@@ -2184,8 +2184,10 @@ pub(crate) fn stored_cancel(l: &queries::ShakedexListing) -> Result<(&str, u32),
 /// R28, a listing whose cancel TRANSFER is mined (CancelAwaitingFinalize,
 /// CancelFinalizing), from hsd's `GET /coin` of that TRANSFER:
 ///
-/// - a coin mined in a block, the name's owner: no live name → Expired;
-///   otherwise the blocks left until its FINALIZE is valid at tip + 1
+/// - a coin mined in a block: no live name, or hsd's name height not the
+///   one it commits to (the name expired and was opened again,
+///   [`registration_ended`]) → Expired; the name's owner: the blocks left
+///   until its FINALIZE is valid at tip + 1
 ///   (`NameParams::blocks_until_finalize` of hsd's `info.transfer`) are
 ///   stored for the reminder, and a CancelFinalizing listing whose FINALIZE
 ///   draft is dead ([`draft_dead`]) → CancelAwaitingFinalize; a mined coin
@@ -2240,8 +2242,16 @@ async fn cancel_on_its_way_home(
             return Ok(());
         }
         let reply = client.get_name_info(&l.name).await?;
-        let Some(info) = name_info(&reply)? else {
+        let cov_height = coin
+            .covenant
+            .as_ref()
+            .and_then(purchase::covenant_name_height);
+        if registration_ended(&reply, cov_height)? {
             queries::expire_locked_listing(conn, &l.id)?;
+            return Ok(());
+        }
+        // `registration_ended` took hsd's `info: null`.
+        let Some(info) = name_info(&reply)? else {
             return Ok(());
         };
         let owner = owner_of(info)?;

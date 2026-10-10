@@ -3192,6 +3192,50 @@ async fn our_own_cancel_found_again_is_no_replacement() {
     );
 }
 
+/// R22's expiry rule for a mined cancel: its TRANSFER a coin mined in a
+/// block while hsd's name height is not the one that TRANSFER commits to
+/// (the name expired and was opened again, `ns.reset`) ends the listing as
+/// Expired, from either cancel state; the same height leaves it.
+#[tokio::test]
+async fn mined_cancel_of_a_registration_gone_is_expired() {
+    for (case, finalizing, height, want) in [
+        (
+            "awaiting, reopened",
+            false,
+            NAME_HEIGHT + 100,
+            ListingState::Expired,
+        ),
+        (
+            "finalizing, reopened",
+            true,
+            NAME_HEIGHT + 100,
+            ListingState::Expired,
+        ),
+        (
+            "same registration",
+            false,
+            NAME_HEIGHT,
+            ListingState::CancelAwaitingFinalize,
+        ),
+    ] {
+        let f = fx(ListingState::Listed);
+        let c = cancel_mined_at(&f);
+        if finalizing {
+            cancel_finalizing(&f, &c);
+        }
+        let mut reply = info_transfer((&txid("d9"), 0), TIP - 30);
+        reply["info"]["height"] = height.into();
+        let rpc = node(
+            reply,
+            vec![transfer_out_of_lock(&f, &c.0, &f.cancel, TIP - 30)],
+            Value::Null,
+        )
+        .with_blockchain_info(tip_at(TIP));
+        run(&f, &rpc).await;
+        assert_eq!(listing(&f).state, want, "{case}");
+    }
+}
+
 /// R28 with R22's reorg rule: a Cancelling listing whose cancel can no
 /// longer land, while the FINALIZE into its lock is in no block and no
 /// mempool (the lock coin hsd's 404, the lock TRANSFER a coin again), goes
