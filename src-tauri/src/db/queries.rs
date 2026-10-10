@@ -3139,31 +3139,53 @@ pub fn list_listings_ready_to_finalize(
 }
 
 /// R28, a cancel that can never land: listing `id`'s lock coin went to a
-/// mined purchase or to another mined cancel. Its cancel draft's reserved
-/// coins are released and the draft, unless mined or already failed, is
-/// `dropped` with `reason`, so it is never sent and Activity says why.
-/// Returns whether a draft was released (`false`: no cancel draft, its row
-/// gone, or mined).
+/// mined purchase or to another mined cancel. `spender_txid` is the txid of
+/// the transaction hsd shows as having mined that spend; it is evidence, not
+/// a hint. Nothing happens (`Ok(false)`) unless the listing is in a state a
+/// mined purchase or another cancel has already put it in (Sold, or one of
+/// [`ListingState::CANCEL_MINED`]) and `spender_txid` is not our cancel (the
+/// draft's own txid, else the listing's `cancel_txid`), so a cancel that did land
+/// (or a lock coin still unspent) never loses its coins.
+///
+/// Then its cancel draft's reserved coins are released and the draft, unless
+/// mined or already failed, is `dropped` with `reason`, so it is never sent
+/// and Activity says why. Returns whether a draft was released (`false`: no
+/// evidence, no cancel draft, its row gone, or mined).
+///
+/// The Step 5 call site (the after-lock job's purchase-beats-cancel and
+/// other-cancel paths) must pass the spender it read from hsd, never a txid
+/// taken from our own rows.
 pub fn release_losing_cancel(
     conn: &rusqlite::Connection,
     id: &str,
+    spender_txid: &str,
     reason: &str,
 ) -> Result<bool, AppError> {
-    let draft: Option<String> = conn
+    let row: Option<(ListingState, Option<String>, Option<String>)> = conn
         .query_row(
-            "SELECT cancel_draft_id FROM shakedex_listings WHERE id = ?1",
+            "SELECT state, cancel_txid, cancel_draft_id FROM shakedex_listings WHERE id = ?1",
             params![id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
-        .optional()?
-        .flatten();
-    let Some(draft) = draft else {
+        .optional()?;
+    let Some((state, cancel_txid, Some(draft))) = row else {
         return Ok(false);
     };
+    let reached =
+        state == ListingWrite::Sell.target() || ListingState::CANCEL_MINED.contains(&state);
+    if !reached {
+        return Ok(false);
+    }
     let Some(row) = get_tx_draft(conn, &draft)? else {
         return Ok(false);
     };
-    if row.status == CONFIRMED_STATUS {
+    // Our cancel's txid is the draft's own; the listing's `cancel_txid` is it
+    // only until a mined cancel of another device replaces it, so it is read
+    // as ours only when the draft knows no txid.
+    let ours = row.txid.clone().or(cancel_txid);
+    if row.status == CONFIRMED_STATUS
+        || ours.map(|t| listing_txid(&t)) == Some(listing_txid(spender_txid))
+    {
         return Ok(false);
     }
     release_reserved_utxos_for_draft(conn, &draft)?;
@@ -3267,6 +3289,10 @@ pub fn set_cancel_blocks_remaining(
 /// be sent now, across profiles (the `cancel_finalize` reminder, R14's
 /// pattern): its lockup over at the last sync and no FINALIZE draft of it
 /// that may have reached the chain.
+/// A `failed` or `dropped` FINALIZE draft counts as not sent here, unlike the
+/// sibling [`list_listings_ready_to_finalize`] (whose draft is the one it
+/// waits to be sent): that draft will never land, so a new FINALIZE is needed
+/// and the reminder must fire again.
 pub fn list_cancels_ready_to_finalize(
     conn: &rusqlite::Connection,
 ) -> Result<Vec<(String, String, String)>, AppError> {

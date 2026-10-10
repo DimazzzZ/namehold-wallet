@@ -963,58 +963,141 @@ fn deleting_an_unsent_cancel_finalize_draft_returns_the_listing_to_awaiting() {
 /// R28: a cancel that lost (a purchase, or another cancel, mined first)
 /// frees the coins it reserved, and is marked dropped with the reason (never
 /// sent again); a failed one keeps its status; a mined one, or a listing
-/// without a cancel draft, is left alone.
+/// without a cancel draft, is left alone. It takes evidence: a mined spender
+/// that is not our cancel, on a listing a purchase or another cancel already
+/// reached. Another listing's draft and coin are never touched.
 #[test]
 fn a_losing_cancel_releases_its_coins() {
-    let reserved = |conn: &Connection| -> i64 {
+    let reserved = |conn: &Connection, draft: &str| -> i64 {
         conn.query_row(
-            "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = 'cx'",
-            [],
+            "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = ?1",
+            [draft],
             |r| r.get(0),
         )
         .unwrap()
     };
-    for (status, after, released) in [
-        ("signed", "dropped", true),
-        ("broadcast_pending", "dropped", true),
-        ("broadcasted", "dropped", true),
-        ("failed", "failed", true),
-        ("confirmed", "confirmed", false),
+    let other = "dd".repeat(32);
+    let ours = "c1".repeat(32);
+    // (draft status, listing state, spender, draft after, released)
+    for (status, state, spender, after, released) in [
+        ("signed", ListingState::Sold, &other, "dropped", true),
+        (
+            "broadcast_pending",
+            ListingState::Sold,
+            &other,
+            "dropped",
+            true,
+        ),
+        ("broadcasted", ListingState::Sold, &other, "dropped", true),
+        (
+            "broadcasted",
+            ListingState::CancelAwaitingFinalize,
+            &other,
+            "dropped",
+            true,
+        ),
+        ("failed", ListingState::Sold, &other, "failed", true),
+        ("confirmed", ListingState::Sold, &other, "confirmed", false),
+        // No evidence: the lock coin is unspent, the listing still Cancelling.
+        (
+            "broadcasted",
+            ListingState::Cancelling,
+            &other,
+            "broadcasted",
+            false,
+        ),
+        // The spender is our own cancel.
+        (
+            "broadcasted",
+            ListingState::Sold,
+            &ours,
+            "broadcasted",
+            false,
+        ),
+        (
+            "broadcasted",
+            ListingState::CancelAwaitingFinalize,
+            &ours,
+            "broadcasted",
+            false,
+        ),
     ] {
         let conn = store_conn();
-        insert_draft(
-            &conn,
-            "cx",
-            crate::noncustodial::shakedex::cancel::CANCEL_ACTION,
-            "signed",
-        );
-        cancelling(&conn, "l1", "dexsale", "cx", true);
+        for (id, name, draft) in [("l1", "dexsale", "cx"), ("l2", "bystander", "cy")] {
+            insert_draft(
+                &conn,
+                draft,
+                crate::noncustodial::shakedex::cancel::CANCEL_ACTION,
+                "signed",
+            );
+            cancelling(&conn, id, name, draft, true);
+            conn.execute(
+                "INSERT INTO tracked_utxos
+                    (txid, vout, wallet_profile_id, address, script_pubkey_hex, value_doos,
+                     covenant_type, spend_class, spent_by_txid, reserved_by_draft_id)
+                 VALUES (?1, 0, ?2, 'rs1qfund', '00', 1000, 0, 'liquid_hns', NULL, ?3)",
+                params![draft.repeat(32), STORE_PROFILE, draft],
+            )
+            .unwrap();
+        }
+        insert_draft_status(&conn, "cx", status);
         conn.execute(
-            "INSERT INTO tracked_utxos
-                (txid, vout, wallet_profile_id, address, script_pubkey_hex, value_doos,
-                 covenant_type, spend_class, spent_by_txid, reserved_by_draft_id)
-             VALUES (?1, 0, ?2, 'rs1qfund', '00', 1000, 0, 'liquid_hns', NULL, 'cx')",
-            params!["aa".repeat(32), STORE_PROFILE],
+            "UPDATE shakedex_listings SET state = ?1 WHERE id = 'l1'",
+            params![state],
         )
         .unwrap();
-        insert_draft_status(&conn, "cx", status);
         let did =
-            queries::release_losing_cancel(&conn, "l1", "a purchase was mined first").unwrap();
-        assert_eq!(did, released, "{status}");
-        assert_eq!(reserved(&conn), i64::from(!released), "{status}");
+            queries::release_losing_cancel(&conn, "l1", spender, "a purchase was mined first")
+                .unwrap();
+        assert_eq!(did, released, "{status} {state:?}");
+        assert_eq!(
+            reserved(&conn, "cx"),
+            i64::from(!released),
+            "{status} {state:?}"
+        );
         let d = queries::get_tx_draft(&conn, "cx").unwrap().unwrap();
-        assert_eq!(d.status, after, "{status}");
+        assert_eq!(d.status, after, "{status} {state:?}");
         if after == "dropped" {
             assert_eq!(
                 d.error_message.as_deref(),
                 Some("a purchase was mined first")
             );
         }
+        // The other listing's draft and coin stay as they were.
+        assert_eq!(
+            reserved(&conn, "cy"),
+            1,
+            "{status} {state:?}: bystander coin"
+        );
+        let by = queries::get_tx_draft(&conn, "cy").unwrap().unwrap();
+        assert_eq!(by.status, "signed", "{status} {state:?}: bystander draft");
     }
+    // The draft's own txid is our cancel too, even when the listing's
+    // `cancel_txid` was replaced by a mined cancel of another device.
+    let conn = store_conn();
+    insert_draft(
+        &conn,
+        "cx",
+        crate::noncustodial::shakedex::cancel::CANCEL_ACTION,
+        "broadcasted",
+    );
+    cancelling(&conn, "l1", "dexsale", "cx", true);
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET txid = ?1 WHERE id = 'cx'",
+        [&ours],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE shakedex_listings SET state = 'sold', cancel_txid = ?1",
+        [&other],
+    )
+    .unwrap();
+    assert!(!queries::release_losing_cancel(&conn, "l1", &ours, "x").unwrap());
+    assert!(queries::release_losing_cancel(&conn, "l1", &other, "x").unwrap());
     let conn = store_conn();
     queries::insert_shakedex_listing(&conn, &listing("l1", "dexsale", ListingState::Sold)).unwrap();
     assert!(
-        !queries::release_losing_cancel(&conn, "l1", "x").unwrap(),
+        !queries::release_losing_cancel(&conn, "l1", &other, "x").unwrap(),
         "no cancel draft"
     );
 }
