@@ -3520,6 +3520,43 @@ pub fn list_listings_kept_on_market(
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// R28 (T6): the published (`publish`) listings whose end LearnHNS Market
+/// must be told, once our own node has it mined: Sold (a mined purchase,
+/// with its `sold_txid`), or the cancel mined —
+/// [`ListingState::CANCEL_MINED`] or Cancelled, with its `cancel_txid` (the
+/// mined cancel's, [`mark_listing_cancel_mined`]). Never a Cancelling one
+/// (sent or not, the cancel is in no block and a purchase may still beat
+/// it) nor SalePending (a purchase in the mempool). Only once the market was
+/// told something (`market_status` set), not yet this (`reported`), and not
+/// refused (`refused`: not retried automatically). The mainnet rule (R23) is
+/// the job's own.
+pub fn list_listings_to_report(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<ShakedexListing>, AppError> {
+    let sql = format!(
+        "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
+         WHERE wallet_profile_id = ?1 AND publish = 1
+           AND market_status IS NOT NULL AND market_status NOT IN (?2, ?3)
+           AND ((state = ?4 AND sold_txid IS NOT NULL)
+                OR (cancel_txid IS NOT NULL AND (state = ?5 OR state IN {})))
+         ORDER BY created_at, id",
+        ListingState::cancel_mined_sql()
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params![
+            profile_id,
+            MarketStatus::Reported,
+            MarketStatus::Refused,
+            ListingState::Sold,
+            ListingState::Cancelled
+        ],
+        row_to_shakedex_listing,
+    )?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 /// R23 day 0: the published listings to announce as pending — Locking once
 /// its lock TRANSFER draft has been sent ([`REACHED_CHAIN_STATUSES`]),
 /// ReadyToFinalize and Finalizing — that the market has not taken yet

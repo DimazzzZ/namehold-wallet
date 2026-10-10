@@ -1473,6 +1473,7 @@ pub(crate) async fn cancel_listing_confirmed<R: tauri::Runtime>(
             cancel_address: &p.cancel_address,
             lock_address: &p.lock_address,
             current_price: p.current_price,
+            published: p.listing.publish,
         }),
     )
     .await?;
