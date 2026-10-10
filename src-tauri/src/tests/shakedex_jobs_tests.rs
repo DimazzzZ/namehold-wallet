@@ -19,7 +19,7 @@ use crate::noncustodial::shakedex::listing_file::{
 use crate::noncustodial::shakedex::lock_key::{derive_lock_key, LockKey};
 use crate::noncustodial::shakedex::script;
 use crate::noncustodial::shakedex::sell::{self, StoredStep};
-use crate::noncustodial::shakedex::template::StepTemplate;
+use crate::noncustodial::shakedex::template::{valid_from_mtp, StepTemplate};
 use crate::noncustodial::sync::COV_FINALIZE;
 use crate::noncustodial::tx::output_address_from_string;
 use crate::shakedex_jobs::{keep_listed_with_client, publish_listings_with_client};
@@ -197,6 +197,13 @@ fn listing(f: &Fx) -> ShakedexListing {
 /// a FINALIZE of NAME at the lock address, worth LOCK_VALUE, at `height`;
 /// the tip and its median time MTP.
 fn node(f: &Fx, height: i64) -> MockNodeRpc {
+    node_at(f, height, MTP)
+}
+
+/// hsd as [`node`], its median time `mtp`.
+fn node_at(f: &Fx, height: i64, mtp: u64) -> MockNodeRpc {
+    let mut info = tip();
+    info.mediantime = Some(mtp);
     let coin: NodeCoin = serde_json::from_value(json!({
         "version": 0, "height": height, "value": LOCK_VALUE, "address": f.lock,
         "covenant": { "type": COV_FINALIZE, "action": "FINALIZE",
@@ -205,7 +212,7 @@ fn node(f: &Fx, height: i64) -> MockNodeRpc {
     }))
     .unwrap();
     MockNodeRpc::new()
-        .with_blockchain_info(tip())
+        .with_blockchain_info(info)
         .with_get_coin(move |t, i| Ok((t == txid("f1") && i == 0).then(|| coin.clone())))
 }
 
@@ -933,10 +940,10 @@ fn set_expiry(f: &Fx, at: u64) {
         .unwrap();
 }
 
-/// Deviation 9: a reverse auction gets its pending post on day 0
-/// (`listingMode: "reverse-auction"`) but no upload once Listed (T8's).
+/// R23 day 0: a reverse auction gets its pending post with
+/// `listingMode: "reverse-auction"`.
 #[tokio::test]
-async fn reverse_auction_gets_the_pending_post_only() {
+async fn reverse_auction_gets_its_pending_post() {
     let f = fx(ListingState::Locking, true);
     f.conn
         .execute("UPDATE shakedex_listings SET mode = 'reverse_auction'", [])
@@ -952,18 +959,112 @@ async fn reverse_auction_gets_the_pending_post_only() {
     m.assert_async().await;
     let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0]).unwrap();
     assert_eq!(sent["listingMode"], "reverse-auction");
+}
 
-    let g = fx(ListingState::Listed, true);
-    g.conn
-        .execute("UPDATE shakedex_listings SET mode = 'reverse_auction'", [])
+/// R24: five steps 1024 s apart (at least 15 minutes), 10 → 2 HNS; at MTP
+/// steps 0–2 are valid (step 2 since MTP − 512) and steps 3–4 are not (step
+/// 3's lock time is MTP + 512, so its 512-s rounding stays above MTP).
+fn schedule() -> Vec<(u64, u64)> {
+    let l2 = sell::buy_now_lock_time(MTP);
+    vec![
+        (10_000_000, l2 - 2_048),
+        (8_000_000, l2 - 1_024),
+        (6_000_000, l2),
+        (4_000_000, l2 + 1_024),
+        (2_000_000, l2 + 2_048),
+    ]
+}
+
+/// `f`'s listing as a reverse auction with `steps` `(price, lock time)`,
+/// each signed over its lock coin, in the row's steps and its listing file
+/// (expiry MTP + 365 days) alike. The signed steps.
+fn as_schedule(f: &Fx, steps: &[(u64, u64)]) -> Vec<PriceStep> {
+    let signed: Vec<PriceStep> = steps
+        .iter()
+        .map(|&(price, lock_time)| signed_step(&f.key, &f.payment, price, lock_time))
+        .collect();
+    let file = file_of(
+        &f.key,
+        &f.payment,
+        &signed,
+        MTP + sell::LISTING_LIFETIME_SECS,
+    );
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET mode = 'reverse_auction', steps_json = ?1,
+             listing_file_json = ?2",
+            [stored(&signed), file],
+        )
         .unwrap();
+    signed
+}
+
+/// R24 (T8): a Listed reverse auction's first upload is its current step
+/// alone — the cheapest step valid at the node's median time, not the
+/// first, not the floor — and the step sent is recorded.
+#[tokio::test]
+async fn uploads_current_step_only() {
+    let f = fx(ListingState::Listed, true);
+    let steps = as_schedule(&f, &schedule());
     let mut s = market().await;
-    let (m, _) = upload_mock(&mut s, 0).await;
-    let n = node(&g, TIP);
-    publish(&g, &n, &s, NOW).await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
     m.assert_async().await;
-    assert_eq!(listing(&g).market_status, None);
-    assert_eq!(n.call_count(), 0);
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(
+        ListingFile::parse(&sent, NET).unwrap().steps,
+        vec![steps[2].clone()],
+        "one step: the current one"
+    );
+    let l = listing(&f);
+    assert_eq!(l.market_status, Some(MarketStatus::Listed));
+    assert_eq!(
+        l.market_sent_step.as_deref(),
+        Some(hex::encode(steps[2].signature).as_str())
+    );
+    // Kept like a Buy Now: the hourly check compares the market's copy with
+    // the current step and finds ours.
+    let mut s = market().await;
+    let get = copy_mock(&mut s, sent.clone(), 1).await;
+    let (m, _) = upload_mock(&mut s, 0).await;
+    keep(&f, &s, NOW + 3_600).await;
+    get.assert_async().await;
+    m.assert_async().await;
+}
+
+/// R24 (T8): a reverse auction whose first step is not valid yet at the
+/// node's median time (a file imported by R32, or a median time a reorg
+/// took back) is not uploaded and nothing is written — no verdict, nothing
+/// to offer; once the median time passes it, its first step is.
+#[tokio::test]
+async fn no_upload_before_the_first_step_is_valid() {
+    let f = fx(ListingState::Listed, true);
+    let first = MTP + 512;
+    let steps = as_schedule(&f, &[(10_000_000, first), (8_000_000, first + 1_024)]);
+    let mut s = market().await;
+    let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    any.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(
+        (
+            l.market_status,
+            l.market_retry_at,
+            l.market_attempts,
+            l.market_sent_step
+        ),
+        (None, None, 0, None),
+        "nothing written"
+    );
+    let mut s = market().await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    publish(&f, &node_at(&f, TIP, valid_from_mtp(first)), &s, NOW + 600).await;
+    m.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(
+        ListingFile::parse(&sent, NET).unwrap().steps,
+        vec![steps[0].clone()]
+    );
 }
 
 fn rfc3339(secs: i64) -> String {
@@ -1033,7 +1134,8 @@ async fn reuploads_when_replaced() {
 
 /// R25: a copy that offers a buyer exactly ours — keys in Flask's order, an
 /// extra field the market adds — is not uploaded again; the next check is
-/// an hour on, and nothing is asked before then.
+/// an hour on, and nothing is asked before then. R24 (T8): the step it
+/// serves as ours is recorded as sent.
 #[tokio::test]
 async fn matching_copy_is_not_reuploaded() {
     let f = listed_on_market(MarketStatus::Listed);
@@ -1051,6 +1153,11 @@ async fn matching_copy_is_not_reuploaded() {
     assert_eq!(
         l.market_retry_at.as_deref(),
         Some(rfc3339(NOW + 3_600).as_str())
+    );
+    let ours = ListingFile::parse(&our_copy(&f), NET).unwrap();
+    assert_eq!(
+        l.market_sent_step,
+        Some(hex::encode(ours.steps[0].signature))
     );
 }
 
@@ -1534,15 +1641,14 @@ async fn steps_unverified_is_verified_again_before_the_market() {
     );
 }
 
-/// R24, R25: of the jobs' set, a reverse auction (T8's), one the market has
-/// not taken yet (the first upload is `publish_listings_with_client`'s) and
-/// a reported one are not asked about.
+/// R24, R25: of the jobs' set, one the market has not taken yet (the first
+/// upload is `publish_listings_with_client`'s) and a reported one are not
+/// asked about.
 #[tokio::test]
-async fn only_buy_now_listings_the_market_took_are_kept() {
-    for case in ["reverse_auction", "unset", "reported"] {
+async fn only_listings_the_market_took_are_kept() {
+    for case in ["unset", "reported"] {
         let f = listed_on_market(MarketStatus::Listed);
         let sql = match case {
-            "reverse_auction" => "UPDATE shakedex_listings SET mode = 'reverse_auction'",
             "unset" => "UPDATE shakedex_listings SET market_status = NULL",
             _ => "UPDATE shakedex_listings SET market_status = 'reported'",
         };

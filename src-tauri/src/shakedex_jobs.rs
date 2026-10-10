@@ -2581,11 +2581,24 @@ fn near_expiry(exp: i64, now: i64) -> bool {
 }
 
 /// Write `r` over `l`, the row the job read ([`queries::record_market_result`]:
-/// nothing is written once the listing changed meanwhile).
+/// nothing is written once the listing changed meanwhile). A result that
+/// sent no step: see [`record_sent`].
 fn record(
     conn: &rusqlite::Connection,
     l: &queries::ShakedexListing,
     r: &MarketResult,
+) -> Result<(), AppError> {
+    record_sent(conn, l, r, None)
+}
+
+/// [`record`] for a result that sent `sent_step` (the signature, hex, of
+/// the one step uploaded or found on the market as ours; R24): recorded as
+/// `market_sent_step`.
+fn record_sent(
+    conn: &rusqlite::Connection,
+    l: &queries::ShakedexListing,
+    r: &MarketResult,
+    sent_step: Option<&str>,
 ) -> Result<(), AppError> {
     queries::record_market_result(
         conn,
@@ -2602,7 +2615,7 @@ fn record(
             error: r.error.as_deref(),
             accepted: r.accepted,
             told: r.told,
-            sent_step: None,
+            sent_step,
         },
     )?;
     Ok(())
@@ -2741,6 +2754,18 @@ pub(crate) async fn market_copy(
     })
 }
 
+/// The signature (hex) of `copy`'s one step, as `market_sent_step` records
+/// it; a copy of another number of steps is the row's to record as
+/// StepsUnverified ([`market_copy`] always cuts to one).
+fn copy_step(copy: &listing_file::ListingFile) -> Result<String, AppError> {
+    match copy.steps.as_slice() {
+        [one] => Ok(hex::encode(one.signature)),
+        _ => Err(AppError::Other(
+            "the market copy does not hold exactly one step".into(),
+        )),
+    }
+}
+
 /// Whether a listing file's `expiresAt` of `exp` (Unix) is near
 /// ([`near_expiry`]); one past `i64` is not.
 fn file_near_expiry(exp: u64, now: i64) -> bool {
@@ -2855,10 +2880,11 @@ fn market_job_clients(
 /// only (returns before any read off mainnet). Day 0: each listing of
 /// [`queries::list_listings_to_announce`] that is due gets its pending
 /// listing (no node read). Once Listed (the FINALIZE into the lock mined,
-/// one confirmation): each Listed Buy Now listing of
+/// one confirmation): each Listed listing of
 /// [`queries::list_listings_kept_on_market`] (published) the market has not
 /// taken yet (`market_status` unset) gets its current step uploaded
-/// ([`market_copy`]); reverse auctions are T8's. R28: each due listing of
+/// ([`market_copy`]: a Buy Now's, or a reverse auction's cheapest step
+/// valid at the node's median time, R24), the step sent recorded. R28: each due listing of
 /// [`queries::list_listings_to_report`] — the market told about it, and our
 /// node has its sale or cancel mined — is reported first ([`report`]), once;
 /// a sent cancel already stopped the keep jobs, the report waits for it to
@@ -2902,7 +2928,7 @@ pub async fn publish_listings_with_client(
         // market. Keeping it there (`keep_listed_with_client`) also covers a
         // Cancelling one whose cancel is not sent yet.
         let listed = l.state == queries::ListingState::Listed;
-        if first && listed && l.mode == queries::ListingMode::BuyNow && due(&l, now) {
+        if first && listed && due(&l, now) {
             if let Err(e) = upload_current(conn, node, market, &l, now).await {
                 eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
             }
@@ -3009,8 +3035,9 @@ async fn announce(
     )
 }
 
-/// R23: upload `l`'s current step ([`market_copy`], every stored step
-/// verified on our node first) and record the market's answer.
+/// R23, R24: upload `l`'s current step ([`market_copy`], every stored step
+/// verified on our node first) and record the market's answer and the step
+/// sent.
 async fn upload_current(
     conn: &rusqlite::Connection,
     node: &dyn NodeRpc,
@@ -3024,17 +3051,29 @@ async fn upload_current(
             Ok(())
         }
         MarketCopy::StepsUnverified(why) => record(conn, l, &steps_unverified(l, why, now)),
-        MarketCopy::Ready { file, listing, .. } => {
-            upload(
+        MarketCopy::Ready {
+            file,
+            copy,
+            listing,
+        } => match copy_step(&copy) {
+            Ok(step) => {
+                upload(
+                    conn,
+                    market,
+                    &file,
+                    &step,
+                    &listing,
+                    queries::MarketStatus::Listed,
+                    now,
+                )
+                .await
+            }
+            Err(e) => record(
                 conn,
-                market,
-                &file,
                 &listing,
-                queries::MarketStatus::Listed,
-                now,
-            )
-            .await
-        }
+                &steps_unverified(&listing, e.to_string(), now),
+            ),
+        },
     }
 }
 
@@ -3060,13 +3099,15 @@ fn steps_unverified(l: &queries::ShakedexListing, why: String, now: i64) -> Mark
     )
 }
 
-/// Upload `file` (`listing`'s [`MarketCopy::Ready`] copy) and record the
-/// market's answer, `ok` on acceptance. An acceptance naming another name
-/// than ours is no answer about ours.
+/// Upload `file` (`listing`'s [`MarketCopy::Ready`] copy, its one step
+/// `step`: [`copy_step`]) and record the market's answer, `ok` on
+/// acceptance, and `step` as sent whatever the answer. An acceptance naming
+/// another name than ours is no answer about ours.
 async fn upload(
     conn: &rusqlite::Connection,
     market: &LearnHnsClient,
     file: &str,
+    step: &str,
     listing: &queries::ShakedexListing,
     ok: queries::MarketStatus,
     now: i64,
@@ -3078,15 +3119,17 @@ async fn upload(
         )),
         reply => Outcome::of(&reply, true),
     };
-    record(
+    record_sent(
         conn,
         listing,
         &after_reply(outcome, ok, listing.market_attempts, now),
+        Some(step),
     )
 }
 
-/// R25 (T6): about hourly, keep the profile's published Buy Now listings on
-/// LearnHNS Market. Mainnet only: returns before any read off mainnet.
+/// R25 (T6): about hourly, keep the profile's published listings on
+/// LearnHNS Market (a reverse auction's current step, R24, like a Buy
+/// Now's). Mainnet only: returns before any read off mainnet.
 /// Takes the listings of [`queries::list_listings_kept_on_market`] — Listed,
 /// and Cancelling while the cancel is not sent (still buyable on chain;
 /// R24, R28: the jobs stop once it is sent) and only once the market
@@ -3106,8 +3149,7 @@ async fn upload(
 /// ([`market_copy`]) makes it Retrying, due now (what is sent changed), and
 /// the next run checks the market's copy and uploads the new file. The
 /// expiry is refreshed for Listed listings only ([`market_copy`],
-/// `ListingWrite::RefreshExpiry` is Listed to Listed). Reverse auctions are
-/// T8's.
+/// `ListingWrite::RefreshExpiry` is Listed to Listed).
 ///
 /// Per listing: [`market_copy`] first (our node: every step verified
 /// again, the expiry refreshed when near). StepsUnverified → recorded,
@@ -3138,9 +3180,6 @@ pub async fn keep_listed_with_client(
         return Ok(());
     }
     for l in queries::list_listings_kept_on_market(conn, profile_id)? {
-        if l.mode != queries::ListingMode::BuyNow {
-            continue;
-        }
         let listed = l.state == queries::ListingState::Listed;
         let run = match l.market_status {
             Some(S::Listed | S::ReplacedReuploaded | S::Retrying | S::StepsUnverified) => {
@@ -3228,9 +3267,19 @@ async fn keep_listed(
             listing,
         } => (file, copy, listing),
     };
+    let step = match copy_step(&ours) {
+        Ok(step) => step,
+        Err(e) => {
+            return record(
+                conn,
+                &listing,
+                &steps_unverified(&listing, e.to_string(), now),
+            )
+        }
+    };
     if listing.listing_file_json != l.listing_file_json {
         // The expiry was just refreshed: the market holds the old file.
-        return upload(conn, market, &file, &listing, S::Listed, now).await;
+        return upload(conn, market, &file, &step, &listing, S::Listed, now).await;
     }
     // What is sent changed since the market last took our copy (a Lower
     // price, an expiry refresh, a reorg back to an unsent cancel:
@@ -3252,16 +3301,17 @@ async fn keep_listed(
                 };
                 // The market serves our own copy: it holds our listing.
                 let matched = Outcome::Taken { holds_ours: true };
-                record(
+                record_sent(
                     conn,
                     &listing,
                     &after_reply(matched, ok, listing.market_attempts, now),
+                    Some(&step),
                 )
             } else {
-                upload(conn, market, &file, &listing, replaced, now).await
+                upload(conn, market, &file, &step, &listing, replaced, now).await
             }
         }
-        ProofCopy::NotListed => upload(conn, market, &file, &listing, S::Listed, now).await,
+        ProofCopy::NotListed => upload(conn, market, &file, &step, &listing, S::Listed, now).await,
         ProofCopy::NoAnswer(why) => {
             let none = Outcome::NoVerdict(format!("no answer from the market: {why}"));
             record(
