@@ -2757,7 +2757,9 @@ async fn mined_cancel_counts_down_to_its_finalize() {
         None,
         "the owner is another coin"
     );
-    run(&f, &chain((&c.0, 0), at + lockup - 2)).await;
+    // hsd's owner hash in another case is the same txid.
+    let upper = c.0.to_uppercase();
+    run(&f, &chain((&upper, 0), at + lockup - 2)).await;
     assert_eq!(
         listing(&f).cancel_blocks_remaining,
         Some(1),

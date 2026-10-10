@@ -7100,9 +7100,9 @@ async fn finalize_cancel_refused_before_the_lockup() {
 }
 
 /// R28: hsd's 404 for the cancel's TRANSFER (spent in a block or in the
-/// mempool: a FINALIZE home already sent, from here or from another device
-/// with the same seed) refuses the FINALIZE before anything else is read:
-/// the name is on its way home or home, and no second FINALIZE is built.
+/// mempool, e.g. by a FINALIZE home already sent from here or from another
+/// device with the same seed, or undone by a reorg) refuses the FINALIZE
+/// before anything else is read, saying only that, and builds nothing.
 #[tokio::test]
 async fn finalize_cancel_refused_once_the_transfer_is_spent() {
     let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
@@ -7121,6 +7121,88 @@ async fn finalize_cancel_refused_once_the_transfer_is_spent() {
             .await
             .expect_err("spent"),
     );
-    assert!(e.contains("on its way home or already home"), "{e}");
+    assert!(
+        e.contains("no longer an unspent coin on the node") && e.contains("undone by a reorg"),
+        "{e}"
+    );
     assert_no_cancel_finalize(&l);
+}
+
+/// R28: every node fact `finalize_cancel` reads refuses with its own reason
+/// when it does not hold, and nothing is written: the cancel's TRANSFER in
+/// the mempool, of another covenant or at another address, committing to an
+/// address not ours, of an earlier registration of the name (its covenant's
+/// name height not the name's); the name with no live state, revoked, or
+/// owned by another coin.
+#[tokio::test]
+async fn finalize_cancel_refused_on_node_facts_that_do_not_hold() {
+    let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
+    let tip = LISTED_TIP + lockup - 1;
+    let stranger = address::encode_p2wpkh(Network::Regtest, &[3; 20]).unwrap();
+    type Change = fn(&mut Value, &mut Value, &str);
+    let cases: [(&str, Change, &str); 8] = [
+        (
+            "in the mempool",
+            |coin, _, _| coin["height"] = (-1).into(),
+            "not mined yet",
+        ),
+        (
+            "another covenant",
+            |coin, _, _| {
+                coin["covenant"]["type"] = COV_FINALIZE.into();
+                coin["covenant"]["action"] = "FINALIZE".into();
+            },
+            "something else than this listing's cancel",
+        ),
+        (
+            "another address",
+            |coin, _, _| coin["address"] = addr00(Network::Regtest).0.into(),
+            "something else than this listing's cancel",
+        ),
+        ("not ours", |_, _, _| {}, "not an address of this wallet"),
+        (
+            "an earlier registration",
+            |coin, _, _| {
+                coin["covenant"]["items"][1] = hex::encode((NAME_HEIGHT - 1).to_le_bytes()).into()
+            },
+            "registered again",
+        ),
+        (
+            "no live name",
+            |_, info, _| *info = json!({ "info": null, "start": null }),
+            "no on-chain state",
+        ),
+        (
+            "revoked",
+            |_, info, _| info["info"]["revoked"] = 1.into(),
+            "no longer held by the cancel",
+        ),
+        (
+            "owner moved",
+            |_, info, _| info["info"]["owner"]["hash"] = "d1".repeat(32).into(),
+            "no longer held by the cancel",
+        ),
+    ];
+    for (case, change, want) in cases {
+        let to = (case == "not ours").then(|| stranger.clone());
+        let (mut l, c) = cancel_mined_fixture(LISTED_TIP, tip, to).await;
+        let to = if case == "not ours" {
+            stranger.clone()
+        } else {
+            l.r.listing().cancel_address.unwrap()
+        };
+        let mut coin = transfer_at_lock(&c, &to, LISTED_TIP);
+        let mut info = name_info(RENEWAL, 0, &c);
+        info["info"]["transfer"] = LISTED_TIP.into();
+        change(&mut coin, &mut info, &c);
+        l.node(tip, Some(LISTED_MTP), info, vec![(c, 0, Some(coin))])
+            .await;
+        let e = err_text(
+            finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+                .await
+                .expect_err(case),
+        );
+        assert!(e.contains(want), "{case}: {e}");
+        assert_no_cancel_finalize(&l);
+    }
 }
