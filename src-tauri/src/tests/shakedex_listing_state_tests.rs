@@ -3023,23 +3023,57 @@ async fn cancel_follows_a_reorg_of_its_transfer() {
     );
 }
 
+/// A funding coin of ours reserved by our cancel draft `cx`, unspent (a
+/// reorg took our mined cancel out, so the coin it spent is a coin again).
+fn cancel_funding(f: &Fx) {
+    f.conn
+        .execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex, value_doos,
+                 height, covenant_type, spend_class, reserved_by_draft_id)
+             VALUES (?1, 1, ?2, ?3, '00', 70000, ?4, 0, 'liquid_hns', 'cx')",
+            params![txid("a7"), PROFILE, f.payment, TIP - 50],
+        )
+        .unwrap();
+}
+
+/// How many coins our cancel draft `cx` holds.
+fn held_by_cancel(f: &Fx) -> i64 {
+    f.conn
+        .query_row(
+            "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = 'cx'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
 /// R22, R28: a reorg replaced our mined cancel with a mined purchase of the
 /// stored lock coin (hsd's 404 for the cancel's TRANSFER and for the lock
 /// coin, the name's owner the purchase's TRANSFER committing to the buyer,
 /// a coin of it at our payment address): Sold with that txid from either
 /// cancel state, and our cancel, which can no longer land, released with
-/// the purchase as the spender. The purchase only in the mempool (the owner
-/// still the lock coin) is no verdict.
+/// the purchase as the spender: its funding coins free again, also while
+/// the draft tracker still calls it `confirmed` (a mined purchase of the
+/// lock coin it spent says it is not). The purchase only in the mempool
+/// (the owner still the lock coin) is no verdict and frees nothing.
 #[tokio::test]
 async fn purchase_replacing_a_mined_cancel_is_sold() {
     let buy = txid("b1");
-    for (case, finalizing) in [("awaiting", false), ("finalizing", true)] {
+    for (case, finalizing, status) in [
+        ("awaiting", false, "broadcasted"),
+        ("finalizing", true, "broadcasted"),
+        ("awaiting, confirmed", false, "confirmed"),
+        ("finalizing, confirmed", true, "confirmed"),
+    ] {
         let f = fx(ListingState::Listed);
-        our_cancel(&f, "broadcasted");
+        our_cancel(&f, status);
+        cancel_funding(&f);
         let c = cancel_mined_at(&f);
         if finalizing {
             cancel_finalizing(&f, &c);
         }
+        queries::set_cancel_blocks_remaining(&f.conn, &f.id, 0).unwrap();
         paid(&f, &buy, 2, -1, false);
         run(
             &f,
@@ -3056,6 +3090,7 @@ async fn purchase_replacing_a_mined_cancel_is_sold() {
             "{case}: in the mempool"
         );
         assert_eq!(l.sold_txid, None, "{case}: in the mempool");
+        assert_eq!(held_by_cancel(&f), 1, "{case}: in the mempool");
 
         paid(&f, &buy, 2, TIP, false);
         run(
@@ -3069,9 +3104,14 @@ async fn purchase_replacing_a_mined_cancel_is_sold() {
         .await;
         let l = listing(&f);
         assert_eq!(
-            (l.state, l.sold_txid.as_deref()),
-            (ListingState::Sold, Some(buy.as_str())),
-            "{case}"
+            (
+                l.state,
+                l.sold_txid.as_deref(),
+                l.cancel_finalize_draft_id,
+                l.cancel_blocks_remaining
+            ),
+            (ListingState::Sold, Some(buy.as_str()), None, None),
+            "{case}: the replaced cancel's FINALIZE link and count forgotten"
         );
         let d = queries::get_tx_draft(&f.conn, "cx").unwrap().unwrap();
         assert_eq!(d.status, "dropped", "{case}");
@@ -3080,6 +3120,7 @@ async fn purchase_replacing_a_mined_cancel_is_sold() {
             Some(crate::noncustodial::shakedex::cancel::CANCEL_LOST_TO_PURCHASE),
             "{case}"
         );
+        assert_eq!(held_by_cancel(&f), 0, "{case}: its coins are free again");
     }
 }
 
@@ -3087,15 +3128,22 @@ async fn purchase_replacing_a_mined_cancel_is_sold() {
 /// the stored lock coin (another same-seed device's, a new txid): the
 /// listing awaits that cancel's finalize, with its outpoint, from either
 /// cancel state (a FINALIZE draft of the old cancel forgotten), and our
-/// cancel is released with that cancel as the spender. The other cancel in
-/// the mempool (the owner still the lock coin), or linked from another lock
-/// coin, is no verdict.
+/// cancel is released with that cancel as the spender, its funding coins
+/// free again also while the tracker still calls it `confirmed`. The other
+/// cancel in the mempool (the owner still the lock coin), or linked from
+/// another lock coin, is no verdict.
 #[tokio::test]
 async fn another_cancel_replacing_a_mined_cancel_awaits_its_finalize() {
     let c7 = txid("c7");
-    for (case, finalizing) in [("awaiting", false), ("finalizing", true)] {
+    for (case, finalizing, status) in [
+        ("awaiting", false, "broadcasted"),
+        ("finalizing", true, "broadcasted"),
+        ("awaiting, confirmed", false, "confirmed"),
+        ("finalizing, confirmed", true, "confirmed"),
+    ] {
         let f = fx(ListingState::Listed);
-        our_cancel(&f, "broadcasted");
+        our_cancel(&f, status);
+        cancel_funding(&f);
         let c = cancel_mined_at(&f);
         if finalizing {
             cancel_finalizing(&f, &c);
@@ -3161,6 +3209,7 @@ async fn another_cancel_replacing_a_mined_cancel_awaits_its_finalize() {
             Some(crate::noncustodial::shakedex::cancel::CANCEL_LOST_TO_ANOTHER),
             "{case}"
         );
+        assert_eq!(held_by_cancel(&f), 0, "{case}: its coins are free again");
     }
 }
 

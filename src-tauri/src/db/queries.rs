@@ -2643,7 +2643,10 @@ pub fn mark_listing_sale_pending(
 
 /// R22: the lock coin `lock` was bought by the mined `purchase_txid`. Only
 /// from [`ListingWrite::Sell`]'s sources, under the same stored-outpoint rule as
-/// [`mark_listing_sale_pending`]. Returns how many rows changed.
+/// [`mark_listing_sale_pending`]. A sale (or a purchase seen pending) forgets
+/// a mined cancel's FINALIZE draft link and lockup count: a reorg replaced
+/// that cancel, so its FINALIZE spends a TRANSFER in no block. Returns how
+/// many rows changed.
 pub fn sell_shakedex_listing(
     conn: &rusqlite::Connection,
     id: &str,
@@ -2662,7 +2665,8 @@ fn sale_write(
 ) -> Result<usize, AppError> {
     let sql = format!(
         "UPDATE shakedex_listings
-         SET state = ?2, sold_txid = ?3, updated_at = datetime('now')
+         SET state = ?2, sold_txid = ?3, cancel_finalize_draft_id = NULL,
+             cancel_blocks_remaining = NULL, updated_at = datetime('now')
          WHERE id = ?1 AND {} AND lock_txid = ?4 AND lock_vout = ?5",
         w.source_sql()
     );
@@ -3173,6 +3177,30 @@ pub fn release_losing_cancel(
     spender_txid: &str,
     reason: &str,
 ) -> Result<bool, AppError> {
+    release_cancel(conn, id, spender_txid, reason, false)
+}
+
+/// [`release_losing_cancel`] for a mined cancel a reorg replaced:
+/// `spender_txid` is a MINED spender of the listing's stored lock coin that
+/// is not our cancel, read from hsd, so our cancel, which spends that same
+/// coin, is in no block, and a `confirmed` status the draft tracker has not
+/// reverted yet is stale: such a draft is released too.
+pub fn release_replaced_cancel(
+    conn: &rusqlite::Connection,
+    id: &str,
+    spender_txid: &str,
+    reason: &str,
+) -> Result<bool, AppError> {
+    release_cancel(conn, id, spender_txid, reason, true)
+}
+
+fn release_cancel(
+    conn: &rusqlite::Connection,
+    id: &str,
+    spender_txid: &str,
+    reason: &str,
+    confirmed_is_stale: bool,
+) -> Result<bool, AppError> {
     let row: Option<(ListingState, Option<String>, Option<String>)> = conn
         .query_row(
             "SELECT state, cancel_txid, cancel_draft_id FROM shakedex_listings WHERE id = ?1",
@@ -3195,7 +3223,7 @@ pub fn release_losing_cancel(
     // only until a mined cancel of another device replaces it, so it is read
     // as ours only when the draft knows no txid.
     let ours = row.txid.clone().or(cancel_txid);
-    if row.status == CONFIRMED_STATUS
+    if (row.status == CONFIRMED_STATUS && !confirmed_is_stale)
         || ours.map(|t| listing_txid(&t)) == Some(listing_txid(spender_txid))
     {
         return Ok(false);
