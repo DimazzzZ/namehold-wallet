@@ -6924,3 +6924,203 @@ fn old_with_timestamps(got: &ShakedexListing, want: &ShakedexListing) -> Shakede
         ..want.clone()
     }
 }
+
+// --- The cancel's FINALIZE home (T5, R28) -----------------------------------
+
+use crate::commands::shakedex::finalize_cancel;
+use crate::noncustodial::shakedex::cancel::CANCEL_FINALIZE_ACTION;
+use crate::noncustodial::shakedex::lock_key::LockKey;
+
+fn r_key(l: &Listed) -> LockKey {
+    l.r.key()
+}
+
+/// The Listed fixture cancelled, its cancel mined at `height` and the
+/// listing CancelAwaitingFinalize (its funding coin released, standing in
+/// for its change); the node at `tip` shows the cancel's TRANSFER, at our
+/// lock committing to `to` (the listing's cancel address unless given), as
+/// the name's owner. Returns the cancel's txid.
+async fn cancel_mined_fixture(height: i64, tip: i64, to: Option<String>) -> (Listed, String) {
+    let mut l = listed_fixture().await;
+    answer(true);
+    let cx = cancel(&l).await.expect("cancel");
+    let c = cx.summary["txid"].as_str().unwrap().to_string();
+    with_db(&l.r.app, |db| {
+        queries::update_tx_draft_status(db, &cx.id, "broadcasted", None, Some(&c)).unwrap();
+        queries::update_tx_draft_confirmation(db, &cx.id, height, None).unwrap();
+        queries::release_reserved_utxos_for_draft(db, &cx.id).unwrap();
+        assert_eq!(
+            queries::mark_listing_cancel_mined(db, &l.r.listing_id, (&c, 0), (&l.lock.0, l.lock.1))
+                .unwrap(),
+            1
+        );
+    });
+    let to = to.unwrap_or_else(|| l.r.listing().cancel_address.unwrap());
+    let mut info = name_info(RENEWAL, 0, &c);
+    info["info"]["transfer"] = height.into();
+    let coin = transfer_at_lock(&c, &to, height);
+    l.node(
+        tip,
+        Some(LISTED_MTP),
+        info,
+        vec![(c.clone(), 0, Some(coin))],
+    )
+    .await;
+    (l, c)
+}
+
+/// The payment address a Listed fixture reserves: another derived address
+/// of the profile (every fixture reserves the same indexes).
+async fn listed_fixture_payment() -> String {
+    listed_fixture().await.r.listing().payment_address.unwrap()
+}
+
+/// R28: once the cancel's lockup is over (hsd judges the FINALIZE at tip +
+/// 1), the FINALIZE out of the lock is built: the cancel's TRANSFER with
+/// the `[lockScript]` witness, to the address that TRANSFER commits to, the
+/// fee from our coins; the listing is CancelFinalizing with that draft,
+/// which the usual confirm, sign and broadcast commands send. A cancel
+/// committing to another address of ours (another device's) pays that one.
+/// A second build is refused while the first is linked.
+#[tokio::test]
+async fn finalize_cancel_builds_the_finalize_to_the_committed_address() {
+    let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
+    let (l, c) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 1, None).await;
+    let to = l.r.listing().cancel_address.unwrap();
+    let draft = finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+        .await
+        .expect("finalize");
+    assert_eq!(draft.action, CANCEL_FINALIZE_ACTION);
+    let row = with_db(&l.r.app, |db| {
+        queries::get_tx_draft(db, &draft.id).unwrap().unwrap()
+    });
+    assert_eq!(row.status, "draft", "signed later by the usual commands");
+    let plan: DraftPlan = serde_json::from_str(&row.signing_inputs_json).unwrap();
+    assert_eq!(
+        (plan.inputs[0].txid.as_str(), plan.inputs[0].vout),
+        (c.as_str(), 0)
+    );
+    assert_eq!(
+        plan.inputs[0].foreign_witness_hex.as_deref(),
+        Some(&[hex::encode(r_key(&l).script)][..])
+    );
+    assert_eq!(
+        plan.inputs[0].lock_key_name, None,
+        "no lock key signs a FINALIZE"
+    );
+    assert_eq!(plan.outputs[0].covenant_type, COV_FINALIZE);
+    assert_eq!(plan.outputs[0].address, to);
+    assert_eq!(plan.outputs[0].value, NAME_VALUE);
+    let s = l.r.listing();
+    assert_eq!(s.state, ListingState::CancelFinalizing);
+    assert_eq!(
+        s.cancel_finalize_draft_id.as_deref(),
+        Some(draft.id.as_str())
+    );
+    let e = err_text(
+        finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err("twice"),
+    );
+    assert!(e.contains("already built"), "{e}");
+
+    // Another device's cancel to another address of ours: the payment
+    // address here stands in for it.
+    let pay = listed_fixture_payment().await;
+    let (l, _) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 1, Some(pay.clone())).await;
+    let draft = finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+        .await
+        .expect("finalize");
+    let row = with_db(&l.r.app, |db| {
+        queries::get_tx_draft(db, &draft.id).unwrap().unwrap()
+    });
+    let plan: DraftPlan = serde_json::from_str(&row.signing_inputs_json).unwrap();
+    assert_eq!(plan.outputs[0].address, pay);
+}
+
+/// A refusal wrote nothing: the listing still awaits its finalize and only
+/// the lock, FINALIZE and cancel drafts exist.
+fn assert_no_cancel_finalize(l: &Listed) {
+    let s = l.r.listing();
+    assert_eq!(
+        (s.state, s.cancel_finalize_draft_id),
+        (ListingState::CancelAwaitingFinalize, None)
+    );
+    assert_eq!(
+        count(&l.r.app, "wallet_tx_drafts"),
+        3,
+        "lock, FINALIZE and cancel only"
+    );
+}
+
+/// R28: refused, with the reason and nothing written, one block before the
+/// lockup ends, for a TRANSFER committing to an address this wallet has not
+/// derived, and while the name's owner is not the cancel's TRANSFER.
+#[tokio::test]
+async fn finalize_cancel_refused_before_the_lockup() {
+    let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
+    let (l, _) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 2, None).await;
+    let e = err_text(
+        finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err("early"),
+    );
+    assert!(e.contains("in 1 block"), "{e}");
+    assert_no_cancel_finalize(&l);
+
+    let stranger = address::encode_p2wpkh(Network::Regtest, &[3; 20]).unwrap();
+    let (l, _) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 1, Some(stranger)).await;
+    let e = err_text(
+        finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err("not ours"),
+    );
+    assert!(e.contains("not an address of this wallet"), "{e}");
+    assert_no_cancel_finalize(&l);
+
+    let (mut l, c) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 1, None).await;
+    let to = l.r.listing().cancel_address.unwrap();
+    let mut moved = name_info(RENEWAL, 0, &"d1".repeat(32));
+    moved["info"]["transfer"] = LISTED_TIP.into();
+    let coin = transfer_at_lock(&c, &to, LISTED_TIP);
+    l.node(
+        LISTED_TIP + lockup - 1,
+        Some(LISTED_MTP),
+        moved,
+        vec![(c, 0, Some(coin))],
+    )
+    .await;
+    let e = err_text(
+        finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err("moved"),
+    );
+    assert!(e.contains("no longer held by the cancel"), "{e}");
+    assert_no_cancel_finalize(&l);
+}
+
+/// R28: hsd's 404 for the cancel's TRANSFER (spent in a block or in the
+/// mempool: a FINALIZE home already sent, from here or from another device
+/// with the same seed) refuses the FINALIZE before anything else is read:
+/// the name is on its way home or home, and no second FINALIZE is built.
+#[tokio::test]
+async fn finalize_cancel_refused_once_the_transfer_is_spent() {
+    let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
+    let (mut l, c) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 1, None).await;
+    let mut home = name_info(RENEWAL, 0, &"d1".repeat(32));
+    home["info"]["transfer"] = 0.into();
+    l.node(
+        LISTED_TIP + lockup,
+        Some(LISTED_MTP),
+        home,
+        vec![(c, 0, None)],
+    )
+    .await;
+    let e = err_text(
+        finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err("spent"),
+    );
+    assert!(e.contains("on its way home or already home"), "{e}");
+    assert_no_cancel_finalize(&l);
+}

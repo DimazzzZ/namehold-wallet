@@ -2424,6 +2424,229 @@ pub async fn shakedex_cancel_listing(
     cancel_listing_confirmed(&state, &app, &listing_id, fee_rate).await
 }
 
+/// R28: hsd answers 404 for the cancel's TRANSFER: a FINALIZE (or anything
+/// else) spends it in a block or in the mempool.
+pub const CANCEL_TRANSFER_SPENT: &str = "the cancel's transfer is already spent: the name is \
+     on its way home or already home, so no finalize was built";
+
+/// R28: the FINALIZE that brings a cancelled listing's name home, built
+/// once its cancel TRANSFER is mined and the transfer lockup is over.
+/// Everything is read on the node now, field by field: the cancel's
+/// TRANSFER `(cancel_txid, cancel_vout)` a coin (hsd's 404, the TRANSFER
+/// already spent by a FINALIZE from here or another device, is refused
+/// first: nothing is built a second time), mined, a TRANSFER of the name at
+/// the lock address of the stored key, committing to an address of this
+/// profile's (the FINALIZE must pay the address the TRANSFER commits to);
+/// the name live, unrevoked and owned by that TRANSFER; the lockup over at
+/// tip + 1, counted from hsd's `info.transfer`; the TRANSFER's name height
+/// the name's. The draft and the listing's move to CancelFinalizing commit
+/// together; the usual confirm, sign and broadcast commands send it. No lock
+/// key is needed: the FINALIZE's lock input carries only `[lockScript]`
+/// (R1). No experimental flag (R15), and the signer is asked when the draft
+/// is signed.
+pub(crate) async fn finalize_cancel(
+    state: &State<'_, AppState>,
+    listing_id: &str,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    let ctx = software_writer_ctx(state)?;
+    let (listing, own) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let l = queries::get_shakedex_listing(&conn, listing_id)?
+            .filter(|l| l.wallet_profile_id == ctx.profile_id)
+            .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
+        if l.state != ListingState::CancelAwaitingFinalize {
+            return Err(AppError::InvalidInput(
+                match l.state {
+                    ListingState::Cancelling => {
+                        "the cancel is not mined yet: its finalize opens after the transfer \
+                         lockup that follows"
+                    }
+                    ListingState::CancelFinalizing => {
+                        "the finalize of this cancel is already built: send it, or delete it to \
+                         build another"
+                    }
+                    other => listing_over(other)
+                        .unwrap_or("this listing has no mined cancel to finalize"),
+                }
+                .into(),
+            ));
+        }
+        let own: std::collections::HashSet<String> =
+            queries::get_profile_addresses(&conn, &ctx.profile_id)?
+                .into_iter()
+                .collect();
+        (l, own)
+    };
+    let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
+    let cancel_txid = listing
+        .cancel_txid
+        .clone()
+        .ok_or_else(|| corrupted("mined cancel"))?;
+    let cancel_vout = listing
+        .cancel_vout
+        .and_then(|v| u32::try_from(v).ok())
+        .ok_or_else(|| corrupted("mined cancel output"))?;
+    let pubkey: [u8; 33] = hex::decode(&listing.lock_pubkey_hex)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(|| corrupted("lock public key"))?;
+    let name = listing.name.clone();
+    let at = sell::ListingLock::new(lock_address(ctx.network, &pubkey)?, &name)?;
+    let coin = ctx
+        .node
+        .get_coin(&cancel_txid, cancel_vout)
+        .await?
+        .ok_or_else(|| AppError::InvalidInput(CANCEL_TRANSFER_SPENT.into()))?;
+    let Some(coin_at) = sell::CoinAt::of_coin(&coin) else {
+        return Err(cancel_could_not_check(
+            "the cancel transfer's address or covenant",
+        ));
+    };
+    if !(coin.txid.eq_ignore_ascii_case(&cancel_txid)
+        && coin.vout == cancel_vout
+        && at.holds(coin_at, COV_TRANSFER, None))
+    {
+        return Err(AppError::Rpc(
+            "node reported something else than this listing's cancel at its outpoint".into(),
+        ));
+    }
+    if coin.mined_height()?.is_none() {
+        return Err(AppError::InvalidInput("the cancel is not mined yet".into()));
+    }
+    let dest = sell::commitment_address(coin_at.items, ctx.network)?
+        .filter(|a| own.contains(a))
+        .ok_or_else(|| {
+            AppError::InvalidInput(
+                "the cancel commits the name to an address that is not an address of this \
+                 wallet: it cannot be finalized here"
+                    .into(),
+            )
+        })?;
+    let transfer_value = u64::try_from(coin.value)
+        .map_err(|_| AppError::Rpc(format!("bad cancel coin value {}", coin.value)))?;
+    let cov_height = coin
+        .covenant
+        .as_ref()
+        .and_then(purchase::covenant_name_height)
+        .ok_or_else(|| cancel_could_not_check("a readable name height in the cancel's transfer"))?;
+    let reply = ctx.node.get_name_info(&name).await?;
+    let info = match reply.get("info") {
+        None => return Err(cancel_could_not_check("the name's info")),
+        Some(serde_json::Value::Null) => {
+            return Err(AppError::InvalidInput(format!(
+                "'{name}' has no on-chain state or has expired"
+            )))
+        }
+        Some(i) => i,
+    };
+    let owner = info.get("owner");
+    let Some(owner_hash) = owner.and_then(|o| o.get("hash")).and_then(|h| h.as_str()) else {
+        return Err(cancel_could_not_check("the name's owner"));
+    };
+    let Some(owner_index) = owner.and_then(|o| o.get("index")).and_then(|i| i.as_u64()) else {
+        return Err(cancel_could_not_check("the name's owner output"));
+    };
+    let Some(revoked) = info.get("revoked").and_then(|r| r.as_u64()) else {
+        return Err(cancel_could_not_check("whether the name was revoked"));
+    };
+    if revoked != 0
+        || !owner_hash.eq_ignore_ascii_case(&cancel_txid)
+        || owner_index != u64::from(cancel_vout)
+    {
+        return Err(AppError::InvalidInput(format!(
+            "'{name}' is no longer held by the cancel's transfer: there is nothing to finalize"
+        )));
+    }
+    let transfer_height = sell::transfer_height(info)
+        .ok_or_else(|| cancel_could_not_check("the cancel transfer's block"))?;
+    let tip = ctx
+        .node
+        .get_blockchain_info()
+        .await
+        .map_err(|e| cancel_could_not_check(&format!("its tip ({e})")))?
+        .blocks;
+    let remaining = ctx
+        .network
+        .name_params()
+        .blocks_until_finalize(transfer_height, tip);
+    if remaining > 0 {
+        return Err(AppError::InvalidInput(format!(
+            "the cancel can be finalized in {remaining} block{}",
+            if remaining == 1 { "" } else { "s" }
+        )));
+    }
+    let ns = draft_ctx::name_state_strict(&reply, &name)?;
+    if cov_height != ns.height {
+        return Err(AppError::InvalidInput(
+            "the name expired and was registered again since the cancel: it cannot be finalized"
+                .into(),
+        ));
+    }
+    let renewal_block = draft_ctx::renewal_block(&ctx.node, ctx.network).await?;
+    let mut transfer_txid = [0u8; 32];
+    hex::decode_to_slice(&cancel_txid, &mut transfer_txid)
+        .map_err(|_| corrupted("readable cancel txid"))?;
+    let res = cancel::build_cancel_finalize_plan(&cancel::CancelFinalizeInput {
+        network: ctx.network,
+        account: ctx.account,
+        transfer_outpoint: (transfer_txid, cancel_vout),
+        transfer_value,
+        lock_pubkey: pubkey,
+        name: &name,
+        name_height: ns.height,
+        weak: ns.weak,
+        claimed: ns.claimed,
+        renewals: ns.renewals,
+        renewal_block,
+        dest_address: &dest,
+        funding: &ctx.funding,
+        change_address: &ctx.change_address,
+        rate: draft_ctx::fee_rate(&ctx, fee_rate),
+        #[cfg(test)]
+        fixed_fee: None,
+    })?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    // The FINALIZE draft and the CancelFinalizing listing commit together.
+    let tx = conn.unchecked_transaction()?;
+    let draft_id = draft_ctx::persist_in_tx(
+        &tx,
+        &ctx.profile_id,
+        &draft_ctx::DraftLabel {
+            action: cancel::CANCEL_FINALIZE_ACTION,
+            name: &name,
+            recipient: Some(&dest),
+            name_list: None,
+            warnings: &[cancel::CANCEL_FINALIZE_NOTE.to_string()],
+        },
+        &res,
+    )?;
+    let n = queries::mark_listing_cancel_finalizing_in_tx(
+        &tx,
+        &listing.id,
+        &draft_id,
+        (&cancel_txid, cancel_vout),
+    )?;
+    if n != 1 {
+        return Err(AppError::InvalidInput(
+            "this listing changed meanwhile: nothing was saved; try again".into(),
+        ));
+    }
+    tx.commit()?;
+    draft_ctx::draft_summary(&conn, &draft_id)
+}
+
+/// The FINALIZE home of a cancelled listing (R28): see [`finalize_cancel`].
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_finalize_cancel(
+    state: State<'_, AppState>,
+    listing_id: String,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    finalize_cancel(&state, &listing_id, fee_rate).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -42,6 +42,10 @@ pub const CANCEL_MEMPOOL_PURCHASE: &str = "If a purchase of the name is already 
 /// R28: the way home after the cancel is mined.
 pub const CANCEL_THEN_FINALIZE: &str = "Once the cancel is mined and the transfer lockup is \
      over, finalize it to bring the name home.";
+/// R28: what the cancel's FINALIZE does, kept on its draft (the usual
+/// transaction prompt shows it).
+pub const CANCEL_FINALIZE_NOTE: &str = "This brings the name out of its lock to the address of \
+     this wallet the cancel committed to; the listing ends.";
 /// Why a cancel draft that can never land was dropped (R28,
 /// `queries::release_losing_cancel`).
 pub const CANCEL_LOST_TO_PURCHASE: &str = "a purchase of the name was mined first: this \
