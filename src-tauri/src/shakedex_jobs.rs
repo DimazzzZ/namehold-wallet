@@ -2474,15 +2474,7 @@ fn after_reply<T>(
     now: i64,
 ) -> MarketResult {
     use queries::MarketStatus as S;
-    let retrying = |why: String| {
-        let attempts = attempts.saturating_add(1);
-        MarketResult {
-            status: S::Retrying,
-            retry_at: Some(rfc3339(now.saturating_add(retry_delay_secs(attempts)))),
-            attempts,
-            error: Some(why),
-        }
-    };
+    let retrying = |why: String| backing_off(S::Retrying, attempts, why, now);
     match reply {
         MarketReply::Accepted(_) => MarketResult {
             status: ok,
@@ -2502,6 +2494,29 @@ fn after_reply<T>(
         )),
         MarketReply::NoAnswer(why) => retrying(format!("no answer from the market: {why}")),
     }
+}
+
+/// One more failure after `attempts` in a row: `status` with `why`, due
+/// again after [`retry_delay_secs`] (5 min doubling to the 6 h cap).
+fn backing_off(
+    status: queries::MarketStatus,
+    attempts: i64,
+    why: String,
+    now: i64,
+) -> MarketResult {
+    let attempts = attempts.saturating_add(1);
+    MarketResult {
+        status,
+        retry_at: Some(rfc3339(now.saturating_add(retry_delay_secs(attempts)))),
+        attempts,
+        error: Some(why),
+    }
+}
+
+/// Whether an `expiresAt` of `exp` (Unix) is within
+/// [`EXPIRY_REFRESH_MARGIN_SECS`] of `now` (R23: time to move it ahead).
+fn near_expiry(exp: i64, now: i64) -> bool {
+    exp.saturating_sub(now) <= EXPIRY_REFRESH_MARGIN_SECS
 }
 
 /// Write `r` over `l`, the row the job read ([`queries::record_market_result`]:
@@ -2607,9 +2622,7 @@ pub(crate) async fn market_copy(
         return not_now("no price step is valid yet");
     };
     let refreshed = mtp.saturating_add(sell::LISTING_LIFETIME_SECS);
-    let near_end = |exp: u64| {
-        i64::try_from(exp).is_ok_and(|e| e.saturating_sub(now) <= EXPIRY_REFRESH_MARGIN_SECS)
-    };
+    let near_end = |exp: u64| i64::try_from(exp).is_ok_and(|e| near_expiry(e, now));
     let (file_json, listing) = match file.expires_at {
         Some(exp)
             if l.state == queries::ListingState::Listed && near_end(exp) && refreshed > exp =>
@@ -2868,13 +2881,12 @@ fn not_now(l: &queries::ShakedexListing, why: &str) {
 /// What a [`MarketCopy::StepsUnverified`] writes: nothing is uploaded, and
 /// the steps are verified again on our node after the backoff.
 fn steps_unverified(l: &queries::ShakedexListing, why: String, now: i64) -> MarketResult {
-    let attempts = l.market_attempts.saturating_add(1);
-    MarketResult {
-        status: queries::MarketStatus::StepsUnverified,
-        retry_at: Some(rfc3339(now.saturating_add(retry_delay_secs(attempts)))),
-        attempts,
-        error: Some(why),
-    }
+    backing_off(
+        queries::MarketStatus::StepsUnverified,
+        l.market_attempts,
+        why,
+        now,
+    )
 }
 
 /// Upload `file` (`listing`'s [`MarketCopy::Ready`] copy) and record the
@@ -2982,12 +2994,10 @@ pub async fn keep_listed_with_client(
 }
 
 /// Whether kept `l`'s (Listed, or Cancelling with an unsent cancel) stored
-/// `expires_at` is within [`EXPIRY_REFRESH_MARGIN_SECS`] of `now` (or not
-/// stored: [`market_copy`] reads the file's own). The refresh rule itself
-/// is [`market_copy`]'s.
+/// `expires_at` is near ([`near_expiry`]; or not stored: [`market_copy`]
+/// reads the file's own). The refresh rule itself is [`market_copy`]'s.
 fn expiry_near(l: &queries::ShakedexListing, now: i64) -> bool {
-    l.expires_at
-        .is_none_or(|e| e.saturating_sub(now) <= EXPIRY_REFRESH_MARGIN_SECS)
+    l.expires_at.is_none_or(|e| near_expiry(e, now))
 }
 
 /// R23 for a Refused Listed listing: [`market_copy`]'s expiry refresh, and
