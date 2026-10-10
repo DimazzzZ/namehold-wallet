@@ -338,12 +338,9 @@ pub fn write_listing_file(l: &NewListingFile, network: Network) -> Result<String
         "version": VERSION,
     });
     let json = serde_json::to_string(&file)?;
-    let back = ListingFile::parse(&json, network)?;
-    if serde_json::from_str::<Value>(&back.to_json()?)? != file {
-        return Err(AppError::Other(
-            "the listing file did not read back as written".into(),
-        ));
-    }
+    // What is guarded is that the strict reader takes it; `to_json` hands
+    // back the value parsed, so comparing it with `file` would say nothing.
+    ListingFile::parse(&json, network)?;
     Ok(json)
 }
 
@@ -383,9 +380,12 @@ pub fn add_step_to_listing_file(
     let back = ListingFile::parse(&json, network)?;
     let mut want = file.steps.clone();
     want.push(step.clone());
-    if back.steps != want || serde_json::from_str::<Value>(&back.to_json()?)? != v {
+    // The strict reader takes it, and its steps are the stored ones and
+    // `step`; the other fields are `v`'s as written (`to_json` hands back
+    // the value parsed, so it is not compared).
+    if back.steps != want {
         return Err(AppError::Other(
-            "the listing file did not read back as written".into(),
+            "the listing file's steps did not read back as the stored ones and the new one".into(),
         ));
     }
     let expiry = back
