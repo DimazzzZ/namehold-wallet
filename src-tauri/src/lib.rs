@@ -706,6 +706,7 @@ pub fn run() {
             commands::shakedex::shakedex_export_listing_file,
             commands::shakedex::shakedex_restore_lock,
             commands::shakedex::shakedex_import_own_listing_file,
+            commands::shakedex::shakedex_cancel_listing,
             commands::names::get_name_action_capabilities,
             commands::names::get_names_action_capabilities,
             commands::bids::recover_bid_commitment,

@@ -6028,3 +6028,593 @@ async fn own_listing_file_refused_for_ledger_and_watch_only() {
         assert_still_restored(&app, kind);
     }
 }
+
+// --- Cancel (T5, R28) --------------------------------------------------------
+
+use crate::commands::shakedex::{cancel_listing_confirmed, CANCEL_TITLE};
+use crate::noncustodial::shakedex::cancel::{
+    CANCEL_ACTION, CANCEL_MEMPOOL_PURCHASE, CANCEL_PRICE_NONE_VALID_YET, CANCEL_PRICE_NOT_KNOWN,
+    CANCEL_STILL_BUYABLE,
+};
+
+/// The node's MTP and tip once the listing is Listed: a day after Finalize
+/// & sign, past the lock's FINALIZE.
+const LISTED_MTP: u64 = SIGN_MTP + 86_400;
+const LISTED_TIP: i64 = QUIET_TIP + 50;
+
+/// A Listed listing on regtest and its node.
+struct Listed {
+    r: Ready,
+    /// The lock coin: the FINALIZE into the lock (its txid, output 0).
+    lock: (String, u32),
+}
+
+impl Listed {
+    /// The lock coin as `GET /coin` sends it, mined at `height`.
+    fn lock_coin(&self, height: i64) -> Value {
+        coin_json(
+            &self.lock.0,
+            self.lock.1,
+            &lock_address(self.r.net),
+            COV_FINALIZE,
+            height,
+        )
+    }
+
+    /// `getnameinfo` with the lock coin the name's owner.
+    fn info(&self) -> Value {
+        let mut v = name_info(RENEWAL, 0, &self.lock.0);
+        v["info"]["owner"]["index"] = self.lock.1.into();
+        v
+    }
+
+    /// Swap the node's answers: `getblockchaininfo` at `tip` (with `mtp`
+    /// when given), `getblockhash` (the renewal block), `getnameinfo` `info`,
+    /// and `GET /coin` of each `(txid, vout, coin)` (`None`: hsd's 404).
+    async fn node(
+        &mut self,
+        tip: i64,
+        mtp: Option<u64>,
+        info: Value,
+        coins: Vec<(String, u32, Option<Value>)>,
+    ) {
+        let r = &mut self.r;
+        for m in r.mocks.drain(..) {
+            m.remove_async().await;
+        }
+        for (method, result) in [
+            ("getblockchaininfo", chain_info(r.net, tip, mtp)),
+            ("getblockhash", json!(RENEWAL_BLOCK)),
+        ] {
+            let m = r
+                .node
+                .mock("POST", "/")
+                .match_body(mockito::Matcher::PartialJson(json!({ "method": method })))
+                .with_header("content-type", "application/json")
+                .with_body(rpc_ok(result))
+                .create_async()
+                .await;
+            r.mocks.push(m);
+        }
+        r.mocks.push(mock_name_info(&mut r.node, info).await);
+        for (txid, vout, coin) in coins {
+            let path = format!("/coin/{txid}/{vout}");
+            let m = match coin {
+                Some(c) => {
+                    r.node
+                        .mock("GET", path.as_str())
+                        .with_header("content-type", "application/json")
+                        .with_body(c.to_string())
+                        .create_async()
+                        .await
+                }
+                None => {
+                    r.node
+                        .mock("GET", path.as_str())
+                        .with_status(404)
+                        .create_async()
+                        .await
+                }
+            };
+            r.mocks.push(m);
+        }
+    }
+
+    /// The node while the listing is Listed: the lock coin mined, the owner.
+    async fn listed_node(&mut self) {
+        let (info, coin, lock) = (
+            self.info(),
+            self.lock_coin(TRANSFER_HEIGHT + 20),
+            self.lock.clone(),
+        );
+        self.node(
+            LISTED_TIP,
+            Some(LISTED_MTP),
+            info,
+            vec![(lock.0, lock.1, Some(coin))],
+        )
+        .await;
+    }
+}
+
+/// A Listed listing: Finalize & sign ran on a ready fixture at "5" HNS,
+/// its FINALIZE draft is confirmed (its reserved coins released: the funding
+/// coin stands in for its change), and the node answers as hsd does once the
+/// lock coin is mined.
+async fn listed_fixture() -> Listed {
+    let r = ready_fixture("regtest").await;
+    let lock = finalized(&r).await;
+    let fin = r.listing().lock_finalize_draft_id.unwrap();
+    with_db(&r.app, |c| {
+        queries::update_tx_draft_status(c, &fin, "broadcasted", None, Some(&lock.0)).unwrap();
+        queries::update_tx_draft_confirmation(c, &fin, TRANSFER_HEIGHT + 20, None).unwrap();
+        queries::release_reserved_utxos_for_draft(c, &fin).unwrap();
+        assert_eq!(queries::mark_listing_listed(c, &r.listing_id).unwrap(), 1);
+    });
+    let mut l = Listed { r, lock };
+    l.listed_node().await;
+    l
+}
+
+async fn cancel(
+    l: &Listed,
+) -> Result<crate::noncustodial::types::TxDraftSummary, crate::error::AppError> {
+    cancel_listing_confirmed(&l.r.app.state(), l.r.app.handle(), &l.r.listing_id, None).await
+}
+
+/// Nothing written or asked: the listing in `state`, no draft but the lock
+/// and FINALIZE drafts, no prompt.
+fn assert_no_cancel(l: &Listed, state: ListingState) {
+    let s = l.r.listing();
+    assert_eq!(s.state, state);
+    assert_eq!((s.cancel_draft_id, s.cancel_txid), (None, None));
+    assert_eq!(
+        count(&l.r.app, "wallet_tx_drafts"),
+        2,
+        "only the lock and FINALIZE drafts"
+    );
+    assert!(take_test_requests().is_empty(), "nothing asked");
+    // The decline queued for a prompt that did not come.
+    crate::commands::secure_prompt::clear_test_answers();
+}
+
+/// For a call that must be refused before its prompt: clear the request
+/// record and queue a decline, so a cancel that reaches the prompt anyway
+/// is declined (and seen by [`assert_no_cancel`]) instead of waiting for an
+/// answer that never comes. The queue is the test thread's own.
+fn decline_if_asked() {
+    answer(false);
+}
+
+/// R28: the cancel needs the unlocked signer, checked before anything else:
+/// the node is not read.
+#[tokio::test]
+async fn cancel_needs_the_unlocked_signer() {
+    let l = listed_fixture().await;
+    *l.r.app.state::<AppState>().signer.lock().unwrap() = None;
+    decline_if_asked();
+    let e = cancel(&l).await.expect_err("locked");
+    assert!(matches!(e, crate::error::AppError::WalletLocked), "{e:?}");
+    assert!(
+        !l.r.mocks[3].matched_async().await,
+        "the lock coin was not read"
+    );
+    assert_no_cancel(&l, ListingState::Listed);
+}
+
+/// R28: the cancel is signed after its own prompt (R28's two sentences and
+/// the current price) and stored as a signed draft with the listing's move
+/// to Cancelling; nothing is sent. The market jobs (R24, R25: the set T6
+/// reads) keep the listing until the cancel is sent and stop then; the
+/// after-lock job keeps following it, since a purchase may still beat it.
+#[tokio::test]
+async fn cancel_stops_jobs() {
+    let mut l = listed_fixture().await;
+    let sent = no_broadcast(&mut l.r).await;
+    // A regtest listing is never published (R23); the flag is set here to
+    // see the market set alone.
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET publish = 1 WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap();
+    });
+    let kept = |app: &App| -> Vec<String> {
+        with_db(app, |c| {
+            queries::list_listings_kept_on_market(c, PROFILE)
+                .unwrap()
+                .into_iter()
+                .map(|x| x.id)
+                .collect()
+        })
+    };
+    assert_eq!(kept(&l.r.app), [l.r.listing_id.clone()]);
+
+    answer(true);
+    let draft = cancel(&l).await.expect("cancel");
+    assert_eq!(draft.action, CANCEL_ACTION);
+    sent.assert_async().await;
+    let reqs = take_test_requests();
+    assert_eq!(reqs.len(), 1, "one prompt");
+    assert_eq!(reqs[0].mode, "confirm");
+    assert_eq!(reqs[0].title, CANCEL_TITLE);
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let value = |label: &str| {
+        rows.iter()
+            .find(|r| r["label"] == label)
+            .map(|r| r["value"].as_str().unwrap().to_string())
+    };
+    assert_eq!(
+        value("Until it is mined").as_deref(),
+        Some(CANCEL_STILL_BUYABLE)
+    );
+    assert_eq!(
+        value("A purchase already sent").as_deref(),
+        Some(CANCEL_MEMPOOL_PURCHASE)
+    );
+    assert_eq!(value("Current price").as_deref(), Some("5.000000 HNS"));
+
+    let row = with_db(&l.r.app, |c| {
+        queries::get_tx_draft(c, &draft.id).unwrap().unwrap()
+    });
+    assert_eq!(row.status, "signed", "sent next by broadcast_tx_draft");
+    assert!(row.signed_tx_hex.is_some());
+    let txid = draft.summary["txid"].as_str().unwrap().to_string();
+    let s = l.r.listing();
+    assert_eq!(s.state, ListingState::Cancelling);
+    assert_eq!(s.cancel_draft_id.as_deref(), Some(draft.id.as_str()));
+    assert_eq!(s.cancel_txid.as_deref(), Some(txid.as_str()));
+    assert_eq!(
+        kept(&l.r.app),
+        [l.r.listing_id.clone()],
+        "not sent yet: still kept"
+    );
+
+    with_db(&l.r.app, |c| {
+        queries::update_tx_draft_status(c, &draft.id, "broadcasted", None, Some(&txid)).unwrap()
+    });
+    assert!(kept(&l.r.app).is_empty(), "sent: the market jobs stop");
+    let followed: Vec<String> = with_db(&l.r.app, |c| {
+        queries::list_shakedex_listings_after_lock(c, PROFILE, 7)
+            .unwrap()
+            .into_iter()
+            .map(|x| x.id)
+            .collect()
+    });
+    assert!(
+        followed.contains(&l.r.listing_id),
+        "still followed on chain"
+    );
+}
+
+/// R28, the T1b carry: the cancel's lock input carries the listing's
+/// reserved cancel path and its TRANSFER, at the lock address, commits to
+/// that address. A stored cancel address that is not the profile's receive
+/// address at the stored index (an address not derived here, or the index
+/// of another one) is refused before anything is asked, signed or written.
+#[tokio::test]
+async fn cancel_commits_only_to_the_listings_reserved_receive_address() {
+    let l = listed_fixture().await;
+    let stored = l.r.listing();
+    answer(true);
+    let draft = cancel(&l).await.expect("cancel");
+    let row = with_db(&l.r.app, |c| {
+        queries::get_tx_draft(c, &draft.id).unwrap().unwrap()
+    });
+    let plan: DraftPlan = serde_json::from_str(&row.signing_inputs_json).unwrap();
+    assert_eq!(
+        (plan.inputs[0].txid.as_str(), plan.inputs[0].vout),
+        (l.lock.0.as_str(), l.lock.1)
+    );
+    assert_eq!(plan.inputs[0].lock_key_name.as_deref(), Some(NAME));
+    assert_eq!(
+        (plan.inputs[0].branch, i64::from(plan.inputs[0].child_index)),
+        (0, stored.cancel_child_index.unwrap())
+    );
+    let (v, h) =
+        address::decode(Network::Regtest, stored.cancel_address.as_deref().unwrap()).unwrap();
+    assert_eq!(plan.outputs[0].covenant_type, COV_TRANSFER);
+    assert_eq!(plan.outputs[0].address, lock_address(Network::Regtest));
+    assert_eq!(
+        plan.outputs[0].covenant_items_hex[2..4],
+        [hex::encode([v]), hex::encode(h)]
+    );
+
+    for (case, sql) in [
+        (
+            "an address not derived here",
+            "UPDATE shakedex_listings SET cancel_address = ?2 WHERE id = ?1",
+        ),
+        (
+            "the index of the payment address",
+            "UPDATE shakedex_listings SET cancel_child_index = cancel_child_index - 1
+             WHERE id = ?1 AND ?2 IS NOT NULL",
+        ),
+    ] {
+        let l = listed_fixture().await;
+        let stranger = address::encode_p2wpkh(Network::Regtest, &[3; 20]).unwrap();
+        with_db(&l.r.app, |c| {
+            c.execute(sql, params![l.r.listing_id, stranger]).unwrap();
+        });
+        decline_if_asked();
+        let e = err_text(cancel(&l).await.expect_err(case));
+        assert!(
+            e.contains(crate::commands::shakedex::CANCEL_NOT_OUR_ADDRESS),
+            "{case}: {e}"
+        );
+        assert_no_cancel(&l, ListingState::Listed);
+    }
+}
+
+/// R28 (deviation 6): Cancel acts on Listed and Restored listings only;
+/// every other state is refused with its reason, nothing asked or written.
+#[tokio::test]
+async fn cancel_refused_outside_listed_and_restored() {
+    for (state, reason) in [
+        (ListingState::Locking, "Cancel transfer"),
+        (ListingState::ReadyToFinalize, "Cancel transfer"),
+        (ListingState::Finalizing, "once it is"),
+        (ListingState::SalePending, "mempool"),
+        (ListingState::Cancelling, "already being cancelled"),
+        (
+            ListingState::CancelAwaitingFinalize,
+            "already being cancelled",
+        ),
+        (ListingState::CancelFinalizing, "already being cancelled"),
+        (ListingState::Sold, "sold"),
+        (ListingState::Cancelled, "cancelled"),
+        (ListingState::Aborted, "aborted"),
+        (ListingState::Expired, "expired"),
+    ] {
+        let l = listed_fixture().await;
+        set_state(&l.r.app, &l.r.listing_id, state);
+        decline_if_asked();
+        let e = err_text(cancel(&l).await.expect_err("refused"));
+        assert!(e.contains(reason), "{state:?}: {e}");
+        assert_no_cancel(&l, state);
+    }
+}
+
+/// R28: a declined prompt signs and writes nothing.
+#[tokio::test]
+async fn declined_cancel_signs_and_writes_nothing() {
+    let l = listed_fixture().await;
+    answer(false);
+    let e = cancel(&l).await.expect_err("declined");
+    assert!(matches!(e, crate::error::AppError::UserRejected), "{e:?}");
+    assert_eq!(take_test_requests().len(), 1, "it was asked");
+    let s = l.r.listing();
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!((s.cancel_draft_id, s.cancel_txid), (None, None));
+    assert_eq!(count(&l.r.app, "wallet_tx_drafts"), 2);
+}
+
+/// R28: the lock coin must be unspent and this listing's on the node: hsd's
+/// 404 (spent in a block or in the mempool) refuses the cancel with its
+/// reason; a coin there that is not a FINALIZE of the name at the lock
+/// address is "could not check". Nothing asked or written.
+#[tokio::test]
+async fn cancel_refused_when_the_lock_coin_is_spent() {
+    let mut l = listed_fixture().await;
+    let (info, lock) = (l.info(), l.lock.clone());
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info.clone(),
+        vec![(lock.0.clone(), lock.1, None)],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(cancel(&l).await.expect_err("spent"));
+    assert!(
+        e.contains(crate::commands::shakedex::CANCEL_LOCK_COIN_SPENT),
+        "{e}"
+    );
+    assert_no_cancel(&l, ListingState::Listed);
+
+    let elsewhere = coin_json(
+        &lock.0,
+        lock.1,
+        &addr00(Network::Regtest).0,
+        COV_FINALIZE,
+        TRANSFER_HEIGHT + 20,
+    );
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info,
+        vec![(lock.0, lock.1, Some(elsewhere))],
+    )
+    .await;
+    decline_if_asked();
+    let e = cancel(&l).await.expect_err("not our lock");
+    assert!(matches!(e, crate::error::AppError::Rpc(_)), "{e:?}");
+    assert_no_cancel(&l, ListingState::Listed);
+}
+
+/// R21, R32, deviation 7: a lock restored by name has no cancel address;
+/// Cancel reserves one receive address (marked used, so it is not handed
+/// out again), stores it on the listing, and the cancel commits to it. The
+/// prompt says the current price is not known on this device.
+#[tokio::test]
+async fn cancel_of_a_lock_restored_by_name_reserves_its_cancel_address() {
+    let l = listed_fixture().await;
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET state = 'restored', payment_address = NULL,
+                 cancel_address = NULL, cancel_child_index = NULL, listing_file_json = NULL,
+                 steps_json = '[]', lock_transfer_txid = NULL, lock_finalize_draft_id = NULL
+             WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap();
+    });
+    let before = count(&l.r.app, "derived_addresses");
+    answer(true);
+    let draft = cancel(&l).await.expect("cancel");
+    let reqs = take_test_requests();
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(rows.iter().any(|r| r["label"] == "Current price"
+        && r["value"] == "not known on this device (a lock restored by name)"));
+    let s = l.r.listing();
+    assert_eq!(s.state, ListingState::Cancelling);
+    let address = s.cancel_address.clone().expect("reserved");
+    let index = u32::try_from(s.cancel_child_index.unwrap()).unwrap();
+    assert_eq!(count(&l.r.app, "derived_addresses"), before + 1);
+    let used: i64 = with_db(&l.r.app, |c| {
+        c.query_row(
+            "SELECT used FROM derived_addresses WHERE address = ?1",
+            [&address],
+            |r| r.get(0),
+        )
+        .unwrap()
+    });
+    assert_eq!(used, 1, "reserved (R21)");
+    assert_eq!(
+        with_db(&l.r.app, |c| queries::receive_address_at(
+            c, PROFILE, 0, index
+        )
+        .unwrap()),
+        Some(address.clone())
+    );
+    let row = with_db(&l.r.app, |c| {
+        queries::get_tx_draft(c, &draft.id).unwrap().unwrap()
+    });
+    let plan: DraftPlan = serde_json::from_str(&row.signing_inputs_json).unwrap();
+    let (_, h) = address::decode(Network::Regtest, &address).unwrap();
+    assert_eq!(plan.outputs[0].covenant_items_hex[3], hex::encode(h));
+    assert_eq!(plan.inputs[0].child_index, index);
+}
+
+/// R28, R3 (Step 3 review carry): a listing with stored steps of which none
+/// is valid at the node's MTP says so in the prompt's "Current price" row;
+/// it is not "not known on this device", which only a lock restored by
+/// name (no stored steps) says.
+#[tokio::test]
+async fn cancel_prompt_says_when_no_step_is_valid_yet() {
+    let mut l = listed_fixture().await;
+    let (info, coin, lock) = (l.info(), l.lock_coin(TRANSFER_HEIGHT + 20), l.lock.clone());
+    // The node's MTP a day before Finalize & sign: the one step's lock time
+    // is not reached.
+    l.node(
+        LISTED_TIP,
+        Some(SIGN_MTP - 86_400),
+        info,
+        vec![(lock.0, lock.1, Some(coin))],
+    )
+    .await;
+    answer(true);
+    cancel(&l).await.expect("cancel");
+    let reqs = take_test_requests();
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let row = rows.iter().find(|r| r["label"] == "Current price").unwrap();
+    assert_eq!(row["value"], CANCEL_PRICE_NONE_VALID_YET);
+    assert_ne!(row["value"], CANCEL_PRICE_NOT_KNOWN);
+}
+
+/// R28: the cancel's other node checks, each refused before anything is
+/// asked, signed or written: the lock coin still in the mempool (the
+/// finalize into the lock not mined), the name expired (`info` null), the
+/// lock coin from an earlier registration of the name, no median time (the
+/// current price cannot be read), and a lock coin at the lock address of a
+/// stored key this wallet does not derive for the name.
+#[tokio::test]
+async fn cancel_refused_on_node_facts_that_do_not_hold() {
+    let mut l = listed_fixture().await;
+    let (info, lock) = (l.info(), l.lock.clone());
+    let mined = l.lock_coin(TRANSFER_HEIGHT + 20);
+
+    let unmined = l.lock_coin(-1);
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info.clone(),
+        vec![(lock.0.clone(), lock.1, Some(unmined))],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(cancel(&l).await.expect_err("unmined"));
+    assert!(e.contains("not mined yet"), "{e}");
+    assert_no_cancel(&l, ListingState::Listed);
+
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        json!({ "info": null, "start": null }),
+        vec![(lock.0.clone(), lock.1, Some(mined.clone()))],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(cancel(&l).await.expect_err("expired"));
+    assert!(e.contains("has expired"), "{e}");
+    assert_no_cancel(&l, ListingState::Listed);
+
+    let mut later = info.clone();
+    later["info"]["height"] = (NAME_HEIGHT + 1).into();
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        later,
+        vec![(lock.0.clone(), lock.1, Some(mined.clone()))],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(cancel(&l).await.expect_err("leftover"));
+    assert!(e.contains("earlier registration"), "{e}");
+    assert_no_cancel(&l, ListingState::Listed);
+
+    l.node(
+        LISTED_TIP,
+        None,
+        info.clone(),
+        vec![(lock.0.clone(), lock.1, Some(mined))],
+    )
+    .await;
+    decline_if_asked();
+    let e = cancel(&l).await.expect_err("no mtp");
+    assert!(
+        matches!(&e, crate::error::AppError::Rpc(m) if m.contains("median time")),
+        "{e:?}"
+    );
+    assert_no_cancel(&l, ListingState::Listed);
+
+    // The stored key is another name's lock key, and the node's lock coin
+    // sits at its lock address: the coin checks pass, the re-derived key
+    // for NAME does not match.
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET lock_pubkey_hex = ?2 WHERE id = ?1",
+            params![l.r.listing_id, hex::encode(other.pubkey)],
+        )
+        .unwrap();
+    });
+    let elsewhere = coin_json(
+        &lock.0,
+        lock.1,
+        &other.address,
+        COV_FINALIZE,
+        TRANSFER_HEIGHT + 20,
+    );
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info,
+        vec![(lock.0, lock.1, Some(elsewhere))],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(cancel(&l).await.expect_err("key mismatch"));
+    assert!(e.contains(sell::LISTING_KEY_MISMATCH), "{e}");
+    assert_no_cancel(&l, ListingState::Listed);
+}

@@ -55,10 +55,25 @@ pub struct CancelRows<'a> {
     pub fee: u64,
     pub cancel_address: &'a str,
     pub lock_address: &'a str,
-    /// The current step's price at the node's MTP (R3); `None` for a lock
-    /// restored by name, whose steps this device does not know.
-    pub current_price: Option<u64>,
+    pub current_price: CancelPrice,
 }
+
+/// The "Current price" row of the cancel's prompt (R3, R28).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelPrice {
+    /// The current step's price at the node's MTP.
+    Step(u64),
+    /// The listing has stored steps, none valid at the node's MTP.
+    NoneValidYet,
+    /// A lock restored by name: this device stores none of its steps.
+    NotKnown,
+}
+
+/// R28: the "Current price" row while no stored step is valid at the MTP.
+pub const CANCEL_PRICE_NONE_VALID_YET: &str =
+    "none yet: no signed price step is valid at the node's median time";
+/// R28: the "Current price" row of a lock restored by name.
+pub const CANCEL_PRICE_NOT_KNOWN: &str = "not known on this device (a lock restored by name)";
 
 /// R28: the rows of the cancel's own confirmation, `{ "rows": [...] }` as
 /// the secure window renders a `confirm` request.
@@ -71,8 +86,9 @@ pub fn cancel_rows(r: &CancelRows) -> serde_json::Value {
         row(
             "Current price",
             match r.current_price {
-                Some(price) => doos_to_hns_string(price),
-                None => "not known on this device (a lock restored by name)".into(),
+                CancelPrice::Step(price) => doos_to_hns_string(price),
+                CancelPrice::NoneValidYet => CANCEL_PRICE_NONE_VALID_YET.into(),
+                CancelPrice::NotKnown => CANCEL_PRICE_NOT_KNOWN.into(),
             },
         ),
         row("Name comes home to", r.cancel_address.into()),
@@ -395,8 +411,8 @@ mod tests {
     /// R28: the cancel's own prompt says what the cancel cannot stop (a buyer
     /// until it is mined; a purchase already in the node's mempool, which
     /// hsd still answers with the cancel's txid), the fee, where the name
-    /// comes home to, and the current price, or that this device does not
-    /// know it (a lock restored by name).
+    /// comes home to, and the current price, that no step is valid yet, or
+    /// that this device does not know it (a lock restored by name).
     #[test]
     fn cancel_rows_say_what_r28_says() {
         let rows = |price| {
@@ -416,7 +432,7 @@ mod tests {
                 .find(|r| r["label"] == label)
                 .map(|r| r["value"].as_str().unwrap().to_string())
         };
-        let r = rows(Some(5_000_000));
+        let r = rows(CancelPrice::Step(5_000_000));
         assert_eq!(value(&r, "Action").as_deref(), Some("Cancel the listing"));
         assert_eq!(value(&r, "Name").as_deref(), Some("dexreviews"));
         assert_eq!(
@@ -441,10 +457,15 @@ mod tests {
         assert!(CANCEL_STILL_BUYABLE.contains("until this cancel is mined"));
         assert!(CANCEL_MEMPOOL_PURCHASE.contains("mempool"));
         assert!(CANCEL_MEMPOOL_PURCHASE.contains("transaction id"));
-        let r = rows(None);
+        let r = rows(CancelPrice::NotKnown);
         assert_eq!(
             value(&r, "Current price").as_deref(),
             Some("not known on this device (a lock restored by name)")
+        );
+        let r = rows(CancelPrice::NoneValidYet);
+        assert_eq!(
+            value(&r, "Current price").as_deref(),
+            Some(CANCEL_PRICE_NONE_VALID_YET)
         );
     }
 
