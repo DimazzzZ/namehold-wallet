@@ -7206,3 +7206,447 @@ async fn finalize_cancel_refused_on_node_facts_that_do_not_hold() {
         assert_no_cancel_finalize(&l);
     }
 }
+
+// --- Lower price (T5, R26) ----------------------------------------------------
+
+use crate::commands::shakedex::{
+    lower_price_confirmed, LOWER_DURING_CANCEL, LOWER_LOCK_COIN_SPENT, LOWER_NO_PRICE_HERE,
+    LOWER_PRICE_TITLE,
+};
+use crate::noncustodial::shakedex::template::current_step_index;
+
+async fn lower(l: &Listed, price: &str) -> Result<ListingSummary, crate::error::AppError> {
+    lower_price_confirmed(&l.r.app.state(), l.r.app.handle(), &l.r.listing_id, price).await
+}
+
+/// Nothing lowered: the steps and the file as they were, nothing asked.
+fn assert_not_lowered(l: &Listed, before: &ShakedexListing) {
+    let after = l.r.listing();
+    assert_eq!(after.state, before.state);
+    assert_eq!(after.steps_json, before.steps_json);
+    assert_eq!(after.listing_file_json, before.listing_file_json);
+    assert_eq!(after.expires_at, before.expires_at);
+    assert!(take_test_requests().is_empty(), "nothing asked");
+    // The decline queued for a prompt that did not come.
+    crate::commands::secure_prompt::clear_test_answers();
+}
+
+/// R26: Lower price signs one new step valid now (R19's rule: the node's
+/// MTP, read before the prompt, minus 512 s), over the stored lock coin at
+/// hsd's value, paying the listing's payment address; it becomes the
+/// current step (R3: the cheapest valid at the MTP). The first step is kept
+/// as it was; the listing file is rewritten with both and reads back through
+/// the strict parser, its lock, key and expiry unchanged; the listing stays
+/// Listed. The prompt is R26's own, asked once, and shows the current and
+/// the new price. Nothing is sent.
+#[tokio::test]
+async fn lower_price_becomes_current() {
+    let mut l = listed_fixture().await;
+    let sent = no_broadcast(&mut l.r).await;
+    let before = l.r.listing();
+    let first: Vec<sell::StoredStep> = serde_json::from_str(&before.steps_json).unwrap();
+    answer(true);
+    let s = lower(&l, "3").await.expect("lower");
+    sent.assert_async().await;
+    let reqs = take_test_requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].title, LOWER_PRICE_TITLE);
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let row = |label: &str| {
+        rows.iter().find(|r| r["label"] == label).unwrap()["value"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(row("Current price"), "5.000000 HNS");
+    assert_eq!(row("New price"), "3.000000 HNS, valid at once");
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!(s.steps.len(), 2);
+    assert_eq!(s.steps[0], first[0], "the first step is kept as signed");
+    let new = &s.steps[1];
+    assert_eq!(
+        (new.price, new.lock_time),
+        (3_000_000, sell::buy_now_lock_time(LISTED_MTP))
+    );
+    let encoded: Vec<(u64, u32)> = s
+        .steps
+        .iter()
+        .map(|x| (x.price, encode_lock_time(x.lock_time).unwrap()))
+        .collect();
+    assert_eq!(
+        current_step_index(&encoded, LISTED_MTP),
+        Some(1),
+        "the lowered price is current"
+    );
+
+    let mut outpoint = [0u8; 32];
+    hex::decode_to_slice(&l.lock.0, &mut outpoint).unwrap();
+    let sig: [u8; 65] = hex::decode(&new.signature).unwrap().try_into().unwrap();
+    assert_eq!(sig[64], 0x84, "SINGLEREVERSE|ANYONECANPAY");
+    let key = l.r.key();
+    verify_step_signature(
+        &StepTemplate {
+            lock_outpoint: (outpoint, l.lock.1),
+            lock_value: NAME_VALUE,
+            lock_pubkey: &key.pubkey,
+            payment: crate::noncustodial::tx::output_address_from_string(
+                Network::Regtest,
+                before.payment_address.as_deref().unwrap(),
+            )
+            .unwrap(),
+            price: 3_000_000,
+            lock_time_secs: new.lock_time,
+        },
+        &sig,
+    )
+    .expect("signed by the lock key over the lock coin");
+
+    let after = l.r.listing();
+    assert_eq!(after.state, ListingState::Listed);
+    let file = ListingFile::parse(
+        after.listing_file_json.as_deref().unwrap(),
+        Network::Regtest,
+    )
+    .unwrap();
+    assert_eq!((file.lock_txid, file.lock_vout), (outpoint, l.lock.1));
+    assert_eq!(file.public_key, key.pubkey);
+    assert_eq!(Some(file.payment_addr.clone()), before.payment_address);
+    assert_eq!(file.steps.len(), 2);
+    assert_eq!(file.steps[1].signature, sig);
+    assert_eq!(
+        file.expires_at.map(|e| e as i64),
+        before.expires_at,
+        "expiry unchanged"
+    );
+    assert_eq!(after.expires_at, before.expires_at);
+}
+
+/// R26: Lower price is disabled while a cancel is unconfirmed (Cancelling),
+/// with that reason; a listing whose cancel is mined is refused as
+/// cancelled. Nothing asked, signed or written.
+#[tokio::test]
+async fn lower_refused_during_cancel() {
+    let l = listed_fixture().await;
+    answer(true);
+    cancel(&l).await.expect("cancel");
+    let _ = take_test_requests();
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("during the cancel"));
+    assert!(e.contains(LOWER_DURING_CANCEL), "{e}");
+    assert_not_lowered(&l, &before);
+    set_state(
+        &l.r.app,
+        &l.r.listing_id,
+        ListingState::CancelAwaitingFinalize,
+    );
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("cancelled"));
+    assert!(e.contains("cancelled"), "{e}");
+    assert_not_lowered(&l, &before);
+}
+
+/// R26: the price must be below the current step (R3, at the node's MTP):
+/// the same price, a dearer one, and prices the backend refuses for
+/// themselves (0, more than 6 decimals) are refused with the reason. Once
+/// lowered to 3, 3 again and 4 (dearer than the current 3, though below the
+/// first 5) are refused: a price is never raised.
+#[tokio::test]
+async fn lower_refused_at_or_above_the_current_step() {
+    let l = listed_fixture().await;
+    let before = l.r.listing();
+    for (price, why) in [
+        ("5", "not below the current price"),
+        ("6", "not below the current price"),
+        ("0", "above 0"),
+        ("4.0000001", "6 decimals"),
+    ] {
+        decline_if_asked();
+        let e = err_text(lower(&l, price).await.expect_err(price));
+        assert!(e.contains(why), "{price}: {e}");
+        assert_not_lowered(&l, &before);
+    }
+    answer(true);
+    lower(&l, "3").await.expect("lower to 3");
+    let _ = take_test_requests();
+    let lowered = l.r.listing();
+    for price in ["3", "4"] {
+        decline_if_asked();
+        let e = err_text(lower(&l, price).await.expect_err(price));
+        assert!(e.contains("raising it needs a cancel"), "{price}: {e}");
+        assert_not_lowered(&l, &lowered);
+    }
+}
+
+/// R26: the lock coin must be unspent and this listing's, on the node:
+/// hsd's 404 (spent in a block or in the mempool) refuses with the reason;
+/// a coin at the lock outpoint that is not a FINALIZE of this name at the
+/// lock address is "could not check"; the FINALIZE into the lock back in the
+/// mempool (a reorg) is refused too. Nothing asked, signed or written.
+#[tokio::test]
+async fn lower_refused_when_the_lock_coin_is_spent() {
+    let mut l = listed_fixture().await;
+    let before = l.r.listing();
+    let (info, lock) = (l.info(), l.lock.clone());
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info.clone(),
+        vec![(lock.0.clone(), lock.1, None)],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("spent"));
+    assert!(e.contains(LOWER_LOCK_COIN_SPENT), "{e}");
+    assert_not_lowered(&l, &before);
+
+    let other = coin_json_of(
+        "othername",
+        &lock.0,
+        lock.1,
+        &lock_address(Network::Regtest),
+        COV_FINALIZE,
+        TRANSFER_HEIGHT + 20,
+    );
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info.clone(),
+        vec![(lock.0.clone(), lock.1, Some(other))],
+    )
+    .await;
+    decline_if_asked();
+    let e = lower(&l, "3").await.expect_err("another name's coin");
+    assert!(matches!(e, crate::error::AppError::Rpc(_)), "{e:?}");
+    assert_not_lowered(&l, &before);
+
+    let unmined = l.lock_coin(-1);
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info,
+        vec![(lock.0, lock.1, Some(unmined))],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("in the mempool"));
+    assert!(e.contains("not mined"), "{e}");
+    assert_not_lowered(&l, &before);
+}
+
+/// R26, R28 (`lock_on_node`, the checks Lower price and Cancel share): a
+/// lock coin reply for another txid or output, without its address, with a
+/// value that is not a coin's, or without a readable name height is "could
+/// not check", nothing asked or written; hsd's txid in upper case is the
+/// stored lock coin all the same (the prompt is reached).
+#[tokio::test]
+async fn lower_refused_on_lock_coin_replies_that_do_not_hold() {
+    let mut l = listed_fixture().await;
+    let before = l.r.listing();
+    let (info, lock) = (l.info(), l.lock.clone());
+    let mined = l.lock_coin(TRANSFER_HEIGHT + 20);
+    let other_txid = "ab".repeat(32);
+    let mut other_tx = mined.clone();
+    other_tx["hash"] = other_txid.clone().into();
+    let mut other_vout = mined.clone();
+    other_vout["index"] = (lock.1 + 1).into();
+    let mut no_address = mined.clone();
+    no_address.as_object_mut().unwrap().remove("address");
+    let mut bad_value = mined.clone();
+    bad_value["value"] = (-1).into();
+    let mut no_height = mined.clone();
+    no_height["covenant"]["items"][1] = "zz".into();
+    for (case, coin) in [
+        ("another txid", other_tx),
+        ("another output", other_vout),
+        ("no address", no_address),
+        ("a value that is not a coin's", bad_value),
+        ("no readable name height", no_height),
+    ] {
+        l.node(
+            LISTED_TIP,
+            Some(LISTED_MTP),
+            info.clone(),
+            vec![(lock.0.clone(), lock.1, Some(coin))],
+        )
+        .await;
+        decline_if_asked();
+        let e = lower(&l, "3").await.expect_err(case);
+        assert!(matches!(e, crate::error::AppError::Rpc(_)), "{case}: {e:?}");
+        assert_not_lowered(&l, &before);
+    }
+
+    let mut upper = mined;
+    upper["hash"] = lock.0.to_uppercase().into();
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info,
+        vec![(lock.0.clone(), lock.1, Some(upper))],
+    )
+    .await;
+    answer(false);
+    let e = lower(&l, "3").await.expect_err("declined");
+    assert!(matches!(e, crate::error::AppError::UserRejected), "{e:?}");
+    assert_eq!(take_test_requests().len(), 1, "it was asked");
+    assert_eq!(l.r.listing().steps_json, before.steps_json);
+}
+
+/// R26, R3: a listing with no signed prices here (a lock restored by name,
+/// or a row without steps) has no current price to lower, and neither has
+/// one whose steps are not valid yet at the node's MTP: each is refused
+/// with that reason, nothing asked or written.
+#[tokio::test]
+async fn lower_refused_without_a_current_price() {
+    let l = listed_fixture().await;
+    set_state(&l.r.app, &l.r.listing_id, ListingState::Restored);
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("restored"));
+    assert!(e.contains("listing file"), "{e}");
+    assert_not_lowered(&l, &before);
+
+    set_state(&l.r.app, &l.r.listing_id, ListingState::Listed);
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET steps_json = '[]' WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap();
+    });
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("no steps"));
+    assert!(e.contains(LOWER_NO_PRICE_HERE), "{e}");
+    assert_not_lowered(&l, &before);
+
+    let l = {
+        let mut l = listed_fixture().await;
+        let (info, coin, lock) = (l.info(), l.lock_coin(TRANSFER_HEIGHT + 20), l.lock.clone());
+        // The node's MTP a day before Finalize & sign: the one step's lock
+        // time is not reached.
+        l.node(
+            LISTED_TIP,
+            Some(SIGN_MTP - 86_400),
+            info,
+            vec![(lock.0, lock.1, Some(coin))],
+        )
+        .await;
+        l
+    };
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("none valid yet"));
+    assert!(e.contains("no price of this listing is valid yet"), "{e}");
+    assert_not_lowered(&l, &before);
+}
+
+/// R26: Lower price needs the unlocked signer, checked before anything else:
+/// the node is not read.
+#[tokio::test]
+async fn lower_price_needs_the_unlocked_signer() {
+    let l = listed_fixture().await;
+    let before = l.r.listing();
+    *l.r.app.state::<AppState>().signer.lock().unwrap() = None;
+    decline_if_asked();
+    let e = lower(&l, "3").await.expect_err("locked");
+    assert!(matches!(e, crate::error::AppError::WalletLocked), "{e:?}");
+    assert!(
+        !l.r.mocks[3].matched_async().await,
+        "the lock coin was not read"
+    );
+    assert_not_lowered(&l, &before);
+}
+
+/// R16, R29: Cancel and Lower price act only for a recovery-phrase profile,
+/// with the sentence the UI shows (`RECOVERY_PHRASE_ONLY`).
+#[tokio::test]
+async fn cancel_and_lower_price_refused_for_ledger_and_watch_only() {
+    let sentence = crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY;
+    for kind in ["ledger_hardware", "xpriv_hot", "watch_only_xpub"] {
+        let l = listed_fixture().await;
+        with_db(&l.r.app, |c| {
+            c.execute(
+                "UPDATE wallet_profiles SET kind = ?1 WHERE id = ?2",
+                params![kind, PROFILE],
+            )
+            .unwrap();
+            if kind == "watch_only_xpub" {
+                c.execute(
+                    "UPDATE wallet_profiles SET watch_only = 1 WHERE id = ?1",
+                    params![PROFILE],
+                )
+                .unwrap();
+            }
+        });
+        let before = l.r.listing();
+        decline_if_asked();
+        let e = err_text(cancel(&l).await.expect_err("cancel"));
+        assert!(e.contains(sentence), "{kind}: {e}");
+        assert_no_cancel(&l, ListingState::Listed);
+        decline_if_asked();
+        let e = err_text(lower(&l, "3").await.expect_err("lower"));
+        assert!(e.contains(sentence), "{kind}: {e}");
+        assert_not_lowered(&l, &before);
+    }
+}
+
+/// Deviation 5: Lower price refuses a reverse auction until T8 (its
+/// schedule rule is T8's). Nothing asked or written.
+#[tokio::test]
+async fn lower_refused_for_a_reverse_auction_until_t8() {
+    let l = listed_fixture().await;
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET mode = 'reverse_auction' WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap();
+    });
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("reverse auction"));
+    assert!(e.contains("reverse auctions are not supported yet"), "{e}");
+    assert_not_lowered(&l, &before);
+}
+
+/// R26: the lock key re-derived for the name must be the stored one: a
+/// stored key this wallet does not derive for the name (the node's lock
+/// coin at its lock address, so the coin checks pass) is refused before
+/// the prompt. Nothing asked, signed or written.
+#[tokio::test]
+async fn lower_refused_for_a_lock_key_this_wallet_does_not_derive() {
+    let mut l = listed_fixture().await;
+    let (info, lock) = (l.info(), l.lock.clone());
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET lock_pubkey_hex = ?2 WHERE id = ?1",
+            params![l.r.listing_id, hex::encode(other.pubkey)],
+        )
+        .unwrap();
+    });
+    let elsewhere = coin_json(
+        &lock.0,
+        lock.1,
+        &other.address,
+        COV_FINALIZE,
+        TRANSFER_HEIGHT + 20,
+    );
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info,
+        vec![(lock.0, lock.1, Some(elsewhere))],
+    )
+    .await;
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("key mismatch"));
+    assert!(e.contains(sell::LISTING_KEY_MISMATCH), "{e}");
+    assert_not_lowered(&l, &before);
+}
