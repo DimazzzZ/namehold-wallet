@@ -1901,7 +1901,7 @@ impl ListingWrite {
 /// The SET fragment that starts a listing's market bookkeeping over
 /// ([`ListingWrite::market_reset_sql`], [`mark_listing_cancel_unmined`]).
 const MARKET_RESET_SQL: &str = ", market_status = NULL, market_retry_at = NULL, \
-     market_attempts = 0, market_error = NULL";
+     market_attempts = 0, market_error = NULL, market_accepted = 0";
 
 /// The condition that the listing's cancel draft (`cancel_draft_id`) exists
 /// and was never sent ([`UNSENT_STATUSES`]). An SQL condition on
@@ -2109,6 +2109,11 @@ pub struct ShakedexListing {
     pub market_attempts: i64,
     /// The market's own refusal, or why there was no answer.
     pub market_error: Option<String>,
+    /// The market accepted an upload of this listing (or served our own
+    /// copy back) since it last became Listed: a Cancelling listing is kept
+    /// on the market only then, so a cancel in progress never publishes a
+    /// listing for the first time.
+    pub market_accepted: bool,
     pub expires_at: Option<i64>,
     pub abort_draft_id: Option<String>,
     /// The txid of the Cancel transfer `abort_draft_id` holds; kept when that
@@ -2136,7 +2141,7 @@ pub struct ShakedexListing {
 const SHAKEDEX_LISTING_COLS: &str = "id, wallet_profile_id, name, mode, state, lock_pubkey_hex, \
     lock_transfer_draft_id, lock_finalize_draft_id, lock_transfer_txid, lock_txid, lock_vout, \
     payment_address, cancel_address, cancel_child_index, steps_json, listing_file_json, publish, market_status, \
-    market_retry_at, market_attempts, market_error, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout, \
+    market_retry_at, market_attempts, market_error, market_accepted, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout, \
     cancel_finalize_draft_id, cancel_blocks_remaining, created_at, updated_at";
 
 fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShakedexListing> {
@@ -2162,6 +2167,7 @@ fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<Shakedex
         market_retry_at: row.get("market_retry_at")?,
         market_attempts: row.get("market_attempts")?,
         market_error: row.get("market_error")?,
+        market_accepted: row.get::<_, i64>("market_accepted")? != 0,
         expires_at: row.get("expires_at")?,
         abort_draft_id: row.get("abort_draft_id")?,
         abort_txid: row.get("abort_txid")?,
@@ -2196,9 +2202,9 @@ pub fn insert_shakedex_listing(
              cancel_address, cancel_child_index, steps_json, listing_file_json, publish,
              market_status, market_retry_at, market_attempts, market_error, expires_at,
              abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout,
-             cancel_finalize_draft_id, cancel_blocks_remaining)
+             cancel_finalize_draft_id, cancel_blocks_remaining, market_accepted)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
+                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
         params![
             l.id,
             l.wallet_profile_id,
@@ -2229,7 +2235,8 @@ pub fn insert_shakedex_listing(
             l.cancel_draft_id,
             l.cancel_vout,
             l.cancel_finalize_draft_id,
-            l.cancel_blocks_remaining
+            l.cancel_blocks_remaining,
+            i64::from(l.market_accepted)
         ],
     )?;
     Ok(())
@@ -3095,10 +3102,11 @@ pub fn mark_listing_cancel_mined(
 /// recorded), the listing is back among [`list_listings_kept_on_market`], so
 /// the market bookkeeping of a listing the market was told about
 /// (`market_status` set) starts over as Retrying, due now (a `Reported` left
-/// from the mined cancel would stop the jobs); one the market was never told
-/// about stays untold (keep-listed takes only told listings, so a cancel in
-/// progress never publishes one for the first time). With the cancel sent it
-/// stays. Returns how many rows changed (0 or 1).
+/// from the mined cancel would stop the jobs), `market_accepted` kept: the
+/// market may still hold the copy it accepted. One the market was never told
+/// about stays untold, and a Refused one stays Refused (not retried until
+/// what is sent changes). With the cancel sent it all stays. Returns how
+/// many rows changed (0 or 1).
 pub fn mark_listing_cancel_unmined(
     conn: &rusqlite::Connection,
     id: &str,
@@ -3108,7 +3116,7 @@ pub fn mark_listing_cancel_unmined(
     // SQLite evaluates every SET expression over the row as it was, so each
     // CASE reads the old `market_status`.
     let told = format!(
-        "({} AND market_status IS NOT NULL)",
+        "({} AND market_status IS NOT NULL AND market_status <> ?5)",
         cancel_draft_unsent_sql()
     );
     let sql = format!(
@@ -3128,7 +3136,8 @@ pub fn mark_listing_cancel_unmined(
             id,
             w.target(),
             listing_txid(cancel_txid),
-            MarketStatus::Retrying
+            MarketStatus::Retrying,
+            MarketStatus::Refused
         ],
     )?)
 }
@@ -3308,6 +3317,9 @@ pub struct MarketUpdate<'a> {
     pub retry_at: Option<&'a str>,
     pub attempts: i64,
     pub error: Option<&'a str>,
+    /// The market accepted an upload (or served our own copy back): sets
+    /// `market_accepted`, which no later result clears.
+    pub accepted: bool,
 }
 
 /// Write a market job's result. Not a state write (no `ListingWrite`): the
@@ -3337,7 +3349,8 @@ pub fn record_market_result(
     Ok(conn.execute(
         "UPDATE shakedex_listings
          SET market_status = ?2, market_retry_at = ?3, market_attempts = ?4,
-             market_error = ?5, updated_at = datetime('now')
+             market_error = ?5, market_accepted = MAX(market_accepted, ?9),
+             updated_at = datetime('now')
          WHERE id = ?1 AND state = ?6 AND steps_json = ?7 AND listing_file_json IS ?8",
         params![
             id,
@@ -3347,7 +3360,8 @@ pub fn record_market_result(
             u.error,
             seen.state,
             seen.steps_json,
-            seen.listing_file_json
+            seen.listing_file_json,
+            i64::from(u.accepted)
         ],
     )?)
 }
@@ -3499,8 +3513,10 @@ fn release_cancel(
 /// The listings the market jobs keep on LearnHNS (R24, R25: the jobs that
 /// re-upload and step listings read this): the
 /// published (`publish`) ones that are Listed, or Cancelling while their
-/// cancel draft is not sent yet (`draft`, `signed`): R28 stops the jobs once
-/// a cancel is broadcast. The mainnet rule (R23) is the jobs' own.
+/// cancel draft is not sent yet (`draft`, `signed`; R28 stops the jobs once
+/// a cancel is broadcast) and only once the market accepted an upload of it
+/// (`market_accepted`): a cancel in progress never publishes a listing for
+/// the first time. The mainnet rule (R23) is the jobs' own.
 pub fn list_listings_kept_on_market(
     conn: &rusqlite::Connection,
     profile_id: &str,
@@ -3508,7 +3524,7 @@ pub fn list_listings_kept_on_market(
     let sql = format!(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
          WHERE wallet_profile_id = ?1 AND publish = 1
-           AND (state = ?2 OR (state = ?3 AND {}))
+           AND (state = ?2 OR (state = ?3 AND market_accepted = 1 AND {}))
          ORDER BY created_at, id",
         cancel_draft_unsent_sql()
     );

@@ -104,6 +104,7 @@ fn fx(state: ListingState, publish: bool) -> Fx {
         market_retry_at: None,
         market_attempts: 0,
         market_error: None,
+        market_accepted: false,
         expires_at: locked.then_some((MTP + sell::LISTING_LIFETIME_SECS) as i64),
         abort_draft_id: None,
         abort_txid: None,
@@ -420,6 +421,11 @@ async fn only_published_listed_listings_are_uploaded() {
             )
             .unwrap();
         if state == ListingState::Cancelling {
+            // With the acceptance flag set it is in the jobs' set; the
+            // publish job's first upload still takes a Listed one only.
+            f.conn
+                .execute("UPDATE shakedex_listings SET market_accepted = 1", [])
+                .unwrap();
             let kept = queries::list_listings_kept_on_market(&f.conn, PROFILE).unwrap();
             assert_eq!(kept.len(), 1, "the unsent cancel keeps it in the jobs' set");
         }
@@ -787,13 +793,14 @@ fn rfc3339(secs: i64) -> String {
     crate::shakedex_jobs::rfc3339(secs)
 }
 
-/// A Listed, published listing the market already took, due for its hourly
-/// check.
+/// A Listed, published listing the market already took (an upload of it
+/// accepted), due for its hourly check.
 fn listed_on_market(status: MarketStatus) -> Fx {
     let f = fx(ListingState::Listed, true);
     f.conn
         .execute(
-            "UPDATE shakedex_listings SET market_status = ?1, market_retry_at = ?2",
+            "UPDATE shakedex_listings SET market_status = ?1, market_retry_at = ?2,
+             market_accepted = 1",
             [status.as_str(), &rfc3339(NOW)],
         )
         .unwrap();
@@ -1341,10 +1348,12 @@ async fn cancelling_listing_is_kept_until_its_cancel_is_sent() {
 /// Fix round 1 (ruling 2026-10-10, option b): a reorg that takes the mined
 /// cancel off the chain while this device's cancel draft is unsent
 /// (`queries::mark_listing_cancel_unmined`) starts the bookkeeping over on a
-/// Cancelling listing the market was told about: Retrying, due now. It is still buyable on chain, so keep-listed takes it
-/// like any kept listing: the market's copy is asked for first, and the
-/// market's "not listed" gets ours uploaded. The first upload stays Listed
-/// only. With the cancel sent, nothing is asked of the market.
+/// Cancelling listing the market was told about: Retrying, due now, its
+/// acceptance (`market_accepted`) kept. It is still buyable on chain, so
+/// keep-listed takes it like any kept listing: the market's copy is asked
+/// for first, and the market's "not listed" gets ours uploaded. The first
+/// upload stays Listed only. With the cancel sent, nothing is asked of the
+/// market.
 #[tokio::test]
 async fn cancelling_listing_reset_by_a_reorg_is_kept() {
     for (status, kept) in [("signed", true), ("broadcasted", false)] {
@@ -1401,33 +1410,93 @@ async fn cancelling_listing_reset_by_a_reorg_is_kept() {
     }
 }
 
-/// Fix round 2 (ruling 2026-10-10, option b): a Listed listing the market
-/// was never told about (the publish job's first upload had not run) whose
-/// cancel is signed but unsent is not published by either job: keep-listed
-/// takes only listings the market was told about, and the first upload is
-/// Listed only.
+/// Ruling 2026-10-10 (fix round 1 of Step 6): a Cancelling listing is kept
+/// on the market only once the market accepted an upload of it
+/// (`market_accepted`). One it never accepted — never told (the publish
+/// job's first upload had not run), its steps unverified (nothing
+/// uploaded), or Retrying after no answer to its first upload — whose cancel
+/// is signed but unsent is published by neither job.
 #[tokio::test]
-async fn never_uploaded_listing_is_not_published_while_cancelling() {
-    let f = fx(ListingState::Listed, true);
-    queries::insert_tx_draft(&f.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
-    queries::update_tx_draft_status(&f.conn, "cd", "signed", None, None).unwrap();
-    f.conn
-        .execute(
-            "UPDATE shakedex_listings SET state = 'cancelling', cancel_draft_id = 'cd'",
-            [],
-        )
-        .unwrap();
-    assert_eq!(listing(&f).market_status, None);
-    let mut s = market().await;
-    let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
-    let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
-    for at in [NOW, NOW + 3_600, NOW + 86_400] {
-        publish(&f, &node(&f, TIP), &s, at).await;
-        keep(&f, &s, at).await;
+async fn never_accepted_listing_is_not_published_while_cancelling() {
+    for status in [
+        None,
+        Some(MarketStatus::StepsUnverified),
+        Some(MarketStatus::Retrying),
+    ] {
+        let f = fx(ListingState::Listed, true);
+        f.conn
+            .execute(
+                "UPDATE shakedex_listings SET market_status = ?1",
+                [status.map(|s| s.as_str())],
+            )
+            .unwrap();
+        cancelling(&f, "signed");
+        assert!(!listing(&f).market_accepted);
+        let mut s = market().await;
+        let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+        let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+        for at in [NOW, NOW + 3_600, NOW + 86_400] {
+            publish(&f, &node(&f, TIP), &s, at).await;
+            keep(&f, &s, at).await;
+        }
+        get.assert_async().await;
+        post.assert_async().await;
+        assert_eq!(listing(&f).market_status, status, "{status:?}");
     }
+}
+
+/// Ruling 2026-10-10 (fix round 1 of Step 6): an accepted upload is
+/// recorded (`market_accepted`) and outlives a later failure: accepted, then
+/// no answer to the hourly check (Retrying), then a cancel signed — the
+/// listing is still buyable on chain and on the market, so it is kept: the
+/// market's "not listed" gets ours uploaded.
+#[tokio::test]
+async fn accepted_listing_is_kept_while_cancelling_after_no_answer() {
+    let f = fx(ListingState::Listed, true);
+    let mut s = market().await;
+    let (up, _) = upload_mock(&mut s, 1).await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    up.assert_async().await;
+    up.remove_async().await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_accepted),
+        (Some(MarketStatus::Listed), true)
+    );
+    let down = s
+        .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_status(503)
+        .with_body("<html>unavailable</html>")
+        .expect(1)
+        .create_async()
+        .await;
+    keep(&f, &s, NOW + 3_600).await;
+    down.assert_async().await;
+    down.remove_async().await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_accepted),
+        (Some(MarketStatus::Retrying), true)
+    );
+    cancelling(&f, "signed");
+    let get = s
+        .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_status(404)
+        .with_body(PROOF_NOT_FOUND)
+        .expect(1)
+        .create_async()
+        .await;
+    let (up, seen) = upload_mock(&mut s, 1).await;
+    keep(&f, &s, NOW + 3_600 + 300).await;
     get.assert_async().await;
-    post.assert_async().await;
-    assert_eq!(listing(&f).market_status, None);
+    up.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(sent, our_copy(&f));
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.market_status, l.market_accepted),
+        (ListingState::Cancelling, Some(MarketStatus::Listed), true)
+    );
 }
 
 /// Put `f` (Listed, on the market) into Cancelling with its cancel draft
@@ -1760,4 +1829,29 @@ async fn a_dead_cancel_puts_the_listing_back_on_the_market() {
     publish(&f, &node(&f, TIP), &s, NOW).await;
     m.assert_async().await;
     assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
+}
+
+/// Ruling 2026-10-10 (fix round 1 of Step 6): the market serving our own
+/// copy back counts as acceptance — an upload whose answer was lost (no
+/// answer, Retrying) went through after all.
+#[tokio::test]
+async fn our_copy_served_back_counts_as_accepted() {
+    let f = fx(ListingState::Listed, true);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET market_status = 'retrying', market_attempts = 1",
+            [],
+        )
+        .unwrap();
+    let mut s = market().await;
+    let get = copy_mock(&mut s, our_copy(&f), 1).await;
+    let (up, _) = upload_mock(&mut s, 0).await;
+    keep(&f, &s, NOW).await;
+    get.assert_async().await;
+    up.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_accepted),
+        (Some(MarketStatus::Listed), true)
+    );
 }

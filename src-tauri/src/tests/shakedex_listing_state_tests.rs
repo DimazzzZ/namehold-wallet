@@ -85,6 +85,7 @@ fn fx(state: ListingState) -> Fx {
         market_retry_at: None,
         market_attempts: 0,
         market_error: None,
+        market_accepted: false,
         expires_at: Some(1_731_536_000),
         abort_draft_id: None,
         abort_txid: None,
@@ -3668,6 +3669,7 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
                     market_retry_at: Some("2026-10-10T00:00:00Z".into()),
                     market_attempts: 3,
                     market_error: Some("told".into()),
+                    market_accepted: true,
                     ..base.clone()
                 };
                 f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
@@ -3685,14 +3687,16 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
                     after.market_retry_at.clone(),
                     after.market_attempts,
                     after.market_error.clone(),
+                    after.market_accepted,
                 );
-                let reset = book == (None, None, 0, None);
+                let reset = book == (None, None, 0, None, false);
                 let kept = book
                     == (
                         Some(MarketStatus::Reported),
                         Some("2026-10-10T00:00:00Z".to_string()),
                         3,
                         Some("told".to_string()),
+                        true,
                     );
                 if *to == S::Listed {
                     assert!(reset, "{w:?} {from:?} -> {to:?}: not reset");
@@ -3725,12 +3729,22 @@ fn market_result_is_written_only_over_the_listing_the_job_read() {
         retry_at: Some("2026-10-10T01:00:00Z"),
         attempts: 0,
         error: None,
+        accepted: true,
     };
     assert_eq!(
         queries::record_market_result(&f.conn, &f.id, &seen, &update).unwrap(),
         1
     );
     assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
+    // An acceptance outlives a later result that is none.
+    let failed = queries::MarketUpdate {
+        status: MarketStatus::Retrying,
+        accepted: false,
+        ..update
+    };
+    queries::record_market_result(&f.conn, &f.id, &seen, &failed).unwrap();
+    assert!(listing(&f).market_accepted);
+    queries::record_market_result(&f.conn, &f.id, &seen, &update).unwrap();
     f.conn
         .execute("UPDATE shakedex_listings SET steps_json = '[]'", [])
         .unwrap();
@@ -3812,6 +3826,35 @@ fn cancel_unmined_back_to_an_unsent_cancel_resets_its_market_status() {
         (ListingState::Cancelling, None, None),
         "never told: stays untold"
     );
+    // Refused stays Refused (not retried until what is sent changes,
+    // Deviation 17), its retry time and words kept.
+    let refused = unmined(Some(MarketStatus::Refused));
+    assert_eq!(
+        (
+            refused.market_status,
+            refused.market_retry_at.as_deref(),
+            refused.market_attempts,
+            refused.market_error.as_deref()
+        ),
+        (
+            Some(MarketStatus::Refused),
+            Some("2026-10-10T00:00:00Z"),
+            3,
+            Some("told")
+        ),
+        "refused: kept"
+    );
+    // Told but never accepted (e.g. Retrying after no answer to its first
+    // upload): Retrying, yet not kept while Cancelling — nothing of it is on
+    // the market to keep.
+    let never_accepted = unmined(Some(MarketStatus::Retrying));
+    assert_eq!(
+        (never_accepted.market_status, never_accepted.market_accepted),
+        (Some(MarketStatus::Retrying), false)
+    );
+    assert!(queries::list_listings_kept_on_market(&f.conn, PROFILE)
+        .unwrap()
+        .is_empty());
     for (status, reset) in [
         ("draft", true),
         ("signed", true),
@@ -3836,6 +3879,7 @@ fn cancel_unmined_back_to_an_unsent_cancel_resets_its_market_status() {
             market_retry_at: Some("2026-10-10T00:00:00Z".into()),
             market_attempts: 3,
             market_error: Some("told".into()),
+            market_accepted: true,
             publish: true,
             ..base.clone()
         };
@@ -3846,6 +3890,7 @@ fn cancel_unmined_back_to_an_unsent_cancel_resets_its_market_status() {
             1,
             "{status}"
         );
+        assert!(listing(&f).market_accepted, "{status}: acceptance kept");
         let after = listing(&f);
         assert_eq!(after.state, ListingState::Cancelling, "{status}");
         let book = (

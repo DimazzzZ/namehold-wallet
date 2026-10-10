@@ -50,6 +50,7 @@ fn listing(id: &str, name: &str, state: ListingState) -> ShakedexListing {
         market_retry_at: None,
         market_attempts: 0,
         market_error: None,
+        market_accepted: false,
         expires_at: None,
         abort_draft_id: None,
         abort_txid: None,
@@ -1157,8 +1158,9 @@ fn a_losing_cancel_releases_its_coins() {
 }
 
 /// R28: the market jobs (R24, R25) keep a published Listed
-/// listing, and a Cancelling one only until its cancel is sent; an
-/// unpublished listing, and every other state, is never kept.
+/// listing, and a Cancelling one the market accepted an upload of, only
+/// until its cancel is sent; an unpublished listing, and every other state,
+/// is never kept.
 #[test]
 fn listings_kept_on_market_stop_once_the_cancel_is_sent() {
     let conn = store_conn();
@@ -1181,6 +1183,21 @@ fn listings_kept_on_market_stop_once_the_cancel_is_sent() {
     );
     cancelling(&conn, "l3", "cancelling", "cx", true);
     publish("l3");
+    // A Cancelling listing only once the market accepted an upload of it.
+    assert_eq!(
+        queries::list_listings_kept_on_market(&conn, STORE_PROFILE)
+            .unwrap()
+            .into_iter()
+            .map(|l| l.id)
+            .collect::<Vec<_>>(),
+        ["l1"],
+        "never accepted: not kept while cancelling"
+    );
+    conn.execute(
+        "UPDATE shakedex_listings SET market_accepted = 1 WHERE id = 'l3'",
+        [],
+    )
+    .unwrap();
     for (i, state) in ListingState::ALL.into_iter().enumerate() {
         if matches!(state, ListingState::Listed | ListingState::Cancelling) {
             continue;
@@ -6284,7 +6301,8 @@ async fn cancel_stops_jobs() {
     // see the market set alone.
     with_db(&l.r.app, |c| {
         c.execute(
-            "UPDATE shakedex_listings SET publish = 1 WHERE id = ?1",
+            "UPDATE shakedex_listings SET publish = 1, market_status = 'listed',
+             market_accepted = 1 WHERE id = ?1",
             [&l.r.listing_id],
         )
         .unwrap();
