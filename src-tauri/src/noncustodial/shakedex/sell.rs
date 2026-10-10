@@ -18,8 +18,8 @@ use crate::noncustodial::shakedex::lock_key::LockKey;
 use crate::noncustodial::shakedex::purchase::MAX_MONEY;
 use crate::noncustodial::shakedex::script;
 use crate::noncustodial::shakedex::template::{
-    current_step_index, encode_lock_time, secs_until_valid, valid_from_mtp, verify_step_signature,
-    StepTemplate, STEP_SIGHASH,
+    current_step_index, encode_lock_time, is_valid_at, secs_until_valid, valid_from_mtp,
+    verify_step_signature, StepTemplate, STEP_SIGHASH,
 };
 use crate::noncustodial::sync::{COV_FINALIZE, COV_NONE, COV_TRANSFER};
 use crate::noncustodial::tx::{output_address_from_string, Covenant, OutputAddress};
@@ -72,6 +72,81 @@ pub fn lock_self_check(key: &LockKey, network: Network) -> Result<(), AppError> 
 /// and the step is valid in the next block (`template::is_valid_at`).
 pub fn buy_now_lock_time(mtp: u64) -> u64 {
     mtp.saturating_sub(LOCK_TIME_UNIT_SECS)
+}
+
+/// R24: a reverse auction has 2 to 1000 steps, at least 15 minutes apart.
+pub const REVERSE_MIN_STEPS: u32 = 2;
+pub const REVERSE_MAX_STEPS: u32 = 1_000;
+pub const REVERSE_MIN_INTERVAL_SECS: u64 = 900;
+
+/// R24: a reverse auction's `(price, lock time)` steps, falling linearly
+/// from `start_price` (step 0, at `start_lock_time`) to exactly `floor` (the
+/// last step), `interval_secs` apart: step `i` costs
+/// `start − ⌊(start − floor) · i / (steps − 1)⌋`, in u128. Refused, with the
+/// reason: fewer than 2 or more than 1000 steps, steps closer than 15
+/// minutes, a floor of 0, a floor not below the start, a start above the
+/// money supply, a floor below the dust limit, prices that would not fall
+/// strictly (fewer doos between start and floor than steps after the
+/// first), a lock time past R3's 40 bits. Prices typed by a person go
+/// through [`parse_step_price`] first.
+pub fn reverse_schedule(
+    start_price: u64,
+    floor: u64,
+    steps: u32,
+    interval_secs: u64,
+    start_lock_time: u64,
+) -> Result<Vec<(u64, u64)>, AppError> {
+    let bad = |why: String| AppError::InvalidInput(format!("reverse auction: {why}"));
+    if !(REVERSE_MIN_STEPS..=REVERSE_MAX_STEPS).contains(&steps) {
+        return Err(bad(format!(
+            "{steps} steps: a schedule has {REVERSE_MIN_STEPS} to {REVERSE_MAX_STEPS} steps"
+        )));
+    }
+    if interval_secs < REVERSE_MIN_INTERVAL_SECS {
+        return Err(bad(format!(
+            "steps {interval_secs} s apart: steps must be at least 15 minutes apart"
+        )));
+    }
+    if floor == 0 {
+        return Err(bad("the floor must be above 0".into()));
+    }
+    if floor >= start_price {
+        return Err(bad(format!(
+            "the floor {} is not below the start {}",
+            doos_to_hns_string(floor),
+            doos_to_hns_string(start_price)
+        )));
+    }
+    if start_price > MAX_MONEY {
+        return Err(bad("the start price is above the money supply".into()));
+    }
+    if floor < DUST_THRESHOLD {
+        return Err(bad(format!(
+            "the floor is below the dust limit of {}",
+            doos_to_hns_string(DUST_THRESHOLD)
+        )));
+    }
+    let span = start_price - floor;
+    let after_first = u64::from(steps) - 1;
+    if span < after_first {
+        return Err(bad(format!(
+            "prices would not be strictly falling: {steps} steps need the start at least \
+             {after_first} doos above the floor"
+        )));
+    }
+    (0..u64::from(steps))
+        .map(|i| {
+            // span · i / (n − 1) ≤ span: always fits u64.
+            let drop = u64::try_from(u128::from(span) * u128::from(i) / u128::from(after_first))
+                .map_err(|_| bad("price arithmetic overflow".into()))?;
+            let lock_time = interval_secs
+                .checked_mul(i)
+                .and_then(|d| start_lock_time.checked_add(d))
+                .filter(|t| encode_lock_time(*t).is_ok())
+                .ok_or_else(|| bad("the last step's time does not fit a lock time".into()))?;
+            Ok((start_price - drop, lock_time))
+        })
+        .collect()
 }
 
 /// `wallet_tx_drafts.action` of the day-0 TRANSFER committing our name to its
@@ -493,18 +568,38 @@ pub fn lower_price_rows(r: &LowerPriceRows) -> serde_json::Value {
 pub const LISTING_KEY_MISMATCH: &str = "the lock key this wallet derives for the name is not \
      this listing's: nothing was signed";
 
-/// R3's current price of a listing's stored steps at `mtp`: the cheapest
+/// R3's current step of a listing's stored steps at `mtp`: the cheapest
 /// step valid for the next block (`template::current_step_index`); `None`
 /// when no step is valid yet or there are none (a Restored lock without its
-/// listing file). A
-/// stored lock time past R3's 40 bits is a corrupted row.
+/// listing file). A stored lock time past R3's 40 bits is a corrupted row.
+pub fn current_step(steps: &[StoredStep], mtp: u64) -> Result<Option<&StoredStep>, AppError> {
+    let encoded = encoded_stored(steps)?;
+    Ok(current_step_index(&encoded, mtp).map(|i| &steps[i]))
+}
+
+/// The price of [`current_step`].
 pub fn current_step_price(steps: &[StoredStep], mtp: u64) -> Result<Option<u64>, AppError> {
-    let encoded = steps
+    Ok(current_step(steps, mtp)?.map(|s| s.price))
+}
+
+/// R26 on a schedule: of `steps`, the ones not valid yet at `mtp` priced
+/// below `price` (they still become current as they become valid) and at
+/// or above it (moot: a cheaper step is valid before them).
+pub fn steps_ahead(steps: &[StoredStep], mtp: u64, price: u64) -> Result<(usize, usize), AppError> {
+    let encoded = encoded_stored(steps)?;
+    let ahead = encoded.iter().filter(|(_, enc)| !is_valid_at(*enc, mtp));
+    let below = ahead.clone().filter(|(p, _)| *p < price).count();
+    Ok((below, ahead.count() - below))
+}
+
+/// `(price, encoded lock time)` of stored steps; a lock time past 40 bits
+/// is a corrupted row.
+fn encoded_stored(steps: &[StoredStep]) -> Result<Vec<(u64, u32)>, AppError> {
+    steps
         .iter()
         .map(|s| encode_lock_time(s.lock_time).map(|e| (s.price, e)))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| AppError::Other("corrupted listing: a stored step's lock time".into()))?;
-    Ok(current_step_index(&encoded, mtp).map(|i| encoded[i].0))
+        .map_err(|_| AppError::Other("corrupted listing: a stored step's lock time".into()))
 }
 
 /// R26: a price is lowered only strictly below the current step's. Raising
@@ -2197,6 +2292,104 @@ mod tests {
         );
         assert!(
             current_step_price(&[step(1, 1 << 41)], mtp).is_err(),
+            "past 40 bits"
+        );
+    }
+
+    /// R24: a schedule falls linearly from the start to exactly the floor,
+    /// one interval apart from R19's start, every price strictly below the
+    /// one before.
+    #[test]
+    fn reverse_schedule_falls_from_start_to_floor_one_interval_apart() {
+        let start = buy_now_lock_time(1_700_100_000);
+        let s = reverse_schedule(5_000_000, 3_000_000, 3, 900, start).unwrap();
+        assert_eq!(
+            s,
+            vec![
+                (5_000_000, start),
+                (4_000_000, start + 900),
+                (3_000_000, start + 1_800)
+            ]
+        );
+        // Uneven division (9 000 000 doos over 7 drops): the floor is still
+        // the last price, and every step is cheaper than the one before.
+        let s = reverse_schedule(10_000_000, 1_000_000, 8, 3_600, start).unwrap();
+        assert_eq!(s.len(), 8);
+        assert_eq!(s.first().unwrap().0, 10_000_000);
+        assert_eq!(s.last().unwrap().0, 1_000_000);
+        assert!(s
+            .windows(2)
+            .all(|w| w[1].0 < w[0].0 && w[1].1 == w[0].1 + 3_600));
+        // The tightest span that still falls: one doo per step.
+        let s = reverse_schedule(1_000_000 + 999, 1_000_000, 1_000, 900, start).unwrap();
+        assert_eq!(s.len(), 1_000);
+        assert!(s.windows(2).all(|w| w[0].0 - w[1].0 == 1));
+        // The bounds themselves are accepted.
+        assert!(reverse_schedule(MAX_MONEY, DUST_THRESHOLD, 2, 900, start).is_ok());
+    }
+
+    /// R24: every out-of-range schedule is refused with its reason, before
+    /// anything is signed.
+    #[test]
+    fn reverse_schedule_refuses_out_of_range_with_the_reason() {
+        let start = buy_now_lock_time(1_700_100_000);
+        for (args, why) in [
+            ((5_000_000, 3_000_000, 1, 900), "2 to 1000 steps"),
+            ((5_000_000, 3_000_000, 1_001, 900), "2 to 1000 steps"),
+            ((5_000_000, 3_000_000, 0, 900), "2 to 1000 steps"),
+            ((5_000_000, 3_000_000, 3, 899), "at least 15 minutes apart"),
+            ((5_000_000, 0, 3, 900), "floor must be above 0"),
+            ((5_000_000, 5_000_000, 3, 900), "not below the start"),
+            ((3_000_000, 5_000_000, 3, 900), "not below the start"),
+            ((5_000_000, 4_999_999, 3, 900), "strictly falling"),
+            ((MAX_MONEY + 1, 3_000_000, 3, 900), "money supply"),
+            ((5_000_000, DUST_THRESHOLD - 1, 3, 900), "dust limit"),
+        ] {
+            let (p, f, n, i) = args;
+            let e = reverse_schedule(p, f, n, i, start)
+                .expect_err(why)
+                .to_string();
+            assert!(e.contains(why), "{args:?}: {e}");
+        }
+        // A last step past R3's 40-bit lock time.
+        let e = reverse_schedule(5_000_000, 3_000_000, 3, 900, (1 << 40) - 1_000)
+            .expect_err("40 bits")
+            .to_string();
+        assert!(e.contains("lock time"), "{e}");
+    }
+
+    /// R3, R26: the current stored step is the cheapest valid at the MTP;
+    /// the steps not valid yet split into those below a price (they take
+    /// over as they become valid) and those at or above it (moot).
+    #[test]
+    fn current_step_and_steps_ahead_read_the_schedule_at_the_mtp() {
+        let mtp = 1_700_100_000;
+        let step = |price, lock_time| StoredStep {
+            price,
+            lock_time,
+            signature: format!("{price:x}"),
+        };
+        let l0 = buy_now_lock_time(mtp);
+        let steps = [
+            step(6_000_000, l0 - 1_024),
+            step(5_000_000, l0),
+            step(4_000_000, l0 + 1_024),
+            step(3_000_000, l0 + 2_048),
+            step(2_000_000, l0 + 3_072),
+        ];
+        assert_eq!(current_step(&steps, mtp).unwrap(), Some(&steps[1]));
+        assert_eq!(
+            current_step(&steps[2..], mtp).unwrap(),
+            None,
+            "none valid yet"
+        );
+        assert_eq!(steps_ahead(&steps, mtp, 3_500_000).unwrap(), (2, 1));
+        // A step ahead at exactly the price is moot, not still to come.
+        assert_eq!(steps_ahead(&steps, mtp, 4_000_000).unwrap(), (2, 1));
+        assert_eq!(steps_ahead(&steps, mtp, 5_000_000).unwrap(), (3, 0));
+        assert_eq!(steps_ahead(&steps[..2], mtp, 5_000_000).unwrap(), (0, 0));
+        assert!(
+            steps_ahead(&[step(1, 1 << 41)], mtp, 5).is_err(),
             "past 40 bits"
         );
     }
