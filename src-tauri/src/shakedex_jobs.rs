@@ -2590,11 +2590,15 @@ pub(crate) enum MarketCopy {
     /// time), and the listing as it now stands (after an expiry refresh).
     Ready {
         file: String,
+        /// `file`, read back by the strict parser.
+        copy: Box<listing_file::ListingFile>,
         listing: Box<queries::ShakedexListing>,
     },
     /// A step of the stored file does not verify over the lock coin hsd
-    /// reports, the file is not this listing's, or the row does not read
-    /// (its steps, lock key, lock outpoint, file): nothing is uploaded.
+    /// reports, the file is not this listing's, the row does not read (its
+    /// steps, lock key, lock outpoint, file), or the stored file cannot be
+    /// rewritten with a refreshed expiry or cut to its current step: nothing
+    /// is uploaded.
     StepsUnverified(String),
     /// The node gives no verdict this sync (no median time, the lock coin
     /// spent (404) or not this listing's FINALIZE, unmined, no step valid
@@ -2661,38 +2665,61 @@ pub(crate) async fn market_copy(
         return not_now("no price step is valid yet");
     };
     let refreshed = mtp.saturating_add(sell::LISTING_LIFETIME_SECS);
-    let near_end = |exp: u64| i64::try_from(exp).is_ok_and(|e| near_expiry(e, now));
-    let (file_json, listing) = match file.expires_at {
-        Some(exp)
-            if l.state == queries::ListingState::Listed && near_end(exp) && refreshed > exp =>
-        {
-            let json = listing_file::with_expiry(stored_file, refreshed, network)?;
-            let expires_at = i64::try_from(refreshed)
-                .map_err(|_| AppError::Other("listing expiry out of range".into()))?;
-            let moved = queries::refresh_listing_expiry(
-                conn,
-                &l.id,
-                &queries::RefreshedExpiry {
-                    lock,
-                    old_file: stored_file,
-                    listing_file_json: &json,
-                    expires_at,
-                },
-            )?;
-            if moved == 0 {
-                return not_now("the listing changed meanwhile");
-            }
-            let Some(listing) = queries::get_shakedex_listing(conn, &l.id)? else {
-                return not_now("the listing is gone");
-            };
-            (json, listing)
+    let refresh = l.state == queries::ListingState::Listed
+        && file
+            .expires_at
+            .is_some_and(|exp| file_near_expiry(exp, now) && refreshed > exp);
+    // The file work before any write: the stored file read once already, so
+    // a rewrite or a cut that fails is the row's, recorded as
+    // StepsUnverified (never the node's).
+    let built = || -> Result<(String, String, listing_file::ListingFile), AppError> {
+        let json = if refresh {
+            listing_file::with_expiry(stored_file, refreshed, network)?
+        } else {
+            stored_file.to_string()
+        };
+        let copy = listing_file::market_copy(&json, index, network)?;
+        let parsed = listing_file::ListingFile::parse(&copy, network)?;
+        Ok((json, copy, parsed))
+    };
+    let (json, copy, parsed) = match built() {
+        Ok(b) => b,
+        Err(e) => return unverified(e.to_string()),
+    };
+    let listing = if refresh {
+        let expires_at = i64::try_from(refreshed)
+            .map_err(|_| AppError::Other("listing expiry out of range".into()))?;
+        let moved = queries::refresh_listing_expiry(
+            conn,
+            &l.id,
+            &queries::RefreshedExpiry {
+                lock,
+                old_file: stored_file,
+                listing_file_json: &json,
+                expires_at,
+            },
+        )?;
+        if moved == 0 {
+            return not_now("the listing changed meanwhile");
         }
-        _ => (stored_file.to_string(), l.clone()),
+        let Some(listing) = queries::get_shakedex_listing(conn, &l.id)? else {
+            return not_now("the listing is gone");
+        };
+        listing
+    } else {
+        l.clone()
     };
     Ok(MarketCopy::Ready {
-        file: listing_file::market_copy(&file_json, index, network)?,
+        file: copy,
+        copy: Box::new(parsed),
         listing: Box::new(listing),
     })
+}
+
+/// Whether a listing file's `expiresAt` of `exp` (Unix) is near
+/// ([`near_expiry`]); one past `i64` is not.
+fn file_near_expiry(exp: u64, now: i64) -> bool {
+    i64::try_from(exp).is_ok_and(|e| near_expiry(e, now))
 }
 
 /// What [`market_copy`] reads from the row alone, before asking the node.
@@ -2862,7 +2889,8 @@ pub async fn publish_listings_with_client(
 /// marked → Reported; its "Listing not found" (nothing of the name to mark)
 /// → Reported with that note; its own refusal → Reported with its words
 /// (nothing more to tell, not retried); no answer or "not seen yet" →
-/// Retrying, backed off ([`after_reply`]) — but a listing the market knows
+/// Retrying, backed off ([`after_reply`]); a row without the txid it
+/// carries → StepsUnverified, backed off, nothing sent — but a listing the market knows
 /// only from its pending post stays Pending while it backs off: that post
 /// is what makes it told ([`queries::list_listings_to_report`]).
 async fn report(
@@ -2871,34 +2899,36 @@ async fn report(
     l: &queries::ShakedexListing,
     now: i64,
 ) -> Result<(), AppError> {
-    let corrupted = |what: &str| AppError::Other(format!("corrupted listing {}: no {what}", l.id));
-    let what = if l.state == queries::ListingState::Sold {
-        StatusReport::Sold {
-            sale_txid: l
-                .sold_txid
-                .as_deref()
-                .ok_or_else(|| corrupted("sale txid"))?,
-        }
-    } else {
-        StatusReport::Cancelled {
-            cancel_txid: l
-                .cancel_txid
-                .as_deref()
-                .ok_or_else(|| corrupted("cancel txid"))?,
-        }
-    };
     use queries::MarketStatus as S;
-    let reply = market.refresh_status(&l.name, &what).await?;
-    let mut result = match Outcome::of(&reply, false) {
-        Outcome::Refused(why) => MarketResult {
-            error: Some(why),
-            ..after_reply(Outcome::Taken { holds_ours: false }, S::Reported, 0, now)
-        },
-        outcome => after_reply(outcome, S::Reported, l.market_attempts, now),
+    let corrupted = |what: &str| format!("corrupted listing {}: no {what}", l.id);
+    let what = if l.state == queries::ListingState::Sold {
+        l.sold_txid
+            .as_deref()
+            .map(|sale_txid| StatusReport::Sold { sale_txid })
+            .ok_or_else(|| corrupted("sale txid"))
+    } else {
+        l.cancel_txid
+            .as_deref()
+            .map(|cancel_txid| StatusReport::Cancelled { cancel_txid })
+            .ok_or_else(|| corrupted("cancel txid"))
     };
-    if reply == MarketReply::Accepted(StatusRecorded::NoListing) {
-        result.error = Some(REPORT_NO_LISTING.into());
-    }
+    let mut result = match what {
+        Err(why) => steps_unverified(l, why, now),
+        Ok(what) => {
+            let reply = market.refresh_status(&l.name, &what).await?;
+            let mut result = match Outcome::of(&reply, false) {
+                Outcome::Refused(why) => MarketResult {
+                    error: Some(why),
+                    ..after_reply(Outcome::Taken { holds_ours: false }, S::Reported, 0, now)
+                },
+                outcome => after_reply(outcome, S::Reported, l.market_attempts, now),
+            };
+            if reply == MarketReply::Accepted(StatusRecorded::NoListing) {
+                result.error = Some(REPORT_NO_LISTING.into());
+            }
+            result
+        }
+    };
     if result.status != S::Reported && !l.market_accepted {
         result.status = S::Pending;
     }
@@ -2910,17 +2940,26 @@ pub const REPORT_NO_LISTING: &str =
     "LearnHNS Market answered \"Listing not found\": it lists nothing of the name to mark";
 
 /// R23 day 0: post `l`'s pending listing — the lock TRANSFER's outpoint, the
-/// lock address, the mode — and record the market's answer.
+/// lock address, the mode — and record the market's answer. A row without
+/// the lock TRANSFER's txid or a readable lock key is recorded as
+/// StepsUnverified, backed off, nothing posted.
 async fn announce(
     conn: &rusqlite::Connection,
     market: &LearnHnsClient,
     l: &queries::ShakedexListing,
     now: i64,
 ) -> Result<(), AppError> {
-    let transfer_txid = l.lock_transfer_txid.as_deref().ok_or_else(|| {
-        AppError::Other(format!("corrupted listing {}: no lock TRANSFER txid", l.id))
-    })?;
-    let lock = listing_lock(Network::Main, l)?;
+    let row = l
+        .lock_transfer_txid
+        .as_deref()
+        .ok_or_else(|| {
+            AppError::Other(format!("corrupted listing {}: no lock TRANSFER txid", l.id))
+        })
+        .and_then(|txid| Ok((txid, listing_lock(Network::Main, l)?)));
+    let (transfer_txid, lock) = match row {
+        Ok(row) => row,
+        Err(e) => return record(conn, l, &steps_unverified(l, e.to_string(), now)),
+    };
     let reply = market
         .post_pending_listing(&PendingListing {
             name: &l.name,
@@ -2960,7 +2999,7 @@ async fn upload_current(
             Ok(())
         }
         MarketCopy::StepsUnverified(why) => record(conn, l, &steps_unverified(l, why, now)),
-        MarketCopy::Ready { file, listing } => {
+        MarketCopy::Ready { file, listing, .. } => {
             upload(
                 conn,
                 market,
@@ -2982,8 +3021,11 @@ fn not_now(l: &queries::ShakedexListing, why: &str) {
     );
 }
 
-/// What a [`MarketCopy::StepsUnverified`] writes: nothing is uploaded, and
-/// the steps are verified again on our node after the backoff.
+/// What a row or file that does not read, or a step that does not verify
+/// ([`MarketCopy::StepsUnverified`]), writes: StepsUnverified with why,
+/// once per backoff, nothing sent; the row is read (and the steps verified
+/// on our node) again after the backoff. Never for a node reply: that is
+/// no verdict, logged and nothing written.
 fn steps_unverified(l: &queries::ShakedexListing, why: String, now: i64) -> MarketResult {
     backing_off(
         queries::MarketStatus::StepsUnverified,
@@ -3101,9 +3143,11 @@ fn expiry_near(l: &queries::ShakedexListing, now: i64) -> bool {
 }
 
 /// R23 for a Refused Listed listing: [`market_copy`]'s expiry refresh, and
-/// nothing else — no market call, and nothing recorded (a refusal stays
-/// until what is sent changes; the refresh is such a change and makes the
-/// listing Retrying, due now, itself).
+/// nothing else — no market call. A refusal stays until what is sent
+/// changes; the refresh is such a change and makes the listing Retrying,
+/// due now, itself. A row or file that does not read (StepsUnverified) is
+/// recorded and backed off like anywhere else; the node's no verdict is
+/// logged, nothing written.
 async fn refresh_refused(
     conn: &rusqlite::Connection,
     node: &dyn NodeRpc,
@@ -3111,10 +3155,13 @@ async fn refresh_refused(
     now: i64,
 ) -> Result<(), AppError> {
     match market_copy(conn, node, Network::Main, l, now).await? {
-        MarketCopy::Ready { .. } => {}
-        MarketCopy::NotNow(why) | MarketCopy::StepsUnverified(why) => not_now(l, &why),
+        MarketCopy::Ready { .. } => Ok(()),
+        MarketCopy::StepsUnverified(why) => record(conn, l, &steps_unverified(l, why, now)),
+        MarketCopy::NotNow(why) => {
+            not_now(l, &why);
+            Ok(())
+        }
     }
-    Ok(())
 }
 
 /// R25: one due check of kept `l` (Listed, or Cancelling with an unsent
@@ -3127,7 +3174,7 @@ async fn keep_listed(
     now: i64,
 ) -> Result<(), AppError> {
     use queries::MarketStatus as S;
-    let (file, listing) = match market_copy(conn, node, Network::Main, l, now).await? {
+    let (file, ours, listing) = match market_copy(conn, node, Network::Main, l, now).await? {
         MarketCopy::NotNow(why) => {
             not_now(l, &why);
             return Ok(());
@@ -3135,7 +3182,11 @@ async fn keep_listed(
         MarketCopy::StepsUnverified(why) => {
             return record(conn, l, &steps_unverified(l, why, now));
         }
-        MarketCopy::Ready { file, listing } => (file, listing),
+        MarketCopy::Ready {
+            file,
+            copy,
+            listing,
+        } => (file, copy, listing),
     };
     if listing.listing_file_json != l.listing_file_json {
         // The expiry was just refreshed: the market holds the old file.
@@ -3152,7 +3203,6 @@ async fn keep_listed(
     };
     match market.proof_copy(&listing.name).await? {
         ProofCopy::Copy(text) => {
-            let ours = listing_file::ListingFile::parse(&file, Network::Main)?;
             let same = listing_file::ListingFile::parse(&text, Network::Main)
                 .is_ok_and(|theirs| listing_file::same_market_listing(&theirs, &ours));
             if same {

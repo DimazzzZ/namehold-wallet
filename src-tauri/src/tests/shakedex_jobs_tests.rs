@@ -590,6 +590,174 @@ async fn unreadable_row_is_recorded_as_steps_unverified() {
     }
 }
 
+/// A1 (code-review round): a row the day-0 post cannot be built from — no
+/// lock TRANSFER txid, or a lock key that does not read — is recorded as
+/// StepsUnverified with why and backed off, nothing posted; it is tried
+/// again after the backoff, not every sync.
+#[tokio::test]
+async fn unreadable_row_is_not_announced_and_is_recorded() {
+    for (state, sql, why) in [
+        (
+            ListingState::ReadyToFinalize,
+            "UPDATE shakedex_listings SET lock_transfer_txid = NULL",
+            "no lock TRANSFER txid",
+        ),
+        (
+            ListingState::Locking,
+            "UPDATE shakedex_listings SET lock_pubkey_hex = 'zz'",
+            "bad lock key",
+        ),
+    ] {
+        let f = fx(state, true);
+        f.conn.execute(sql, []).unwrap();
+        let mut s = market().await;
+        let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+        publish(&f, &MockNodeRpc::new(), &s, NOW).await;
+        publish(&f, &MockNodeRpc::new(), &s, NOW + 299).await;
+        let l = listing(&f);
+        assert_eq!(
+            (
+                l.market_status,
+                l.market_attempts,
+                l.market_retry_at.as_deref()
+            ),
+            (
+                Some(MarketStatus::StepsUnverified),
+                1,
+                Some(rfc3339(NOW + 300).as_str())
+            ),
+            "{why}"
+        );
+        assert!(l.market_error.unwrap().contains(why), "{why}");
+        publish(&f, &MockNodeRpc::new(), &s, NOW + 300).await;
+        assert_eq!(
+            listing(&f).market_attempts,
+            2,
+            "{why}: tried after the backoff"
+        );
+        any.assert_async().await;
+    }
+}
+
+/// A1: a report whose row lacks the mined txid it carries is recorded as
+/// StepsUnverified with why and backed off; nothing is sent.
+#[tokio::test]
+async fn report_of_a_row_without_its_txid_is_recorded() {
+    for (sql, why) in [
+        (
+            "UPDATE shakedex_listings SET state = 'sold', sold_txid = NULL",
+            "no sale txid",
+        ),
+        (
+            "UPDATE shakedex_listings SET state = 'cancelled', cancel_txid = NULL",
+            "no cancel txid",
+        ),
+    ] {
+        let f = listed_on_market(MarketStatus::Listed);
+        f.conn.execute(sql, []).unwrap();
+        let mut s = market().await;
+        let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+        publish(&f, &node(&f, TIP), &s, NOW).await;
+        publish(&f, &node(&f, TIP), &s, NOW + 299).await;
+        any.assert_async().await;
+        let l = listing(&f);
+        assert_eq!(
+            (
+                l.market_status,
+                l.market_attempts,
+                l.market_retry_at.as_deref()
+            ),
+            (
+                Some(MarketStatus::StepsUnverified),
+                1,
+                Some(rfc3339(NOW + 300).as_str())
+            ),
+            "{why}"
+        );
+        assert!(l.market_error.unwrap().contains(why), "{why}");
+    }
+}
+
+/// A1: a stored file that reads but cannot be rewritten with its refreshed
+/// expiry (here: the rewrite would pass the listing-file size limit) is the
+/// row's problem, not the node's: recorded as StepsUnverified with why,
+/// backed off, nothing uploaded and the stored file left as it is.
+#[tokio::test]
+async fn file_that_cannot_be_rewritten_is_recorded_as_steps_unverified() {
+    use crate::noncustodial::shakedex::listing_file::MAX_LISTING_FILE_BYTES;
+    let f = fx(ListingState::Listed, true);
+    let mut v: serde_json::Value =
+        serde_json::from_str(&listing(&f).listing_file_json.unwrap()).unwrap();
+    // An expiry long past (one digit): the refresh writes ten.
+    v["expiresAt"] = 1.into();
+    v["pad"] = "".into();
+    let bare = serde_json::to_string(&v).unwrap().len();
+    v["pad"] = "x".repeat(MAX_LISTING_FILE_BYTES - 5 - bare).into();
+    let file = serde_json::to_string(&v).unwrap();
+    ListingFile::parse(&file, NET).expect("the stored file reads");
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET listing_file_json = ?1, expires_at = 1",
+            [&file],
+        )
+        .unwrap();
+    let mut s = market().await;
+    let (m, _) = upload_mock(&mut s, 0).await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    m.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(
+        (
+            l.market_status,
+            l.market_attempts,
+            l.market_retry_at.as_deref()
+        ),
+        (
+            Some(MarketStatus::StepsUnverified),
+            1,
+            Some(rfc3339(NOW + 300).as_str())
+        )
+    );
+    assert!(l.market_error.unwrap().contains("larger than"));
+    assert_eq!(l.listing_file_json.as_deref(), Some(file.as_str()));
+}
+
+/// A1: a Refused Listed listing near its expiry whose row does not read is
+/// recorded as StepsUnverified with why and backed off, with no market
+/// call.
+#[tokio::test]
+async fn refused_listing_whose_row_does_not_read_is_recorded() {
+    let f = listed_on_market(MarketStatus::Refused);
+    f.conn
+        .execute("UPDATE shakedex_listings SET market_retry_at = NULL", [])
+        .unwrap();
+    set_expiry(&f, (NOW + 86_400) as u64);
+    f.conn
+        .execute("UPDATE shakedex_listings SET steps_json = 'not json'", [])
+        .unwrap();
+    let mut s = market().await;
+    let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+    let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    keep(&f, &s, NOW).await;
+    keep(&f, &s, NOW + 299).await;
+    get.assert_async().await;
+    post.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(
+        (
+            l.market_status,
+            l.market_attempts,
+            l.market_retry_at.as_deref()
+        ),
+        (
+            Some(MarketStatus::StepsUnverified),
+            1,
+            Some(rfc3339(NOW + 300).as_str())
+        )
+    );
+    assert!(l.market_error.unwrap().contains("unreadable steps"));
+}
+
 /// R23 with R26 (T6): a lowered Buy Now's file holds both steps; the market
 /// takes one, so only the current step (the cheapest valid at the node's
 /// median time) is uploaded.

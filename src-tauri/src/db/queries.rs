@@ -3584,9 +3584,11 @@ pub fn list_listings_kept_on_market(
 
 /// R28 (T6): the published (`publish`) listings whose end LearnHNS Market
 /// must be told, once our own node has it mined: Sold (a mined purchase,
-/// with its `sold_txid`), or the cancel mined —
-/// [`ListingState::CANCEL_MINED`] or Cancelled, with its `cancel_txid` (the
-/// mined cancel's, [`mark_listing_cancel_mined`]). Never a Cancelling one
+/// reported with its `sold_txid`), or the cancel mined —
+/// [`ListingState::CANCEL_MINED`] or Cancelled, reported with its
+/// `cancel_txid` (the mined cancel's, [`mark_listing_cancel_mined`]); a row
+/// without that txid is listed too, so the job records it rather than
+/// skipping it unseen. Never a Cancelling one
 /// (sent or not, the cancel is in no block and a purchase may still beat
 /// it) nor SalePending (a purchase in the mempool). Only while the market
 /// holds something of ours — it accepted an upload or served our own copy
@@ -3604,8 +3606,7 @@ pub fn list_listings_to_report(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
          WHERE wallet_profile_id = ?1 AND publish = 1
            AND (market_accepted = 1 OR market_status = ?3) AND market_status <> ?2
-           AND ((state = ?4 AND sold_txid IS NOT NULL)
-                OR (cancel_txid IS NOT NULL AND (state = ?5 OR state IN {})))
+           AND (state = ?4 OR state = ?5 OR state IN {})
          ORDER BY created_at, id",
         ListingState::cancel_mined_sql()
     );
@@ -3626,9 +3627,10 @@ pub fn list_listings_to_report(
 /// R23 day 0: the published listings to announce as pending — Locking once
 /// its lock TRANSFER draft has been sent ([`REACHED_CHAIN_STATUSES`]),
 /// ReadyToFinalize and Finalizing — that the market has not taken yet
-/// (`market_status` unset, or retrying after no answer; a refused one waits
-/// for a change, see [`MarketStatus::Refused`]). The mainnet rule is the
-/// job's own.
+/// (`market_status` unset, retrying after no answer, or steps unverified: a
+/// row the post could not be built from, tried again after its backoff; a
+/// refused one waits for a change, see [`MarketStatus::Refused`]). The
+/// mainnet rule is the job's own.
 pub fn list_listings_to_announce(
     conn: &rusqlite::Connection,
     profile_id: &str,
@@ -3636,7 +3638,7 @@ pub fn list_listings_to_announce(
     let sql = format!(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
          WHERE wallet_profile_id = ?1 AND publish = 1
-           AND (market_status IS NULL OR market_status = ?2)
+           AND (market_status IS NULL OR market_status IN (?2, ?6))
            AND (state IN (?3, ?4)
                 OR (state = ?5 AND EXISTS (
                     SELECT 1 FROM wallet_tx_drafts d
@@ -3652,7 +3654,8 @@ pub fn list_listings_to_announce(
             MarketStatus::Retrying,
             ListingState::ReadyToFinalize,
             ListingState::Finalizing,
-            ListingState::Locking
+            ListingState::Locking,
+            MarketStatus::StepsUnverified
         ],
         row_to_shakedex_listing,
     )?;
