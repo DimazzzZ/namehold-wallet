@@ -1209,6 +1209,27 @@ fn cancel_could_not_check(what: &str) -> AppError {
     ))
 }
 
+/// R21, deviation 7: reserve one receive address of `profile_id` and store
+/// it as the cancel address of the Restored listing `listing_id`, which has
+/// none, in one database transaction: when the row write does not apply
+/// (the row changed meanwhile), the reservation is rolled back too.
+/// Returns the address and its receive index.
+pub(crate) fn reserve_restored_cancel_address(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    listing_id: &str,
+) -> Result<(String, u32), AppError> {
+    let tx = conn.unchecked_transaction()?;
+    let d = derivation::reserve_receive_address(&tx, profile_id)?;
+    if queries::set_restored_lock_cancel_address(&tx, listing_id, &d.address, d.child_index)? != 1 {
+        return Err(AppError::InvalidInput(
+            "this lock changed meanwhile: nothing was signed; try again".into(),
+        ));
+    }
+    tx.commit()?;
+    Ok((d.address, d.child_index))
+}
+
 /// R28's checks, before the prompt: the gates (R16, R6; no experimental
 /// flag, R15) and the unlocked signer first; the listing the active
 /// profile's and Listed or Restored; on the node, the lock coin unspent,
@@ -1300,8 +1321,9 @@ pub(crate) async fn prepare_cancel(
     }
     let steps: Vec<sell::StoredStep> = serde_json::from_str(&listing.steps_json)
         .map_err(|e| AppError::Other(format!("corrupted listing: unreadable steps: {e}")))?;
-    // A lock restored by name stores no steps; a listing with steps but
-    // none valid at the MTP says so (R3).
+    // A Restored lock without its listing file stores no steps (restored
+    // by name, or finalized into our lock by another device); a listing
+    // with steps but none valid at the MTP says so (R3).
     let current_price = if steps.is_empty() {
         cancel::CancelPrice::NotKnown
     } else {
@@ -1326,21 +1348,7 @@ pub(crate) async fn prepare_cancel(
             (Some(a), Some(i)) => (a, u32::try_from(i).map_err(|_| corrupted("cancel index"))?),
             (None, None) if listing.state == ListingState::Restored => {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-                let tx = conn.unchecked_transaction()?;
-                let d = derivation::reserve_receive_address(&tx, &ctx.profile_id)?;
-                if queries::set_restored_lock_cancel_address(
-                    &tx,
-                    &listing.id,
-                    &d.address,
-                    d.child_index,
-                )? != 1
-                {
-                    return Err(AppError::InvalidInput(
-                        "this lock changed meanwhile: nothing was signed; try again".into(),
-                    ));
-                }
-                tx.commit()?;
-                (d.address, d.child_index)
+                reserve_restored_cancel_address(&conn, &ctx.profile_id, &listing.id)?
             }
             _ => return Err(corrupted("cancel address")),
         };

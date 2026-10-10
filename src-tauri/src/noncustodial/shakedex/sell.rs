@@ -486,7 +486,8 @@ pub const LISTING_KEY_MISMATCH: &str = "the lock key this wallet derives for the
 
 /// R3's current price of a listing's stored steps at `mtp`: the cheapest
 /// step valid for the next block (`template::current_step_index`); `None`
-/// when no step is valid yet or there are none (a lock restored by name). A
+/// when no step is valid yet or there are none (a Restored lock without its
+/// listing file). A
 /// stored lock time past R3's 40 bits is a corrupted row.
 pub fn current_step_price(steps: &[StoredStep], mtp: u64) -> Result<Option<u64>, AppError> {
     let encoded = steps
