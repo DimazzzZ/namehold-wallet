@@ -374,7 +374,7 @@ async fn no_http_off_mainnet() {
 /// page, a redirect, a 5xx, an oversized reply or a reply not in its shape
 /// as no answer.
 #[tokio::test]
-async fn upload_shape() {
+async fn upload_posts_the_file_as_written_and_takes_only_the_markets_json_as_a_verdict() {
     let mut s = mockito::Server::new_async().await;
     let (m, seen) = recording(
         s.mock("POST", "/api/upload-proof").match_header(
@@ -504,7 +504,7 @@ async fn upload_refuses_a_file_it_cannot_name() {
 /// `main`, the lock TRANSFER outpoint, the lock address and the mode; no
 /// price (chosen at Finalize & sign) and no note.
 #[tokio::test]
-async fn pending_listing_shape() {
+async fn pending_post_sends_the_lock_transfer_outpoint_and_no_price() {
     let mut s = mockito::Server::new_async().await;
     let (m, seen) = recording(
         s.mock("POST", "/api/v2/pending-listings")
@@ -556,7 +556,7 @@ async fn pending_listing_shape() {
 /// listed, its 404 "Transaction was not found" as not seen yet, its other
 /// JSON refusals as refused, anything else as no answer.
 #[tokio::test]
-async fn refresh_status_shape() {
+async fn refresh_status_sends_the_mined_txid_and_reads_the_markets_answer() {
     let cancel_txid = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
     let sale_txid = "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1";
     let mut s = mockito::Server::new_async().await;
