@@ -6052,6 +6052,7 @@ async fn finalize_and_sign_on_chain(
         &[crate::commands::shakedex::StepInput {
             price: price.into(),
         }],
+        None,
         Some(per_byte),
     )
     .await

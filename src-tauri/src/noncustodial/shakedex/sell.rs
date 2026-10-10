@@ -503,20 +503,22 @@ pub struct FinalizeAndSignRows<'a> {
 }
 
 /// R20: the rows of the Finalize & sign confirmation, `{ "rows": [...] }`
-/// as the secure window renders a `confirm` request.
+/// as the secure window renders a `confirm` request. Every step gets its own
+/// row, up to a full 1000-step schedule (R24): nothing is folded into a
+/// summary.
 pub fn finalize_and_sign_rows(r: &FinalizeAndSignRows) -> serde_json::Value {
     let row = |label: String, value: String| serde_json::json!({ "label": label, "value": value });
-    let mut rows = vec![
-        row(
-            "Action".into(),
-            "Finalize into the lock and sign the price".into(),
-        ),
-        row("Name".into(), r.name.into()),
-        row(
-            "Network fee (finalize into the lock)".into(),
-            doos_to_hns_string(r.finalize_fee),
-        ),
-    ];
+    // Three rows before the steps and three after.
+    let mut rows = Vec::with_capacity(r.steps.len() + 6);
+    rows.push(row(
+        "Action".into(),
+        "Finalize into the lock and sign the price".into(),
+    ));
+    rows.push(row("Name".into(), r.name.into()));
+    rows.push(row(
+        "Network fee (finalize into the lock)".into(),
+        doos_to_hns_string(r.finalize_fee),
+    ));
     for (i, &(price, lock_time)) in r.steps.iter().enumerate() {
         let when = step_validity(lock_time, r.mtp);
         rows.push(row(
@@ -1647,6 +1649,46 @@ mod tests {
         assert_eq!(get("Warning"), [STEP_SIGNATURE_PERMANENCE]);
         assert!(STEP_SIGNATURE_PERMANENCE.contains("anyone"));
         assert!(STEP_SIGNATURE_PERMANENCE.contains("cancel is mined"));
+    }
+
+    /// R20 with R24 (ruling 2): a full 1000-step schedule's confirmation
+    /// lists every step — 1000 "Price step" rows, the first valid at once,
+    /// the last the floor — beside the fixed rows, and no step is folded
+    /// into a summary.
+    #[test]
+    fn finalize_and_sign_rows_list_every_step_of_a_full_schedule() {
+        let mtp = 1_700_100_000;
+        let steps =
+            reverse_schedule(1_000_999_000, 1_000_000, 1_000, 900, buy_now_lock_time(mtp)).unwrap();
+        let v = finalize_and_sign_rows(&FinalizeAndSignRows {
+            name: "dexreviews",
+            finalize_fee: 2_340,
+            lock_address: "hs1qlock",
+            payment_address: "hs1qpay",
+            steps: &steps,
+            mtp,
+        });
+        let rows = v["rows"].as_array().unwrap();
+        let step_rows: Vec<_> = rows
+            .iter()
+            .filter(|r| r["label"].as_str().unwrap().starts_with("Price step "))
+            .collect();
+        assert_eq!(step_rows.len(), 1_000);
+        assert_eq!(
+            rows.len(),
+            3 + 1_000 + 3,
+            "Action, Name, fee; the steps; Paid to, Lock address, Warning"
+        );
+        assert_eq!(step_rows[0]["label"], "Price step 1");
+        assert!(step_rows[0]["value"]
+            .as_str()
+            .unwrap()
+            .ends_with("valid at once"));
+        assert_eq!(step_rows[999]["label"], "Price step 1000");
+        assert!(step_rows[999]["value"]
+            .as_str()
+            .unwrap()
+            .starts_with("1.000000 HNS, valid from "));
     }
 
     /// The stored step reads back as written (`steps_json`, read by T5/T6/T8).

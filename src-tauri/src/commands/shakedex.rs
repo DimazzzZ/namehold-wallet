@@ -678,11 +678,40 @@ fn derive_listing_key(
 }
 
 /// One price step the seller typed (R19): HNS as text, so the backend can
-/// refuse what it cannot represent. T8 adds a schedule.
+/// refuse what it cannot represent. A Buy Now's one price.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepInput {
     pub price: String,
+}
+
+/// A reverse auction's schedule as the seller typed it (R24): the start and
+/// floor prices in HNS as text (R19's rule), the number of steps and the
+/// seconds between them. Built into steps by `sell::reverse_schedule`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleInput {
+    pub start_price: String,
+    pub floor_price: String,
+    pub steps: u32,
+    pub interval_secs: u64,
+}
+
+/// R24: why Finalize & sign refuses a reverse auction without its schedule.
+pub const REVERSE_NEEDS_SCHEDULE: &str = "a reverse auction needs its schedule: a start \
+     price, a floor, the number of steps and the time between them";
+
+/// The pricing of the mode a listing was locked with (R19, R24), parsed and
+/// checked before any node read; the lock times wait for the node's median
+/// time.
+enum Pricing {
+    BuyNow(u64),
+    Schedule {
+        start: u64,
+        floor: u64,
+        steps: u32,
+        interval: u64,
+    },
 }
 
 /// Everything Finalize & sign has checked and built before it asks (R20).
@@ -693,9 +722,9 @@ pub(crate) struct PreparedLockFinalize {
     /// The FINALIZE into the lock; the lock coin is its FINALIZE output
     /// (`sell::lock_output`).
     pub(crate) plan: actions::PlanResult,
-    pub(crate) prices: Vec<u64>,
-    /// R19: the Buy Now lock time, from the MTP at signing.
-    pub(crate) lock_time: u64,
+    /// `(price, lock time)` of every step about to be signed: a Buy Now's
+    /// one, at R19's lock time; a reverse auction's schedule from it (R24).
+    pub(crate) steps: Vec<(u64, u64)>,
     pub(crate) mtp: u64,
     pub(crate) payment_address: String,
 }
@@ -716,6 +745,7 @@ pub(crate) async fn prepare_lock_finalize(
     state: &State<'_, AppState>,
     listing_id: &str,
     prices: &[StepInput],
+    schedule: Option<&ScheduleInput>,
     fee_rate: Option<u64>,
 ) -> Result<PreparedLockFinalize, AppError> {
     // R16, R6. No experimental flag: this acts on an existing listing (R15).
@@ -741,11 +771,6 @@ pub(crate) async fn prepare_lock_finalize(
                 ))
             }
         }
-        if listing.mode != ListingMode::BuyNow {
-            return Err(AppError::InvalidInput(
-                "reverse auctions are not supported yet".into(),
-            ));
-        }
         // The Cancel transfer and the FINALIZE spend the same TRANSFER coin.
         if let Some(cancel_id) = &listing.abort_draft_id {
             if let Some(cancel) = queries::get_tx_draft(&conn, cancel_id)? {
@@ -757,15 +782,43 @@ pub(crate) async fn prepare_lock_finalize(
         let owner = queries::get_name_coin(&conn, &ctx.profile_id, &listing.name)?;
         (listing, owner)
     };
-    if prices.len() != 1 {
-        return Err(AppError::InvalidInput(
-            "a Buy Now listing has exactly one price".into(),
-        ));
-    }
-    let prices = prices
-        .iter()
-        .map(|p| sell::parse_step_price(&p.price))
-        .collect::<Result<Vec<_>, _>>()?;
+    // The pricing the mode was locked with (R19, R24), every price parsed
+    // and the schedule checked before any node read.
+    let pricing = match (listing.mode, schedule) {
+        (ListingMode::BuyNow, Some(_)) => {
+            return Err(AppError::InvalidInput(
+                "a Buy Now listing has one price and no schedule".into(),
+            ))
+        }
+        (ListingMode::BuyNow, None) => {
+            if prices.len() != 1 {
+                return Err(AppError::InvalidInput(
+                    "a Buy Now listing has exactly one price".into(),
+                ));
+            }
+            Pricing::BuyNow(sell::parse_step_price(&prices[0].price)?)
+        }
+        (ListingMode::ReverseAuction, None) => {
+            return Err(AppError::InvalidInput(REVERSE_NEEDS_SCHEDULE.into()))
+        }
+        (ListingMode::ReverseAuction, Some(_)) if !prices.is_empty() => {
+            return Err(AppError::InvalidInput(
+                "a reverse auction's prices come from its schedule".into(),
+            ))
+        }
+        (ListingMode::ReverseAuction, Some(s)) => {
+            let start = sell::parse_step_price(&s.start_price)?;
+            let floor = sell::parse_step_price(&s.floor_price)?;
+            // Every rule but the lock times' fit, before the node is read.
+            sell::reverse_schedule(start, floor, s.steps, s.interval_secs, 0)?;
+            Pricing::Schedule {
+                start,
+                floor,
+                steps: s.steps,
+                interval: s.interval_secs,
+            }
+        }
+    };
     let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
     let lock_transfer_txid = listing
         .lock_transfer_txid
@@ -915,13 +968,24 @@ pub(crate) async fn prepare_lock_finalize(
         #[cfg(test)]
         fixed_fee: None,
     })?;
+    // R19: the first step valid at once; a schedule's next steps follow it
+    // (R24).
+    let first = sell::buy_now_lock_time(mtp);
+    let steps = match pricing {
+        Pricing::BuyNow(price) => vec![(price, first)],
+        Pricing::Schedule {
+            start,
+            floor,
+            steps,
+            interval,
+        } => sell::reverse_schedule(start, floor, steps, interval, first)?,
+    };
     Ok(PreparedLockFinalize {
         ctx,
         listing,
         key,
         plan,
-        prices,
-        lock_time: sell::buy_now_lock_time(mtp),
+        steps,
         mtp,
         payment_address,
     })
@@ -1000,12 +1064,13 @@ pub(crate) async fn finalize_and_sign_confirmed<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     listing_id: &str,
     prices: &[StepInput],
+    schedule: Option<&ScheduleInput>,
     fee_rate: Option<u64>,
 ) -> Result<ListingSummary, AppError> {
-    let p = prepare_lock_finalize(state, listing_id, prices, fee_rate).await?;
+    let p = prepare_lock_finalize(state, listing_id, prices, schedule, fee_rate).await?;
     let net = p.ctx.network;
     let (lock_vout, lock_value) = sell::lock_output(&p.plan.plan, &p.key.address)?;
-    let steps: Vec<(u64, u64)> = p.prices.iter().map(|&price| (price, p.lock_time)).collect();
+    let steps = p.steps.clone();
     crate::commands::secure_confirm::confirm_rows(
         app,
         FINALIZE_AND_SIGN_TITLE,
@@ -2540,8 +2605,10 @@ pub async fn shakedex_build_lock_draft(
 }
 
 /// Finalize & sign, day 2 (R19, R20): see [`finalize_and_sign_confirmed`].
-/// Returns the listing, now Finalizing; its `finalizeDraftId` is the signed
-/// FINALIZE, which `broadcast_tx_draft` sends.
+/// Buy Now: `prices` holds its one price and `schedule` is absent; a reverse
+/// auction: `schedule` (R24) and no `prices`. Returns the listing, now
+/// Finalizing; its `finalizeDraftId` is the signed FINALIZE, which
+/// `broadcast_tx_draft` sends.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn shakedex_finalize_and_sign(
@@ -2549,9 +2616,18 @@ pub async fn shakedex_finalize_and_sign(
     app: tauri::AppHandle,
     listing_id: String,
     prices: Vec<StepInput>,
+    schedule: Option<ScheduleInput>,
     fee_rate: Option<u64>,
 ) -> Result<ListingSummary, AppError> {
-    finalize_and_sign_confirmed(&state, &app, &listing_id, &prices, fee_rate).await
+    finalize_and_sign_confirmed(
+        &state,
+        &app,
+        &listing_id,
+        &prices,
+        schedule.as_ref(),
+        fee_rate,
+    )
+    .await
 }
 
 /// R23: the saved listing file of one of the active profile's listings; see

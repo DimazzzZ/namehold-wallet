@@ -2754,7 +2754,9 @@ async fn lock_broadcast_refused_when_the_name_would_expire_during_the_lockup() {
 
 // --- Finalize & sign (T3) ---------------------------------------------------
 
-use crate::commands::shakedex::{prepare_lock_finalize, PreparedLockFinalize, StepInput};
+use crate::commands::shakedex::{
+    prepare_lock_finalize, PreparedLockFinalize, ScheduleInput, StepInput,
+};
 
 /// Mined at TRANSFER_HEIGHT; on regtest the lockup is over once tip + 1 >=
 /// TRANSFER_HEIGHT + 10, i.e. from tip TRANSFER_HEIGHT + 9.
@@ -2919,7 +2921,7 @@ async fn prepare(
     r: &Ready,
     prices: &[StepInput],
 ) -> Result<PreparedLockFinalize, crate::error::AppError> {
-    prepare_lock_finalize(&r.app.state(), &r.listing_id, prices, None).await
+    prepare_lock_finalize(&r.app.state(), &r.listing_id, prices, None, None).await
 }
 
 /// A refusal wrote nothing: the listing is still ReadyToFinalize and only
@@ -2940,13 +2942,15 @@ async fn prepare_lock_finalize_builds_the_finalize_into_the_lock() {
     let p = prepare(&r, &price("5")).await.expect("ready");
     let key = r.key();
     assert_eq!(p.key.pubkey, key.pubkey);
-    assert_eq!(p.prices, vec![5_000_000]);
+    assert_eq!(
+        p.steps,
+        vec![(5_000_000, sell::buy_now_lock_time(SIGN_MTP))]
+    );
     assert_eq!(
         sell::lock_output(&p.plan.plan, &key.address).unwrap(),
         (0, NAME_VALUE)
     );
     assert_eq!(p.mtp, SIGN_MTP);
-    assert_eq!(p.lock_time, sell::buy_now_lock_time(SIGN_MTP));
     assert_eq!(p.listing.id, r.listing_id);
     assert_eq!(p.payment_address, r.listing().payment_address.unwrap());
     let plan = &p.plan.plan;
@@ -3345,9 +3349,223 @@ async fn step_prices_out_of_range_are_refused() {
         prepare(&r, &price("2040000000"))
             .await
             .expect("the supply")
-            .prices,
-        vec![crate::noncustodial::shakedex::purchase::MAX_MONEY]
+            .steps,
+        vec![(
+            crate::noncustodial::shakedex::purchase::MAX_MONEY,
+            sell::buy_now_lock_time(SIGN_MTP)
+        )]
     );
+    assert_nothing_finalized(&r, 1);
+}
+
+fn schedule(start: &str, floor: &str, steps: u32, interval_secs: u64) -> ScheduleInput {
+    ScheduleInput {
+        start_price: start.into(),
+        floor_price: floor.into(),
+        steps,
+        interval_secs,
+    }
+}
+
+/// `r`'s listing locked as a reverse auction.
+fn as_reverse_auction(r: &Ready) {
+    with_db(&r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET mode = 'reverse_auction' WHERE id = ?1",
+            [&r.listing_id],
+        )
+        .unwrap();
+    });
+}
+
+/// No node endpoint has been read since the fixture set its answers.
+/// mockito's `matched` is "exactly one hit", so a mock read twice is not
+/// matched either: call this after every call that must not read, so the
+/// first read (one hit) fails it.
+async fn assert_node_not_read(r: &Ready) {
+    for m in &r.mocks {
+        assert!(!m.matched_async().await, "the node was not read");
+    }
+}
+
+async fn prepare_schedule(
+    r: &Ready,
+    s: &ScheduleInput,
+) -> Result<PreparedLockFinalize, crate::error::AppError> {
+    prepare_lock_finalize(&r.app.state(), &r.listing_id, &[], Some(s), None).await
+}
+
+async fn finalize_and_sign_schedule(
+    r: &Ready,
+    s: &ScheduleInput,
+) -> Result<ListingSummary, crate::error::AppError> {
+    finalize_and_sign_confirmed(
+        &r.app.state(),
+        r.app.handle(),
+        &r.listing_id,
+        &[],
+        Some(s),
+        None,
+    )
+    .await
+}
+
+/// R24, R19, R20: Finalize & sign of a reverse auction signs every step of
+/// its schedule in one unlock — step 0 at R19's lock time (the MTP at
+/// signing minus 512 s, valid at once), each next one an interval later —
+/// over the lock coin its FINALIZE creates, paying the listing's payment
+/// address; the prompt lists every step and when it becomes valid; the
+/// stored steps and the listing file carry them all, and R3 makes each
+/// current in turn.
+#[tokio::test]
+async fn reverse_schedule_signs_every_step() {
+    let r = ready_fixture("regtest").await;
+    as_reverse_auction(&r);
+    let net = Network::Regtest;
+    answer(true);
+    let s = finalize_and_sign_schedule(&r, &schedule("5", "3", 3, 900))
+        .await
+        .expect("finalize & sign");
+    assert_eq!(s.state, ListingState::Finalizing);
+    let l0 = sell::buy_now_lock_time(SIGN_MTP);
+    assert_eq!(
+        s.steps
+            .iter()
+            .map(|x| (x.price, x.lock_time))
+            .collect::<Vec<_>>(),
+        vec![
+            (5_000_000, l0),
+            (4_000_000, l0 + 900),
+            (3_000_000, l0 + 1_800)
+        ]
+    );
+
+    let reqs = take_test_requests();
+    assert_eq!(reqs.len(), 1, "one prompt for the FINALIZE and every step");
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let row = |label: &str| {
+        rows.iter().find(|x| x["label"] == label).unwrap()["value"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(row("Price step 1"), "5.000000 HNS, valid at once");
+    assert!(
+        row("Price step 2").starts_with("4.000000 HNS, valid from "),
+        "{rows:?}"
+    );
+    assert!(
+        row("Price step 3").starts_with("3.000000 HNS, valid from "),
+        "{rows:?}"
+    );
+
+    let l = r.listing();
+    let key = r.key();
+    let mut outpoint = [0u8; 32];
+    hex::decode_to_slice(l.lock_txid.as_deref().unwrap(), &mut outpoint).unwrap();
+    let payment = crate::noncustodial::tx::output_address_from_string(
+        net,
+        l.payment_address.as_deref().unwrap(),
+    )
+    .unwrap();
+    for step in &s.steps {
+        let sig: [u8; 65] = hex::decode(&step.signature).unwrap().try_into().unwrap();
+        verify_step_signature(
+            &StepTemplate {
+                lock_outpoint: (outpoint, u32::try_from(l.lock_vout.unwrap()).unwrap()),
+                lock_value: NAME_VALUE,
+                lock_pubkey: &key.pubkey,
+                payment: payment.clone(),
+                price: step.price,
+                lock_time_secs: step.lock_time,
+            },
+            &sig,
+        )
+        .expect("each step signed by the lock key over the lock coin");
+    }
+    let file = ListingFile::parse(l.listing_file_json.as_deref().unwrap(), net).unwrap();
+    assert_eq!(file.steps.len(), 3, "the listing file carries every step");
+    assert_eq!(
+        file.expires_at,
+        Some(SIGN_MTP + sell::LISTING_LIFETIME_SECS)
+    );
+    let stored: Vec<sell::StoredStep> = serde_json::from_str(&l.steps_json).unwrap();
+    assert_eq!(stored, s.steps);
+    for (mtp, want) in [
+        (SIGN_MTP, 5_000_000),
+        (valid_from_mtp(l0 + 900), 4_000_000),
+        (valid_from_mtp(l0 + 1_800), 3_000_000),
+    ] {
+        assert_eq!(
+            sell::current_step_price(&stored, mtp).unwrap(),
+            Some(want),
+            "{mtp}"
+        );
+    }
+}
+
+/// R24 (Review Focus 5): out-of-range schedules are refused in the backend
+/// with the reason — fewer than 2 or more than 1000 steps, steps closer than
+/// 15 minutes, prices not strictly falling, a floor of 0 or not below the
+/// start, and prices R19 refuses — before any node read; nothing is asked,
+/// signed or written.
+#[tokio::test]
+async fn reverse_schedule_out_of_range_is_refused() {
+    let r = ready_fixture("regtest").await;
+    as_reverse_auction(&r);
+    for (s, why) in [
+        (schedule("5", "3", 1, 900), "2 to 1000 steps"),
+        (schedule("5", "3", 1_001, 900), "2 to 1000 steps"),
+        (schedule("5", "3", 3, 899), "at least 15 minutes apart"),
+        (schedule("5", "5", 3, 900), "not below the start"),
+        (schedule("3", "5", 3, 900), "not below the start"),
+        (schedule("5", "4.999999", 3, 900), "strictly falling"),
+        (schedule("5", "0", 3, 900), "above 0"),
+        (schedule("5", "0.0009", 3, 900), "dust"),
+        (schedule("2040000000.000001", "3", 3, 900), "money supply"),
+        (schedule("5.0000001", "3", 3, 900), "6 decimals"),
+        (schedule("five", "3", 3, 900), "not a number"),
+    ] {
+        let _ = take_test_requests();
+        let e = err_text(prepare_schedule(&r, &s).await.err().expect(why));
+        assert!(e.contains(why), "{s:?}: {e}");
+        assert!(take_test_requests().is_empty(), "nothing asked");
+        assert_node_not_read(&r).await;
+    }
+    assert_nothing_finalized(&r, 1);
+}
+
+/// R19, R24: Finalize & sign takes the pricing of the mode the name was
+/// locked with: a Buy Now one price and no schedule, a reverse auction a
+/// schedule and no separate price. Anything else is refused with the reason
+/// before any node read; nothing is written.
+#[tokio::test]
+async fn finalize_and_sign_takes_the_pricing_of_the_listings_mode() {
+    let r = ready_fixture("regtest").await;
+    let s = schedule("5", "3", 3, 900);
+    let e = err_text(
+        prepare_lock_finalize(&r.app.state(), &r.listing_id, &price("5"), Some(&s), None)
+            .await
+            .err()
+            .expect("a Buy Now has no schedule"),
+    );
+    assert!(e.contains("no schedule"), "{e}");
+    assert_node_not_read(&r).await;
+    as_reverse_auction(&r);
+    let e = err_text(prepare(&r, &price("5")).await.err().expect("no schedule"));
+    assert!(e.contains("needs its schedule"), "{e}");
+    assert_node_not_read(&r).await;
+    let e = err_text(
+        prepare_lock_finalize(&r.app.state(), &r.listing_id, &price("5"), Some(&s), None)
+            .await
+            .err()
+            .expect("a price beside the schedule"),
+    );
+    assert!(e.contains("come from its schedule"), "{e}");
+    assert_node_not_read(&r).await;
     assert_nothing_finalized(&r, 1);
 }
 
@@ -3449,7 +3667,7 @@ async fn finalize_and_sign_needs_the_unlocked_signer() {
 #[tokio::test]
 async fn finalize_and_sign_acts_only_on_the_active_profiles_listing() {
     let r = ready_fixture("regtest").await;
-    let e = prepare_lock_finalize(&r.app.state(), "no-such-listing", &price("5"), None)
+    let e = prepare_lock_finalize(&r.app.state(), "no-such-listing", &price("5"), None, None)
         .await
         .err()
         .expect("unknown");
@@ -3490,21 +3708,6 @@ async fn finalize_and_sign_refused_without_the_median_time() {
     );
 }
 
-/// Deviation 6: a reverse auction's schedule arrives with T8.
-#[tokio::test]
-async fn finalize_and_sign_refused_for_a_reverse_auction_until_t8() {
-    let r = ready_fixture("regtest").await;
-    with_db(&r.app, |c| {
-        c.execute(
-            "UPDATE shakedex_listings SET mode = 'reverse_auction' WHERE id = ?1",
-            [&r.listing_id],
-        )
-        .unwrap();
-    });
-    let e = err_text(prepare(&r, &price("5")).await.err().expect("refused"));
-    assert!(e.contains("reverse auctions are not supported yet"), "{e}");
-}
-
 // --- Finalize & sign: confirm, sign, store; export (T3) ---------------------
 
 use crate::commands::secure_prompt::{push_test_answer, take_test_requests, SecurePromptResult};
@@ -3513,7 +3716,8 @@ use crate::commands::shakedex::{
 };
 use crate::noncustodial::shakedex::listing_file::ListingFile;
 use crate::noncustodial::shakedex::template::{
-    encode_lock_time, is_valid_at, secs_until_valid, verify_step_signature, StepTemplate,
+    encode_lock_time, is_valid_at, secs_until_valid, valid_from_mtp, verify_step_signature,
+    StepTemplate,
 };
 use crate::noncustodial::sync::COV_FINALIZE;
 
@@ -3530,7 +3734,15 @@ async fn finalize_and_sign(
     r: &Ready,
     prices: &[StepInput],
 ) -> Result<ListingSummary, crate::error::AppError> {
-    finalize_and_sign_confirmed(&r.app.state(), r.app.handle(), &r.listing_id, prices, None).await
+    finalize_and_sign_confirmed(
+        &r.app.state(),
+        r.app.handle(),
+        &r.listing_id,
+        prices,
+        None,
+        None,
+    )
+    .await
 }
 
 /// A node mock that fails the test if anything is sent.
