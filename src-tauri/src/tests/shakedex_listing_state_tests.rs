@@ -2411,7 +2411,7 @@ async fn our_mined_cancel_awaits_its_finalize() {
     assert_eq!(d.status, "broadcasted", "our own cancel: nothing released");
 }
 
-/// The T4 carry: the stored lock coin spent by a mined TRANSFER of the name
+/// R28: the stored lock coin spent by a mined TRANSFER of the name
 /// at our lock committing to an address of ours that this device did not
 /// send (another same-seed device's cancel, or our own purchase) moves a
 /// Listed, SalePending or Restored listing (a lock restored by name too) to
@@ -2832,7 +2832,7 @@ async fn dead_cancel_finalize_returns_to_awaiting() {
     }
 }
 
-/// R28 and the T4 carry: the name is home — the owner a mined FINALIZE of
+/// R28: the name is home — the owner a mined FINALIZE of
 /// the name at an address of ours spending the cancel's TRANSFER — so the
 /// listing is Cancelled, from CancelFinalizing (our FINALIZE) and from
 /// CancelAwaitingFinalize (one sent from another device). A FINALIZE to an
@@ -2957,7 +2957,7 @@ async fn cancel_finalized_home_is_cancelled() {
     assert_eq!(l.cancel_finalize_draft_id, None, "no FINALIZE of ours");
 }
 
-/// Deviation 11: a reorg that puts the mined cancel's TRANSFER back in the
+/// R28: a reorg that puts the mined cancel's TRANSFER back in the
 /// mempool, or takes it out of every block and mempool (the lock coin a
 /// coin again), makes the listing Cancelling again, the mined outpoint,
 /// count and FINALIZE draft link forgotten; a Cancelling listing without a
