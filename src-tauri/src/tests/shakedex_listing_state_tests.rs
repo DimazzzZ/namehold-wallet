@@ -6,7 +6,9 @@
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
-use crate::db::queries::{self, ListingMode, ListingState, ListingWrite, ShakedexListing};
+use crate::db::queries::{
+    self, ListingMode, ListingState, ListingWrite, MarketStatus, ShakedexListing,
+};
 use crate::noncustodial::address;
 use crate::noncustodial::derivation;
 use crate::noncustodial::hd::ExtendedPrivKey;
@@ -81,6 +83,8 @@ fn fx(state: ListingState) -> Fx {
         publish: false,
         market_status: None,
         market_retry_at: None,
+        market_attempts: 0,
+        market_error: None,
         expires_at: Some(1_731_536_000),
         abort_draft_id: None,
         abort_txid: None,
@@ -234,6 +238,16 @@ fn apply(f: &Fx, w: ListingWrite, to: ListingState) -> Result<usize, crate::erro
                 expires_at: 1,
             },
         ),
+        ListingWrite::RefreshExpiry => queries::refresh_listing_expiry(
+            c,
+            id,
+            &queries::RefreshedExpiry {
+                lock: own,
+                old_file: listing(f).listing_file_json.as_deref().unwrap_or(""),
+                listing_file_json: r#"{"refreshed":true}"#,
+                expires_at: 2_000_000_000,
+            },
+        ),
         ListingWrite::Upgrade => queries::upgrade_restored_lock(
             c,
             id,
@@ -293,6 +307,7 @@ fn each_listing_write_moves_exactly_its_transitions() {
             S::CancelAwaitingFinalize,
         ),
         (ListingWrite::LowerPrice, S::Listed, S::Listed),
+        (ListingWrite::RefreshExpiry, S::Listed, S::Listed),
     ];
     for from in before_lock_end {
         expected.push((ListingWrite::Abort, from, S::Aborted));
@@ -3623,4 +3638,145 @@ async fn a_stable_sold_listing_is_not_written_again() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// R25 (T6; carried from T5): a write whose targets include Listed starts
+/// the listing's market bookkeeping over, so the market jobs announce it
+/// afresh — a cancel that died after the market was told, a reorg back from
+/// Sold, a restored lock upgraded, a lowered price, a refreshed expiry. Every
+/// other write leaves the bookkeeping as it is.
+#[test]
+fn every_write_back_onto_the_market_resets_its_market_status() {
+    use ListingState as S;
+    let f = fx(S::Listed);
+    let base = listing(&f);
+    let mut resets = 0;
+    for w in ListingWrite::ALL {
+        for from in w.from() {
+            for to in w.to() {
+                let proven = w == ListingWrite::ProvenLockSale;
+                let row = ShakedexListing {
+                    state: *from,
+                    lock_txid: base.lock_txid.clone().filter(|_| !proven),
+                    lock_vout: base.lock_vout.filter(|_| !proven),
+                    cancel_txid: Some(txid("c1")),
+                    cancel_vout: Some(0),
+                    cancel_finalize_draft_id: Some("cfin".to_string()),
+                    market_status: Some(MarketStatus::Reported),
+                    market_retry_at: Some("2026-10-10T00:00:00Z".into()),
+                    market_attempts: 3,
+                    market_error: Some("told".into()),
+                    ..base.clone()
+                };
+                f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
+                queries::insert_shakedex_listing(&f.conn, &row).unwrap();
+                f.conn
+                    .execute(
+                        "UPDATE wallet_tx_drafts SET status = 'failed' WHERE id = 'fin'",
+                        [],
+                    )
+                    .unwrap();
+                assert_eq!(apply(&f, w, *to).unwrap(), 1, "{w:?} {from:?} -> {to:?}");
+                let after = listing(&f);
+                let book = (
+                    after.market_status,
+                    after.market_retry_at.clone(),
+                    after.market_attempts,
+                    after.market_error.clone(),
+                );
+                let reset = book == (None, None, 0, None);
+                let kept = book
+                    == (
+                        Some(MarketStatus::Reported),
+                        Some("2026-10-10T00:00:00Z".to_string()),
+                        3,
+                        Some("told".to_string()),
+                    );
+                if w.to().contains(&S::Listed) {
+                    assert!(reset, "{w:?} {from:?} -> {to:?}: not reset");
+                    resets += 1;
+                } else {
+                    assert!(kept, "{w:?} {from:?} -> {to:?}: touched");
+                }
+            }
+        }
+    }
+    assert!(resets >= 6, "only {resets} resets seen");
+}
+
+/// The market jobs write their result only over the listing as they read
+/// it: a Lower price (new steps and file) or a state change in between makes
+/// the write a no-op.
+#[test]
+fn market_result_is_written_only_over_the_listing_the_job_read() {
+    let f = fx(ListingState::Listed);
+    let l = listing(&f);
+    let seen = queries::MarketSeen {
+        state: l.state,
+        steps_json: &l.steps_json,
+        listing_file_json: l.listing_file_json.as_deref(),
+    };
+    let update = queries::MarketUpdate {
+        status: MarketStatus::Listed,
+        retry_at: Some("2026-10-10T01:00:00Z"),
+        attempts: 0,
+        error: None,
+    };
+    assert_eq!(
+        queries::record_market_result(&f.conn, &f.id, &seen, &update).unwrap(),
+        1
+    );
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
+    f.conn
+        .execute("UPDATE shakedex_listings SET steps_json = '[]'", [])
+        .unwrap();
+    let retry = queries::MarketUpdate {
+        status: MarketStatus::Retrying,
+        ..update
+    };
+    assert_eq!(
+        queries::record_market_result(&f.conn, &f.id, &seen, &retry).unwrap(),
+        0
+    );
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET steps_json = ?1, state = 'cancelling'",
+            [&l.steps_json],
+        )
+        .unwrap();
+    assert_eq!(
+        queries::record_market_result(&f.conn, &f.id, &seen, &retry).unwrap(),
+        0
+    );
+}
+
+/// `market_status` is stored by its spelling; an unknown spelling is refused
+/// when read, never mapped to a guess.
+#[test]
+fn market_status_is_stored_by_its_spelling() {
+    let f = fx(ListingState::Listed);
+    for (s, spelling) in [
+        (MarketStatus::Pending, "pending"),
+        (MarketStatus::Listed, "listed"),
+        (MarketStatus::ReplacedReuploaded, "replaced_reuploaded"),
+        (MarketStatus::Retrying, "retrying"),
+        (MarketStatus::Refused, "refused"),
+        (MarketStatus::StepsUnverified, "steps_unverified"),
+        (MarketStatus::Reported, "reported"),
+    ] {
+        assert_eq!(s.as_str(), spelling);
+        f.conn
+            .execute(
+                "UPDATE shakedex_listings SET market_status = ?1",
+                [spelling],
+            )
+            .unwrap();
+        assert_eq!(listing(&f).market_status, Some(s));
+    }
+    assert_eq!(MarketStatus::ALL.len(), 7);
+    f.conn
+        .execute("UPDATE shakedex_listings SET market_status = 'gone'", [])
+        .unwrap();
+    assert!(queries::get_shakedex_listing(&f.conn, &f.id).is_err());
 }
