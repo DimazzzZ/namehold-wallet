@@ -24,7 +24,7 @@ use crate::noncustodial::sync::COV_FINALIZE;
 use crate::noncustodial::tx::output_address_from_string;
 use crate::shakedex_jobs::{keep_listed_with_client, publish_listings_with_client};
 use crate::tests::learnhns_tests::{
-    proof_part, recording, Seen, COIN_NOT_SEEN, PENDING_ACCEPTED, UPLOAD_ACCEPTED,
+    proof_part, recording, Seen, COIN_NOT_SEEN, PENDING_ACCEPTED, PROOF_NOT_FOUND, UPLOAD_ACCEPTED,
 };
 use crate::tests::mock_node_rpc::{MockNodeRpc, RpcCall};
 use crate::tests::shakedex_cmd_tests::{seed, seeded, PROFILE};
@@ -764,4 +764,474 @@ async fn reverse_auction_gets_the_pending_post_only() {
 
 fn rfc3339(secs: i64) -> String {
     crate::shakedex_jobs::rfc3339(secs)
+}
+
+/// A Listed, published listing the market already took, due for its hourly
+/// check.
+fn listed_on_market(status: MarketStatus) -> Fx {
+    let f = fx(ListingState::Listed, true);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET market_status = ?1, market_retry_at = ?2",
+            [status.as_str(), &rfc3339(NOW)],
+        )
+        .unwrap();
+    f
+}
+
+/// Our copy, as the market would serve it (the stored file cut to its step).
+fn our_copy(f: &Fx) -> String {
+    listing_file_market_copy(listing(f).listing_file_json.as_deref().unwrap())
+}
+
+fn listing_file_market_copy(stored: &str) -> String {
+    crate::noncustodial::shakedex::listing_file::market_copy(stored, 0, NET).unwrap()
+}
+
+async fn keep(f: &Fx, s: &ServerGuard, now: i64) {
+    keep_listed_with_client(&f.conn, &node(f, TIP), &client(s), PROFILE, now)
+        .await
+        .unwrap();
+}
+
+/// The market serves `body` (200) as its copy of NAME.
+async fn copy_mock(s: &mut ServerGuard, body: String, hits: usize) -> mockito::Mock {
+    s.mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_body(body)
+        .expect(hits)
+        .create_async()
+        .await
+}
+
+/// R25: the market serves someone else's copy (another price, signature or
+/// fee address over our lock): ours is uploaded over it, and the listing
+/// says "replaced on the market — re-uploaded".
+#[tokio::test]
+async fn reuploads_when_replaced() {
+    let f = listed_on_market(MarketStatus::Listed);
+    let mut theirs: serde_json::Value = serde_json::from_str(&our_copy(&f)).unwrap();
+    theirs["data"][0]["price"] = 1.into();
+    let mut s = market().await;
+    let _get = copy_mock(&mut s, theirs.to_string(), 1).await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    keep(&f, &s, NOW).await;
+    m.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(sent, our_copy(&f));
+    let l = listing(&f);
+    assert_eq!(l.market_status, Some(MarketStatus::ReplacedReuploaded));
+    assert_eq!(
+        l.market_retry_at.as_deref(),
+        Some(rfc3339(NOW + 3_600).as_str())
+    );
+}
+
+/// R25: a copy that offers a buyer exactly ours — keys in Flask's order, an
+/// extra field the market adds — is not uploaded again; the next check is
+/// an hour on, and nothing is asked before then.
+#[tokio::test]
+async fn matching_copy_is_not_reuploaded() {
+    let f = listed_on_market(MarketStatus::Listed);
+    let mut served: serde_json::Value = serde_json::from_str(&our_copy(&f)).unwrap();
+    served["served"] = true.into();
+    let mut s = market().await;
+    let get = copy_mock(&mut s, served.to_string(), 1).await;
+    let (m, _) = upload_mock(&mut s, 0).await;
+    keep(&f, &s, NOW).await;
+    keep(&f, &s, NOW + 3_599).await;
+    get.assert_async().await;
+    m.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(l.market_status, Some(MarketStatus::Listed));
+    assert_eq!(
+        l.market_retry_at.as_deref(),
+        Some(rfc3339(NOW + 3_600).as_str())
+    );
+}
+
+/// R25: no answer from the market (a proxy's 502 page) is "Not on market —
+/// retrying", never a verdict: nothing is uploaded on it, and the next try
+/// waits 5 minutes, then 10, then 20 — exponential backoff. The market's
+/// own "not listed" (its JSON 404) gets an upload, which puts it back.
+#[tokio::test]
+async fn backs_off_when_unreachable() {
+    let f = listed_on_market(MarketStatus::Listed);
+    let mut s = market().await;
+    let get = s
+        .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_status(502)
+        .with_body("<html>Application failed to respond</html>")
+        .expect(3)
+        .create_async()
+        .await;
+    let (m, _) = upload_mock(&mut s, 0).await;
+    let mut at = NOW;
+    for (attempts, wait) in [(1, 300), (2, 600), (3, 1_200)] {
+        keep(&f, &s, at).await;
+        let l = listing(&f);
+        assert_eq!(
+            (l.market_status, l.market_attempts),
+            (Some(MarketStatus::Retrying), attempts)
+        );
+        assert_eq!(
+            l.market_retry_at.as_deref(),
+            Some(rfc3339(at + wait).as_str())
+        );
+        keep(&f, &s, at + wait - 1).await; // not due: no request
+        at += wait;
+    }
+    get.assert_async().await;
+    m.assert_async().await;
+    drop(get);
+    drop(m);
+    let _gone = s
+        .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_status(404)
+        .with_body(PROOF_NOT_FOUND)
+        .create_async()
+        .await;
+    let (m, _) = upload_mock(&mut s, 1).await;
+    keep(&f, &s, at).await;
+    m.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_attempts, l.market_error),
+        (Some(MarketStatus::Listed), 0, None)
+    );
+    assert_eq!(
+        retry_delays(),
+        [300, 600, 1_200, 2_400, 4_800, 9_600, 19_200, 21_600, 21_600]
+    );
+}
+
+fn retry_delays() -> Vec<i64> {
+    (1..=9)
+        .map(crate::shakedex_jobs::retry_delay_secs)
+        .collect()
+}
+
+/// R23: an `expiresAt` within 30 days of now is moved to the node's median
+/// time plus 365 days in the stored file (every other field as written) and
+/// on the market; the listing's `expires_at` follows.
+#[tokio::test]
+async fn expires_at_refreshed_before_it_lapses() {
+    let f = listed_on_market(MarketStatus::Listed);
+    let soon = (NOW + 29 * 86_400) as u64;
+    set_expiry(&f, soon);
+    let old = listing(&f).listing_file_json.unwrap();
+    let mut s = market().await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    // The market still serves the old copy; it is replaced by the refreshed one.
+    let _get = copy_mock(&mut s, listing_file_market_copy(&old), 0).await;
+    keep(&f, &s, NOW).await;
+    m.assert_async().await;
+    let want = MTP + sell::LISTING_LIFETIME_SECS;
+    let l = listing(&f);
+    assert_eq!(l.expires_at, Some(want as i64));
+    let stored_file = l.listing_file_json.as_deref().unwrap();
+    assert_eq!(
+        ListingFile::parse(stored_file, NET).unwrap().expires_at,
+        Some(want)
+    );
+    assert_eq!(
+        stored_file,
+        crate::noncustodial::shakedex::listing_file::with_expiry(&old, want, NET).unwrap(),
+        "every other field as written"
+    );
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(
+        ListingFile::parse(&sent, NET).unwrap().expires_at,
+        Some(want)
+    );
+    assert_eq!(l.market_status, Some(MarketStatus::Listed));
+
+    // 31 days left: not refreshed.
+    let g = listed_on_market(MarketStatus::Listed);
+    let far = (NOW + 31 * 86_400) as u64;
+    set_expiry(&g, far);
+    let file = listing(&g).listing_file_json.unwrap();
+    let mut s = market().await;
+    let _get = copy_mock(&mut s, listing_file_market_copy(&file), 1).await;
+    let (m, _) = upload_mock(&mut s, 0).await;
+    keep(&g, &s, NOW).await;
+    m.assert_async().await;
+    assert_eq!(listing(&g).expires_at, Some(far as i64));
+}
+
+/// R25 (ruling 2026-10-10): the market's own refusal (a 4xx JSON `error`)
+/// is a verdict: kept with its words, Refused, and **not** retried — no
+/// request reaches the market on later syncs, however long after. Only a
+/// write that changes what is sent starts it over: here a Lower price
+/// (a cheaper step, `queries::lower_listing_price`), after which the next
+/// run uploads the new current step. (No answer, by contrast, is retried
+/// with backoff: `backs_off_when_unreachable`.)
+#[tokio::test]
+async fn refused_upload_is_not_retried_until_it_changes() {
+    let f = listed_on_market(MarketStatus::Retrying);
+    let mut s = market().await;
+    let get = s
+        .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_status(404)
+        .with_body(PROOF_NOT_FOUND)
+        .expect(1)
+        .create_async()
+        .await;
+    let refuse = s
+        .mock("POST", "/api/upload-proof")
+        .with_status(409)
+        .with_body(r#"{"error":"An active listing for dexjobs already exists. Cancel it or wait for it to expire before uploading a different listing proof."}"#)
+        .expect(1)
+        .create_async()
+        .await;
+    keep(&f, &s, NOW).await;
+    let l = listing(&f);
+    assert_eq!(l.market_status, Some(MarketStatus::Refused));
+    assert!(l
+        .market_error
+        .clone()
+        .unwrap()
+        .contains("An active listing for dexjobs already exists"));
+    assert_eq!(l.market_retry_at, None, "no automatic retry");
+    // Hours and days later: nothing is asked of the market.
+    for at in [NOW + 300, NOW + 6 * 3_600, NOW + 7 * 86_400] {
+        publish(&f, &node(&f, TIP), &s, at).await;
+        keep(&f, &s, at).await;
+    }
+    get.assert_async().await;
+    refuse.assert_async().await;
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Refused));
+    drop(refuse);
+    // A Lower price changes what is sent: the bookkeeping starts over and
+    // the cheaper step is uploaded at the next run.
+    let old = listing(&f);
+    let first = signed_step(&f.key, &f.payment, PRICE, sell::buy_now_lock_time(MTP));
+    let lower = signed_step(&f.key, &f.payment, 3_000_000, sell::buy_now_lock_time(MTP));
+    let file = file_of(
+        &f.key,
+        &f.payment,
+        &[first.clone(), lower.clone()],
+        MTP + sell::LISTING_LIFETIME_SECS,
+    );
+    let steps = stored(&[first, lower.clone()]);
+    let txid_f1 = txid("f1");
+    assert_eq!(
+        queries::lower_listing_price(
+            &f.conn,
+            &f.id,
+            &queries::LoweredPrice {
+                lock: (&txid_f1, 0),
+                old_steps_json: &old.steps_json,
+                steps_json: &steps,
+                listing_file_json: &file,
+                expires_at: old.expires_at.unwrap(),
+            },
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(listing(&f).market_status, None, "started over");
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    publish(&f, &node(&f, TIP), &s, NOW + 7 * 86_400).await;
+    m.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(ListingFile::parse(&sent, NET).unwrap().steps, vec![lower]);
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
+}
+
+/// Ruling 2026-10-10: a Refused Listed listing near its expiry gets the
+/// expiry check only — the refresh, read from our node, with no market call
+/// — which starts its bookkeeping over; the next run uploads the new file.
+#[tokio::test]
+async fn refused_listing_near_expiry_is_refreshed_without_a_market_call() {
+    let f = listed_on_market(MarketStatus::Refused);
+    f.conn
+        .execute("UPDATE shakedex_listings SET market_retry_at = NULL", [])
+        .unwrap();
+    set_expiry(&f, (NOW + 86_400) as u64);
+    let mut s = market().await;
+    let any = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+    let (m, _) = upload_mock(&mut s, 0).await;
+    keep(&f, &s, NOW).await;
+    any.assert_async().await;
+    m.assert_async().await;
+    let want = MTP + sell::LISTING_LIFETIME_SECS;
+    let l = listing(&f);
+    assert_eq!(l.expires_at, Some(want as i64));
+    assert_eq!(l.market_status, None, "started over");
+    drop(m);
+    let (m, _) = upload_mock(&mut s, 1).await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    m.assert_async().await;
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
+
+    // Far from its expiry: the Refused listing is not even read from the node.
+    let g = listed_on_market(MarketStatus::Refused);
+    let mut s = market().await;
+    let any = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+    let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    let n = node(&g, TIP);
+    keep_listed_with_client(&g.conn, &n, &client(&s), PROFILE, NOW)
+        .await
+        .unwrap();
+    any.assert_async().await;
+    post.assert_async().await;
+    assert_eq!(n.call_count(), 0);
+    assert_eq!(listing(&g).market_status, Some(MarketStatus::Refused));
+}
+
+/// R23: off mainnet the keep-listed job returns before any read: no node
+/// call, no market request, nothing written — even for a listing that is
+/// due and that a mainnet client would check.
+#[tokio::test]
+async fn nothing_kept_off_mainnet() {
+    let f = listed_on_market(MarketStatus::Listed);
+    f.conn
+        .execute(
+            "UPDATE wallet_profiles SET network = 'regtest' WHERE id = ?1",
+            [PROFILE],
+        )
+        .unwrap();
+    let mut s = market().await;
+    let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+    let n = node(&f, TIP);
+    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW)
+        .await
+        .unwrap();
+    any.assert_async().await;
+    get.assert_async().await;
+    assert_eq!(n.call_count(), 0);
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_retry_at),
+        (Some(MarketStatus::Listed), Some(rfc3339(NOW)))
+    );
+}
+
+/// R25: a copy that does not read as a listing file — here the price spelled
+/// as a float, which hsd's integers never are — is not ours: ours is
+/// uploaded over it. Once ours is served again it is left alone, still
+/// saying "replaced on the market — re-uploaded".
+#[tokio::test]
+async fn unreadable_copy_is_replaced() {
+    let f = listed_on_market(MarketStatus::Listed);
+    let ours = our_copy(&f);
+    let floated = ours.replace(&format!(":{PRICE}"), &format!(":{PRICE}.0"));
+    assert_ne!(floated, ours, "the fixture spells the price as a float");
+    let mut s = market().await;
+    let get = copy_mock(&mut s, floated, 1).await;
+    let (m, _) = upload_mock(&mut s, 1).await;
+    keep(&f, &s, NOW).await;
+    m.assert_async().await;
+    get.assert_async().await;
+    assert_eq!(
+        listing(&f).market_status,
+        Some(MarketStatus::ReplacedReuploaded)
+    );
+    drop(get);
+    drop(m);
+    let get = copy_mock(&mut s, ours, 1).await;
+    let (m, _) = upload_mock(&mut s, 0).await;
+    keep(&f, &s, NOW + 3_600).await;
+    get.assert_async().await;
+    m.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(l.market_status, Some(MarketStatus::ReplacedReuploaded));
+    assert_eq!(
+        l.market_retry_at.as_deref(),
+        Some(rfc3339(NOW + 7_200).as_str())
+    );
+}
+
+/// Carried from T4: a listing whose steps did not verify (StepsUnverified)
+/// is verified again on our node before the market is asked anything: still
+/// failing → backed off, no request; verifying now → checked against the
+/// market's copy, Listed.
+#[tokio::test]
+async fn steps_unverified_is_verified_again_before_the_market() {
+    let f = listed_on_market(MarketStatus::StepsUnverified);
+    let mut bad = signed_step(&f.key, &f.payment, PRICE, sell::buy_now_lock_time(MTP));
+    bad.price += 1;
+    let file = file_of(
+        &f.key,
+        &f.payment,
+        std::slice::from_ref(&bad),
+        MTP + sell::LISTING_LIFETIME_SECS,
+    );
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET steps_json = ?1, listing_file_json = ?2, market_attempts = 1",
+            [stored(&[bad]), file],
+        )
+        .unwrap();
+    let mut s = market().await;
+    let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+    let (m, _) = upload_mock(&mut s, 0).await;
+    keep(&f, &s, NOW).await;
+    get.assert_async().await;
+    m.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_attempts),
+        (Some(MarketStatus::StepsUnverified), 2)
+    );
+    assert_eq!(
+        l.market_retry_at.as_deref(),
+        Some(rfc3339(NOW + 600).as_str())
+    );
+    assert!(l
+        .market_error
+        .unwrap()
+        .contains(sell::STEP_NOT_SIGNED_BY_LOCK));
+
+    let g = listed_on_market(MarketStatus::StepsUnverified);
+    let mut s = market().await;
+    let get = copy_mock(&mut s, our_copy(&g), 1).await;
+    let (m, _) = upload_mock(&mut s, 0).await;
+    keep(&g, &s, NOW).await;
+    get.assert_async().await;
+    m.assert_async().await;
+    let l = listing(&g);
+    assert_eq!(
+        (l.market_status, l.market_attempts, l.market_error),
+        (Some(MarketStatus::Listed), 0, None)
+    );
+}
+
+/// R24, R28: only a Listed Buy Now listing is kept on the market by this
+/// job: a Cancelling one (its cancel not sent yet), a reverse auction
+/// (T8's), one the market has not taken yet (the first upload is
+/// `publish_listings_with_client`'s) and a reported one are not asked about.
+#[tokio::test]
+async fn only_listed_buy_now_listings_are_kept() {
+    for case in ["cancelling", "reverse_auction", "unset", "reported"] {
+        let f = listed_on_market(MarketStatus::Listed);
+        let sql = match case {
+            "cancelling" => {
+                queries::insert_tx_draft(&f.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
+                "UPDATE shakedex_listings SET state = 'cancelling', cancel_draft_id = 'cd'"
+            }
+            "reverse_auction" => "UPDATE shakedex_listings SET mode = 'reverse_auction'",
+            "unset" => "UPDATE shakedex_listings SET market_status = NULL",
+            _ => "UPDATE shakedex_listings SET market_status = 'reported'",
+        };
+        f.conn.execute(sql, []).unwrap();
+        assert_eq!(
+            queries::list_listings_kept_on_market(&f.conn, PROFILE)
+                .unwrap()
+                .len(),
+            1,
+            "{case}: in the jobs' set"
+        );
+        let mut s = market().await;
+        let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+        let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+        let n = node(&f, TIP);
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW)
+            .await
+            .unwrap();
+        get.assert_async().await;
+        post.assert_async().await;
+        assert_eq!(n.call_count(), 0, "{case}");
+    }
 }
