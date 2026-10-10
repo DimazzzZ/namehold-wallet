@@ -1230,6 +1230,120 @@ pub(crate) fn reserve_restored_cancel_address(
     Ok((d.address, d.child_index))
 }
 
+/// The words a command that signs over a listing's lock coin (Cancel, R28;
+/// Lower price, R26) puts in [`lock_on_node`]'s refusals.
+struct LockCoinWords {
+    /// What could not be checked: "the cancel", "the price".
+    checked: &'static str,
+    /// hsd's 404 for the lock coin.
+    spent: &'static str,
+    /// The lock coin in the mempool: the finalize into the lock not mined.
+    not_mined: &'static str,
+    /// The end of a refusal for a name whose lock is gone.
+    nothing: &'static str,
+}
+
+const CANCEL_LOCK_WORDS: LockCoinWords = LockCoinWords {
+    checked: "the cancel",
+    spent: CANCEL_LOCK_COIN_SPENT,
+    not_mined: CANCEL_LOCK_NOT_MINED,
+    nothing: "there is nothing to cancel",
+};
+
+/// What the node showed of a listing's lock coin once every check held.
+struct LockOnNode {
+    /// The lock coin's value, as hsd reports it.
+    value: u64,
+    /// The name's height, the lock coin's and the live registration's.
+    name_height: u32,
+    /// The node's MTP, when asked for.
+    mtp: Option<u64>,
+}
+
+/// The node checks Cancel (R28) and Lower price (R26) both make before they
+/// sign over a listing's stored lock coin, in one place so they cannot
+/// drift: the lock coin of `name` unspent (hsd's 404 is `words.spent`), at its stored
+/// outpoint (the txid in any case), a FINALIZE of the name at the lock
+/// address `at`, mined, with a readable value and name height; the name's
+/// live state (`info` not null) at that name height (a lock coin left over
+/// from an earlier registration is refused); and, with `read_mtp`, the
+/// node's MTP. A reply missing a field read here is "could not check".
+async fn lock_on_node(
+    ctx: &Ctx,
+    name: &str,
+    at: &sell::ListingLock,
+    lock: (&str, u32),
+    read_mtp: bool,
+    words: &LockCoinWords,
+) -> Result<LockOnNode, AppError> {
+    let could_not_check = |what: &str| {
+        AppError::Rpc(format!(
+            "node did not report {what}: could not check {}",
+            words.checked
+        ))
+    };
+    let (lock_txid, lock_vout) = lock;
+    let coin = ctx
+        .node
+        .get_coin(lock_txid, lock_vout)
+        .await?
+        .ok_or_else(|| AppError::InvalidInput(words.spent.into()))?;
+    let Some(coin_at) = sell::CoinAt::of_coin(&coin) else {
+        return Err(could_not_check("the lock coin's address or covenant"));
+    };
+    if !(coin.txid.eq_ignore_ascii_case(lock_txid)
+        && coin.vout == lock_vout
+        && at.holds(coin_at, COV_FINALIZE, None))
+    {
+        return Err(AppError::Rpc(format!(
+            "node reported something else than this listing's lock at its lock outpoint: could \
+             not check {}",
+            words.checked
+        )));
+    }
+    if coin.mined_height()?.is_none() {
+        return Err(AppError::InvalidInput(words.not_mined.into()));
+    }
+    let value = u64::try_from(coin.value)
+        .map_err(|_| AppError::Rpc(format!("bad lock coin value {}", coin.value)))?;
+    let cov_height = coin
+        .covenant
+        .as_ref()
+        .and_then(purchase::covenant_name_height)
+        .ok_or_else(|| could_not_check("a readable name height in the lock coin"))?;
+    let reply = ctx.node.get_name_info(name).await?;
+    if reply.get("info").is_some_and(serde_json::Value::is_null) {
+        return Err(AppError::InvalidInput(format!(
+            "'{name}' has no on-chain state or has expired: {}",
+            words.nothing
+        )));
+    }
+    let ns = draft_ctx::name_state_strict(&reply, name)?;
+    if ns.height != cov_height {
+        return Err(AppError::InvalidInput(format!(
+            "the lock coin is left over from an earlier registration of the name: {}",
+            words.nothing
+        )));
+    }
+    let mtp = if read_mtp {
+        Some(
+            ctx.node
+                .get_blockchain_info()
+                .await
+                .map_err(|e| could_not_check(&format!("its tip ({e})")))?
+                .mediantime
+                .ok_or_else(|| could_not_check("its median time (the current price)"))?,
+        )
+    } else {
+        None
+    };
+    Ok(LockOnNode {
+        value,
+        name_height: cov_height,
+        mtp,
+    })
+}
+
 /// R28's checks, before the prompt: the gates (R16, R6; no experimental
 /// flag, R15) and the unlocked signer first; the listing the active
 /// profile's and Listed or Restored; on the node, the lock coin unspent,
@@ -1275,69 +1389,28 @@ pub(crate) async fn prepare_cancel(
     let lock_addr = lock_address(ctx.network, &pubkey)?;
     let at = sell::ListingLock::new(lock_addr.clone(), &name)?;
 
-    let coin = ctx
-        .node
-        .get_coin(&lock_txid, lock_vout)
-        .await?
-        .ok_or_else(|| AppError::InvalidInput(CANCEL_LOCK_COIN_SPENT.into()))?;
-    let Some(coin_at) = sell::CoinAt::of_coin(&coin) else {
-        return Err(cancel_could_not_check(
-            "the lock coin's address or covenant",
-        ));
-    };
-    if !(coin.txid.eq_ignore_ascii_case(&lock_txid)
-        && coin.vout == lock_vout
-        && at.holds(coin_at, COV_FINALIZE, None))
-    {
-        return Err(AppError::Rpc(
-            "node reported something else than this listing's lock at its lock outpoint: could \
-             not check the cancel"
-                .into(),
-        ));
-    }
-    if coin.mined_height()?.is_none() {
-        return Err(AppError::InvalidInput(CANCEL_LOCK_NOT_MINED.into()));
-    }
-    let lock_value = u64::try_from(coin.value)
-        .map_err(|_| AppError::Rpc(format!("bad lock coin value {}", coin.value)))?;
-    let cov_height = coin
-        .covenant
-        .as_ref()
-        .and_then(purchase::covenant_name_height)
-        .ok_or_else(|| cancel_could_not_check("a readable name height in the lock coin"))?;
-    let reply = ctx.node.get_name_info(&name).await?;
-    if reply.get("info").is_some_and(serde_json::Value::is_null) {
-        return Err(AppError::InvalidInput(format!(
-            "'{name}' has no on-chain state or has expired: there is nothing to cancel"
-        )));
-    }
-    let ns = draft_ctx::name_state_strict(&reply, &name)?;
-    if ns.height != cov_height {
-        return Err(AppError::InvalidInput(
-            "the lock coin is left over from an earlier registration of the name: there is \
-             nothing to cancel"
-                .into(),
-        ));
-    }
     let steps: Vec<sell::StoredStep> = serde_json::from_str(&listing.steps_json)
         .map_err(|e| AppError::Other(format!("corrupted listing: unreadable steps: {e}")))?;
     // A Restored lock without its listing file stores no steps (restored
-    // by name, or finalized into our lock by another device); a listing
-    // with steps but none valid at the MTP says so (R3).
-    let current_price = if steps.is_empty() {
-        cancel::CancelPrice::NotKnown
-    } else {
-        let mtp = ctx
-            .node
-            .get_blockchain_info()
-            .await
-            .map_err(|e| cancel_could_not_check(&format!("its tip ({e})")))?
-            .mediantime
-            .ok_or_else(|| cancel_could_not_check("its median time (the current price)"))?;
-        match sell::current_step_price(&steps, mtp)? {
+    // by name, or finalized into our lock by another device): its current
+    // price is not known here, so the MTP is not read for it.
+    let on_node = lock_on_node(
+        &ctx,
+        &name,
+        &at,
+        (&lock_txid, lock_vout),
+        !steps.is_empty(),
+        &CANCEL_LOCK_WORDS,
+    )
+    .await?;
+    let (lock_value, name_height) = (on_node.value, on_node.name_height);
+    // A listing with steps but none valid at the MTP says so (R3).
+    let current_price = match on_node.mtp {
+        None => cancel::CancelPrice::NotKnown,
+        Some(mtp) => match sell::current_step_price(&steps, mtp)? {
             Some(price) => cancel::CancelPrice::Step(price),
             None => cancel::CancelPrice::NoneValidYet,
-        }
+        },
     };
 
     // R21, deviation 7: a lock restored by name reserves its cancel address
@@ -1373,7 +1446,7 @@ pub(crate) async fn prepare_cancel(
         network: ctx.network,
         account: ctx.account,
         name: &name,
-        name_height: ns.height,
+        name_height,
         lock_outpoint: (lock_bytes, lock_vout),
         lock_value,
         lock_pubkey: key.pubkey,
