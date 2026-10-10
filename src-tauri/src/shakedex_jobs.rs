@@ -998,17 +998,35 @@ async fn owner_in_our_lock(
     }
 }
 
+// ---------------------------------------------------------------------------
+// A listing row's stored fields, read in one place for the jobs and the
+// commands (Cancel, Lower price, the cancel's FINALIZE): a field that does not
+// read is a corrupted row.
+// ---------------------------------------------------------------------------
+
+/// Listing `l`'s stored lock public key.
+pub(crate) fn lock_pubkey(l: &queries::ShakedexListing) -> Result<[u8; 33], AppError> {
+    hex::decode(&l.lock_pubkey_hex)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(|| AppError::Other(format!("corrupted listing {}: bad lock key", l.id)))
+}
+
 /// Listing `l`'s lock: the lock address of its stored lock public key, and
 /// its name.
-fn listing_lock(
+pub(crate) fn listing_lock(
     network: Network,
     l: &queries::ShakedexListing,
 ) -> Result<sell::ListingLock, AppError> {
-    let pubkey: [u8; 33] = hex::decode(&l.lock_pubkey_hex)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-        .ok_or_else(|| AppError::Other(format!("corrupted listing {}: bad lock key", l.id)))?;
-    sell::ListingLock::new(script::lock_address(network, &pubkey)?, &l.name)
+    sell::ListingLock::new(script::lock_address(network, &lock_pubkey(l)?)?, &l.name)
+}
+
+/// Listing `l`'s stored price steps (`steps_json`).
+pub(crate) fn stored_steps(
+    l: &queries::ShakedexListing,
+) -> Result<Vec<sell::StoredStep>, AppError> {
+    serde_json::from_str(&l.steps_json)
+        .map_err(|e| AppError::Other(format!("corrupted listing {}: unreadable steps: {e}", l.id)))
 }
 
 /// The before-lock job of [`refresh_listings_with_client`] (R19), for one
@@ -1870,7 +1888,7 @@ async fn find_sale(
 
 /// Listing `l`'s stored lock outpoint, `None` while it has none; a stored
 /// output index that is not a `u32` is a corrupted row.
-fn stored_lock(l: &queries::ShakedexListing) -> Result<Option<(&str, u32)>, AppError> {
+pub(crate) fn stored_lock(l: &queries::ShakedexListing) -> Result<Option<(&str, u32)>, AppError> {
     let (Some(txid), Some(vout)) = (l.lock_txid.as_deref(), l.lock_vout) else {
         return Ok(None);
     };
@@ -2153,7 +2171,7 @@ fn uncancel_over_a_dead_lock_finalize(
 /// A listing's mined cancel outpoint `(cancel_txid, cancel_vout)`; a row in
 /// [`queries::ListingState::CANCEL_MINED`] without it, or with an output
 /// index that is not a `u32`, is corrupted.
-fn stored_cancel(l: &queries::ShakedexListing) -> Result<(&str, u32), AppError> {
+pub(crate) fn stored_cancel(l: &queries::ShakedexListing) -> Result<(&str, u32), AppError> {
     let corrupted = || AppError::Other(format!("corrupted listing {}: no mined cancel", l.id));
     let txid = l.cancel_txid.as_deref().ok_or_else(corrupted)?;
     let vout = l

@@ -43,6 +43,7 @@ use crate::noncustodial::sync::{COV_FINALIZE, COV_REGISTER, COV_RENEW, COV_TRANS
 use crate::noncustodial::tx::output_address_from_string;
 use crate::noncustodial::types::TxDraftSummary;
 use crate::providers::signer::WriteCapability;
+use crate::shakedex_jobs;
 use crate::AppState;
 
 /// Listings fetched per market page; each one is verified in turn, against
@@ -972,8 +973,7 @@ pub struct ListingSummary {
 
 impl ListingSummary {
     fn of(l: &ShakedexListing) -> Result<Self, AppError> {
-        let steps = serde_json::from_str(&l.steps_json)
-            .map_err(|e| AppError::Other(format!("corrupted listing: unreadable steps: {e}")))?;
+        let steps = shakedex_jobs::stored_steps(l)?;
         Ok(Self {
             id: l.id.clone(),
             name: l.name.clone(),
@@ -1373,24 +1373,14 @@ pub(crate) async fn prepare_cancel(
         l
     };
     let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
-    let lock_txid = listing
-        .lock_txid
-        .clone()
+    let (lock_txid, lock_vout) = shakedex_jobs::stored_lock(&listing)?
+        .map(|(t, v)| (t.to_string(), v))
         .ok_or_else(|| corrupted("lock coin"))?;
-    let lock_vout = listing
-        .lock_vout
-        .and_then(|v| u32::try_from(v).ok())
-        .ok_or_else(|| corrupted("lock output"))?;
-    let pubkey: [u8; 33] = hex::decode(&listing.lock_pubkey_hex)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-        .ok_or_else(|| corrupted("lock public key"))?;
+    let pubkey = shakedex_jobs::lock_pubkey(&listing)?;
     let name = listing.name.clone();
-    let lock_addr = lock_address(ctx.network, &pubkey)?;
-    let at = sell::ListingLock::new(lock_addr.clone(), &name)?;
-
-    let steps: Vec<sell::StoredStep> = serde_json::from_str(&listing.steps_json)
-        .map_err(|e| AppError::Other(format!("corrupted listing: unreadable steps: {e}")))?;
+    let at = shakedex_jobs::listing_lock(ctx.network, &listing)?;
+    let lock_addr = at.address.clone();
+    let steps = shakedex_jobs::stored_steps(&listing)?;
     // A Restored lock without its listing file stores no steps (restored
     // by name, or finalized into our lock by another device): its current
     // price is not known here, so the MTP is not read for it.
@@ -1640,32 +1630,23 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
         }
         l
     };
-    let stored: Vec<sell::StoredStep> = serde_json::from_str(&listing.steps_json)
-        .map_err(|e| AppError::Other(format!("corrupted listing: unreadable steps: {e}")))?;
+    let stored = shakedex_jobs::stored_steps(&listing)?;
     if stored.is_empty() {
         return Err(AppError::InvalidInput(LOWER_NO_PRICE_HERE.into()));
     }
     let new_price = sell::parse_step_price(price)?;
     let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
-    let lock_txid = listing
-        .lock_txid
-        .clone()
+    let (lock_txid, lock_vout) = shakedex_jobs::stored_lock(&listing)?
+        .map(|(t, v)| (t.to_string(), v))
         .ok_or_else(|| corrupted("lock coin"))?;
-    let lock_vout = listing
-        .lock_vout
-        .and_then(|v| u32::try_from(v).ok())
-        .ok_or_else(|| corrupted("lock output"))?;
-    let pubkey: [u8; 33] = hex::decode(&listing.lock_pubkey_hex)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-        .ok_or_else(|| corrupted("lock public key"))?;
+    let pubkey = shakedex_jobs::lock_pubkey(&listing)?;
     let payment_address = listing
         .payment_address
         .clone()
         .ok_or_else(|| corrupted("payment address"))?;
     let name = listing.name.clone();
-    let lock_addr = lock_address(ctx.network, &pubkey)?;
-    let at = sell::ListingLock::new(lock_addr.clone(), &name)?;
+    let at = shakedex_jobs::listing_lock(ctx.network, &listing)?;
+    let lock_addr = at.address.clone();
 
     let on_node = lock_on_node(
         &ctx,
@@ -2792,20 +2773,11 @@ pub(crate) async fn finalize_cancel(
         (l, own)
     };
     let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
-    let cancel_txid = listing
-        .cancel_txid
-        .clone()
-        .ok_or_else(|| corrupted("mined cancel"))?;
-    let cancel_vout = listing
-        .cancel_vout
-        .and_then(|v| u32::try_from(v).ok())
-        .ok_or_else(|| corrupted("mined cancel output"))?;
-    let pubkey: [u8; 33] = hex::decode(&listing.lock_pubkey_hex)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-        .ok_or_else(|| corrupted("lock public key"))?;
+    let (cancel_txid, cancel_vout) = shakedex_jobs::stored_cancel(&listing)?;
+    let cancel_txid = cancel_txid.to_string();
+    let pubkey = shakedex_jobs::lock_pubkey(&listing)?;
     let name = listing.name.clone();
-    let at = sell::ListingLock::new(lock_address(ctx.network, &pubkey)?, &name)?;
+    let at = shakedex_jobs::listing_lock(ctx.network, &listing)?;
     let coin = ctx
         .node
         .get_coin(&cancel_txid, cancel_vout)
