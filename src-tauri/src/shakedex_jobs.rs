@@ -2459,6 +2459,9 @@ struct MarketResult {
     retry_at: Option<String>,
     attempts: i64,
     error: Option<String>,
+    /// The market accepted an upload, or served our own copy back
+    /// (`market_accepted`); set by the caller, never by [`after_reply`].
+    accepted: bool,
 }
 
 /// What a market job writes after an answer, given the listing's attempts so
@@ -2485,12 +2488,14 @@ fn after_reply<T>(
                 .then(|| rfc3339(now.saturating_add(KEEP_LISTED_INTERVAL_SECS))),
             attempts: 0,
             error: None,
+            accepted: false,
         },
         MarketReply::Refused { status, error } => MarketResult {
             status: S::Refused,
             retry_at: None,
             attempts,
             error: Some(format!("{error} (HTTP {status})")),
+            accepted: false,
         },
         MarketReply::NotSeenYet { status, error } => retrying(format!(
             "the market has not seen it on chain yet: {error} (HTTP {status})"
@@ -2513,6 +2518,7 @@ fn backing_off(
         retry_at: Some(rfc3339(now.saturating_add(retry_delay_secs(attempts)))),
         attempts,
         error: Some(why),
+        accepted: false,
     }
 }
 
@@ -2542,6 +2548,7 @@ fn record(
             retry_at: r.retry_at.as_deref(),
             attempts: r.attempts,
             error: r.error.as_deref(),
+            accepted: r.accepted,
         },
     )?;
     Ok(())
@@ -2967,18 +2974,17 @@ async fn upload(
         )),
         other => other,
     };
-    record(
-        conn,
-        listing,
-        &after_reply(&reply, ok, listing.market_attempts, now),
-    )
+    let mut result = after_reply(&reply, ok, listing.market_attempts, now);
+    result.accepted = matches!(reply, MarketReply::Accepted(_));
+    record(conn, listing, &result)
 }
 
 /// R25 (T6): about hourly, keep the profile's published Buy Now listings on
 /// LearnHNS Market. Mainnet only: returns before any read off mainnet.
 /// Takes the listings of [`queries::list_listings_kept_on_market`] — Listed,
 /// and Cancelling while the cancel is not sent (still buyable on chain;
-/// R24, R28: the jobs stop once it is sent) — that the market has taken or
+/// R24, R28: the jobs stop once it is sent) and only once the market
+/// accepted an upload of it (`market_accepted`) — that the market has taken or
 /// failed to take for want of an answer or of verified steps
 /// (`market_status` Listed, ReplacedReuploaded, Retrying, StepsUnverified;
 /// a reorg that takes a mined cancel back to an unsent one starts a told
@@ -3105,11 +3111,10 @@ async fn keep_listed(
                     _ => S::Listed,
                 };
                 let matched: MarketReply<()> = MarketReply::Accepted(());
-                record(
-                    conn,
-                    &listing,
-                    &after_reply(&matched, ok, listing.market_attempts, now),
-                )
+                let mut result = after_reply(&matched, ok, listing.market_attempts, now);
+                // The market serves our own copy: it holds our listing.
+                result.accepted = true;
+                record(conn, &listing, &result)
             } else {
                 upload(conn, market, &file, &listing, S::ReplacedReuploaded, now).await
             }
