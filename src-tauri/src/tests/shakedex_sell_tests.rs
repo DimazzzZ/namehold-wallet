@@ -8114,7 +8114,7 @@ async fn lower_price_on_a_schedule_continues_below_it() {
     assert_eq!(
         row("Schedule"),
         "3 later price steps below the new price still take over as they become valid; \
-         1 later step at or above it never will"
+         1 later step never lowers the price"
     );
     assert_eq!(s.state, ListingState::Listed);
     assert_eq!(s.steps.len(), 10);

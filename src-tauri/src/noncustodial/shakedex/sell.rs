@@ -553,11 +553,19 @@ pub struct LowerPriceRows<'a> {
     pub ahead: (usize, usize),
 }
 
-/// R26: what a lowered price leaves of a schedule — the later steps below
-/// it still take over, those at or above it never will. `None` when no step
-/// is ahead (a Buy Now, or a schedule at its floor).
+/// R26: what a lowered price leaves of a schedule ([`steps_ahead`]) — the
+/// later steps that lower it further still take over, the others never
+/// lower the price. `None` when no step is ahead (a Buy Now, or a schedule
+/// at its floor).
 fn schedule_ahead_text((below, moot): (usize, usize)) -> Option<String> {
     let steps = |n: usize| if n == 1 { "step" } else { "steps" };
+    let never = |n: usize| {
+        if n == 1 {
+            "1 later step never lowers the price".to_string()
+        } else {
+            format!("{n} later steps never lower the price")
+        }
+    };
     let below_text = match below {
         0 => None,
         1 => Some(
@@ -572,14 +580,8 @@ fn schedule_ahead_text((below, moot): (usize, usize)) -> Option<String> {
     match (below_text, moot) {
         (None, 0) => None,
         (Some(b), 0) => Some(b),
-        (Some(b), m) => Some(format!(
-            "{b}; {m} later {} at or above it never will",
-            steps(m)
-        )),
-        (None, m) => Some(format!(
-            "{m} later {} at or above the new price never will be current",
-            steps(m)
-        )),
+        (Some(b), m) => Some(format!("{b}; {}", never(m))),
+        (None, m) => Some(never(m)),
     }
 }
 
@@ -631,16 +633,30 @@ pub fn current_step_price(steps: &[StoredStep], mtp: u64) -> Result<Option<u64>,
     Ok(current_step(steps, mtp)?.map(|s| s.price))
 }
 
-/// R26 on a schedule: of `steps` not valid yet at `mtp`, those priced below
-/// `price` and those at or above it (moot: a step at least as cheap is
-/// valid before them). With our own falling schedule the ones below become
-/// current in turn; an imported file's steps may come in any order, so some
-/// of them may be moot too.
+/// R26 on a schedule: of `steps` not valid yet at `mtp`, those that lower
+/// the price below `price` when they become valid, and the rest (moot: a
+/// step at least as cheap is valid by then). The steps ahead are walked in
+/// lock-time order (the cheaper first of those valid at the same time) with
+/// a running minimum starting at `price`; a step lowers the price only when
+/// it is strictly below that minimum. Our own falling schedule lowers it at
+/// every step below `price`; an imported file may list its steps in any
+/// order and at any prices, and an equal-priced step never lowers it.
 pub fn steps_ahead(steps: &[StoredStep], mtp: u64, price: u64) -> Result<(usize, usize), AppError> {
-    let encoded = encoded_stored(steps)?;
-    let ahead = encoded.iter().filter(|(_, enc)| !is_valid_at(*enc, mtp));
-    let below = ahead.clone().filter(|(p, _)| *p < price).count();
-    Ok((below, ahead.count() - below))
+    let mut ahead: Vec<(u32, u64)> = encoded_stored(steps)?
+        .into_iter()
+        .filter(|(_, enc)| !is_valid_at(*enc, mtp))
+        .map(|(p, enc)| (enc, p))
+        .collect();
+    ahead.sort_unstable();
+    let mut lowest = price;
+    let mut below = 0;
+    for &(_, p) in &ahead {
+        if p < lowest {
+            lowest = p;
+            below += 1;
+        }
+    }
+    Ok((below, ahead.len() - below))
 }
 
 /// `(price, encoded lock time)` of stored steps; a lock time past 40 bits
@@ -2382,7 +2398,7 @@ mod tests {
             schedule(&rows((3, 1))).as_deref(),
             Some(
                 "3 later price steps below the new price still take over as they become \
-                 valid; 1 later step at or above it never will"
+                 valid; 1 later step never lowers the price"
             )
         );
         assert_eq!(
@@ -2391,7 +2407,7 @@ mod tests {
         );
         assert_eq!(
             schedule(&rows((0, 2))).as_deref(),
-            Some("2 later steps at or above the new price never will be current")
+            Some("2 later steps never lower the price")
         );
     }
 
@@ -2535,6 +2551,46 @@ mod tests {
         assert!(
             steps_ahead(&[step(1, 1 << 41)], mtp, 5).is_err(),
             "past 40 bits"
+        );
+    }
+
+    /// R26 on any stored file (T8 review): a step ahead still to come is one
+    /// that lowers the price when it becomes valid — walked in lock-time
+    /// order from the price, each strictly below every earlier one. An
+    /// equal-priced step, a dearer step after a cheaper one, and the dearer
+    /// of two steps valid at the same time are moot, in whatever order an
+    /// imported file lists them.
+    #[test]
+    fn steps_ahead_counts_only_steps_that_lower_the_price_in_time_order() {
+        let mtp = 1_700_100_000;
+        let step = |price, lock_time| StoredStep {
+            price,
+            lock_time,
+            signature: format!("{price:x}"),
+        };
+        let l0 = buy_now_lock_time(mtp);
+        let t = |i: u64| l0 + i * 1_024;
+        // Listed out of time order, as an imported file may be.
+        let steps = [
+            step(3_200_000, t(5)),       // moot: after 3.0
+            step(3_000_000, t(4)),       // lowers
+            step(4_200_000, t(3)),       // moot: after 4.0
+            step(6_000_000, l0 - 1_024), // valid now
+            step(4_500_000, t(1)),       // moot: equal to the price
+            step(4_000_000, t(2)),       // lowers
+            step(2_500_000, t(6)),       // moot: 2.0 is valid at the same time
+            step(2_000_000, t(6)),       // lowers
+        ];
+        assert_eq!(steps_ahead(&steps, mtp, 4_500_000).unwrap(), (3, 4));
+        assert_eq!(
+            steps_ahead(
+                &[step(5_000_000, t(1)), step(5_000_000, t(2))],
+                mtp,
+                5_000_000
+            )
+            .unwrap(),
+            (0, 2),
+            "equal-priced steps never lower the price"
         );
     }
 
