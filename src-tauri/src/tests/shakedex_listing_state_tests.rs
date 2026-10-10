@@ -3640,11 +3640,13 @@ async fn a_stable_sold_listing_is_not_written_again() {
     );
 }
 
-/// R25 (T6; carried from T5): a write whose targets include Listed starts
-/// the listing's market bookkeeping over, so the market jobs announce it
-/// afresh — a cancel that died after the market was told, a reorg back from
-/// Sold, a restored lock upgraded, a lowered price, a refreshed expiry. Every
-/// other write leaves the bookkeeping as it is.
+/// R25 (T6; carried from T5): a write that moves a listing to Listed starts
+/// its market bookkeeping over, so the market jobs announce it afresh — a
+/// cancel that died after the market was told, a reorg back from Sold, a
+/// restored lock upgraded, a lowered price, a refreshed expiry. Every other
+/// write, and every other target of a write that may also go to Listed
+/// (Unsell to Finalizing or Restored, Uncancel to Restored), leaves the
+/// bookkeeping as it is.
 #[test]
 fn every_write_back_onto_the_market_resets_its_market_status() {
     use ListingState as S;
@@ -3692,7 +3694,7 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
                         3,
                         Some("told".to_string()),
                     );
-                if w.to().contains(&S::Listed) {
+                if *to == S::Listed {
                     assert!(reset, "{w:?} {from:?} -> {to:?}: not reset");
                     resets += 1;
                 } else {
@@ -3701,7 +3703,9 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
             }
         }
     }
-    assert!(resets >= 6, "only {resets} resets seen");
+    // Listed (from Finalizing), Unsell (from SalePending and Sold), Upgrade,
+    // Uncancel, LowerPrice, RefreshExpiry.
+    assert_eq!(resets, 7);
 }
 
 /// The market jobs write their result only over the listing as they read
@@ -3749,6 +3753,90 @@ fn market_result_is_written_only_over_the_listing_the_job_read() {
         queries::record_market_result(&f.conn, &f.id, &seen, &retry).unwrap(),
         0
     );
+    // The same state and steps with another file (an `expiresAt` refresh).
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET state = 'listed', listing_file_json = '{\"other\":1}'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        queries::record_market_result(&f.conn, &f.id, &seen, &retry).unwrap(),
+        0
+    );
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
+}
+
+/// R28, a reorg back to Cancelling: while the cancel draft is unsent the
+/// listing is kept on the market again ([`queries::list_listings_kept_on_market`]),
+/// so its market bookkeeping starts over (a `Reported` left from the mined
+/// cancel would stop the jobs); with the cancel sent the bookkeeping stays.
+#[test]
+fn cancel_unmined_back_to_an_unsent_cancel_resets_its_market_status() {
+    let f = fx(ListingState::Listed);
+    let base = listing(&f);
+    queries::insert_tx_draft(&f.conn, "cx", PROFILE, "shakedex_cancel", "00", "{}", "{}").unwrap();
+    for (status, reset) in [
+        ("draft", true),
+        ("signed", true),
+        ("broadcast_pending", false),
+        ("broadcasted", false),
+        ("confirmed", false),
+        ("failed", false),
+        ("dropped", false),
+    ] {
+        f.conn
+            .execute(
+                "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = 'cx'",
+                [status],
+            )
+            .unwrap();
+        let row = ShakedexListing {
+            state: ListingState::CancelAwaitingFinalize,
+            cancel_draft_id: Some("cx".into()),
+            cancel_txid: Some(txid("c1")),
+            cancel_vout: Some(0),
+            market_status: Some(MarketStatus::Reported),
+            market_retry_at: Some("2026-10-10T00:00:00Z".into()),
+            market_attempts: 3,
+            market_error: Some("told".into()),
+            publish: true,
+            ..base.clone()
+        };
+        f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
+        queries::insert_shakedex_listing(&f.conn, &row).unwrap();
+        assert_eq!(
+            queries::mark_listing_cancel_unmined(&f.conn, &f.id, &txid("c1")).unwrap(),
+            1,
+            "{status}"
+        );
+        let after = listing(&f);
+        assert_eq!(after.state, ListingState::Cancelling, "{status}");
+        let book = (
+            after.market_status,
+            after.market_retry_at,
+            after.market_attempts,
+            after.market_error,
+        );
+        if reset {
+            assert_eq!(book, (None, None, 0, None), "{status}");
+        } else {
+            assert_eq!(
+                book,
+                (
+                    Some(MarketStatus::Reported),
+                    Some("2026-10-10T00:00:00Z".to_string()),
+                    3,
+                    Some("told".to_string())
+                ),
+                "{status}"
+            );
+        }
+        let kept = queries::list_listings_kept_on_market(&f.conn, PROFILE)
+            .unwrap()
+            .len();
+        assert_eq!(kept, usize::from(reset), "{status}");
+    }
 }
 
 /// `market_status` is stored by its spelling; an unknown spelling is refused
