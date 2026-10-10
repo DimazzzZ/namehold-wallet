@@ -449,7 +449,9 @@ pub fn with_expiry(stored: &str, expires_at: u64, network: Network) -> Result<St
 /// committed to by `0x84`, so a copy naming one is someone else's), and the
 /// same `expiresAt` (an earlier one hides the listing early). Deliberately
 /// not reflexive: a file with a fee address in effect or more than one step
-/// is never the market listing, even compared with itself.
+/// is never the market listing, even compared with itself. File against
+/// file: whether a stored file is the row's own is
+/// `shakedex_jobs::row_for_market`'s, a different comparison.
 pub fn same_market_listing(copy: &ListingFile, ours: &ListingFile) -> bool {
     copy.steps.len() == 1
         && copy.name == ours.name

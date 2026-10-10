@@ -2750,7 +2750,9 @@ struct RowForMarket<'a> {
 /// Listing `l`'s stored lock outpoint, lock, and listing file, the file
 /// this listing's own (name, lock outpoint, key, payment address, and the
 /// steps the row stores). An `Err` is the row's, never the node's: the
-/// caller records it as StepsUnverified.
+/// caller records it as StepsUnverified. Row against file: the market's
+/// copy against ours is [`listing_file::same_market_listing`]'s, file
+/// against file, a different comparison.
 fn row_for_market(
     l: &queries::ShakedexListing,
     network: Network,
