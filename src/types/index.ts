@@ -932,6 +932,12 @@ export interface ShakedexListingSummary {
   expiresAt: number | null;
   /** The signed FINALIZE into the lock; `broadcast_tx_draft` sends it. */
   finalizeDraftId: string | null;
+  /** The signed cancel draft; `broadcast_tx_draft` sends it (R28). */
+  cancelDraftId: string | null;
+  /** The cancel's FINALIZE home, once built (R28). */
+  cancelFinalizeDraftId: string | null;
+  /** Blocks left until the cancel's FINALIZE is valid, at the last sync. */
+  cancelBlocksRemaining: number | null;
 }
 
 export type ImportSource =

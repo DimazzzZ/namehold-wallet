@@ -107,6 +107,28 @@ pub(crate) fn push_test_answer(result: SecurePromptResult) {
     TEST_ANSWERS.with(|q| q.borrow_mut().push_back(result));
 }
 
+/// Drop every queued answer no prompt took (a test that expected no
+/// prompt), so it cannot answer a later prompt on this thread.
+#[cfg(test)]
+pub(crate) fn clear_test_answers() {
+    TEST_ANSWERS.with(|q| q.borrow_mut().clear());
+}
+
+// Test-only action run once when the next queued answer is taken: a test
+// changes the world "while the prompt is open".
+#[cfg(test)]
+thread_local! {
+    static TEST_ON_ANSWER: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` when `prompt_secure` next answers from the test queue, before it
+/// returns that answer.
+#[cfg(test)]
+pub(crate) fn on_next_test_answer(f: impl FnOnce() + 'static) {
+    TEST_ON_ANSWER.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+}
+
 // Test-only record of every request `prompt_secure` answered from the
 // queue, so a test can read the rows the window would have shown.
 #[cfg(test)]
@@ -139,6 +161,9 @@ pub async fn prompt_secure<R: Runtime>(
         if let Some(answer) = TEST_ANSWERS.with(|q| q.borrow_mut().pop_front()) {
             let _ = app;
             TEST_REQUESTS.with(|r| r.borrow_mut().push(request));
+            if let Some(f) = TEST_ON_ANSWER.with(|h| h.borrow_mut().take()) {
+                f();
+            }
             return Ok(answer);
         }
     }

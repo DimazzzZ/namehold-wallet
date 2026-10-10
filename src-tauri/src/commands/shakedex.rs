@@ -25,8 +25,10 @@ use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::{self, ChainSource, NodeRpcClient};
 use crate::noncustodial::send::{self, SpendableCoin, DUST_THRESHOLD};
 use crate::noncustodial::session::{session_ttl_ms, SignerSession};
+use crate::noncustodial::shakedex::cancel;
 use crate::noncustodial::shakedex::listing_file::{
-    write_listing_file, ListingFile, NewListingFile, PriceStep, MAX_LISTING_FILE_BYTES,
+    add_step_to_listing_file, write_listing_file, ListingFile, NewListingFile, PriceStep,
+    MAX_LISTING_FILE_BYTES,
 };
 use crate::noncustodial::shakedex::lock_key::{derive_lock_key, LockKey};
 use crate::noncustodial::shakedex::purchase::{
@@ -42,6 +44,7 @@ use crate::noncustodial::sync::{COV_FINALIZE, COV_REGISTER, COV_RENEW, COV_TRANS
 use crate::noncustodial::tx::output_address_from_string;
 use crate::noncustodial::types::TxDraftSummary;
 use crate::providers::signer::WriteCapability;
+use crate::shakedex_jobs;
 use crate::AppState;
 
 /// Listings fetched per market page; each one is verified in turn, against
@@ -643,6 +646,10 @@ pub(crate) fn build_lock_draft_inner(
             abort_txid: None,
             sold_txid: None,
             cancel_txid: None,
+            cancel_draft_id: None,
+            cancel_vout: None,
+            cancel_finalize_draft_id: None,
+            cancel_blocks_remaining: None,
             created_at: String::new(),
             updated_at: String::new(),
         },
@@ -943,7 +950,7 @@ pub const FINALIZE_AND_SIGN_TITLE: &str = "Confirm Finalize & sign";
 const FINALIZE_AND_SIGN_MESSAGE: &str = "Review these details. This signs the finalize of \
      the name into its lock and every price below with the lock key.";
 
-/// A listing as the UI reads it (T7's "My listings").
+/// A listing as the UI reads it ("My listings").
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListingSummary {
@@ -958,12 +965,16 @@ pub struct ListingSummary {
     pub expires_at: Option<i64>,
     /// The FINALIZE into the lock, signed; `broadcast_tx_draft` sends it.
     pub finalize_draft_id: Option<String>,
+    /// The cancel's drafts, and blocks left until its FINALIZE, for the
+    /// listing's cancel actions (R28).
+    pub cancel_draft_id: Option<String>,
+    pub cancel_finalize_draft_id: Option<String>,
+    pub cancel_blocks_remaining: Option<i64>,
 }
 
 impl ListingSummary {
     fn of(l: &ShakedexListing) -> Result<Self, AppError> {
-        let steps = serde_json::from_str(&l.steps_json)
-            .map_err(|e| AppError::Other(format!("corrupted listing: unreadable steps: {e}")))?;
+        let steps = shakedex_jobs::stored_steps(l)?;
         Ok(Self {
             id: l.id.clone(),
             name: l.name.clone(),
@@ -975,6 +986,9 @@ impl ListingSummary {
             steps,
             expires_at: l.expires_at,
             finalize_draft_id: l.lock_finalize_draft_id.clone(),
+            cancel_draft_id: l.cancel_draft_id.clone(),
+            cancel_finalize_draft_id: l.cancel_finalize_draft_id.clone(),
+            cancel_blocks_remaining: l.cancel_blocks_remaining,
         })
     }
 }
@@ -1138,6 +1152,631 @@ fn listing_over(state: ListingState) -> Option<&'static str> {
     }
 }
 
+/// R28: the cancel's own prompt title, never the transaction prompt's.
+pub const CANCEL_TITLE: &str = "Confirm cancel";
+const CANCEL_MESSAGE: &str = "Review these details. This signs, with the lock key, a \
+     transfer of the name out of its lock back to this wallet.";
+/// R28: hsd answers 404 for a lock coin spent in a block or in its mempool.
+pub const CANCEL_LOCK_COIN_SPENT: &str = "the lock coin is no longer unspent (bought, \
+     cancelled, or being spent in the node's mempool): there is nothing to cancel";
+/// R21: the stored cancel address is not this profile's receive address at
+/// the stored index.
+pub const CANCEL_NOT_OUR_ADDRESS: &str = "this listing's cancel address is not this wallet's \
+     reserved receive address: nothing was signed";
+/// R28: a purchase the node already holds would beat the cancel.
+const CANCEL_PURCHASE_PENDING: &str = "a purchase of this listing is in the node's mempool: \
+     the node would not take a cancel now";
+/// R28: the finalize into the lock is not mined, so the lock coin is not
+/// there to spend yet.
+const CANCEL_LOCK_NOT_MINED: &str = "the finalize into the lock is not mined yet: the listing \
+     can be cancelled once it is";
+
+/// Why Cancel refuses a listing in `state` (R28); `None` for the two whose
+/// lock coin is mined and not being bought, Listed and Restored.
+fn cancel_refusal(state: ListingState) -> Option<&'static str> {
+    match state {
+        ListingState::Listed | ListingState::Restored => None,
+        ListingState::Locking | ListingState::ReadyToFinalize => {
+            Some("the name is not in its lock yet: take it back with Cancel transfer")
+        }
+        ListingState::Finalizing => Some(CANCEL_LOCK_NOT_MINED),
+        ListingState::SalePending => Some(CANCEL_PURCHASE_PENDING),
+        ListingState::Cancelling
+        | ListingState::CancelAwaitingFinalize
+        | ListingState::CancelFinalizing => Some("this listing is already being cancelled"),
+        ListingState::Sold
+        | ListingState::Cancelled
+        | ListingState::Aborted
+        | ListingState::Expired => listing_over(state),
+    }
+}
+
+/// Everything the cancel has checked and built before it asks (R28).
+pub(crate) struct PreparedCancel {
+    ctx: Ctx,
+    listing: ShakedexListing,
+    plan: actions::PlanResult,
+    lock: (String, u32),
+    lock_address: String,
+    cancel_address: String,
+    cancel_index: u32,
+    current_price: cancel::CancelPrice,
+}
+
+/// "could not check" for a field `what` of a node reply that a command
+/// signing over a listing's coin reads, `checked` naming what it checks
+/// ("the cancel", "the price").
+fn reply_could_not_check(what: &str, checked: &str) -> AppError {
+    AppError::Rpc(format!(
+        "node did not report {what}: could not check {checked}"
+    ))
+}
+
+/// "could not check" for a node reply the cancel reads.
+fn cancel_could_not_check(what: &str) -> AppError {
+    reply_could_not_check(what, "the cancel")
+}
+
+/// R21, R32: reserve one receive address of `profile_id` and store
+/// it as the cancel address of the Restored listing `listing_id`, which has
+/// none, in one database transaction: when the row write does not apply
+/// (the row changed meanwhile), the reservation is rolled back too.
+/// Returns the address and its receive index.
+pub(crate) fn reserve_restored_cancel_address(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    listing_id: &str,
+) -> Result<(String, u32), AppError> {
+    let tx = conn.unchecked_transaction()?;
+    let d = derivation::reserve_receive_address(&tx, profile_id)?;
+    if queries::set_restored_lock_cancel_address(&tx, listing_id, &d.address, d.child_index)? != 1 {
+        return Err(AppError::InvalidInput(
+            "this lock changed meanwhile: nothing was signed; try again".into(),
+        ));
+    }
+    tx.commit()?;
+    Ok((d.address, d.child_index))
+}
+
+/// The words a command that signs over a listing's lock coin (Cancel, R28;
+/// Lower price, R26) puts in [`lock_on_node`]'s refusals.
+struct LockCoinWords {
+    /// What could not be checked: "the cancel", "the price".
+    checked: &'static str,
+    /// hsd's 404 for the lock coin.
+    spent: &'static str,
+    /// The lock coin in the mempool: the finalize into the lock not mined.
+    not_mined: &'static str,
+    /// The end of a refusal for a name whose lock is gone.
+    nothing: &'static str,
+}
+
+const CANCEL_LOCK_WORDS: LockCoinWords = LockCoinWords {
+    checked: "the cancel",
+    spent: CANCEL_LOCK_COIN_SPENT,
+    not_mined: CANCEL_LOCK_NOT_MINED,
+    nothing: "there is nothing to cancel",
+};
+
+/// What the node showed of a listing's lock coin once every check held.
+struct LockOnNode {
+    /// The lock coin's value, as hsd reports it.
+    value: u64,
+    /// The name's height, the lock coin's and the live registration's.
+    name_height: u32,
+    /// The node's MTP, when asked for.
+    mtp: Option<u64>,
+}
+
+/// The node checks Cancel (R28) and Lower price (R26) both make before they
+/// sign over a listing's stored lock coin, in one place so they cannot
+/// drift: the lock coin of `name` unspent (hsd's 404 is `words.spent`), at
+/// its stored outpoint (the txid in any case), a FINALIZE of the name at the
+/// lock address `at`, mined, with a readable value and name height; the
+/// name's live state (`info` not null) at that name height (a lock coin left
+/// over from an earlier registration is refused); and, with `read_mtp`, the
+/// node's MTP. A reply missing a field read here is "could not check".
+async fn lock_on_node(
+    ctx: &Ctx,
+    name: &str,
+    at: &sell::ListingLock,
+    lock: (&str, u32),
+    read_mtp: bool,
+    words: &LockCoinWords,
+) -> Result<LockOnNode, AppError> {
+    let could_not_check = |what: &str| reply_could_not_check(what, words.checked);
+    let (lock_txid, lock_vout) = lock;
+    let coin = ctx
+        .node
+        .get_coin(lock_txid, lock_vout)
+        .await?
+        .ok_or_else(|| AppError::InvalidInput(words.spent.into()))?;
+    match at.stored_coin(&coin, lock, COV_FINALIZE) {
+        Ok(_) => {}
+        Err(sell::StoredCoinRefusal::Unreadable) => {
+            return Err(could_not_check("the lock coin's address or covenant"));
+        }
+        Err(sell::StoredCoinRefusal::SomethingElse) => {
+            return Err(AppError::Rpc(format!(
+                "node reported something else than this listing's lock at its lock outpoint: \
+                 could not check {}",
+                words.checked
+            )));
+        }
+    }
+    if coin.mined_height()?.is_none() {
+        return Err(AppError::InvalidInput(words.not_mined.into()));
+    }
+    let value = u64::try_from(coin.value)
+        .map_err(|_| AppError::Rpc(format!("bad lock coin value {}", coin.value)))?;
+    let cov_height = coin
+        .covenant
+        .as_ref()
+        .and_then(purchase::covenant_name_height)
+        .ok_or_else(|| could_not_check("a readable name height in the lock coin"))?;
+    let reply = ctx.node.get_name_info(name).await?;
+    if reply.get("info").is_some_and(serde_json::Value::is_null) {
+        return Err(AppError::InvalidInput(format!(
+            "'{name}' has no on-chain state or has expired: {}",
+            words.nothing
+        )));
+    }
+    let ns = draft_ctx::name_state_strict(&reply, name)?;
+    if ns.height != cov_height {
+        return Err(AppError::InvalidInput(format!(
+            "the lock coin is left over from an earlier registration of the name: {}",
+            words.nothing
+        )));
+    }
+    let mtp = if read_mtp {
+        Some(
+            ctx.node
+                .get_blockchain_info()
+                .await
+                .map_err(|e| could_not_check(&format!("its tip ({e})")))?
+                .mediantime
+                .ok_or_else(|| could_not_check("its median time (the current price)"))?,
+        )
+    } else {
+        None
+    };
+    Ok(LockOnNode {
+        value,
+        name_height: cov_height,
+        mtp,
+    })
+}
+
+/// R28's checks, before the prompt: the gates (R16, R6; no experimental
+/// flag, R15) and the unlocked signer first; the listing the active
+/// profile's and Listed or Restored; on the node, the lock coin unspent,
+/// mined, a FINALIZE of the name at the lock address of the stored key, of
+/// the name's live registration, and the MTP (the current price the prompt
+/// shows); the cancel address reserved (a lock restored by name reserves
+/// one now, R32) and the profile's receive address at its stored index
+/// (R21); the lock key re-derived after the reads, its public
+/// key the stored one; the plan built and checked to be for the profile's
+/// account, that path, this name and the stored lock coin. Writes nothing
+/// but that reservation.
+pub(crate) async fn prepare_cancel(
+    state: &State<'_, AppState>,
+    listing_id: &str,
+    fee_rate: Option<u64>,
+) -> Result<PreparedCancel, AppError> {
+    let ctx = software_writer_ctx(state)?;
+    authorize_signer(state, &ctx)?;
+    let listing = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let l = queries::get_shakedex_listing(&conn, listing_id)?
+            .filter(|l| l.wallet_profile_id == ctx.profile_id)
+            .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
+        if let Some(why) = cancel_refusal(l.state) {
+            return Err(AppError::InvalidInput(why.into()));
+        }
+        l
+    };
+    let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
+    let (lock_txid, lock_vout) = shakedex_jobs::stored_lock(&listing)?
+        .map(|(t, v)| (t.to_string(), v))
+        .ok_or_else(|| corrupted("lock coin"))?;
+    let pubkey = shakedex_jobs::lock_pubkey(&listing)?;
+    let name = listing.name.clone();
+    let at = shakedex_jobs::listing_lock(ctx.network, &listing)?;
+    let lock_addr = at.address.clone();
+    let steps = shakedex_jobs::stored_steps(&listing)?;
+    // A Restored lock without its listing file stores no steps (restored
+    // by name, or finalized into our lock by another device): its current
+    // price is not known here, so the MTP is not read for it.
+    let on_node = lock_on_node(
+        &ctx,
+        &name,
+        &at,
+        (&lock_txid, lock_vout),
+        !steps.is_empty(),
+        &CANCEL_LOCK_WORDS,
+    )
+    .await?;
+    let (lock_value, name_height) = (on_node.value, on_node.name_height);
+    // A listing with steps but none valid at the MTP says so (R3).
+    let current_price = match on_node.mtp {
+        None => cancel::CancelPrice::NotKnown,
+        Some(mtp) => match sell::current_step_price(&steps, mtp)? {
+            Some(price) => cancel::CancelPrice::Step(price),
+            None => cancel::CancelPrice::NoneValidYet,
+        },
+    };
+
+    // R21, R32: a lock restored by name reserves its cancel address
+    // now, after the node reads. The reservation and the row commit
+    // together.
+    let (cancel_address, cancel_index) =
+        match (listing.cancel_address.clone(), listing.cancel_child_index) {
+            (Some(a), Some(i)) => (a, u32::try_from(i).map_err(|_| corrupted("cancel index"))?),
+            (None, None) if listing.state == ListingState::Restored => {
+                let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+                reserve_restored_cancel_address(&conn, &ctx.profile_id, &listing.id)?
+            }
+            _ => return Err(corrupted("cancel address")),
+        };
+    // R21: the profile's own receive address at the stored index.
+    {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let derived =
+            queries::receive_address_at(&conn, &ctx.profile_id, ctx.account, cancel_index)?;
+        if derived.as_deref() != Some(cancel_address.as_str()) {
+            return Err(AppError::InvalidInput(CANCEL_NOT_OUR_ADDRESS.into()));
+        }
+    }
+
+    let key = derive_listing_key(state, &ctx, &name)?;
+    if key.pubkey != pubkey {
+        return Err(AppError::InvalidInput(sell::LISTING_KEY_MISMATCH.into()));
+    }
+    let mut lock_bytes = [0u8; 32];
+    hex::decode_to_slice(&lock_txid, &mut lock_bytes)
+        .map_err(|_| corrupted("readable lock txid"))?;
+    let plan = cancel::build_cancel_plan(&cancel::CancelInput {
+        network: ctx.network,
+        account: ctx.account,
+        name: &name,
+        name_height,
+        lock_outpoint: (lock_bytes, lock_vout),
+        lock_value,
+        lock_pubkey: key.pubkey,
+        cancel_address: &cancel_address,
+        cancel_branch: derivation::BRANCH_RECEIVE,
+        cancel_index,
+        funding: &ctx.funding,
+        change_address: &ctx.change_address,
+        rate: draft_ctx::fee_rate(&ctx, fee_rate),
+        #[cfg(test)]
+        fixed_fee: None,
+    })?;
+    cancel::check_cancel_plan(
+        &plan.plan,
+        ctx.account,
+        cancel_index,
+        &name,
+        (&lock_txid, lock_vout),
+    )?;
+    Ok(PreparedCancel {
+        ctx,
+        listing,
+        plan,
+        lock: (lock_txid, lock_vout),
+        lock_address: lock_addr,
+        cancel_address,
+        cancel_index,
+        current_price,
+    })
+}
+
+/// R28, generic over the runtime so tests drive it: check
+/// ([`prepare_cancel`]), ask (R28's own prompt), then sign the cancel with
+/// the unlocked session (the signer derives the lock key and re-checks the
+/// TRANSFER's commitment, `cancel::check_lock_key_input`) and store the
+/// signed draft with the listing's move to Cancelling in one database
+/// transaction. Sends nothing: `commands::tx::broadcast_tx_draft` does.
+pub(crate) async fn cancel_listing_confirmed<R: tauri::Runtime>(
+    state: &State<'_, AppState>,
+    app: &tauri::AppHandle<R>,
+    listing_id: &str,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    let p = prepare_cancel(state, listing_id, fee_rate).await?;
+    crate::commands::secure_confirm::confirm_rows(
+        app,
+        CANCEL_TITLE,
+        CANCEL_MESSAGE,
+        cancel::cancel_rows(&cancel::CancelRows {
+            name: &p.listing.name,
+            fee: p.plan.fee,
+            cancel_address: &p.cancel_address,
+            lock_address: &p.lock_address,
+            current_price: p.current_price,
+        }),
+    )
+    .await?;
+    // The prompt may have outlasted the earlier check: authorized again.
+    let signed_hex = with_signer(state, &p.ctx, |session| {
+        let (hex, txid) = actions::sign_plan(session, &p.plan.plan)?;
+        if txid != p.plan.txid {
+            return Err(AppError::Other(
+                "the signed cancel's txid is not the plan's".into(),
+            ));
+        }
+        Ok(hex)
+    })?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    // The signed cancel and the Cancelling listing commit together.
+    let tx = conn.unchecked_transaction()?;
+    let draft_id = draft_ctx::persist_in_tx(
+        &tx,
+        &p.ctx.profile_id,
+        &draft_ctx::DraftLabel {
+            action: cancel::CANCEL_ACTION,
+            name: &p.listing.name,
+            recipient: Some(&p.cancel_address),
+            name_list: None,
+            warnings: &[
+                cancel::CANCEL_STILL_BUYABLE.to_string(),
+                cancel::CANCEL_MEMPOOL_PURCHASE.to_string(),
+            ],
+        },
+        &p.plan,
+    )?;
+    let summary = queries::get_tx_draft(&tx, &draft_id)?
+        .ok_or_else(|| AppError::Other("draft vanished after insert".into()))?
+        .summary_json;
+    queries::update_tx_draft_signed(&tx, &draft_id, &signed_hex, &summary)?;
+    let n = queries::mark_listing_cancelling_in_tx(
+        &tx,
+        &p.listing.id,
+        &queries::CancellingListing {
+            cancel_draft_id: &draft_id,
+            cancel_txid: &p.plan.txid,
+            lock: (&p.lock.0, p.lock.1),
+            cancel_address: &p.cancel_address,
+            cancel_child_index: p.cancel_index,
+        },
+    )?;
+    if n != 1 {
+        return Err(AppError::InvalidInput(
+            "this listing changed meanwhile: nothing was saved; try again".into(),
+        ));
+    }
+    tx.commit()?;
+    draft_ctx::draft_summary(&conn, &draft_id)
+}
+
+/// R26: the Lower price prompt's own title.
+pub const LOWER_PRICE_TITLE: &str = "Confirm Lower price";
+const LOWER_PRICE_MESSAGE: &str = "Review these details. This signs, with the lock key, one \
+     more, lower price for the name.";
+/// R26: disabled while a cancel is unconfirmed.
+pub const LOWER_DURING_CANCEL: &str = "a cancel of this listing is not mined yet: its price \
+     cannot be lowered";
+/// R26: hsd answers 404 for a lock coin spent in a block or in its mempool.
+pub const LOWER_LOCK_COIN_SPENT: &str = "the lock coin is no longer unspent (bought, \
+     cancelled, or being spent in the node's mempool): the price cannot be lowered";
+/// R26: a listing without signed prices here has no current price.
+pub const LOWER_NO_PRICE_HERE: &str = "this listing has no signed prices here: import its \
+     listing file first";
+
+const LOWER_LOCK_WORDS: LockCoinWords = LockCoinWords {
+    checked: "the price",
+    spent: LOWER_LOCK_COIN_SPENT,
+    not_mined: "the finalize into the lock is not mined: the price cannot be lowered until it is",
+    nothing: "the price cannot be lowered",
+};
+
+/// Why Lower price refuses a listing in `state` (R26); `None` for Listed.
+fn lower_refusal(state: ListingState) -> Option<&'static str> {
+    match state {
+        ListingState::Listed => None,
+        ListingState::Cancelling => Some(LOWER_DURING_CANCEL),
+        ListingState::CancelAwaitingFinalize | ListingState::CancelFinalizing => {
+            Some("this listing is cancelled: its price cannot be lowered")
+        }
+        ListingState::SalePending => {
+            Some("a purchase of this listing is in the node's mempool: its price cannot be lowered")
+        }
+        ListingState::Restored => Some(LOWER_NO_PRICE_HERE),
+        ListingState::Locking | ListingState::ReadyToFinalize => {
+            Some("the price is set at Finalize & sign")
+        }
+        ListingState::Finalizing => {
+            Some("the price can be lowered once the finalize into the lock is mined")
+        }
+        ListingState::Sold
+        | ListingState::Cancelled
+        | ListingState::Aborted
+        | ListingState::Expired => listing_over(state),
+    }
+}
+
+/// R26, generic over the runtime so tests drive it. The gates (R16, R6; no
+/// experimental flag, R15) and the unlocked signer first; the listing the
+/// active profile's, Listed, a Buy Now (reverse auctions are T8's) with
+/// signed steps here; the price parsed by R19's rule; on the node the lock
+/// coin checks Cancel makes too ([`lock_on_node`]: unspent, at the stored
+/// outpoint, a FINALIZE of the name at the lock address of the stored key,
+/// mined, of the name's live registration) and the MTP; the new price below
+/// the current step at that MTP (R3, `sell::check_lower_price`); the lock
+/// key re-derived after the reads, its public key the stored one; then R26's
+/// own prompt, one step signed valid now (R19: the MTP minus 512 s) over the
+/// stored lock coin at hsd's value, paying the listing's payment address,
+/// added to the stored listing file as written, unknown fields kept, once
+/// that file is checked to be the row's (`add_step_to_listing_file`, read
+/// back by the strict parser), and the steps and file stored only while the
+/// listing is still Listed on that lock coin with the steps read here
+/// (`queries::lower_listing_price`). Sends nothing.
+pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
+    state: &State<'_, AppState>,
+    app: &tauri::AppHandle<R>,
+    listing_id: &str,
+    price: &str,
+) -> Result<ListingSummary, AppError> {
+    let ctx = software_writer_ctx(state)?;
+    authorize_signer(state, &ctx)?;
+    let listing = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let l = queries::get_shakedex_listing(&conn, listing_id)?
+            .filter(|l| l.wallet_profile_id == ctx.profile_id)
+            .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
+        if let Some(why) = lower_refusal(l.state) {
+            return Err(AppError::InvalidInput(why.into()));
+        }
+        if l.mode != ListingMode::BuyNow {
+            return Err(AppError::InvalidInput(
+                "reverse auctions are not supported yet".into(),
+            ));
+        }
+        l
+    };
+    let stored = shakedex_jobs::stored_steps(&listing)?;
+    if stored.is_empty() {
+        return Err(AppError::InvalidInput(LOWER_NO_PRICE_HERE.into()));
+    }
+    let new_price = sell::parse_step_price(price)?;
+    let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
+    let (lock_txid, lock_vout) = shakedex_jobs::stored_lock(&listing)?
+        .map(|(t, v)| (t.to_string(), v))
+        .ok_or_else(|| corrupted("lock coin"))?;
+    let pubkey = shakedex_jobs::lock_pubkey(&listing)?;
+    let payment_address = listing
+        .payment_address
+        .clone()
+        .ok_or_else(|| corrupted("payment address"))?;
+    let name = listing.name.clone();
+    let at = shakedex_jobs::listing_lock(ctx.network, &listing)?;
+    let lock_addr = at.address.clone();
+    // The step is added to the stored file as written (R26, R32): it must
+    // be this row's file, its lock, key, payment address and steps.
+    let stored_file = listing
+        .listing_file_json
+        .clone()
+        .ok_or_else(|| corrupted("listing file"))?;
+    let file_is_the_rows = ListingFile::parse(&stored_file, ctx.network)
+        .ok()
+        .is_some_and(|f| {
+            hex::encode(f.lock_txid) == lock_txid
+                && f.lock_vout == lock_vout
+                && f.public_key == pubkey
+                && f.payment_addr == payment_address
+                && f.steps
+                    .iter()
+                    .map(|s| sell::StoredStep {
+                        price: s.price,
+                        lock_time: s.lock_time,
+                        signature: hex::encode(s.signature),
+                    })
+                    .eq(stored.iter().cloned())
+        });
+    if !file_is_the_rows {
+        return Err(corrupted("listing file matching its lock and steps"));
+    }
+
+    let on_node = lock_on_node(
+        &ctx,
+        &name,
+        &at,
+        (&lock_txid, lock_vout),
+        true,
+        &LOWER_LOCK_WORDS,
+    )
+    .await?;
+    let mtp = on_node
+        .mtp
+        .ok_or_else(|| AppError::Other("the node's median time was not read".into()))?;
+    let current = sell::current_step_price(&stored, mtp)?.ok_or_else(|| {
+        AppError::InvalidInput(
+            "no price of this listing is valid yet at the node's median time: there is no \
+             current price to lower"
+                .into(),
+        )
+    })?;
+    sell::check_lower_price(new_price, current)?;
+    let lock_time = sell::buy_now_lock_time(mtp);
+    let key = derive_listing_key(state, &ctx, &name)?;
+    if key.pubkey != pubkey {
+        return Err(AppError::InvalidInput(sell::LISTING_KEY_MISMATCH.into()));
+    }
+    crate::commands::secure_confirm::confirm_rows(
+        app,
+        LOWER_PRICE_TITLE,
+        LOWER_PRICE_MESSAGE,
+        sell::lower_price_rows(&sell::LowerPriceRows {
+            name: &name,
+            current_price: current,
+            new_price,
+            lock_time,
+            mtp,
+            payment_address: &payment_address,
+            lock_address: &lock_addr,
+        }),
+    )
+    .await?;
+
+    let mut lock_bytes = [0u8; 32];
+    hex::decode_to_slice(&lock_txid, &mut lock_bytes)
+        .map_err(|_| corrupted("readable lock txid"))?;
+    let payment = output_address_from_string(ctx.network, &payment_address)?;
+    // The prompt may have outlasted the earlier check: authorized again.
+    let signature = with_signer(state, &ctx, |_| {
+        sell::sign_step(
+            &key,
+            &template::StepTemplate {
+                lock_outpoint: (lock_bytes, lock_vout),
+                lock_value: on_node.value,
+                lock_pubkey: &key.pubkey,
+                payment,
+                price: new_price,
+                lock_time_secs: lock_time,
+            },
+        )
+    })?;
+    // The file's expiry stays as signed; a file imported without one (R32)
+    // gets R23's, from this signing's MTP.
+    let (file, expires_at) = add_step_to_listing_file(
+        &stored_file,
+        &PriceStep {
+            price: new_price,
+            lock_time,
+            signature,
+            fee: 0,
+        },
+        mtp + sell::LISTING_LIFETIME_SECS,
+        ctx.network,
+    )?;
+    let mut stored_new = stored.clone();
+    stored_new.push(sell::StoredStep {
+        price: new_price,
+        lock_time,
+        signature: hex::encode(signature),
+    });
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let n = queries::lower_listing_price(
+        &conn,
+        &listing.id,
+        &queries::LoweredPrice {
+            lock: (&lock_txid, lock_vout),
+            old_steps_json: &listing.steps_json,
+            steps_json: &serde_json::to_string(&stored_new)?,
+            listing_file_json: &file,
+            expires_at: i64::try_from(expires_at).map_err(|_| corrupted("readable expiry"))?,
+        },
+    )?;
+    if n != 1 {
+        return Err(AppError::InvalidInput(
+            "this listing changed meanwhile: nothing was saved; try again".into(),
+        ));
+    }
+    let l = queries::get_shakedex_listing(&conn, &listing.id)?
+        .ok_or_else(|| AppError::Other("listing vanished after Lower price".into()))?;
+    ListingSummary::of(&l)
+}
+
 /// R23: the saved listing file of one of the profile's listings, once its
 /// FINALIZE into the lock is mined (Listed or later): before that its steps
 /// are over a coin that may never exist.
@@ -1221,6 +1860,10 @@ pub(crate) fn restore_lock_inner(
         abort_txid: None,
         sold_txid: None,
         cancel_txid: None,
+        cancel_draft_id: None,
+        cancel_vout: None,
+        cancel_finalize_draft_id: None,
+        cancel_blocks_remaining: None,
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -2060,6 +2703,249 @@ pub async fn shakedex_import_own_listing_file(
             coin: coin.as_ref(),
         },
     )
+}
+
+/// Cancel a listing (R28): see [`cancel_listing_confirmed`]. Returns the
+/// signed cancel draft, which `broadcast_tx_draft` sends.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_cancel_listing(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    listing_id: String,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    cancel_listing_confirmed(&state, &app, &listing_id, fee_rate).await
+}
+
+/// R28: hsd answers 404 for the cancel's TRANSFER: something spends it in a
+/// block or in the mempool (a FINALIZE home, from here or another device),
+/// or a reorg left the cancel in no block and no mempool. Only that is said.
+pub const CANCEL_TRANSFER_SPENT: &str = "the cancel's transfer is no longer an unspent coin \
+     on the node: it is on its way home, home, or undone by a reorg; nothing was built";
+
+/// R28: the FINALIZE that brings a cancelled listing's name home, built
+/// once its cancel TRANSFER is mined and the transfer lockup is over.
+/// Everything is read on the node now, field by field: the cancel's
+/// TRANSFER `(cancel_txid, cancel_vout)` a coin (hsd's 404, the TRANSFER
+/// already spent by a FINALIZE from here or another device, is refused
+/// first: nothing is built a second time), mined, a TRANSFER of the name at
+/// the lock address of the stored key, committing to an address of this
+/// profile's (the FINALIZE must pay the address the TRANSFER commits to);
+/// the name live, unrevoked and owned by that TRANSFER; the lockup over at
+/// tip + 1, counted from hsd's `info.transfer`; the TRANSFER's name height
+/// the name's. The draft and the listing's move to CancelFinalizing commit
+/// together; the usual confirm, sign and broadcast commands send it. No lock
+/// key is needed: the FINALIZE's lock input carries only `[lockScript]`
+/// (R1). No experimental flag (R15), and the signer is asked when the draft
+/// is signed.
+pub(crate) async fn finalize_cancel(
+    state: &State<'_, AppState>,
+    listing_id: &str,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    let ctx = software_writer_ctx(state)?;
+    let (listing, own) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let l = queries::get_shakedex_listing(&conn, listing_id)?
+            .filter(|l| l.wallet_profile_id == ctx.profile_id)
+            .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
+        if l.state != ListingState::CancelAwaitingFinalize {
+            return Err(AppError::InvalidInput(
+                match l.state {
+                    ListingState::Cancelling => {
+                        "the cancel is not mined yet: its finalize opens after the transfer \
+                         lockup that follows"
+                    }
+                    ListingState::CancelFinalizing => {
+                        "the finalize of this cancel is already built: send it, or delete it to \
+                         build another"
+                    }
+                    // A state `listing_over` does not name (before the
+                    // lock, Finalizing, Listed, SalePending) has no cancel.
+                    other => listing_over(other)
+                        .unwrap_or("this listing has no mined cancel to finalize"),
+                }
+                .into(),
+            ));
+        }
+        let own: std::collections::HashSet<String> =
+            queries::get_profile_addresses(&conn, &ctx.profile_id)?
+                .into_iter()
+                .collect();
+        (l, own)
+    };
+    let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
+    let (cancel_txid, cancel_vout) = shakedex_jobs::stored_cancel(&listing)?;
+    let cancel_txid = cancel_txid.to_string();
+    let pubkey = shakedex_jobs::lock_pubkey(&listing)?;
+    let name = listing.name.clone();
+    let at = shakedex_jobs::listing_lock(ctx.network, &listing)?;
+    let coin = ctx
+        .node
+        .get_coin(&cancel_txid, cancel_vout)
+        .await?
+        .ok_or_else(|| AppError::InvalidInput(CANCEL_TRANSFER_SPENT.into()))?;
+    let coin_at = match at.stored_coin(&coin, (&cancel_txid, cancel_vout), COV_TRANSFER) {
+        Ok(coin_at) => coin_at,
+        Err(sell::StoredCoinRefusal::Unreadable) => {
+            return Err(cancel_could_not_check(
+                "the cancel transfer's address or covenant",
+            ));
+        }
+        Err(sell::StoredCoinRefusal::SomethingElse) => {
+            return Err(AppError::Rpc(
+                "node reported something else than this listing's cancel at its outpoint".into(),
+            ));
+        }
+    };
+    if coin.mined_height()?.is_none() {
+        return Err(AppError::InvalidInput("the cancel is not mined yet".into()));
+    }
+    let dest = sell::commitment_address(coin_at.items, ctx.network)?
+        .filter(|a| own.contains(a))
+        .ok_or_else(|| {
+            AppError::InvalidInput(
+                "the cancel commits the name to an address that is not an address of this \
+                 wallet: it cannot be finalized here"
+                    .into(),
+            )
+        })?;
+    let transfer_value = u64::try_from(coin.value)
+        .map_err(|_| AppError::Rpc(format!("bad cancel coin value {}", coin.value)))?;
+    let cov_height = coin
+        .covenant
+        .as_ref()
+        .and_then(purchase::covenant_name_height)
+        .ok_or_else(|| cancel_could_not_check("a readable name height in the cancel's transfer"))?;
+    let reply = ctx.node.get_name_info(&name).await?;
+    let info = match reply.get("info") {
+        None => return Err(cancel_could_not_check("the name's info")),
+        Some(serde_json::Value::Null) => {
+            return Err(AppError::InvalidInput(format!(
+                "'{name}' has no on-chain state or has expired"
+            )))
+        }
+        Some(i) => i,
+    };
+    let owner = info.get("owner");
+    let Some(owner_hash) = owner.and_then(|o| o.get("hash")).and_then(|h| h.as_str()) else {
+        return Err(cancel_could_not_check("the name's owner"));
+    };
+    let Some(owner_index) = owner.and_then(|o| o.get("index")).and_then(|i| i.as_u64()) else {
+        return Err(cancel_could_not_check("the name's owner output"));
+    };
+    let Some(revoked) = info.get("revoked").and_then(|r| r.as_u64()) else {
+        return Err(cancel_could_not_check("whether the name was revoked"));
+    };
+    if revoked != 0
+        || !owner_hash.eq_ignore_ascii_case(&cancel_txid)
+        || owner_index != u64::from(cancel_vout)
+    {
+        return Err(AppError::InvalidInput(format!(
+            "'{name}' is no longer held by the cancel's transfer: there is nothing to finalize"
+        )));
+    }
+    let transfer_height = sell::transfer_height(info)
+        .ok_or_else(|| cancel_could_not_check("the cancel transfer's block"))?;
+    let tip = ctx
+        .node
+        .get_blockchain_info()
+        .await
+        .map_err(|e| cancel_could_not_check(&format!("its tip ({e})")))?
+        .blocks;
+    let remaining = ctx
+        .network
+        .name_params()
+        .blocks_until_finalize(transfer_height, tip);
+    if remaining > 0 {
+        return Err(AppError::InvalidInput(format!(
+            "the cancel can be finalized in {remaining} block{}",
+            if remaining == 1 { "" } else { "s" }
+        )));
+    }
+    let ns = draft_ctx::name_state_strict(&reply, &name)?;
+    if cov_height != ns.height {
+        return Err(AppError::InvalidInput(
+            "the name expired and was registered again since the cancel: it cannot be finalized"
+                .into(),
+        ));
+    }
+    let renewal_block = draft_ctx::renewal_block(&ctx.node, ctx.network).await?;
+    let mut transfer_txid = [0u8; 32];
+    hex::decode_to_slice(&cancel_txid, &mut transfer_txid)
+        .map_err(|_| corrupted("readable cancel txid"))?;
+    let res = cancel::build_cancel_finalize_plan(&cancel::CancelFinalizeInput {
+        network: ctx.network,
+        account: ctx.account,
+        transfer_outpoint: (transfer_txid, cancel_vout),
+        transfer_value,
+        lock_pubkey: pubkey,
+        name: &name,
+        name_height: ns.height,
+        weak: ns.weak,
+        claimed: ns.claimed,
+        renewals: ns.renewals,
+        renewal_block,
+        dest_address: &dest,
+        funding: &ctx.funding,
+        change_address: &ctx.change_address,
+        rate: draft_ctx::fee_rate(&ctx, fee_rate),
+        #[cfg(test)]
+        fixed_fee: None,
+    })?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    // The FINALIZE draft and the CancelFinalizing listing commit together.
+    let tx = conn.unchecked_transaction()?;
+    let draft_id = draft_ctx::persist_in_tx(
+        &tx,
+        &ctx.profile_id,
+        &draft_ctx::DraftLabel {
+            action: cancel::CANCEL_FINALIZE_ACTION,
+            name: &name,
+            recipient: Some(&dest),
+            name_list: None,
+            warnings: &[cancel::CANCEL_FINALIZE_NOTE.to_string()],
+        },
+        &res,
+    )?;
+    let n = queries::mark_listing_cancel_finalizing_in_tx(
+        &tx,
+        &listing.id,
+        &draft_id,
+        (&cancel_txid, cancel_vout),
+    )?;
+    if n != 1 {
+        return Err(AppError::InvalidInput(
+            "this listing changed meanwhile: nothing was saved; try again".into(),
+        ));
+    }
+    tx.commit()?;
+    draft_ctx::draft_summary(&conn, &draft_id)
+}
+
+/// The FINALIZE home of a cancelled listing (R28): see [`finalize_cancel`].
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_finalize_cancel(
+    state: State<'_, AppState>,
+    listing_id: String,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    finalize_cancel(&state, &listing_id, fee_rate).await
+}
+
+/// Lower a listing's price (R26): see [`lower_price_confirmed`]. Returns the
+/// listing with its new step.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_lower_price(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    listing_id: String,
+    price: String,
+) -> Result<ListingSummary, AppError> {
+    lower_price_confirmed(&state, &app, &listing_id, &price).await
 }
 
 #[cfg(test)]

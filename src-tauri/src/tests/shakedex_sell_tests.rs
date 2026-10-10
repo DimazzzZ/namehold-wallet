@@ -53,6 +53,10 @@ fn listing(id: &str, name: &str, state: ListingState) -> ShakedexListing {
         abort_txid: None,
         sold_txid: None,
         cancel_txid: None,
+        cancel_draft_id: None,
+        cancel_vout: None,
+        cancel_finalize_draft_id: None,
+        cancel_blocks_remaining: None,
         created_at: String::new(),
         updated_at: String::new(),
     }
@@ -107,6 +111,58 @@ fn ts_listing_state_union_lists_every_state() {
         .collect();
     in_rust.sort_unstable();
     assert_eq!(in_ts, in_rust);
+}
+
+/// The TS mirror `ShakedexListingSummary` (`src/types/index.ts`) has
+/// exactly the keys serde sends for `ListingSummary`, an optional one typed
+/// `| null`.
+#[test]
+fn ts_listing_summary_lists_every_field() {
+    let ts = include_str!("../../../src/types/index.ts");
+    let start = ts
+        .find("export interface ShakedexListingSummary {")
+        .expect("the TS interface");
+    let block = &ts[start..start + ts[start..].find("\n}").expect("end of the interface")];
+    let fields: Vec<(&str, &str)> = block
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|l| !l.starts_with("/**") && !l.starts_with('*') && !l.is_empty())
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, t)| (k.trim(), t.trim()))
+        .collect();
+    let mut in_ts: Vec<&str> = fields.iter().map(|(k, _)| *k).collect();
+    in_ts.sort_unstable();
+    let summary = crate::commands::shakedex::ListingSummary {
+        id: String::new(),
+        name: String::new(),
+        mode: ListingMode::BuyNow,
+        state: ListingState::Listed,
+        lock_txid: None,
+        lock_vout: None,
+        payment_address: None,
+        steps: vec![],
+        expires_at: None,
+        finalize_draft_id: None,
+        cancel_draft_id: None,
+        cancel_finalize_draft_id: None,
+        cancel_blocks_remaining: None,
+    };
+    let json = serde_json::to_value(&summary).unwrap();
+    let mut in_rust: Vec<&str> = json
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    in_rust.sort_unstable();
+    assert_eq!(in_ts, in_rust);
+    for (k, v) in json.as_object().unwrap() {
+        if v.is_null() {
+            let t = fields.iter().find(|(f, _)| f == k).unwrap().1;
+            assert!(t.ends_with("| null;"), "{k}: {t}");
+        }
+    }
 }
 
 #[test]
@@ -704,6 +760,13 @@ fn job_listing_sets_are_disjoint() {
     for s in ListingState::CANCEL_ABORTABLE {
         assert!(before.contains(&s), "{s:?}");
     }
+    for s in ListingState::CANCEL_MINED {
+        assert!(
+            after.contains(&s),
+            "{s:?}: the cancel's way home is followed"
+        );
+    }
+    assert!(after.contains(&ListingState::Cancelling));
 
     let conn = store_conn();
     for (i, state) in ListingState::ALL.into_iter().enumerate() {
@@ -733,7 +796,7 @@ fn job_listing_sets_are_disjoint() {
     );
 }
 
-/// The after-lock source lists exactly its five states of a profile, in
+/// The after-lock source lists exactly its eight states of a profile, in
 /// creation order.
 #[test]
 fn after_lock_listings_are_listed() {
@@ -746,6 +809,10 @@ fn after_lock_listings_are_listed() {
         ("l5", "e", ListingState::Sold),
         ("l6", "f", ListingState::ReadyToFinalize),
         ("l7", "g", ListingState::Aborted),
+        ("l8", "h", ListingState::Cancelling),
+        ("l9", "i", ListingState::CancelAwaitingFinalize),
+        ("la", "j", ListingState::CancelFinalizing),
+        ("lb", "k", ListingState::Cancelled),
     ] {
         queries::insert_shakedex_listing(&conn, &listing(id, name, state)).unwrap();
     }
@@ -754,7 +821,7 @@ fn after_lock_listings_are_listed() {
         .into_iter()
         .map(|l| l.id)
         .collect();
-    assert_eq!(ids, ["l1", "l2", "l3", "l4", "l5"]);
+    assert_eq!(ids, ["l1", "l2", "l3", "l4", "l5", "l8", "l9", "la"]);
     assert!(
         queries::list_shakedex_listings_after_lock(&conn, "other", 7)
             .unwrap()
@@ -806,6 +873,455 @@ fn listings_ready_to_finalize_are_listed_for_the_reminder() {
     assert_eq!(
         queries::list_listings_ready_to_finalize(&conn).unwrap(),
         vec![row("built", "l5"), row("ready", "l1"), row("unsent", "l4")]
+    );
+}
+
+/// A listing that has cancelled: Cancelling with the cancel draft `draft`
+/// (its txid `c1…`), its lock coin `(f1…, 0)`, a listing file unless `file`
+/// is false (a stand-in for a lock restored by name).
+fn cancelling(conn: &Connection, id: &str, name: &str, draft: &str, file: bool) {
+    let mut l = listing(id, name, ListingState::Listed);
+    l.lock_txid = Some("f1".repeat(32));
+    l.lock_vout = Some(0);
+    l.listing_file_json = file.then(|| "{}".to_string());
+    queries::insert_shakedex_listing(conn, &l).unwrap();
+    let tx = conn.unchecked_transaction().unwrap();
+    let n = queries::mark_listing_cancelling_in_tx(
+        &tx,
+        id,
+        &queries::CancellingListing {
+            cancel_draft_id: draft,
+            cancel_txid: &"c1".repeat(32),
+            lock: (&"f1".repeat(32), 0),
+            cancel_address: "rs1qcancel",
+            cancel_child_index: 2,
+        },
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(n, 1);
+}
+
+/// R28: an unsent cancel (draft or signed) deleted takes nothing out of the
+/// lock, so its listing is Listed again, Restored without a file, and
+/// forgets that cancel. A cancel that was sent (`failed`, `dropped`) may be
+/// deleted, but its listing stays Cancelling: whether it landed is the
+/// chain's to say. Another listing's draft frees nothing.
+#[test]
+fn deleting_an_unsent_cancel_draft_returns_the_listing() {
+    use crate::noncustodial::shakedex::cancel::CANCEL_ACTION;
+    for (status, file, back) in [
+        ("draft", true, ListingState::Listed),
+        ("signed", true, ListingState::Listed),
+        ("signed", false, ListingState::Restored),
+        ("failed", true, ListingState::Cancelling),
+        ("dropped", true, ListingState::Cancelling),
+    ] {
+        let conn = store_conn();
+        insert_draft(&conn, "cx", CANCEL_ACTION, "signed");
+        insert_draft(&conn, "cy", CANCEL_ACTION, "signed");
+        cancelling(&conn, "l2", "other", "cy", true);
+        cancelling(&conn, "l1", "dexsale", "cx", file);
+        insert_draft_status(&conn, "cx", status);
+        queries::delete_tx_draft(&conn, "cx").unwrap();
+        let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+        assert_eq!(l.state, back, "{status}, file {file}");
+        if back == ListingState::Cancelling {
+            assert_eq!(l.cancel_txid, Some("c1".repeat(32)), "{status}");
+            assert_eq!(l.cancel_draft_id.as_deref(), Some("cx"), "{status}");
+        } else {
+            assert_eq!(
+                (l.cancel_draft_id, l.cancel_txid, l.cancel_vout),
+                (None, None, None),
+                "{status}"
+            );
+        }
+        let other = queries::get_shakedex_listing(&conn, "l2").unwrap().unwrap();
+        assert_eq!(
+            other.state,
+            ListingState::Cancelling,
+            "{status}: not its draft"
+        );
+        assert_eq!(other.cancel_draft_id.as_deref(), Some("cy"), "{status}");
+    }
+    // A sent one cannot be deleted at all.
+    let conn = store_conn();
+    insert_draft(&conn, "cx", CANCEL_ACTION, "signed");
+    cancelling(&conn, "l1", "dexsale", "cx", true);
+    insert_draft_status(&conn, "cx", "broadcasted");
+    assert!(queries::delete_tx_draft(&conn, "cx").is_err());
+}
+
+/// R28: an unsent FINALIZE of a mined cancel deleted: the listing awaits its
+/// finalize again, the draft link gone; a sent one keeps it; another
+/// listing's draft frees nothing.
+#[test]
+fn deleting_an_unsent_cancel_finalize_draft_returns_the_listing_to_awaiting() {
+    use crate::noncustodial::shakedex::cancel::{CANCEL_ACTION, CANCEL_FINALIZE_ACTION};
+    for (status, back) in [
+        ("draft", ListingState::CancelAwaitingFinalize),
+        ("signed", ListingState::CancelAwaitingFinalize),
+        ("failed", ListingState::CancelFinalizing),
+        ("dropped", ListingState::CancelFinalizing),
+    ] {
+        let conn = store_conn();
+        for (id, name) in [("l1", "dexsale"), ("l2", "other")] {
+            let cx = format!("{id}-cx");
+            let fin = format!("{id}-fin");
+            insert_draft(&conn, &cx, CANCEL_ACTION, "confirmed");
+            cancelling(&conn, id, name, &cx, true);
+            assert_eq!(
+                queries::mark_listing_cancel_mined(
+                    &conn,
+                    id,
+                    (&"c1".repeat(32), 0),
+                    (&"f1".repeat(32), 0)
+                )
+                .unwrap(),
+                1
+            );
+            insert_draft(&conn, &fin, CANCEL_FINALIZE_ACTION, "signed");
+            let tx = conn.unchecked_transaction().unwrap();
+            assert_eq!(
+                queries::mark_listing_cancel_finalizing_in_tx(&tx, id, &fin, (&"c1".repeat(32), 0))
+                    .unwrap(),
+                1
+            );
+            tx.commit().unwrap();
+        }
+        insert_draft_status(&conn, "l1-fin", status);
+        queries::delete_tx_draft(&conn, "l1-fin").unwrap();
+        let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+        assert_eq!(l.state, back, "{status}");
+        assert_eq!(
+            l.cancel_finalize_draft_id.is_some(),
+            back == ListingState::CancelFinalizing,
+            "{status}"
+        );
+        let other = queries::get_shakedex_listing(&conn, "l2").unwrap().unwrap();
+        assert_eq!(
+            other.state,
+            ListingState::CancelFinalizing,
+            "{status}: not its draft"
+        );
+        assert_eq!(
+            other.cancel_finalize_draft_id.as_deref(),
+            Some("l2-fin"),
+            "{status}"
+        );
+    }
+}
+
+/// R28: a cancel that lost (a purchase, or another cancel, mined first)
+/// frees the coins it reserved, and is marked dropped with the reason (never
+/// sent again); a failed one keeps its status; a mined one, or a listing
+/// without a cancel draft, is left alone. It takes evidence: a mined spender
+/// that is not our cancel, on a listing a purchase or another cancel already
+/// reached. Another listing's draft and coin are never touched.
+#[test]
+fn a_losing_cancel_releases_its_coins() {
+    let reserved = |conn: &Connection, draft: &str| -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = ?1",
+            [draft],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let other = "dd".repeat(32);
+    let ours = "c1".repeat(32);
+    // (draft status, listing state, spender, draft after, released)
+    for (status, state, spender, after, released) in [
+        ("signed", ListingState::Sold, &other, "dropped", true),
+        (
+            "broadcast_pending",
+            ListingState::Sold,
+            &other,
+            "dropped",
+            true,
+        ),
+        ("broadcasted", ListingState::Sold, &other, "dropped", true),
+        (
+            "broadcasted",
+            ListingState::CancelAwaitingFinalize,
+            &other,
+            "dropped",
+            true,
+        ),
+        ("failed", ListingState::Sold, &other, "failed", true),
+        ("confirmed", ListingState::Sold, &other, "confirmed", false),
+        // No evidence: the lock coin is unspent, the listing still Cancelling.
+        (
+            "broadcasted",
+            ListingState::Cancelling,
+            &other,
+            "broadcasted",
+            false,
+        ),
+        // The spender is our own cancel.
+        (
+            "broadcasted",
+            ListingState::Sold,
+            &ours,
+            "broadcasted",
+            false,
+        ),
+        (
+            "broadcasted",
+            ListingState::CancelAwaitingFinalize,
+            &ours,
+            "broadcasted",
+            false,
+        ),
+    ] {
+        let conn = store_conn();
+        for (id, name, draft) in [("l1", "dexsale", "cx"), ("l2", "bystander", "cy")] {
+            insert_draft(
+                &conn,
+                draft,
+                crate::noncustodial::shakedex::cancel::CANCEL_ACTION,
+                "signed",
+            );
+            cancelling(&conn, id, name, draft, true);
+            conn.execute(
+                "INSERT INTO tracked_utxos
+                    (txid, vout, wallet_profile_id, address, script_pubkey_hex, value_doos,
+                     covenant_type, spend_class, spent_by_txid, reserved_by_draft_id)
+                 VALUES (?1, 0, ?2, 'rs1qfund', '00', 1000, 0, 'liquid_hns', NULL, ?3)",
+                params![draft.repeat(32), STORE_PROFILE, draft],
+            )
+            .unwrap();
+        }
+        insert_draft_status(&conn, "cx", status);
+        conn.execute(
+            "UPDATE shakedex_listings SET state = ?1 WHERE id = 'l1'",
+            params![state],
+        )
+        .unwrap();
+        let did =
+            queries::release_losing_cancel(&conn, "l1", spender, "a purchase was mined first")
+                .unwrap();
+        assert_eq!(did, released, "{status} {state:?}");
+        assert_eq!(
+            reserved(&conn, "cx"),
+            i64::from(!released),
+            "{status} {state:?}"
+        );
+        let d = queries::get_tx_draft(&conn, "cx").unwrap().unwrap();
+        assert_eq!(d.status, after, "{status} {state:?}");
+        if after == "dropped" {
+            assert_eq!(
+                d.error_message.as_deref(),
+                Some("a purchase was mined first")
+            );
+        }
+        // The other listing's draft and coin stay as they were.
+        assert_eq!(
+            reserved(&conn, "cy"),
+            1,
+            "{status} {state:?}: bystander coin"
+        );
+        let by = queries::get_tx_draft(&conn, "cy").unwrap().unwrap();
+        assert_eq!(by.status, "signed", "{status} {state:?}: bystander draft");
+    }
+    // The draft's own txid is our cancel too, even when the listing's
+    // `cancel_txid` was replaced by a mined cancel of another device.
+    let conn = store_conn();
+    insert_draft(
+        &conn,
+        "cx",
+        crate::noncustodial::shakedex::cancel::CANCEL_ACTION,
+        "broadcasted",
+    );
+    cancelling(&conn, "l1", "dexsale", "cx", true);
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET txid = ?1 WHERE id = 'cx'",
+        [&ours],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE shakedex_listings SET state = 'sold', cancel_txid = ?1",
+        [&other],
+    )
+    .unwrap();
+    assert!(!queries::release_losing_cancel(&conn, "l1", &ours, "x").unwrap());
+    assert!(queries::release_losing_cancel(&conn, "l1", &other, "x").unwrap());
+    let conn = store_conn();
+    queries::insert_shakedex_listing(&conn, &listing("l1", "dexsale", ListingState::Sold)).unwrap();
+    assert!(
+        !queries::release_losing_cancel(&conn, "l1", &other, "x").unwrap(),
+        "no cancel draft"
+    );
+}
+
+/// R28: the market jobs (R24, R25) keep a published Listed
+/// listing, and a Cancelling one only until its cancel is sent; an
+/// unpublished listing, and every other state, is never kept.
+#[test]
+fn listings_kept_on_market_stop_once_the_cancel_is_sent() {
+    let conn = store_conn();
+    let publish = |id: &str| {
+        conn.execute(
+            "UPDATE shakedex_listings SET publish = 1 WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+    };
+    queries::insert_shakedex_listing(&conn, &listing("l1", "listed", ListingState::Listed))
+        .unwrap();
+    publish("l1");
+    queries::insert_shakedex_listing(&conn, &listing("l2", "quiet", ListingState::Listed)).unwrap();
+    insert_draft(
+        &conn,
+        "cx",
+        crate::noncustodial::shakedex::cancel::CANCEL_ACTION,
+        "signed",
+    );
+    cancelling(&conn, "l3", "cancelling", "cx", true);
+    publish("l3");
+    for (i, state) in ListingState::ALL.into_iter().enumerate() {
+        if matches!(state, ListingState::Listed | ListingState::Cancelling) {
+            continue;
+        }
+        let id = format!("o{i}");
+        queries::insert_shakedex_listing(&conn, &listing(&id, &format!("n{i}"), state)).unwrap();
+        publish(&id);
+    }
+    let kept = |conn: &Connection| -> Vec<String> {
+        queries::list_listings_kept_on_market(conn, STORE_PROFILE)
+            .unwrap()
+            .into_iter()
+            .map(|l| l.id)
+            .collect()
+    };
+    assert_eq!(kept(&conn), ["l1", "l3"], "the cancel is not sent yet");
+    for status in [
+        "broadcast_pending",
+        "broadcasted",
+        "confirmed",
+        "dropped",
+        "failed",
+    ] {
+        insert_draft_status(&conn, "cx", status);
+        assert_eq!(kept(&conn), ["l1"], "{status}");
+    }
+}
+
+/// R28's reminder source (R14's pattern): a mined cancel whose lockup is over
+/// (0 blocks left at the last sync) and whose FINALIZE has not been sent,
+/// across profiles; not while blocks are left, not once its FINALIZE draft
+/// may have reached the chain.
+#[test]
+fn cancels_ready_to_finalize_are_listed_for_the_reminder() {
+    use crate::noncustodial::shakedex::cancel::{CANCEL_ACTION, CANCEL_FINALIZE_ACTION};
+    let conn = store_conn();
+    for (id, name, blocks, finalize) in [
+        ("l1", "ready", Some(0), None),
+        ("l2", "waiting", Some(3), None),
+        ("l3", "unknown", None, None),
+        ("l4", "unsent", Some(0), Some("signed")),
+        ("l5", "sent", Some(0), Some("broadcasted")),
+        ("l6", "failed", Some(0), Some("failed")),
+    ] {
+        let draft = format!("{id}-cx");
+        insert_draft(&conn, &draft, CANCEL_ACTION, "confirmed");
+        cancelling(&conn, id, name, &draft, true);
+        assert_eq!(
+            queries::mark_listing_cancel_mined(
+                &conn,
+                id,
+                (&"c1".repeat(32), 0),
+                (&"f1".repeat(32), 0)
+            )
+            .unwrap(),
+            1
+        );
+        if let Some(b) = blocks {
+            assert_eq!(
+                queries::set_cancel_blocks_remaining(&conn, id, b).unwrap(),
+                1
+            );
+        }
+        if let Some(status) = finalize {
+            let fin = format!("{id}-fin");
+            insert_draft(&conn, &fin, CANCEL_FINALIZE_ACTION, status);
+            let tx = conn.unchecked_transaction().unwrap();
+            queries::mark_listing_cancel_finalizing_in_tx(&tx, id, &fin, (&"c1".repeat(32), 0))
+                .unwrap();
+            tx.commit().unwrap();
+        }
+    }
+    let row = |name: &str| (STORE_PROFILE.to_string(), name.to_string(), "c1".repeat(32));
+    assert_eq!(
+        queries::list_cancels_ready_to_finalize(&conn).unwrap(),
+        vec![row("failed"), row("ready"), row("unsent")]
+    );
+    // An unchanged count is not written again.
+    assert_eq!(
+        queries::set_cancel_blocks_remaining(&conn, "l1", 0).unwrap(),
+        0
+    );
+}
+
+/// R21: the receive-branch address of the profile at an index, under
+/// its account, as `derived_addresses` holds it; another branch, account or
+/// index is not it.
+#[test]
+fn receive_address_at_reads_the_receive_branch_of_the_account() {
+    let conn = store_conn();
+    for (account, branch, child, addr) in [
+        (0, 0, 2, "rs1qcancel"),
+        (0, 1, 3, "rs1qchange"),
+        (1, 0, 4, "rs1qother"),
+    ] {
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index, address,
+                 script_pubkey_hex, public_key_hex)
+             VALUES (?1, ?2, ?3, ?4, ?5, '00', '02')",
+            params![STORE_PROFILE, account, branch, child, addr],
+        )
+        .unwrap();
+    }
+    let at =
+        |account, child| queries::receive_address_at(&conn, STORE_PROFILE, account, child).unwrap();
+    assert_eq!(at(0, 2).as_deref(), Some("rs1qcancel"));
+    assert_eq!(at(0, 3), None, "the change branch");
+    assert_eq!(at(0, 4), None, "another account's index");
+    assert_eq!(at(1, 4).as_deref(), Some("rs1qother"));
+}
+
+/// R21/R28: a lock restored by name gets its cancel address when it is
+/// cancelled, only while Restored and without one.
+#[test]
+fn a_restored_lock_gets_its_cancel_address_once() {
+    let conn = store_conn();
+    let mut l = listing("l1", "restored", ListingState::Restored);
+    l.cancel_address = None;
+    l.cancel_child_index = None;
+    queries::insert_shakedex_listing(&conn, &l).unwrap();
+    let mut other = listing("l2", "listed", ListingState::Listed);
+    other.cancel_address = None;
+    other.cancel_child_index = None;
+    queries::insert_shakedex_listing(&conn, &other).unwrap();
+    assert_eq!(
+        queries::set_restored_lock_cancel_address(&conn, "l1", "rs1qc", 7).unwrap(),
+        1
+    );
+    assert_eq!(
+        queries::set_restored_lock_cancel_address(&conn, "l1", "rs1qd", 8).unwrap(),
+        0,
+        "has one"
+    );
+    assert_eq!(
+        queries::set_restored_lock_cancel_address(&conn, "l2", "rs1qc", 7).unwrap(),
+        0,
+        "not Restored"
+    );
+    let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+    assert_eq!(
+        (l.cancel_address.as_deref(), l.cancel_child_index),
+        (Some("rs1qc"), Some(7))
     );
 }
 
@@ -5563,4 +6079,1840 @@ async fn own_listing_file_refused_for_ledger_and_watch_only() {
         );
         assert_still_restored(&app, kind);
     }
+}
+
+// --- Cancel (T5, R28) --------------------------------------------------------
+
+use crate::commands::shakedex::{
+    cancel_listing_confirmed, reserve_restored_cancel_address, CANCEL_TITLE,
+};
+use crate::noncustodial::shakedex::cancel::{
+    CANCEL_ACTION, CANCEL_MEMPOOL_PURCHASE, CANCEL_PRICE_NONE_VALID_YET, CANCEL_PRICE_NOT_KNOWN,
+    CANCEL_STILL_BUYABLE,
+};
+
+/// The node's MTP and tip once the listing is Listed: a day after Finalize
+/// & sign, past the lock's FINALIZE.
+const LISTED_MTP: u64 = SIGN_MTP + 86_400;
+const LISTED_TIP: i64 = QUIET_TIP + 50;
+
+/// A Listed listing on regtest and its node.
+struct Listed {
+    r: Ready,
+    /// The lock coin: the FINALIZE into the lock (its txid, output 0).
+    lock: (String, u32),
+}
+
+impl Listed {
+    /// The lock coin as `GET /coin` sends it, mined at `height`.
+    fn lock_coin(&self, height: i64) -> Value {
+        coin_json(
+            &self.lock.0,
+            self.lock.1,
+            &lock_address(self.r.net),
+            COV_FINALIZE,
+            height,
+        )
+    }
+
+    /// `getnameinfo` with the lock coin the name's owner.
+    fn info(&self) -> Value {
+        let mut v = name_info(RENEWAL, 0, &self.lock.0);
+        v["info"]["owner"]["index"] = self.lock.1.into();
+        v
+    }
+
+    /// Swap the node's answers: `getblockchaininfo` at `tip` (with `mtp`
+    /// when given), `getblockhash` (the renewal block), `getnameinfo` `info`,
+    /// and `GET /coin` of each `(txid, vout, coin)` (`None`: hsd's 404).
+    async fn node(
+        &mut self,
+        tip: i64,
+        mtp: Option<u64>,
+        info: Value,
+        coins: Vec<(String, u32, Option<Value>)>,
+    ) {
+        let r = &mut self.r;
+        for m in r.mocks.drain(..) {
+            m.remove_async().await;
+        }
+        for (method, result) in [
+            ("getblockchaininfo", chain_info(r.net, tip, mtp)),
+            ("getblockhash", json!(RENEWAL_BLOCK)),
+        ] {
+            let m = r
+                .node
+                .mock("POST", "/")
+                .match_body(mockito::Matcher::PartialJson(json!({ "method": method })))
+                .with_header("content-type", "application/json")
+                .with_body(rpc_ok(result))
+                .create_async()
+                .await;
+            r.mocks.push(m);
+        }
+        r.mocks.push(mock_name_info(&mut r.node, info).await);
+        for (txid, vout, coin) in coins {
+            let path = format!("/coin/{txid}/{vout}");
+            let m = match coin {
+                Some(c) => {
+                    r.node
+                        .mock("GET", path.as_str())
+                        .with_header("content-type", "application/json")
+                        .with_body(c.to_string())
+                        .create_async()
+                        .await
+                }
+                None => {
+                    r.node
+                        .mock("GET", path.as_str())
+                        .with_status(404)
+                        .create_async()
+                        .await
+                }
+            };
+            r.mocks.push(m);
+        }
+    }
+
+    /// The node while the listing is Listed: the lock coin mined, the owner.
+    async fn listed_node(&mut self) {
+        let (info, coin, lock) = (
+            self.info(),
+            self.lock_coin(TRANSFER_HEIGHT + 20),
+            self.lock.clone(),
+        );
+        self.node(
+            LISTED_TIP,
+            Some(LISTED_MTP),
+            info,
+            vec![(lock.0, lock.1, Some(coin))],
+        )
+        .await;
+    }
+}
+
+/// A Listed listing: Finalize & sign ran on a ready fixture at "5" HNS,
+/// its FINALIZE draft is confirmed (its reserved coins released: the funding
+/// coin stands in for its change), and the node answers as hsd does once the
+/// lock coin is mined.
+async fn listed_fixture() -> Listed {
+    let r = ready_fixture("regtest").await;
+    let lock = finalized(&r).await;
+    let fin = r.listing().lock_finalize_draft_id.unwrap();
+    with_db(&r.app, |c| {
+        queries::update_tx_draft_status(c, &fin, "broadcasted", None, Some(&lock.0)).unwrap();
+        queries::update_tx_draft_confirmation(c, &fin, TRANSFER_HEIGHT + 20, None).unwrap();
+        queries::release_reserved_utxos_for_draft(c, &fin).unwrap();
+        assert_eq!(queries::mark_listing_listed(c, &r.listing_id).unwrap(), 1);
+    });
+    let mut l = Listed { r, lock };
+    l.listed_node().await;
+    l
+}
+
+async fn cancel(
+    l: &Listed,
+) -> Result<crate::noncustodial::types::TxDraftSummary, crate::error::AppError> {
+    cancel_listing_confirmed(&l.r.app.state(), l.r.app.handle(), &l.r.listing_id, None).await
+}
+
+/// Nothing written or asked: the listing in `state`, no draft but the lock
+/// and FINALIZE drafts, no prompt.
+fn assert_no_cancel(l: &Listed, state: ListingState) {
+    let s = l.r.listing();
+    assert_eq!(s.state, state);
+    assert_eq!((s.cancel_draft_id, s.cancel_txid), (None, None));
+    assert_eq!(
+        count(&l.r.app, "wallet_tx_drafts"),
+        2,
+        "only the lock and FINALIZE drafts"
+    );
+    assert!(take_test_requests().is_empty(), "nothing asked");
+    // The decline queued for a prompt that did not come.
+    crate::commands::secure_prompt::clear_test_answers();
+}
+
+/// For a call that must be refused before its prompt: clear the request
+/// record and queue a decline, so a cancel that reaches the prompt anyway
+/// is declined (and seen by [`assert_no_cancel`]) instead of waiting for an
+/// answer that never comes. The queue is the test thread's own.
+fn decline_if_asked() {
+    answer(false);
+}
+
+/// R28: the cancel needs the unlocked signer, checked before anything else:
+/// the node is not read.
+#[tokio::test]
+async fn cancel_needs_the_unlocked_signer() {
+    let l = listed_fixture().await;
+    *l.r.app.state::<AppState>().signer.lock().unwrap() = None;
+    decline_if_asked();
+    let e = cancel(&l).await.expect_err("locked");
+    assert!(matches!(e, crate::error::AppError::WalletLocked), "{e:?}");
+    assert!(
+        !l.r.mocks[3].matched_async().await,
+        "the lock coin was not read"
+    );
+    assert_no_cancel(&l, ListingState::Listed);
+}
+
+/// R28: the cancel is signed after its own prompt (R28's two sentences and
+/// the current price) and stored as a signed draft with the listing's move
+/// to Cancelling; nothing is sent. The market jobs (R24, R25: the set they
+/// read) keep the listing until the cancel is sent and stop then; the
+/// after-lock job keeps following it, since a purchase may still beat it.
+#[tokio::test]
+async fn cancel_stops_jobs() {
+    let mut l = listed_fixture().await;
+    let sent = no_broadcast(&mut l.r).await;
+    // A regtest listing is never published (R23); the flag is set here to
+    // see the market set alone.
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET publish = 1 WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap();
+    });
+    let kept = |app: &App| -> Vec<String> {
+        with_db(app, |c| {
+            queries::list_listings_kept_on_market(c, PROFILE)
+                .unwrap()
+                .into_iter()
+                .map(|x| x.id)
+                .collect()
+        })
+    };
+    assert_eq!(kept(&l.r.app), [l.r.listing_id.clone()]);
+
+    answer(true);
+    let draft = cancel(&l).await.expect("cancel");
+    assert_eq!(draft.action, CANCEL_ACTION);
+    sent.assert_async().await;
+    let reqs = take_test_requests();
+    assert_eq!(reqs.len(), 1, "one prompt");
+    assert_eq!(reqs[0].mode, "confirm");
+    assert_eq!(reqs[0].title, CANCEL_TITLE);
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let value = |label: &str| {
+        rows.iter()
+            .find(|r| r["label"] == label)
+            .map(|r| r["value"].as_str().unwrap().to_string())
+    };
+    assert_eq!(
+        value("Until it is mined").as_deref(),
+        Some(CANCEL_STILL_BUYABLE)
+    );
+    assert_eq!(
+        value("A purchase already sent").as_deref(),
+        Some(CANCEL_MEMPOOL_PURCHASE)
+    );
+    assert_eq!(value("Current price").as_deref(), Some("5.000000 HNS"));
+
+    let row = with_db(&l.r.app, |c| {
+        queries::get_tx_draft(c, &draft.id).unwrap().unwrap()
+    });
+    assert_eq!(row.status, "signed", "sent next by broadcast_tx_draft");
+    assert!(row.signed_tx_hex.is_some());
+    let txid = draft.summary["txid"].as_str().unwrap().to_string();
+    let s = l.r.listing();
+    assert_eq!(s.state, ListingState::Cancelling);
+    assert_eq!(s.cancel_draft_id.as_deref(), Some(draft.id.as_str()));
+    assert_eq!(s.cancel_txid.as_deref(), Some(txid.as_str()));
+    assert_eq!(
+        kept(&l.r.app),
+        [l.r.listing_id.clone()],
+        "not sent yet: still kept"
+    );
+
+    with_db(&l.r.app, |c| {
+        queries::update_tx_draft_status(c, &draft.id, "broadcasted", None, Some(&txid)).unwrap()
+    });
+    assert!(kept(&l.r.app).is_empty(), "sent: the market jobs stop");
+    let followed: Vec<String> = with_db(&l.r.app, |c| {
+        queries::list_shakedex_listings_after_lock(c, PROFILE, 7)
+            .unwrap()
+            .into_iter()
+            .map(|x| x.id)
+            .collect()
+    });
+    assert!(
+        followed.contains(&l.r.listing_id),
+        "still followed on chain"
+    );
+}
+
+/// R28, R21: the cancel's lock input carries the listing's
+/// reserved cancel path and its TRANSFER, at the lock address, commits to
+/// that address. A stored cancel address that is not the profile's receive
+/// address at the stored index (an address not derived here, or the index
+/// of another one) is refused before anything is asked, signed or written.
+#[tokio::test]
+async fn cancel_commits_only_to_the_listings_reserved_receive_address() {
+    let l = listed_fixture().await;
+    let stored = l.r.listing();
+    answer(true);
+    let draft = cancel(&l).await.expect("cancel");
+    let row = with_db(&l.r.app, |c| {
+        queries::get_tx_draft(c, &draft.id).unwrap().unwrap()
+    });
+    let plan: DraftPlan = serde_json::from_str(&row.signing_inputs_json).unwrap();
+    assert_eq!(
+        (plan.inputs[0].txid.as_str(), plan.inputs[0].vout),
+        (l.lock.0.as_str(), l.lock.1)
+    );
+    assert_eq!(plan.inputs[0].lock_key_name.as_deref(), Some(NAME));
+    assert_eq!(
+        (plan.inputs[0].branch, i64::from(plan.inputs[0].child_index)),
+        (0, stored.cancel_child_index.unwrap())
+    );
+    let (v, h) =
+        address::decode(Network::Regtest, stored.cancel_address.as_deref().unwrap()).unwrap();
+    assert_eq!(plan.outputs[0].covenant_type, COV_TRANSFER);
+    assert_eq!(plan.outputs[0].address, lock_address(Network::Regtest));
+    assert_eq!(
+        plan.outputs[0].covenant_items_hex[2..4],
+        [hex::encode([v]), hex::encode(h)]
+    );
+
+    for (case, sql) in [
+        (
+            "an address not derived here",
+            "UPDATE shakedex_listings SET cancel_address = ?2 WHERE id = ?1",
+        ),
+        (
+            "the index of the payment address",
+            "UPDATE shakedex_listings SET cancel_child_index = cancel_child_index - 1
+             WHERE id = ?1 AND ?2 IS NOT NULL",
+        ),
+    ] {
+        let l = listed_fixture().await;
+        let stranger = address::encode_p2wpkh(Network::Regtest, &[3; 20]).unwrap();
+        with_db(&l.r.app, |c| {
+            c.execute(sql, params![l.r.listing_id, stranger]).unwrap();
+        });
+        decline_if_asked();
+        let e = err_text(cancel(&l).await.expect_err(case));
+        assert!(
+            e.contains(crate::commands::shakedex::CANCEL_NOT_OUR_ADDRESS),
+            "{case}: {e}"
+        );
+        assert_no_cancel(&l, ListingState::Listed);
+    }
+}
+
+/// R28: Cancel acts on Listed and Restored listings only;
+/// every other state is refused with its reason, nothing asked or written.
+#[tokio::test]
+async fn cancel_refused_outside_listed_and_restored() {
+    for (state, reason) in [
+        (ListingState::Locking, "Cancel transfer"),
+        (ListingState::ReadyToFinalize, "Cancel transfer"),
+        (ListingState::Finalizing, "once it is"),
+        (ListingState::SalePending, "mempool"),
+        (ListingState::Cancelling, "already being cancelled"),
+        (
+            ListingState::CancelAwaitingFinalize,
+            "already being cancelled",
+        ),
+        (ListingState::CancelFinalizing, "already being cancelled"),
+        (ListingState::Sold, "sold"),
+        (ListingState::Cancelled, "cancelled"),
+        (ListingState::Aborted, "aborted"),
+        (ListingState::Expired, "expired"),
+    ] {
+        let l = listed_fixture().await;
+        set_state(&l.r.app, &l.r.listing_id, state);
+        decline_if_asked();
+        let e = err_text(cancel(&l).await.expect_err("refused"));
+        assert!(e.contains(reason), "{state:?}: {e}");
+        assert_no_cancel(&l, state);
+    }
+}
+
+/// R28: a declined prompt signs and writes nothing.
+#[tokio::test]
+async fn declined_cancel_signs_and_writes_nothing() {
+    let l = listed_fixture().await;
+    answer(false);
+    let e = cancel(&l).await.expect_err("declined");
+    assert!(matches!(e, crate::error::AppError::UserRejected), "{e:?}");
+    assert_eq!(take_test_requests().len(), 1, "it was asked");
+    let s = l.r.listing();
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!((s.cancel_draft_id, s.cancel_txid), (None, None));
+    assert_eq!(count(&l.r.app, "wallet_tx_drafts"), 2);
+}
+
+/// R28: the lock coin must be unspent and this listing's on the node: hsd's
+/// 404 (spent in a block or in the mempool) refuses the cancel with its
+/// reason; a coin there that is not a FINALIZE of the name at the lock
+/// address is "could not check". Nothing asked or written.
+#[tokio::test]
+async fn cancel_refused_when_the_lock_coin_is_spent() {
+    let mut l = listed_fixture().await;
+    let (info, lock) = (l.info(), l.lock.clone());
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info.clone(),
+        vec![(lock.0.clone(), lock.1, None)],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(cancel(&l).await.expect_err("spent"));
+    assert!(
+        e.contains(crate::commands::shakedex::CANCEL_LOCK_COIN_SPENT),
+        "{e}"
+    );
+    assert_no_cancel(&l, ListingState::Listed);
+
+    let elsewhere = coin_json(
+        &lock.0,
+        lock.1,
+        &addr00(Network::Regtest).0,
+        COV_FINALIZE,
+        TRANSFER_HEIGHT + 20,
+    );
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info,
+        vec![(lock.0, lock.1, Some(elsewhere))],
+    )
+    .await;
+    decline_if_asked();
+    let e = cancel(&l).await.expect_err("not our lock");
+    assert!(matches!(e, crate::error::AppError::Rpc(_)), "{e:?}");
+    assert_no_cancel(&l, ListingState::Listed);
+}
+
+/// R21, R32: a lock restored by name has no cancel address;
+/// Cancel reserves one receive address (marked used, so it is not handed
+/// out again), stores it on the listing, and the cancel commits to it. The
+/// prompt says the current price is not known on this device.
+#[tokio::test]
+async fn cancel_of_a_lock_restored_by_name_reserves_its_cancel_address() {
+    let l = listed_fixture().await;
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET state = 'restored', payment_address = NULL,
+                 cancel_address = NULL, cancel_child_index = NULL, listing_file_json = NULL,
+                 steps_json = '[]', lock_transfer_txid = NULL, lock_finalize_draft_id = NULL
+             WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap();
+    });
+    let before = count(&l.r.app, "derived_addresses");
+    answer(true);
+    let draft = cancel(&l).await.expect("cancel");
+    let reqs = take_test_requests();
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(rows
+        .iter()
+        .any(|r| r["label"] == "Current price" && r["value"] == CANCEL_PRICE_NOT_KNOWN));
+    let s = l.r.listing();
+    assert_eq!(s.state, ListingState::Cancelling);
+    let address = s.cancel_address.clone().expect("reserved");
+    let index = u32::try_from(s.cancel_child_index.unwrap()).unwrap();
+    assert_eq!(count(&l.r.app, "derived_addresses"), before + 1);
+    let used: i64 = with_db(&l.r.app, |c| {
+        c.query_row(
+            "SELECT used FROM derived_addresses WHERE address = ?1",
+            [&address],
+            |r| r.get(0),
+        )
+        .unwrap()
+    });
+    assert_eq!(used, 1, "reserved (R21)");
+    assert_eq!(
+        with_db(&l.r.app, |c| queries::receive_address_at(
+            c, PROFILE, 0, index
+        )
+        .unwrap()),
+        Some(address.clone())
+    );
+    let row = with_db(&l.r.app, |c| {
+        queries::get_tx_draft(c, &draft.id).unwrap().unwrap()
+    });
+    let plan: DraftPlan = serde_json::from_str(&row.signing_inputs_json).unwrap();
+    let (_, h) = address::decode(Network::Regtest, &address).unwrap();
+    assert_eq!(plan.outputs[0].covenant_items_hex[3], hex::encode(h));
+    assert_eq!(plan.inputs[0].child_index, index);
+}
+
+/// R28, R3: a listing with stored steps of which none
+/// is valid at the node's MTP says so in the prompt's "Current price" row;
+/// it is not "not known on this device", which only a lock restored by
+/// name (no stored steps) says.
+#[tokio::test]
+async fn cancel_prompt_says_when_no_step_is_valid_yet() {
+    let mut l = listed_fixture().await;
+    let (info, coin, lock) = (l.info(), l.lock_coin(TRANSFER_HEIGHT + 20), l.lock.clone());
+    // The node's MTP a day before Finalize & sign: the one step's lock time
+    // is not reached.
+    l.node(
+        LISTED_TIP,
+        Some(SIGN_MTP - 86_400),
+        info,
+        vec![(lock.0, lock.1, Some(coin))],
+    )
+    .await;
+    answer(true);
+    cancel(&l).await.expect("cancel");
+    let reqs = take_test_requests();
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let row = rows.iter().find(|r| r["label"] == "Current price").unwrap();
+    assert_eq!(row["value"], CANCEL_PRICE_NONE_VALID_YET);
+    assert_ne!(row["value"], CANCEL_PRICE_NOT_KNOWN);
+}
+
+/// R28: the cancel's other node checks, each refused before anything is
+/// asked, signed or written: the lock coin still in the mempool (the
+/// finalize into the lock not mined), the name expired (`info` null), the
+/// lock coin from an earlier registration of the name, no median time (the
+/// current price cannot be read), and a lock coin at the lock address of a
+/// stored key this wallet does not derive for the name.
+#[tokio::test]
+async fn cancel_refused_on_node_facts_that_do_not_hold() {
+    let mut l = listed_fixture().await;
+    let (info, lock) = (l.info(), l.lock.clone());
+    let mined = l.lock_coin(TRANSFER_HEIGHT + 20);
+
+    let unmined = l.lock_coin(-1);
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info.clone(),
+        vec![(lock.0.clone(), lock.1, Some(unmined))],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(cancel(&l).await.expect_err("unmined"));
+    assert!(e.contains("not mined yet"), "{e}");
+    assert_no_cancel(&l, ListingState::Listed);
+
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        json!({ "info": null, "start": null }),
+        vec![(lock.0.clone(), lock.1, Some(mined.clone()))],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(cancel(&l).await.expect_err("expired"));
+    assert!(e.contains("has expired"), "{e}");
+    assert_no_cancel(&l, ListingState::Listed);
+
+    let mut later = info.clone();
+    later["info"]["height"] = (NAME_HEIGHT + 1).into();
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        later,
+        vec![(lock.0.clone(), lock.1, Some(mined.clone()))],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(cancel(&l).await.expect_err("leftover"));
+    assert!(e.contains("earlier registration"), "{e}");
+    assert_no_cancel(&l, ListingState::Listed);
+
+    l.node(
+        LISTED_TIP,
+        None,
+        info.clone(),
+        vec![(lock.0.clone(), lock.1, Some(mined))],
+    )
+    .await;
+    decline_if_asked();
+    let e = cancel(&l).await.expect_err("no mtp");
+    assert!(
+        matches!(&e, crate::error::AppError::Rpc(m) if m.contains("median time")),
+        "{e:?}"
+    );
+    assert_no_cancel(&l, ListingState::Listed);
+
+    // The stored key is another name's lock key, and the node's lock coin
+    // sits at its lock address: the coin checks pass, the re-derived key
+    // for NAME does not match.
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET lock_pubkey_hex = ?2 WHERE id = ?1",
+            params![l.r.listing_id, hex::encode(other.pubkey)],
+        )
+        .unwrap();
+    });
+    let elsewhere = coin_json(
+        &lock.0,
+        lock.1,
+        &other.address,
+        COV_FINALIZE,
+        TRANSFER_HEIGHT + 20,
+    );
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info,
+        vec![(lock.0, lock.1, Some(elsewhere))],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(cancel(&l).await.expect_err("key mismatch"));
+    assert!(e.contains(sell::LISTING_KEY_MISMATCH), "{e}");
+    assert_no_cancel(&l, ListingState::Listed);
+}
+
+/// R21, R32: the cancel address of a restored lock is reserved and
+/// written on its row in one database transaction. When the row write does
+/// not apply (the row is no longer a Restored lock without a cancel
+/// address), the reservation is rolled back: no derived address is added
+/// or marked used.
+#[tokio::test]
+async fn a_restored_cancel_address_is_reserved_only_with_its_row() {
+    let l = listed_fixture().await;
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET cancel_address = NULL, cancel_child_index = NULL
+             WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap();
+    });
+    let used = |app: &App| -> i64 {
+        with_db(app, |c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM derived_addresses WHERE used = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        })
+    };
+    let (rows, used_before) = (count(&l.r.app, "derived_addresses"), used(&l.r.app));
+    let e = with_db(&l.r.app, |c| {
+        reserve_restored_cancel_address(c, PROFILE, &l.r.listing_id).expect_err("listed")
+    });
+    assert!(err_text(e).contains("changed meanwhile"));
+    assert_eq!(
+        count(&l.r.app, "derived_addresses"),
+        rows,
+        "nothing derived"
+    );
+    assert_eq!(used(&l.r.app), used_before, "nothing reserved");
+    let s = l.r.listing();
+    assert_eq!((s.cancel_address, s.cancel_child_index), (None, None));
+}
+
+use crate::noncustodial::shakedex::cancel::CANCEL_LOST_TO_PURCHASE;
+
+/// A TRANSFER of NAME at our regtest lock committing to `to`, output 0 of
+/// `txid`, as `GET /coin` sends it.
+fn transfer_at_lock(txid: &str, to: &str, height: i64) -> Value {
+    let (v, h) = address::decode(Network::Regtest, to).unwrap();
+    let mut c = coin_json(
+        txid,
+        0,
+        &lock_address(Network::Regtest),
+        COV_TRANSFER,
+        height,
+    );
+    c["covenant"]["items"][2] = hex::encode([v]).into();
+    c["covenant"]["items"][3] = hex::encode(h).into();
+    c
+}
+
+/// `txid` as `GET /tx` sends it: input 0 spends `lock` (witness signed with
+/// `sighash`), output 0 is a TRANSFER of NAME at our lock committing to
+/// `to`, and with `pay` the last output pays it 5 HNS (a purchase: a step
+/// commits to output len - 1 - 0).
+fn out_of_lock(
+    txid: &str,
+    lock: (&str, u32),
+    to: &str,
+    height: i64,
+    pay: Option<&str>,
+    sighash: u8,
+) -> Value {
+    let none = json!({ "type": 0, "action": "NONE", "items": [] });
+    let transfer = transfer_at_lock(txid, to, height);
+    let mut outputs = vec![
+        json!({ "value": NAME_VALUE, "address": transfer["address"], "covenant": transfer["covenant"] }),
+        json!({ "value": 1, "address": addr00(Network::Regtest).0, "covenant": none }),
+    ];
+    if let Some(pay) = pay {
+        outputs.push(json!({ "value": 5_000_000, "address": pay, "covenant": none }));
+    }
+    json!({
+        "hash": txid, "height": height, "hex": "00",
+        "inputs": [
+            { "prevout": { "hash": lock.0, "index": lock.1 },
+              "witness": [format!("{}{sighash:02x}", "aa".repeat(64)), "76".repeat(40)] },
+            { "prevout": { "hash": "aa".repeat(32), "index": 1 },
+              "witness": [format!("{}01", "bb".repeat(64)), "02".repeat(33)] }
+        ],
+        "outputs": outputs
+    })
+}
+
+/// R28: a purchase mined before our cancel wins. While it is only in the
+/// node's mempool (the owner still the lock coin) the listing stays
+/// Cancelling: no verdict over a cancel of ours. Mined, the listing is Sold
+/// by it (R22, the purchase paying our payment address), and our cancel,
+/// which can never land, has its reserved coins released and is dropped
+/// with the reason.
+#[tokio::test]
+async fn purchase_beats_cancel() {
+    let l = listed_fixture().await;
+    answer(true);
+    let cx = cancel(&l).await.expect("cancel");
+    let reserved = |app: &App| -> i64 {
+        with_db(app, |c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = ?1",
+                [&cx.id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        })
+    };
+    assert!(reserved(&l.r.app) > 0, "the cancel holds its funding coin");
+    let pay = l.r.listing().payment_address.unwrap();
+    let buy = "b1".repeat(32);
+    let buyer = address::encode_p2wpkh(Network::Regtest, &[9; 20]).unwrap();
+    // Our coin of the purchase at the payment address, as the sync records it.
+    let paid = |height: i64| {
+        with_db(&l.r.app, |c| {
+            c.execute(
+                "INSERT OR REPLACE INTO tracked_utxos
+                    (txid, vout, wallet_profile_id, address, script_pubkey_hex, value_doos,
+                     height, covenant_type, spend_class, spent_by_txid)
+                 VALUES (?1, 2, ?2, ?3, '00', 5000000, ?4, 0, 'liquid_hns', NULL)",
+                params![buy, PROFILE, pay, height],
+            )
+            .unwrap();
+        })
+    };
+    let lock = (l.lock.0.as_str(), l.lock.1);
+
+    paid(-1);
+    let mempool = MockNodeRpc::new()
+        .with_name_info(l.info())
+        .with_tx_by_hash(out_of_lock(&buy, lock, &buyer, -1, Some(&pay), 0x84))
+        .with_get_coin(|_, _| Ok(None));
+    run_listing_step(&l.r.app, &mempool).await;
+    assert_eq!(
+        listing_state(&l.r.app, &l.r.listing_id),
+        ListingState::Cancelling,
+        "mempool"
+    );
+    assert!(
+        reserved(&l.r.app) > 0,
+        "still held while the purchase is unmined"
+    );
+
+    paid(LISTED_TIP);
+    let coin: NodeCoin =
+        serde_json::from_value(transfer_at_lock(&buy, &buyer, LISTED_TIP)).unwrap();
+    let b = buy.clone();
+    let mined = MockNodeRpc::new()
+        .with_name_info(name_info(RENEWAL, 0, &buy))
+        .with_tx_by_hash(out_of_lock(
+            &buy,
+            lock,
+            &buyer,
+            LISTED_TIP,
+            Some(&pay),
+            0x84,
+        ))
+        .with_get_coin(move |t, v| Ok((t == b && v == 0).then(|| coin.clone())));
+    run_listing_step(&l.r.app, &mined).await;
+    let s = l.r.listing();
+    assert_eq!(
+        (s.state, s.sold_txid.as_deref()),
+        (ListingState::Sold, Some(buy.as_str()))
+    );
+    assert_eq!(reserved(&l.r.app), 0, "the cancel's coins are free again");
+    let d = with_db(&l.r.app, |c| {
+        queries::get_tx_draft(c, &cx.id).unwrap().unwrap()
+    });
+    assert_eq!(d.status, "dropped");
+    assert_eq!(d.error_message.as_deref(), Some(CANCEL_LOST_TO_PURCHASE));
+}
+
+/// Review Focus 1 (R28, ADR 0004): re-listing a name after a cancel reuses
+/// its lock key and lock address, and the new listing tracks only its own
+/// lock outpoint. The old listing (Cancelled, lock coin f1) is terminal, so
+/// the name can be locked again and no job reads it; a mined TRANSFER to an
+/// address of ours out of the OLD lock coin is not the new listing's
+/// cancel, one out of the new lock coin is; the old listing never moves,
+/// and none of its cancel, steps or file attach to the new one.
+#[tokio::test]
+async fn relist_after_cancel_tracks_only_the_new_lock_coin() {
+    let conn = seeded("regtest", "mnemonic_hot", "http://127.0.0.1:9");
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let addr = |conn: &Connection| derivation::reserve_receive_address(conn, PROFILE).unwrap();
+    let (old_pay, old_cancel) = (addr(&conn), addr(&conn));
+    let old = ShakedexListing {
+        wallet_profile_id: PROFILE.into(),
+        lock_pubkey_hex: hex::encode(key.pubkey),
+        lock_txid: Some("f1".repeat(32)),
+        lock_vout: Some(0),
+        payment_address: Some(old_pay.address),
+        cancel_address: Some(old_cancel.address.clone()),
+        cancel_child_index: Some(i64::from(old_cancel.child_index)),
+        steps_json: r#"[{"price":5000000,"lockTime":1,"signature":"ab"}]"#.into(),
+        listing_file_json: Some("{\"old\":true}".into()),
+        cancel_txid: Some("c1".repeat(32)),
+        cancel_vout: Some(0),
+        ..listing("old", NAME, ListingState::Cancelled)
+    };
+    queries::insert_shakedex_listing(&conn, &old).unwrap();
+    assert!(
+        queries::open_shakedex_listing_for_name(&conn, PROFILE, NAME)
+            .unwrap()
+            .is_none(),
+        "a Cancelled listing leaves the name free to lock again"
+    );
+    let (new_pay, new_cancel) = (addr(&conn), addr(&conn));
+    let new = ShakedexListing {
+        wallet_profile_id: PROFILE.into(),
+        lock_pubkey_hex: hex::encode(key.pubkey),
+        lock_txid: Some("f2".repeat(32)),
+        lock_vout: Some(0),
+        payment_address: Some(new_pay.address),
+        cancel_address: Some(new_cancel.address.clone()),
+        cancel_child_index: Some(i64::from(new_cancel.child_index)),
+        listing_file_json: Some("{}".into()),
+        ..listing("new", NAME, ListingState::Listed)
+    };
+    queries::insert_shakedex_listing(&conn, &new).unwrap();
+    assert_eq!(
+        queries::open_shakedex_listing_for_name(&conn, PROFILE, NAME)
+            .unwrap()
+            .map(|l| l.id)
+            .as_deref(),
+        Some("new")
+    );
+    let after: Vec<String> = queries::list_shakedex_listings_after_lock(&conn, PROFILE, 7)
+        .unwrap()
+        .into_iter()
+        .map(|l| l.id)
+        .collect();
+    assert_eq!(after, ["new"], "the old listing is in no job's set");
+
+    // The owner a mined TRANSFER at our lock to our (new) cancel address,
+    // its transaction spending `spends`.
+    let run = |spends: &str| {
+        let c9 = "c9".repeat(32);
+        let coin: NodeCoin =
+            serde_json::from_value(transfer_at_lock(&c9, &new_cancel.address, QUIET_TIP)).unwrap();
+        let tx = out_of_lock(&c9, (spends, 0), &new_cancel.address, QUIET_TIP, None, 0x83);
+        let c = c9.clone();
+        MockNodeRpc::new()
+            .with_name_info(name_info(RENEWAL, 0, &c9))
+            .with_tx_by_hash(tx)
+            .with_get_coin(move |t, v| Ok((t == c && v == 0).then(|| coin.clone())))
+    };
+    let rpc = run(&"f1".repeat(32));
+    refresh_listings_with_client(&conn, &rpc, PROFILE)
+        .await
+        .unwrap();
+    let get = |id: &str| queries::get_shakedex_listing(&conn, id).unwrap().unwrap();
+    assert_eq!(
+        get("new").state,
+        ListingState::Listed,
+        "out of the old lock coin: not ours to follow"
+    );
+    assert_eq!(
+        get("old"),
+        old_with_timestamps(&get("old"), &old),
+        "the old listing never moves"
+    );
+
+    let rpc = run(&"f2".repeat(32));
+    refresh_listings_with_client(&conn, &rpc, PROFILE)
+        .await
+        .unwrap();
+    let n = get("new");
+    assert_eq!(n.state, ListingState::CancelAwaitingFinalize);
+    assert_eq!(
+        (n.cancel_txid.as_deref(), n.cancel_vout),
+        (Some("c9".repeat(32).as_str()), Some(0))
+    );
+    assert_eq!(
+        (n.lock_txid.as_deref(), n.steps_json.as_str()),
+        (Some("f2".repeat(32).as_str()), "[]")
+    );
+    assert_eq!(n.listing_file_json.as_deref(), Some("{}"));
+    let o = get("old");
+    assert_eq!(
+        (o.state, o.cancel_txid.as_deref(), o.lock_txid.as_deref()),
+        (
+            ListingState::Cancelled,
+            Some("c1".repeat(32).as_str()),
+            Some("f1".repeat(32).as_str())
+        )
+    );
+}
+
+/// `want` with the timestamps the database gave `got` (the insert fills
+/// them).
+fn old_with_timestamps(got: &ShakedexListing, want: &ShakedexListing) -> ShakedexListing {
+    ShakedexListing {
+        created_at: got.created_at.clone(),
+        updated_at: got.updated_at.clone(),
+        ..want.clone()
+    }
+}
+
+// --- The cancel's FINALIZE home (T5, R28) -----------------------------------
+
+use crate::commands::shakedex::finalize_cancel;
+use crate::noncustodial::shakedex::cancel::CANCEL_FINALIZE_ACTION;
+use crate::noncustodial::shakedex::lock_key::LockKey;
+
+fn r_key(l: &Listed) -> LockKey {
+    l.r.key()
+}
+
+/// The Listed fixture cancelled, its cancel mined at `height` and the
+/// listing CancelAwaitingFinalize (its funding coin released, standing in
+/// for its change); the node at `tip` shows the cancel's TRANSFER, at our
+/// lock committing to `to` (the listing's cancel address unless given), as
+/// the name's owner. Returns the cancel's txid.
+async fn cancel_mined_fixture(height: i64, tip: i64, to: Option<String>) -> (Listed, String) {
+    let mut l = listed_fixture().await;
+    answer(true);
+    let cx = cancel(&l).await.expect("cancel");
+    let c = cx.summary["txid"].as_str().unwrap().to_string();
+    with_db(&l.r.app, |db| {
+        queries::update_tx_draft_status(db, &cx.id, "broadcasted", None, Some(&c)).unwrap();
+        queries::update_tx_draft_confirmation(db, &cx.id, height, None).unwrap();
+        queries::release_reserved_utxos_for_draft(db, &cx.id).unwrap();
+        assert_eq!(
+            queries::mark_listing_cancel_mined(db, &l.r.listing_id, (&c, 0), (&l.lock.0, l.lock.1))
+                .unwrap(),
+            1
+        );
+    });
+    let to = to.unwrap_or_else(|| l.r.listing().cancel_address.unwrap());
+    let mut info = name_info(RENEWAL, 0, &c);
+    info["info"]["transfer"] = height.into();
+    let coin = transfer_at_lock(&c, &to, height);
+    l.node(
+        tip,
+        Some(LISTED_MTP),
+        info,
+        vec![(c.clone(), 0, Some(coin))],
+    )
+    .await;
+    (l, c)
+}
+
+/// The payment address a Listed fixture reserves: another derived address
+/// of the profile (every fixture reserves the same indexes).
+async fn listed_fixture_payment() -> String {
+    listed_fixture().await.r.listing().payment_address.unwrap()
+}
+
+/// R28: once the cancel's lockup is over (hsd judges the FINALIZE at tip +
+/// 1), the FINALIZE out of the lock is built: the cancel's TRANSFER with
+/// the `[lockScript]` witness, to the address that TRANSFER commits to, the
+/// fee from our coins; the listing is CancelFinalizing with that draft,
+/// which the usual confirm, sign and broadcast commands send. A cancel
+/// committing to another address of ours (another device's) pays that one.
+/// A second build is refused while the first is linked.
+#[tokio::test]
+async fn finalize_cancel_builds_the_finalize_to_the_committed_address() {
+    let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
+    let (l, c) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 1, None).await;
+    let to = l.r.listing().cancel_address.unwrap();
+    let draft = finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+        .await
+        .expect("finalize");
+    assert_eq!(draft.action, CANCEL_FINALIZE_ACTION);
+    let row = with_db(&l.r.app, |db| {
+        queries::get_tx_draft(db, &draft.id).unwrap().unwrap()
+    });
+    assert_eq!(row.status, "draft", "signed later by the usual commands");
+    let plan: DraftPlan = serde_json::from_str(&row.signing_inputs_json).unwrap();
+    assert_eq!(
+        (plan.inputs[0].txid.as_str(), plan.inputs[0].vout),
+        (c.as_str(), 0)
+    );
+    assert_eq!(
+        plan.inputs[0].foreign_witness_hex.as_deref(),
+        Some(&[hex::encode(r_key(&l).script)][..])
+    );
+    assert_eq!(
+        plan.inputs[0].lock_key_name, None,
+        "no lock key signs a FINALIZE"
+    );
+    assert_eq!(plan.outputs[0].covenant_type, COV_FINALIZE);
+    assert_eq!(plan.outputs[0].address, to);
+    assert_eq!(plan.outputs[0].value, NAME_VALUE);
+    let s = l.r.listing();
+    assert_eq!(s.state, ListingState::CancelFinalizing);
+    assert_eq!(
+        s.cancel_finalize_draft_id.as_deref(),
+        Some(draft.id.as_str())
+    );
+    let e = err_text(
+        finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err("twice"),
+    );
+    assert!(e.contains("already built"), "{e}");
+
+    // Another device's cancel to another address of ours: the payment
+    // address here stands in for it.
+    let pay = listed_fixture_payment().await;
+    let (l, _) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 1, Some(pay.clone())).await;
+    let draft = finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+        .await
+        .expect("finalize");
+    let row = with_db(&l.r.app, |db| {
+        queries::get_tx_draft(db, &draft.id).unwrap().unwrap()
+    });
+    let plan: DraftPlan = serde_json::from_str(&row.signing_inputs_json).unwrap();
+    assert_eq!(plan.outputs[0].address, pay);
+}
+
+/// A refusal wrote nothing: the listing still awaits its finalize and only
+/// the lock, FINALIZE and cancel drafts exist.
+fn assert_no_cancel_finalize(l: &Listed) {
+    let s = l.r.listing();
+    assert_eq!(
+        (s.state, s.cancel_finalize_draft_id),
+        (ListingState::CancelAwaitingFinalize, None)
+    );
+    assert_eq!(
+        count(&l.r.app, "wallet_tx_drafts"),
+        3,
+        "lock, FINALIZE and cancel only"
+    );
+}
+
+/// R28: refused, with the reason and nothing written, one block before the
+/// lockup ends, for a TRANSFER committing to an address this wallet has not
+/// derived, and while the name's owner is not the cancel's TRANSFER.
+#[tokio::test]
+async fn finalize_cancel_refused_before_the_lockup() {
+    let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
+    let (l, _) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 2, None).await;
+    let e = err_text(
+        finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err("early"),
+    );
+    assert!(e.contains("in 1 block"), "{e}");
+    assert_no_cancel_finalize(&l);
+
+    let stranger = address::encode_p2wpkh(Network::Regtest, &[3; 20]).unwrap();
+    let (l, _) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 1, Some(stranger)).await;
+    let e = err_text(
+        finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err("not ours"),
+    );
+    assert!(e.contains("not an address of this wallet"), "{e}");
+    assert_no_cancel_finalize(&l);
+
+    let (mut l, c) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 1, None).await;
+    let to = l.r.listing().cancel_address.unwrap();
+    let mut moved = name_info(RENEWAL, 0, &"d1".repeat(32));
+    moved["info"]["transfer"] = LISTED_TIP.into();
+    let coin = transfer_at_lock(&c, &to, LISTED_TIP);
+    l.node(
+        LISTED_TIP + lockup - 1,
+        Some(LISTED_MTP),
+        moved,
+        vec![(c, 0, Some(coin))],
+    )
+    .await;
+    let e = err_text(
+        finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err("moved"),
+    );
+    assert!(e.contains("no longer held by the cancel"), "{e}");
+    assert_no_cancel_finalize(&l);
+}
+
+/// R28: hsd's 404 for the cancel's TRANSFER (spent in a block or in the
+/// mempool, e.g. by a FINALIZE home already sent from here or from another
+/// device with the same seed, or undone by a reorg) refuses the FINALIZE
+/// before anything else is read, saying only that, and builds nothing.
+#[tokio::test]
+async fn finalize_cancel_refused_once_the_transfer_is_spent() {
+    let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
+    let (mut l, c) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 1, None).await;
+    let mut home = name_info(RENEWAL, 0, &"d1".repeat(32));
+    home["info"]["transfer"] = 0.into();
+    l.node(
+        LISTED_TIP + lockup,
+        Some(LISTED_MTP),
+        home,
+        vec![(c, 0, None)],
+    )
+    .await;
+    let e = err_text(
+        finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err("spent"),
+    );
+    assert!(
+        e.contains("no longer an unspent coin on the node") && e.contains("undone by a reorg"),
+        "{e}"
+    );
+    assert_no_cancel_finalize(&l);
+}
+
+/// R28: every node fact `finalize_cancel` reads refuses with its own reason
+/// when it does not hold, and nothing is written: the cancel's TRANSFER in
+/// the mempool, of another covenant or at another address, committing to an
+/// address not ours, of an earlier registration of the name (its covenant's
+/// name height not the name's); the name with no live state, revoked, or
+/// owned by another coin.
+#[tokio::test]
+async fn finalize_cancel_refused_on_node_facts_that_do_not_hold() {
+    let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
+    let tip = LISTED_TIP + lockup - 1;
+    let stranger = address::encode_p2wpkh(Network::Regtest, &[3; 20]).unwrap();
+    type Change = fn(&mut Value, &mut Value, &str);
+    let cases: [(&str, Change, &str); 8] = [
+        (
+            "in the mempool",
+            |coin, _, _| coin["height"] = (-1).into(),
+            "not mined yet",
+        ),
+        (
+            "another covenant",
+            |coin, _, _| {
+                coin["covenant"]["type"] = COV_FINALIZE.into();
+                coin["covenant"]["action"] = "FINALIZE".into();
+            },
+            "something else than this listing's cancel",
+        ),
+        (
+            "another address",
+            |coin, _, _| coin["address"] = addr00(Network::Regtest).0.into(),
+            "something else than this listing's cancel",
+        ),
+        ("not ours", |_, _, _| {}, "not an address of this wallet"),
+        (
+            "an earlier registration",
+            |coin, _, _| {
+                coin["covenant"]["items"][1] = hex::encode((NAME_HEIGHT - 1).to_le_bytes()).into()
+            },
+            "registered again",
+        ),
+        (
+            "no live name",
+            |_, info, _| *info = json!({ "info": null, "start": null }),
+            "no on-chain state",
+        ),
+        (
+            "revoked",
+            |_, info, _| info["info"]["revoked"] = 1.into(),
+            "no longer held by the cancel",
+        ),
+        (
+            "owner moved",
+            |_, info, _| info["info"]["owner"]["hash"] = "d1".repeat(32).into(),
+            "no longer held by the cancel",
+        ),
+    ];
+    for (case, change, want) in cases {
+        let to = (case == "not ours").then(|| stranger.clone());
+        let (mut l, c) = cancel_mined_fixture(LISTED_TIP, tip, to).await;
+        let to = if case == "not ours" {
+            stranger.clone()
+        } else {
+            l.r.listing().cancel_address.unwrap()
+        };
+        let mut coin = transfer_at_lock(&c, &to, LISTED_TIP);
+        let mut info = name_info(RENEWAL, 0, &c);
+        info["info"]["transfer"] = LISTED_TIP.into();
+        change(&mut coin, &mut info, &c);
+        l.node(tip, Some(LISTED_MTP), info, vec![(c, 0, Some(coin))])
+            .await;
+        let e = err_text(
+            finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+                .await
+                .expect_err(case),
+        );
+        assert!(e.contains(want), "{case}: {e}");
+        assert_no_cancel_finalize(&l);
+    }
+}
+
+// --- Lower price (T5, R26) ----------------------------------------------------
+
+use crate::commands::shakedex::{
+    lower_price_confirmed, LOWER_DURING_CANCEL, LOWER_LOCK_COIN_SPENT, LOWER_NO_PRICE_HERE,
+    LOWER_PRICE_TITLE,
+};
+use crate::noncustodial::shakedex::template::current_step_index;
+
+async fn lower(l: &Listed, price: &str) -> Result<ListingSummary, crate::error::AppError> {
+    lower_price_confirmed(&l.r.app.state(), l.r.app.handle(), &l.r.listing_id, price).await
+}
+
+/// Nothing lowered: the steps and the file as they were, nothing asked.
+fn assert_not_lowered(l: &Listed, before: &ShakedexListing) {
+    let after = l.r.listing();
+    assert_eq!(after.state, before.state);
+    assert_eq!(after.steps_json, before.steps_json);
+    assert_eq!(after.listing_file_json, before.listing_file_json);
+    assert_eq!(after.expires_at, before.expires_at);
+    assert!(take_test_requests().is_empty(), "nothing asked");
+    // The decline queued for a prompt that did not come.
+    crate::commands::secure_prompt::clear_test_answers();
+}
+
+/// R26: Lower price signs one new step valid now (R19's rule: the node's
+/// MTP, read before the prompt, minus 512 s), over the stored lock coin at
+/// hsd's value, paying the listing's payment address; it becomes the
+/// current step (R3: the cheapest valid at the MTP). The first step is kept
+/// as it was; the listing file is rewritten with both and reads back through
+/// the strict parser, its lock, key and expiry unchanged; the listing stays
+/// Listed. The prompt is R26's own, asked once, and shows the current and
+/// the new price. Nothing is sent.
+#[tokio::test]
+async fn lower_price_becomes_current() {
+    let mut l = listed_fixture().await;
+    let sent = no_broadcast(&mut l.r).await;
+    let before = l.r.listing();
+    let first: Vec<sell::StoredStep> = serde_json::from_str(&before.steps_json).unwrap();
+    answer(true);
+    let s = lower(&l, "3").await.expect("lower");
+    sent.assert_async().await;
+    let reqs = take_test_requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].title, LOWER_PRICE_TITLE);
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let row = |label: &str| {
+        rows.iter().find(|r| r["label"] == label).unwrap()["value"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(row("Current price"), "5.000000 HNS");
+    assert_eq!(row("New price"), "3.000000 HNS, valid at once");
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!(s.steps.len(), 2);
+    assert_eq!(s.steps[0], first[0], "the first step is kept as signed");
+    let new = &s.steps[1];
+    assert_eq!(
+        (new.price, new.lock_time),
+        (3_000_000, sell::buy_now_lock_time(LISTED_MTP))
+    );
+    let encoded: Vec<(u64, u32)> = s
+        .steps
+        .iter()
+        .map(|x| (x.price, encode_lock_time(x.lock_time).unwrap()))
+        .collect();
+    assert_eq!(
+        current_step_index(&encoded, LISTED_MTP),
+        Some(1),
+        "the lowered price is current"
+    );
+
+    let mut outpoint = [0u8; 32];
+    hex::decode_to_slice(&l.lock.0, &mut outpoint).unwrap();
+    let sig: [u8; 65] = hex::decode(&new.signature).unwrap().try_into().unwrap();
+    assert_eq!(sig[64], 0x84, "SINGLEREVERSE|ANYONECANPAY");
+    let key = l.r.key();
+    verify_step_signature(
+        &StepTemplate {
+            lock_outpoint: (outpoint, l.lock.1),
+            lock_value: NAME_VALUE,
+            lock_pubkey: &key.pubkey,
+            payment: crate::noncustodial::tx::output_address_from_string(
+                Network::Regtest,
+                before.payment_address.as_deref().unwrap(),
+            )
+            .unwrap(),
+            price: 3_000_000,
+            lock_time_secs: new.lock_time,
+        },
+        &sig,
+    )
+    .expect("signed by the lock key over the lock coin");
+
+    let after = l.r.listing();
+    assert_eq!(after.state, ListingState::Listed);
+    let file = ListingFile::parse(
+        after.listing_file_json.as_deref().unwrap(),
+        Network::Regtest,
+    )
+    .unwrap();
+    assert_eq!((file.lock_txid, file.lock_vout), (outpoint, l.lock.1));
+    assert_eq!(file.public_key, key.pubkey);
+    assert_eq!(Some(file.payment_addr.clone()), before.payment_address);
+    assert_eq!(file.steps.len(), 2);
+    assert_eq!(file.steps[1].signature, sig);
+    assert_eq!(
+        file.expires_at.map(|e| e as i64),
+        before.expires_at,
+        "expiry unchanged"
+    );
+    assert_eq!(after.expires_at, before.expires_at);
+}
+
+/// R26: Lower price is disabled while a cancel is unconfirmed (Cancelling),
+/// with that reason; a listing whose cancel is mined is refused as
+/// cancelled. Nothing asked, signed or written.
+#[tokio::test]
+async fn lower_refused_during_cancel() {
+    let l = listed_fixture().await;
+    answer(true);
+    cancel(&l).await.expect("cancel");
+    let _ = take_test_requests();
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("during the cancel"));
+    assert!(e.contains(LOWER_DURING_CANCEL), "{e}");
+    assert_not_lowered(&l, &before);
+    set_state(
+        &l.r.app,
+        &l.r.listing_id,
+        ListingState::CancelAwaitingFinalize,
+    );
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("cancelled"));
+    assert!(e.contains("cancelled"), "{e}");
+    assert_not_lowered(&l, &before);
+}
+
+/// R26: the price must be below the current step (R3, at the node's MTP):
+/// the same price, a dearer one, and prices the backend refuses for
+/// themselves (0, more than 6 decimals) are refused with the reason. Once
+/// lowered to 3, 3 again and 4 (dearer than the current 3, though below the
+/// first 5) are refused: a price is never raised.
+#[tokio::test]
+async fn lower_refused_at_or_above_the_current_step() {
+    let l = listed_fixture().await;
+    let before = l.r.listing();
+    for (price, why) in [
+        ("5", "not below the current price"),
+        ("6", "not below the current price"),
+        ("0", "above 0"),
+        ("4.0000001", "6 decimals"),
+    ] {
+        decline_if_asked();
+        let e = err_text(lower(&l, price).await.expect_err(price));
+        assert!(e.contains(why), "{price}: {e}");
+        assert_not_lowered(&l, &before);
+    }
+    answer(true);
+    lower(&l, "3").await.expect("lower to 3");
+    let _ = take_test_requests();
+    let lowered = l.r.listing();
+    for price in ["3", "4"] {
+        decline_if_asked();
+        let e = err_text(lower(&l, price).await.expect_err(price));
+        assert!(e.contains("raising it needs a cancel"), "{price}: {e}");
+        assert_not_lowered(&l, &lowered);
+    }
+}
+
+/// R26: the lock coin must be unspent and this listing's, on the node:
+/// hsd's 404 (spent in a block or in the mempool) refuses with the reason;
+/// a coin at the lock outpoint that is not a FINALIZE of this name at the
+/// lock address is "could not check"; the FINALIZE into the lock back in the
+/// mempool (a reorg) is refused too. Nothing asked, signed or written.
+#[tokio::test]
+async fn lower_refused_when_the_lock_coin_is_spent() {
+    let mut l = listed_fixture().await;
+    let before = l.r.listing();
+    let (info, lock) = (l.info(), l.lock.clone());
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info.clone(),
+        vec![(lock.0.clone(), lock.1, None)],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("spent"));
+    assert!(e.contains(LOWER_LOCK_COIN_SPENT), "{e}");
+    assert_not_lowered(&l, &before);
+
+    let other = coin_json_of(
+        "othername",
+        &lock.0,
+        lock.1,
+        &lock_address(Network::Regtest),
+        COV_FINALIZE,
+        TRANSFER_HEIGHT + 20,
+    );
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info.clone(),
+        vec![(lock.0.clone(), lock.1, Some(other))],
+    )
+    .await;
+    decline_if_asked();
+    let e = lower(&l, "3").await.expect_err("another name's coin");
+    assert!(matches!(e, crate::error::AppError::Rpc(_)), "{e:?}");
+    assert_not_lowered(&l, &before);
+
+    let unmined = l.lock_coin(-1);
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info,
+        vec![(lock.0, lock.1, Some(unmined))],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("in the mempool"));
+    assert!(e.contains("not mined"), "{e}");
+    assert_not_lowered(&l, &before);
+}
+
+/// R26, R28 (`lock_on_node`, the checks Lower price and Cancel share): a
+/// lock coin reply for another txid or output, without its address, with a
+/// value that is not a coin's, or without a readable name height is "could
+/// not check", nothing asked or written; a lock coin left over from an
+/// earlier registration (its name height not hsd's) is refused with that
+/// reason; hsd's txid in upper case is the stored lock coin all the same (the
+/// prompt is reached).
+#[tokio::test]
+async fn lower_refused_on_lock_coin_replies_that_do_not_hold() {
+    let mut l = listed_fixture().await;
+    let before = l.r.listing();
+    let (info, lock) = (l.info(), l.lock.clone());
+    let mined = l.lock_coin(TRANSFER_HEIGHT + 20);
+    let other_txid = "ab".repeat(32);
+    let mut other_tx = mined.clone();
+    other_tx["hash"] = other_txid.clone().into();
+    let mut other_vout = mined.clone();
+    other_vout["index"] = (lock.1 + 1).into();
+    let mut no_address = mined.clone();
+    no_address.as_object_mut().unwrap().remove("address");
+    let mut bad_value = mined.clone();
+    bad_value["value"] = (-1).into();
+    let mut no_height = mined.clone();
+    no_height["covenant"]["items"][1] = "zz".into();
+    for (case, coin) in [
+        ("another txid", other_tx),
+        ("another output", other_vout),
+        ("no address", no_address),
+        ("a value that is not a coin's", bad_value),
+        ("no readable name height", no_height),
+    ] {
+        l.node(
+            LISTED_TIP,
+            Some(LISTED_MTP),
+            info.clone(),
+            vec![(lock.0.clone(), lock.1, Some(coin))],
+        )
+        .await;
+        decline_if_asked();
+        let e = lower(&l, "3").await.expect_err(case);
+        assert!(matches!(e, crate::error::AppError::Rpc(_)), "{case}: {e:?}");
+        assert_not_lowered(&l, &before);
+    }
+
+    // The name expired and was opened again: hsd's name height is not the
+    // one the lock coin commits to.
+    let mut later = info.clone();
+    later["info"]["height"] = (NAME_HEIGHT + 1).into();
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        later,
+        vec![(lock.0.clone(), lock.1, Some(mined.clone()))],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("leftover"));
+    assert!(e.contains("earlier registration"), "{e}");
+    assert_not_lowered(&l, &before);
+
+    let mut upper = mined;
+    upper["hash"] = lock.0.to_uppercase().into();
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info,
+        vec![(lock.0.clone(), lock.1, Some(upper))],
+    )
+    .await;
+    answer(false);
+    let e = lower(&l, "3").await.expect_err("declined");
+    assert!(matches!(e, crate::error::AppError::UserRejected), "{e:?}");
+    assert_eq!(take_test_requests().len(), 1, "it was asked");
+    assert_eq!(l.r.listing().steps_json, before.steps_json);
+}
+
+/// R26, R3: a listing with no signed prices here (a lock restored by name,
+/// or a row without steps) has no current price to lower, and neither has
+/// one whose steps are not valid yet at the node's MTP: each is refused
+/// with that reason, nothing asked or written.
+#[tokio::test]
+async fn lower_refused_without_a_current_price() {
+    let l = listed_fixture().await;
+    set_state(&l.r.app, &l.r.listing_id, ListingState::Restored);
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("restored"));
+    assert!(e.contains("listing file"), "{e}");
+    assert_not_lowered(&l, &before);
+
+    set_state(&l.r.app, &l.r.listing_id, ListingState::Listed);
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET steps_json = '[]' WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap();
+    });
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("no steps"));
+    assert!(e.contains(LOWER_NO_PRICE_HERE), "{e}");
+    assert_not_lowered(&l, &before);
+
+    let l = {
+        let mut l = listed_fixture().await;
+        let (info, coin, lock) = (l.info(), l.lock_coin(TRANSFER_HEIGHT + 20), l.lock.clone());
+        // The node's MTP a day before Finalize & sign: the one step's lock
+        // time is not reached.
+        l.node(
+            LISTED_TIP,
+            Some(SIGN_MTP - 86_400),
+            info,
+            vec![(lock.0, lock.1, Some(coin))],
+        )
+        .await;
+        l
+    };
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("none valid yet"));
+    assert!(e.contains("no price of this listing is valid yet"), "{e}");
+    assert_not_lowered(&l, &before);
+}
+
+/// R26: Lower price needs the unlocked signer, checked before anything else:
+/// the node is not read.
+#[tokio::test]
+async fn lower_price_needs_the_unlocked_signer() {
+    let l = listed_fixture().await;
+    let before = l.r.listing();
+    *l.r.app.state::<AppState>().signer.lock().unwrap() = None;
+    decline_if_asked();
+    let e = lower(&l, "3").await.expect_err("locked");
+    assert!(matches!(e, crate::error::AppError::WalletLocked), "{e:?}");
+    assert!(
+        !l.r.mocks[3].matched_async().await,
+        "the lock coin was not read"
+    );
+    assert_not_lowered(&l, &before);
+}
+
+/// R16, R29: Cancel and Lower price act only for a recovery-phrase profile,
+/// with the sentence the UI shows (`RECOVERY_PHRASE_ONLY`).
+#[tokio::test]
+async fn cancel_and_lower_price_refused_for_ledger_and_watch_only() {
+    let sentence = crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY;
+    for kind in ["ledger_hardware", "xpriv_hot", "watch_only_xpub"] {
+        let l = listed_fixture().await;
+        with_db(&l.r.app, |c| {
+            c.execute(
+                "UPDATE wallet_profiles SET kind = ?1 WHERE id = ?2",
+                params![kind, PROFILE],
+            )
+            .unwrap();
+            if kind == "watch_only_xpub" {
+                c.execute(
+                    "UPDATE wallet_profiles SET watch_only = 1 WHERE id = ?1",
+                    params![PROFILE],
+                )
+                .unwrap();
+            }
+        });
+        let before = l.r.listing();
+        decline_if_asked();
+        let e = err_text(cancel(&l).await.expect_err("cancel"));
+        assert!(e.contains(sentence), "{kind}: {e}");
+        assert_no_cancel(&l, ListingState::Listed);
+        decline_if_asked();
+        let e = err_text(lower(&l, "3").await.expect_err("lower"));
+        assert!(e.contains(sentence), "{kind}: {e}");
+        assert_not_lowered(&l, &before);
+    }
+}
+
+/// R26: Lower price refuses a reverse auction until its schedule rule is
+/// built (T8). Nothing asked or written.
+#[tokio::test]
+async fn lower_refused_for_a_reverse_auction_until_t8() {
+    let l = listed_fixture().await;
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET mode = 'reverse_auction' WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap();
+    });
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("reverse auction"));
+    assert!(e.contains("reverse auctions are not supported yet"), "{e}");
+    assert_not_lowered(&l, &before);
+}
+
+/// R26: the lock key re-derived for the name must be the stored one: a
+/// stored key this wallet does not derive for the name (the node's lock
+/// coin at its lock address, so the coin checks pass) is refused before
+/// the prompt. Nothing asked, signed or written.
+#[tokio::test]
+async fn lower_refused_for_a_lock_key_this_wallet_does_not_derive() {
+    let mut l = listed_fixture().await;
+    let (info, lock) = (l.info(), l.lock.clone());
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    // The row and its file both carry that key (the file is this row's).
+    let mut file: Value =
+        serde_json::from_str(l.r.listing().listing_file_json.as_deref().unwrap()).unwrap();
+    file["publicKey"] = hex::encode(other.pubkey).into();
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET lock_pubkey_hex = ?2, listing_file_json = ?3
+             WHERE id = ?1",
+            params![l.r.listing_id, hex::encode(other.pubkey), file.to_string()],
+        )
+        .unwrap();
+    });
+    let elsewhere = coin_json(
+        &lock.0,
+        lock.1,
+        &other.address,
+        COV_FINALIZE,
+        TRANSFER_HEIGHT + 20,
+    );
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info,
+        vec![(lock.0, lock.1, Some(elsewhere))],
+    )
+    .await;
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("key mismatch"));
+    assert!(e.contains(sell::LISTING_KEY_MISMATCH), "{e}");
+    assert_not_lowered(&l, &before);
+}
+
+/// R23, R32: a listing whose file was imported without `expiresAt` (its row
+/// has no expiry) gets R23's at its first Lower price: the node's MTP plus
+/// 365 days, in the row and in the rewritten file read back strictly.
+#[tokio::test]
+async fn lower_price_gives_a_file_without_expiry_r23s() {
+    let l = listed_fixture().await;
+    let mut file: Value =
+        serde_json::from_str(l.r.listing().listing_file_json.as_deref().unwrap()).unwrap();
+    file.as_object_mut().unwrap().remove("expiresAt");
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET expires_at = NULL, listing_file_json = ?2 WHERE id = ?1",
+            params![l.r.listing_id, file.to_string()],
+        )
+        .unwrap();
+    });
+    answer(true);
+    lower(&l, "3").await.expect("lower");
+    let _ = take_test_requests();
+    let want = LISTED_MTP + sell::LISTING_LIFETIME_SECS;
+    let after = l.r.listing();
+    assert_eq!(after.expires_at, Some(i64::try_from(want).unwrap()));
+    let back = ListingFile::parse(
+        after.listing_file_json.as_deref().unwrap(),
+        Network::Regtest,
+    )
+    .unwrap();
+    assert_eq!(back.expires_at, Some(want));
+}
+
+/// R26, R32 (docs/CODING_STANDARDS.md: unknown fields are kept at every
+/// level): Lower price adds its step to the stored file as written, so a
+/// field this wallet does not write, at the top level or inside a step,
+/// survives; the new step carries only the fields we write, and every step
+/// of the file still verifies over the lock coin.
+#[tokio::test]
+async fn lower_price_keeps_a_files_unknown_fields() {
+    let l = listed_fixture().await;
+    let mut file: Value =
+        serde_json::from_str(l.r.listing().listing_file_json.as_deref().unwrap()).unwrap();
+    file["marketNote"] = json!({ "seen": 1 });
+    file["data"][0]["origin"] = json!("cli");
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET listing_file_json = ?2 WHERE id = ?1",
+            params![l.r.listing_id, file.to_string()],
+        )
+        .unwrap();
+    });
+    answer(true);
+    lower(&l, "3").await.expect("lower");
+    let _ = take_test_requests();
+    let row = l.r.listing();
+    let after: Value = serde_json::from_str(row.listing_file_json.as_deref().unwrap()).unwrap();
+    assert_eq!(after["marketNote"], json!({ "seen": 1 }));
+    assert_eq!(after["data"][0]["origin"], json!("cli"));
+    let mut keys: Vec<&String> = after["data"][1].as_object().unwrap().keys().collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["fee", "lockTime", "price", "signature"]);
+    let back =
+        ListingFile::parse(row.listing_file_json.as_deref().unwrap(), Network::Regtest).unwrap();
+    let mut outpoint = [0u8; 32];
+    hex::decode_to_slice(&l.lock.0, &mut outpoint).unwrap();
+    let payment = crate::noncustodial::tx::output_address_from_string(
+        Network::Regtest,
+        row.payment_address.as_deref().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        back.steps.iter().map(|s| s.price).collect::<Vec<_>>(),
+        vec![5_000_000, 3_000_000]
+    );
+    for s in &back.steps {
+        verify_step_signature(
+            &StepTemplate {
+                lock_outpoint: (outpoint, l.lock.1),
+                lock_value: NAME_VALUE,
+                lock_pubkey: &back.public_key,
+                payment: payment.clone(),
+                price: s.price,
+                lock_time_secs: s.lock_time,
+            },
+            &s.signature,
+        )
+        .unwrap_or_else(|e| panic!("step at {}: {e}", s.price));
+    }
+}
+
+/// R26: Lower price adds its step to the stored file only when that file is
+/// the row's: its steps, lock and key the stored ones. A file whose step
+/// differs from the row's is refused before the prompt; nothing is written.
+#[tokio::test]
+async fn lower_refused_when_its_file_is_not_the_rows() {
+    let l = listed_fixture().await;
+    let mut file: Value =
+        serde_json::from_str(l.r.listing().listing_file_json.as_deref().unwrap()).unwrap();
+    file["data"][0]["price"] = json!(6_000_000);
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET listing_file_json = ?2 WHERE id = ?1",
+            params![l.r.listing_id, file.to_string()],
+        )
+        .unwrap();
+    });
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("refused"));
+    assert!(
+        e.contains("listing file matching its lock and steps"),
+        "{e}"
+    );
+    assert_not_lowered(&l, &before);
+}
+
+/// R23, R26: after Lower price the exported file is the row's, reads back
+/// strictly, and every step in it verifies over the stored lock outpoint,
+/// the lock coin's value and the listing's payment address.
+#[tokio::test]
+async fn lowered_listing_exports_a_file_whose_every_step_verifies() {
+    let l = listed_fixture().await;
+    answer(true);
+    lower(&l, "3").await.expect("lower");
+    let _ = take_test_requests();
+    let row = l.r.listing();
+    let exported = with_db(&l.r.app, |c| {
+        export_listing_file_from_conn(c, PROFILE, &l.r.listing_id).unwrap()
+    });
+    assert_eq!(Some(exported.as_str()), row.listing_file_json.as_deref());
+    let file = ListingFile::parse(&exported, Network::Regtest).unwrap();
+    let mut outpoint = [0u8; 32];
+    hex::decode_to_slice(&l.lock.0, &mut outpoint).unwrap();
+    assert_eq!((file.lock_txid, file.lock_vout), (outpoint, l.lock.1));
+    let payment = crate::noncustodial::tx::output_address_from_string(
+        Network::Regtest,
+        row.payment_address.as_deref().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        Some(file.payment_addr.as_str()),
+        row.payment_address.as_deref()
+    );
+    assert_eq!(
+        file.steps.iter().map(|s| s.price).collect::<Vec<_>>(),
+        vec![5_000_000, 3_000_000]
+    );
+    for s in &file.steps {
+        verify_step_signature(
+            &StepTemplate {
+                lock_outpoint: (outpoint, l.lock.1),
+                lock_value: NAME_VALUE,
+                lock_pubkey: &file.public_key,
+                payment: payment.clone(),
+                price: s.price,
+                lock_time_secs: s.lock_time,
+            },
+            &s.signature,
+        )
+        .unwrap_or_else(|e| panic!("step at {}: {e}", s.price));
+    }
+}
+
+/// R26: the steps are stored only while the listing still has the steps it
+/// was read with: a row changed while the prompt was open is left as it
+/// changed, and the command says so.
+#[tokio::test]
+async fn lower_price_saves_nothing_when_the_listing_changed_meanwhile() {
+    let l = listed_fixture().await;
+    let handle = l.r.app.handle().clone();
+    let id = l.r.listing_id.clone();
+    crate::commands::secure_prompt::on_next_test_answer(move || {
+        let db = &handle.state::<AppState>().db;
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE shakedex_listings SET steps_json = '[]' WHERE id = ?1",
+                [&id],
+            )
+            .unwrap();
+    });
+    let before = l.r.listing();
+    answer(true);
+    let e = err_text(lower(&l, "3").await.expect_err("changed"));
+    assert!(e.contains("changed meanwhile"), "{e}");
+    assert_eq!(take_test_requests().len(), 1, "it was asked");
+    let after = l.r.listing();
+    assert_eq!(after.steps_json, "[]", "the change is kept");
+    assert_eq!(after.listing_file_json, before.listing_file_json);
+    assert_eq!(after.expires_at, before.expires_at);
+    assert_eq!(after.state, ListingState::Listed);
 }
