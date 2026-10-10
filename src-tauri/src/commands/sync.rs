@@ -560,12 +560,17 @@ pub async fn run_sync_steps(
         // Restored) and after it (Listed, SalePending, Sold). Reads the node
         // and the database only, so the daemon runs it as the app does.
         crate::shakedex_jobs::refresh_listings_step(db_path, profile_id).await;
-        // R23, R25, R28 (T6): publish, keep listed and report the profile's
-        // published listings on LearnHNS Market, mainnet only. Both read the
-        // node and write to the market and the listing's market bookkeeping
-        // only: no key, no signature, no send — the daemon runs them as the
-        // app does (SECURITY.md, "The daemon never signs or broadcasts").
+        // R23, R24, R25, R28 (T6, T8): publish, advance, keep listed and
+        // report the profile's published listings on LearnHNS Market,
+        // mainnet only. Each reads the node and writes to the market and the
+        // listing's market bookkeeping only: no key, no signature, no send —
+        // the daemon runs them as the app does (SECURITY.md, "The daemon
+        // never signs or broadcasts").
         crate::shakedex_jobs::publish_listings_step(db_path, profile_id).await;
+        // R24 (T8): a reverse auction's copy on the market follows its
+        // schedule: the current step uploaded once it moves. Same contract
+        // as the two around it: no key, no signature, no send.
+        crate::shakedex_jobs::advance_reverse_auctions_step(db_path, profile_id).await;
         crate::shakedex_jobs::keep_listed_step(db_path, profile_id).await;
     }
 }

@@ -22,7 +22,9 @@ use crate::noncustodial::shakedex::sell::{self, StoredStep};
 use crate::noncustodial::shakedex::template::{valid_from_mtp, StepTemplate};
 use crate::noncustodial::sync::COV_FINALIZE;
 use crate::noncustodial::tx::output_address_from_string;
-use crate::shakedex_jobs::{keep_listed_with_client, publish_listings_with_client};
+use crate::shakedex_jobs::{
+    advance_reverse_auctions_with_client, keep_listed_with_client, publish_listings_with_client,
+};
 use crate::tests::learnhns_tests::{
     proof_part, recording, Seen, CANCEL_RECORDED, COIN_NOT_SEEN, NO_LISTING, PENDING_ACCEPTED,
     PROOF_NOT_FOUND, SALE_RECORDED, TX_NOT_SEEN, UPLOAD_ACCEPTED,
@@ -965,7 +967,12 @@ async fn reverse_auction_gets_its_pending_post() {
 /// steps 0–2 are valid (step 2 since MTP − 512) and steps 3–4 are not (step
 /// 3's lock time is MTP + 512, so its 512-s rounding stays above MTP).
 fn schedule() -> Vec<(u64, u64)> {
-    let l2 = sell::buy_now_lock_time(MTP);
+    schedule_at(MTP)
+}
+
+/// [`schedule`] around the node's median time `mtp`: step 2 is current.
+fn schedule_at(mtp: u64) -> Vec<(u64, u64)> {
+    let l2 = sell::buy_now_lock_time(mtp);
     vec![
         (10_000_000, l2 - 2_048),
         (8_000_000, l2 - 1_024),
@@ -979,6 +986,11 @@ fn schedule() -> Vec<(u64, u64)> {
 /// each signed over its lock coin, in the row's steps and its listing file
 /// (expiry MTP + 365 days) alike. The signed steps.
 fn as_schedule(f: &Fx, steps: &[(u64, u64)]) -> Vec<PriceStep> {
+    as_schedule_at(f, steps, MTP)
+}
+
+/// [`as_schedule`], the file's expiry `mtp` + 365 days.
+fn as_schedule_at(f: &Fx, steps: &[(u64, u64)], mtp: u64) -> Vec<PriceStep> {
     let signed: Vec<PriceStep> = steps
         .iter()
         .map(|&(price, lock_time)| signed_step(&f.key, &f.payment, price, lock_time))
@@ -987,7 +999,7 @@ fn as_schedule(f: &Fx, steps: &[(u64, u64)]) -> Vec<PriceStep> {
         &f.key,
         &f.payment,
         &signed,
-        MTP + sell::LISTING_LIFETIME_SECS,
+        mtp + sell::LISTING_LIFETIME_SECS,
     );
     f.conn
         .execute(
@@ -1240,6 +1252,235 @@ async fn foreign_copy_after_the_step_moved_is_replaced() {
             "{case}"
         );
     }
+}
+
+async fn advance(f: &Fx, node: &MockNodeRpc, s: &ServerGuard, now: i64) {
+    advance_reverse_auctions_with_client(&f.conn, node, &client(s), PROFILE, now)
+        .await
+        .unwrap();
+}
+
+/// A Listed reverse auction on [`schedule`] whose current step at MTP
+/// (step 2) the market accepted at NOW; the signed steps.
+async fn auction_on_market() -> (Fx, Vec<PriceStep>) {
+    let f = fx(ListingState::Listed, true);
+    let (steps, _) = schedule_on_market(&f).await;
+    (f, steps)
+}
+
+/// The median time at which step 3 of [`schedule`] is current, and the
+/// wall clock then (before the hourly check is due).
+fn moved() -> (u64, i64) {
+    let mtp = step_3_mtp();
+    (mtp, NOW + i64::try_from(mtp - MTP).unwrap())
+}
+
+/// `f`'s stored listing file cut to its step `i`, as the market would serve
+/// it.
+fn listing_file_market_copy_at(f: &Fx, i: usize) -> String {
+    let stored = listing(f).listing_file_json.unwrap();
+    crate::noncustodial::shakedex::listing_file::market_copy(&stored, i, NET).unwrap()
+}
+
+/// R24 (T8): once the node's median time makes a cheaper step current, the
+/// next sync uploads it alone, though the hourly check is not due, with no
+/// read of the market's copy; once is enough at the same median time.
+#[tokio::test]
+async fn uploads_again_when_the_step_moves() {
+    let (f, steps) = auction_on_market().await;
+    // Not moved: nothing.
+    let mut s = market().await;
+    let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    advance(&f, &node(&f, TIP), &s, NOW + 60).await;
+    any.assert_async().await;
+
+    let (mtp, later) = moved();
+    assert!(later < NOW + 3_600, "the hourly check is not due");
+    let mut s = market().await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+    advance(&f, &node_at(&f, TIP, mtp), &s, later).await;
+    m.assert_async().await;
+    get.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(
+        ListingFile::parse(&sent, NET).unwrap().steps,
+        vec![steps[3].clone()]
+    );
+    let l = listing(&f);
+    assert_eq!(l.market_status, Some(MarketStatus::Listed));
+    assert_eq!(
+        l.market_sent_step.as_deref(),
+        Some(hex::encode(steps[3].signature).as_str())
+    );
+    assert_eq!(
+        l.market_retry_at.as_deref(),
+        Some(rfc3339(later + 3_600).as_str())
+    );
+
+    let mut s = market().await;
+    let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    advance(&f, &node_at(&f, TIP, mtp), &s, later + 60).await;
+    any.assert_async().await;
+}
+
+/// R25 with R24 (T8): a moved step whose upload got no answer is retried by
+/// keep-listed after its backoff; the market's copy is then our earlier
+/// step, so ours is uploaded over it as Listed, not "replaced by someone
+/// else's copy".
+#[tokio::test]
+async fn our_earlier_step_on_the_market_is_not_a_replacement() {
+    let (f, steps) = auction_on_market().await;
+    let earlier = listing_file_market_copy_at(&f, 2);
+    let (mtp, later) = moved();
+    let mut s = market().await;
+    let _down = s
+        .mock("POST", "/api/upload-proof")
+        .with_status(502)
+        .with_body("<html>Bad gateway</html>")
+        .create_async()
+        .await;
+    advance(&f, &node_at(&f, TIP, mtp), &s, later).await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_changed),
+        (Some(MarketStatus::Retrying), true)
+    );
+    // Advance leaves a Retrying listing to keep-listed's backoff, even once
+    // the schedule moved on again (step 4 current: not the step last sent).
+    for at in [mtp, valid_from_mtp(schedule()[4].1)] {
+        let mut s = market().await;
+        let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+        advance(&f, &node_at(&f, TIP, at), &s, later + 60).await;
+        any.assert_async().await;
+    }
+
+    let retry = later + crate::shakedex_jobs::retry_delay_secs(1);
+    let mut s = market().await;
+    let _get = copy_mock(&mut s, earlier, 1).await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    keep_listed_with_client(&f.conn, &node_at(&f, TIP, mtp), &client(&s), PROFILE, retry)
+        .await
+        .unwrap();
+    m.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(
+        ListingFile::parse(&sent, NET).unwrap().steps,
+        vec![steps[3].clone()]
+    );
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
+}
+
+/// Deviation 6 (T8): the market's refusal of a step is not retried for that
+/// step, and is tried again once the schedule moves to the next one (what
+/// is sent changed).
+#[tokio::test]
+async fn refused_auction_is_tried_again_when_its_step_moves() {
+    let f = fx(ListingState::Listed, true);
+    let steps = as_schedule(&f, &schedule());
+    let mut s = market().await;
+    let _refuse = s
+        .mock("POST", "/api/upload-proof")
+        .with_status(409)
+        .with_body(r#"{"error":"An active listing for dexjobs already exists."}"#)
+        .expect(1)
+        .create_async()
+        .await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    let l = listing(&f);
+    assert_eq!(l.market_status, Some(MarketStatus::Refused));
+    assert_eq!(
+        l.market_sent_step.as_deref(),
+        Some(hex::encode(steps[2].signature).as_str())
+    );
+    let mut s = market().await;
+    let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    advance(&f, &node(&f, TIP), &s, NOW + 600).await;
+    any.assert_async().await;
+
+    let (mtp, later) = moved();
+    let mut s = market().await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    advance(&f, &node_at(&f, TIP, mtp), &s, later).await;
+    m.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(
+        ListingFile::parse(&sent, NET).unwrap().steps,
+        vec![steps[3].clone()]
+    );
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
+}
+
+/// Deviation 7 (T8): the advance job takes reverse auctions only — a Buy
+/// Now (its current step moves only by Lower price, whose write already
+/// makes it due) is not looked at, even with no step recorded as sent; and
+/// one the market has not taken yet is the publish job's. Deviation 8: a
+/// Retrying or StepsUnverified one is keep-listed's (its backoff), though
+/// its step moved. Nothing is read.
+#[tokio::test]
+async fn advance_takes_only_reverse_auctions_the_market_took() {
+    for case in ["buy_now", "untold", "retrying", "steps_unverified"] {
+        let f = listed_on_market(MarketStatus::Listed);
+        if case != "buy_now" {
+            let steps = as_schedule(&f, &schedule());
+            let status = match case {
+                "untold" => None,
+                "retrying" => Some(MarketStatus::Retrying),
+                _ => Some(MarketStatus::StepsUnverified),
+            };
+            f.conn
+                .execute(
+                    "UPDATE shakedex_listings SET market_status = ?1, market_sent_step = ?2",
+                    rusqlite::params![status.map(|s| s.as_str()), hex::encode(steps[2].signature)],
+                )
+                .unwrap();
+        }
+        let mut s = market().await;
+        let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+        let n = node_at(&f, TIP, moved().0);
+        advance(&f, &n, &s, NOW).await;
+        any.assert_async().await;
+        assert_eq!(n.call_count(), 0, "{case}: the node was not read");
+    }
+}
+
+/// R24 (T8): a reverse auction on the market whose steps no longer read is
+/// not taken for "not moved": the advance job records it as
+/// StepsUnverified, backed off, and uploads nothing.
+#[tokio::test]
+async fn advance_records_an_unreadable_row() {
+    let (f, _) = auction_on_market().await;
+    f.conn
+        .execute("UPDATE shakedex_listings SET steps_json = 'not json'", [])
+        .unwrap();
+    let mut s = market().await;
+    let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    advance(&f, &node(&f, TIP), &s, NOW + 60).await;
+    any.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_attempts),
+        (Some(MarketStatus::StepsUnverified), 1)
+    );
+    assert!(l.market_error.unwrap().contains("unreadable steps"));
+}
+
+/// R23: off mainnet the advance job reads nothing and calls no market.
+#[tokio::test]
+async fn nothing_advanced_off_mainnet() {
+    let (f, _) = auction_on_market().await;
+    f.conn
+        .execute(
+            "UPDATE wallet_profiles SET network = 'regtest' WHERE id = ?1",
+            [PROFILE],
+        )
+        .unwrap();
+    let mut s = market().await;
+    let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    let n = node_at(&f, TIP, moved().0);
+    advance(&f, &n, &s, NOW).await;
+    any.assert_async().await;
+    assert_eq!(n.call_count(), 0);
 }
 
 /// R25: a copy that offers a buyer exactly ours — keys in Flask's order, an
@@ -2828,110 +3069,172 @@ async fn lowered_listing_is_kept_while_cancelling_and_then_reported() {
 /// keeps a signing call out of the jobs.
 #[tokio::test]
 async fn daemon_publishes_but_never_signs_or_broadcasts() {
-    use crate::commands::sync::{run_sync_steps, SyncCaller, SyncStatus};
+    use crate::commands::sync::SyncCaller;
     for caller in [SyncCaller::Daemon, SyncCaller::App] {
         // Real time: run_sync_steps reads the clock itself.
         let now = chrono::Utc::now().timestamp();
         let f = fx_at(ListingState::Listed, true, (now - 600) as u64);
-        let mut hsd = mockito::Server::new_async().await;
-        let mut s = market().await;
-        let path = std::env::temp_dir().join(format!(
-            "namehold_publish_{}_{caller:?}.db",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
-        let db_path = path.to_str().unwrap().to_string();
-        queries::set_setting(&f.conn, "node_rpc_url", &hsd.url()).unwrap();
-        queries::set_setting(&f.conn, "learnhns_base_url", &s.url()).unwrap();
-        f.conn
-            .execute("VACUUM INTO ?1", rusqlite::params![db_path])
-            .unwrap();
-        let rpc = |srv: &mut ServerGuard, method: &str, result: serde_json::Value| {
-            srv.mock("POST", "/")
-                .match_body(Matcher::PartialJson(json!({ "method": method })))
-                .with_header("content-type", "application/json")
-                .with_body(crate::tests::shakedex_cmd_tests::rpc_ok(result))
-        };
-        let _chain = rpc(
-            &mut hsd,
-            "getblockchaininfo",
-            json!({
-                "chain": "main", "blocks": TIP, "headers": TIP,
-                "verificationprogress": 1.0, "mediantime": now - 600
-            }),
-        )
-        .create_async()
-        .await;
-        let _coin = hsd
-            .mock("GET", format!("/coin/{}/0", txid("f1")).as_str())
-            .with_header("content-type", "application/json")
-            .with_body(
-                json!({
-                    "version": 0, "height": TIP - 5, "value": LOCK_VALUE, "address": f.lock,
-                    "covenant": { "type": COV_FINALIZE, "action": "FINALIZE",
-                                  "items": [hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap()), "32000000"] },
-                    "coinbase": false, "hash": txid("f1"), "index": 0
-                })
-                .to_string(),
-            )
-            .create_async()
-            .await;
-        let send = hsd
-            .mock("POST", "/")
-            .match_body(Matcher::Regex("sendrawtransaction".into()))
-            .expect(0)
-            .create_async()
-            .await;
-        let (up, seen) = upload_mock(&mut s, 1).await;
         let before = listing(&f);
-        let drafts = |c: &Connection| -> Vec<(String, String)> {
-            let mut st = c
-                .prepare("SELECT id, status FROM wallet_tx_drafts ORDER BY id")
-                .unwrap();
-            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-                .unwrap()
-                .map(Result::unwrap)
-                .collect()
-        };
-        let drafts_before = drafts(&f.conn);
-        let status = std::sync::Arc::new(tokio::sync::Mutex::new(SyncStatus::default()));
-        run_sync_steps(&status, &db_path, PROFILE, caller).await;
-        send.assert_async().await;
-        up.assert_async().await;
-        let after_conn = Connection::open(&db_path).unwrap();
-        let after = queries::get_shakedex_listing(&after_conn, &f.id)
-            .unwrap()
-            .unwrap();
+        let (after, seen) = sync_on_a_copy(&f, caller, now - 600, 1).await;
         assert_eq!(
             after.market_status,
             Some(MarketStatus::Listed),
             "{caller:?}"
         );
-        assert_eq!(
-            (
-                after.steps_json.as_str(),
-                after.listing_file_json.as_deref()
-            ),
-            (
-                before.steps_json.as_str(),
-                before.listing_file_json.as_deref()
-            )
-        );
-        assert_eq!(
-            drafts(&after_conn),
-            drafts_before,
-            "{caller:?}: no draft created or changed"
-        );
-        let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+        let (_, sent) = proof_part(&seen[0]);
         let stored = ListingFile::parse(before.listing_file_json.as_deref().unwrap(), NET).unwrap();
         assert_eq!(
             ListingFile::parse(&sent, NET).unwrap().steps,
             stored.steps,
             "the signed step as stored"
         );
-        drop(after_conn);
-        let _ = std::fs::remove_file(&path);
     }
+}
+
+/// R24, decision 3, SECURITY.md: `run_sync_steps`, as the daemon and as the
+/// app run it, uploads a reverse auction's moved step — signed at Finalize
+/// & sign, byte for byte — and makes no send: no `sendrawtransaction`, no
+/// draft created or changed, the steps and file as they were.
+#[tokio::test]
+async fn daemon_advances_a_reverse_auction_but_never_signs_or_broadcasts() {
+    use crate::commands::sync::SyncCaller;
+    for caller in [SyncCaller::Daemon, SyncCaller::App] {
+        // Real time: run_sync_steps reads the clock itself.
+        let now = chrono::Utc::now().timestamp();
+        let mtp0 = (now - 600) as u64;
+        let f = fx_at(ListingState::Listed, true, mtp0);
+        let schedule = schedule_at(mtp0);
+        let steps = as_schedule_at(&f, &schedule, mtp0);
+        // The market accepted step 2, current at `mtp0`; the hourly check is
+        // an hour away.
+        f.conn
+            .execute(
+                "UPDATE shakedex_listings SET market_status = 'listed', market_sent_step = ?1,
+                 market_retry_at = ?2, market_accepted = 1, market_told = 1",
+                [hex::encode(steps[2].signature), rfc3339(now + 3_600)],
+            )
+            .unwrap();
+        let mtp = i64::try_from(valid_from_mtp(schedule[3].1)).unwrap();
+        let (after, seen) = sync_on_a_copy(&f, caller, mtp, 1).await;
+        let (_, sent) = proof_part(&seen[0]);
+        assert_eq!(
+            ListingFile::parse(&sent, NET).unwrap().steps,
+            vec![steps[3].clone()],
+            "{caller:?}: step 3, as signed"
+        );
+        assert_eq!(after.market_status, Some(MarketStatus::Listed));
+        assert_eq!(
+            after.market_sent_step,
+            Some(hex::encode(steps[3].signature)),
+            "{caller:?}"
+        );
+    }
+}
+
+/// Run `run_sync_steps` as `caller` on a copy of `f`'s database, against an
+/// hsd answering the median time `mtp` and `f`'s lock coin (and refusing
+/// to see a `sendrawtransaction`: expected 0), and a market accepting
+/// `uploads` uploads. Asserts no send, no draft created or changed, and
+/// the listing's steps and file as they were; returns the listing after
+/// and the bodies uploaded.
+async fn sync_on_a_copy(
+    f: &Fx,
+    caller: crate::commands::sync::SyncCaller,
+    mtp: i64,
+    uploads: usize,
+) -> (ShakedexListing, Vec<Vec<u8>>) {
+    use crate::commands::sync::{run_sync_steps, SyncStatus};
+    static COPIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let mut hsd = mockito::Server::new_async().await;
+    let mut s = market().await;
+    let path = std::env::temp_dir().join(format!(
+        "namehold_publish_{}_{caller:?}_{}.db",
+        std::process::id(),
+        COPIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_file(&path);
+    let db_path = path.to_str().unwrap().to_string();
+    queries::set_setting(&f.conn, "node_rpc_url", &hsd.url()).unwrap();
+    queries::set_setting(&f.conn, "learnhns_base_url", &s.url()).unwrap();
+    f.conn
+        .execute("VACUUM INTO ?1", rusqlite::params![db_path])
+        .unwrap();
+    let rpc = |srv: &mut ServerGuard, method: &str, result: serde_json::Value| {
+        srv.mock("POST", "/")
+            .match_body(Matcher::PartialJson(json!({ "method": method })))
+            .with_header("content-type", "application/json")
+            .with_body(crate::tests::shakedex_cmd_tests::rpc_ok(result))
+    };
+    let _chain = rpc(
+        &mut hsd,
+        "getblockchaininfo",
+        json!({
+            "chain": "main", "blocks": TIP, "headers": TIP,
+            "verificationprogress": 1.0, "mediantime": mtp
+        }),
+    )
+    .create_async()
+    .await;
+    let _coin = hsd
+        .mock("GET", format!("/coin/{}/0", txid("f1")).as_str())
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "version": 0, "height": TIP - 5, "value": LOCK_VALUE, "address": f.lock,
+                "covenant": { "type": COV_FINALIZE, "action": "FINALIZE",
+                              "items": [hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap()), "32000000"] },
+                "coinbase": false, "hash": txid("f1"), "index": 0
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+    let send = hsd
+        .mock("POST", "/")
+        .match_body(Matcher::Regex("sendrawtransaction".into()))
+        .expect(0)
+        .create_async()
+        .await;
+    let (up, seen) = upload_mock(&mut s, uploads).await;
+    let before = listing(f);
+    let drafts = |c: &Connection| -> Vec<(String, String)> {
+        let mut st = c
+            .prepare("SELECT id, status FROM wallet_tx_drafts ORDER BY id")
+            .unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let drafts_before = drafts(&f.conn);
+    let status = std::sync::Arc::new(tokio::sync::Mutex::new(SyncStatus::default()));
+    run_sync_steps(&status, &db_path, PROFILE, caller).await;
+    send.assert_async().await;
+    up.assert_async().await;
+    let after_conn = Connection::open(&db_path).unwrap();
+    let after = queries::get_shakedex_listing(&after_conn, &f.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (
+            after.steps_json.as_str(),
+            after.listing_file_json.as_deref()
+        ),
+        (
+            before.steps_json.as_str(),
+            before.listing_file_json.as_deref()
+        ),
+        "{caller:?}: the steps and file as they were"
+    );
+    assert_eq!(
+        drafts(&after_conn),
+        drafts_before,
+        "{caller:?}: no draft created or changed"
+    );
+    drop(after_conn);
+    let _ = std::fs::remove_file(&path);
+    let bodies = seen.lock().unwrap().clone();
+    (after, bodies)
 }
 
 /// Lower `f`'s price to 3 HNS (a second step, `queries::lower_listing_price`);

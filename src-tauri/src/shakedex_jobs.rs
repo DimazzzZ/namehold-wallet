@@ -2890,6 +2890,106 @@ pub async fn keep_listed_step(db_path: &str, profile_id: &str) {
     }
 }
 
+/// R24 (T8): upload a reverse auction's current step when the schedule has
+/// moved past the one the market was sent; the IO shell of
+/// [`advance_reverse_auctions_with_client`], like [`publish_listings_step`].
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn advance_reverse_auctions_step(db_path: &str, profile_id: &str) {
+    let Some((conn, node, market)) = market_job_clients(db_path, profile_id) else {
+        return;
+    };
+    let now = chrono::Utc::now().timestamp();
+    if let Err(e) =
+        advance_reverse_auctions_with_client(&conn, &node, &market, profile_id, now).await
+    {
+        eprintln!("shakedex market: advance failed for {profile_id}: {e}");
+    }
+}
+
+/// R24 (T8): LearnHNS Market takes one step, so a reverse auction's copy
+/// there is replaced as the schedule moves. Mainnet only: returns before
+/// any read off mainnet. Takes the profile's published reverse auctions of
+/// [`queries::list_listings_kept_on_market`] whose market copy is ours or
+/// was refused (`market_status` Listed, ReplacedReuploaded, Refused: a
+/// refusal is final only until what is sent changes, and a new step is a
+/// change); never one the market has not taken yet (the publish job's
+/// first upload) nor one Retrying or StepsUnverified (keep-listed's
+/// backoff, which uploads the current step itself). Reads the node's median
+/// time once, and for each such listing compares its current stored step
+/// there ([`sell::current_step`], R3) with the one the market was last sent
+/// (`market_sent_step`); when they differ, uploads the current step at once
+/// ([`upload_current`]: every step re-verified over hsd's lock coin first,
+/// the answer recorded by [`after_reply`]), whatever the hourly check's
+/// `market_retry_at` says. The same step is never uploaded twice: the step
+/// is recorded as sent whatever the answer, a refusal included. No step
+/// valid at that median time (a reorg took it back) is no move. A row whose
+/// steps do not read goes to [`upload_current`], which records it as
+/// StepsUnverified. Reads the node, writes only to the market and the
+/// listing's market bookkeeping: never signs, never broadcasts
+/// (SECURITY.md). A failure on one listing is logged and leaves it for the
+/// next sync.
+pub async fn advance_reverse_auctions_with_client(
+    conn: &rusqlite::Connection,
+    node: &dyn NodeRpc,
+    market: &LearnHnsClient,
+    profile_id: &str,
+    now: i64,
+) -> Result<(), AppError> {
+    use queries::MarketStatus as S;
+    if queries::profile_network(conn, profile_id)? != Network::Main {
+        return Ok(());
+    }
+    let auctions: Vec<_> = queries::list_listings_kept_on_market(conn, profile_id)?
+        .into_iter()
+        .filter(|l| {
+            l.mode == queries::ListingMode::ReverseAuction
+                && matches!(
+                    l.market_status,
+                    Some(S::Listed | S::ReplacedReuploaded | S::Refused)
+                )
+        })
+        .collect();
+    if auctions.is_empty() {
+        return Ok(());
+    }
+    let Some(mtp) = node.get_blockchain_info().await?.mediantime else {
+        eprintln!("shakedex market: the node reported no median time: no reverse auction advanced");
+        return Ok(());
+    };
+    for l in auctions {
+        if let Err(e) = advance_one(conn, node, market, &l, mtp, now).await {
+            eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
+        }
+    }
+    Ok(())
+}
+
+/// One reverse auction of [`advance_reverse_auctions_with_client`] at `mtp`.
+async fn advance_one(
+    conn: &rusqlite::Connection,
+    node: &dyn NodeRpc,
+    market: &LearnHnsClient,
+    l: &queries::ShakedexListing,
+    mtp: u64,
+    now: i64,
+) -> Result<(), AppError> {
+    let current = stored_steps(l).and_then(|steps| {
+        Ok(sell::current_step(&steps, mtp)?.map(|s| s.signature.to_ascii_lowercase()))
+    });
+    let moved = match current {
+        Ok(Some(step)) => l.market_sent_step.as_deref() != Some(step.as_str()),
+        // No step valid at this median time: nothing to move to.
+        Ok(None) => false,
+        // The row does not read: `upload_current` records it.
+        Err(_) => true,
+    };
+    if moved {
+        upload_current(conn, node, market, l, now).await
+    } else {
+        Ok(())
+    }
+}
+
 /// The database, node client and market client of a market job, on a
 /// mainnet profile only (R23).
 #[cfg_attr(coverage_nightly, coverage(off))]
