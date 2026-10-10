@@ -1657,14 +1657,17 @@ fn lower_refusal(state: ListingState) -> Option<&'static str> {
 
 /// R26, generic over the runtime so tests drive it. The gates (R16, R6; no
 /// experimental flag, R15) and the unlocked signer first; the listing the
-/// active profile's, Listed, a Buy Now (reverse auctions are T8's) with
-/// signed steps here; the price parsed by R19's rule; on the node the lock
-/// coin checks Cancel makes too ([`lock_on_node`]: unspent, at the stored
-/// outpoint, a FINALIZE of the name at the lock address of the stored key,
-/// mined, of the name's live registration) and the MTP; the new price below
-/// the current step at that MTP (R3, `sell::check_lower_price`); the lock
-/// key re-derived after the reads, its public key the stored one; then R26's
-/// own prompt, one step signed valid now (R19: the MTP minus 512 s) over the
+/// active profile's, Listed, a Buy Now or a reverse auction (R26: the
+/// lowered step joins the schedule; R3 keeps the later steps below it, the
+/// dearer ones are moot) with signed steps here; the price parsed by R19's
+/// rule; on the node the lock coin checks Cancel makes too
+/// ([`lock_on_node`]: unspent, at the stored outpoint, a FINALIZE of the
+/// name at the lock address of the stored key, mined, of the name's live
+/// registration) and the MTP; the new price below the current step at that
+/// MTP (R3, `sell::check_lower_price`); the lock key re-derived after the
+/// reads, its public key the stored one; then R26's own prompt (for a
+/// schedule, how many later steps still take over and how many are moot:
+/// `sell::steps_ahead`), one step signed valid now (R19: the MTP minus 512 s) over the
 /// stored lock coin at hsd's value, paying the listing's payment address,
 /// added to the stored listing file as written, unknown fields kept, once
 /// that file is checked to be the row's (`add_step_to_listing_file`, read
@@ -1686,11 +1689,6 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
             .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
         if let Some(why) = lower_refusal(l.state) {
             return Err(AppError::InvalidInput(why.into()));
-        }
-        if l.mode != ListingMode::BuyNow {
-            return Err(AppError::InvalidInput(
-                "reverse auctions are not supported yet".into(),
-            ));
         }
         l
     };
@@ -1757,6 +1755,7 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
         )
     })?;
     sell::check_lower_price(new_price, current)?;
+    let ahead = sell::steps_ahead(&stored, mtp, new_price)?;
     let lock_time = sell::buy_now_lock_time(mtp);
     let key = derive_listing_key(state, &ctx, &name)?;
     if key.pubkey != pubkey {
@@ -1774,6 +1773,7 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
             mtp,
             payment_address: &payment_address,
             lock_address: &lock_addr,
+            ahead,
         }),
     )
     .await?;

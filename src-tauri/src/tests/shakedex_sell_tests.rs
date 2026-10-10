@@ -6465,13 +6465,10 @@ impl Listed {
     }
 }
 
-/// A Listed listing: Finalize & sign ran on a ready fixture at "5" HNS,
-/// its FINALIZE draft is confirmed (its reserved coins released: the funding
-/// coin stands in for its change), and the node answers as hsd does once the
-/// lock coin is mined.
-async fn listed_fixture() -> Listed {
-    let r = ready_fixture("regtest").await;
-    let lock = finalized(&r).await;
+/// `r`'s FINALIZE (just signed) confirmed (its reserved coins released: the
+/// funding coin stands in for its change) and the listing Listed, the node
+/// answering as hsd does once the lock coin is mined, at LISTED_MTP.
+async fn listed_from(r: Ready, lock: (String, u32)) -> Listed {
     let fin = r.listing().lock_finalize_draft_id.unwrap();
     with_db(&r.app, |c| {
         queries::update_tx_draft_status(c, &fin, "broadcasted", None, Some(&lock.0)).unwrap();
@@ -6482,6 +6479,30 @@ async fn listed_fixture() -> Listed {
     let mut l = Listed { r, lock };
     l.listed_node().await;
     l
+}
+
+/// A Listed listing: Finalize & sign ran on a ready fixture at "5" HNS
+/// ([`listed_from`]).
+async fn listed_fixture() -> Listed {
+    let r = ready_fixture("regtest").await;
+    let lock = finalized(&r).await;
+    listed_from(r, lock).await
+}
+
+/// A Listed reverse auction signed at SIGN_MTP from `s` ([`listed_from`]).
+async fn listed_schedule_fixture(s: &ScheduleInput) -> Listed {
+    let r = ready_fixture("regtest").await;
+    as_reverse_auction(&r);
+    answer(true);
+    let sum = finalize_and_sign_schedule(&r, s)
+        .await
+        .expect("finalize & sign");
+    let lock = (
+        sum.lock_txid.unwrap(),
+        u32::try_from(sum.lock_vout.unwrap()).unwrap(),
+    );
+    let _ = take_test_requests();
+    listed_from(r, lock).await
 }
 
 async fn cancel(
@@ -7964,23 +7985,80 @@ async fn cancel_and_lower_price_refused_for_ledger_and_watch_only() {
     }
 }
 
-/// R26: Lower price refuses a reverse auction until its schedule rule is
-/// built (T8). Nothing asked or written.
+/// R26 on a schedule (T8): a reverse auction 10 → 2 HNS over 9 steps six
+/// hours apart, signed at SIGN_MTP, stands at its step 4 (6 HNS) at
+/// LISTED_MTP, a day later. Lowered to 4.5 HNS, one step valid now is signed
+/// and added; the prompt says three later steps (4, 3, 2 HNS) still take
+/// over and one (5 HNS) never will. R3 then reads 4.5 HNS now and when the
+/// 5 HNS step becomes valid (moot), 4 HNS once that step is valid, and the
+/// floor at the end: the schedule continues below the new price. Every
+/// stored step verifies in the exported file. Nothing is sent.
 #[tokio::test]
-async fn lower_refused_for_a_reverse_auction_until_t8() {
-    let l = listed_fixture().await;
-    with_db(&l.r.app, |c| {
-        c.execute(
-            "UPDATE shakedex_listings SET mode = 'reverse_auction' WHERE id = ?1",
-            [&l.r.listing_id],
-        )
-        .unwrap();
-    });
+async fn lower_price_on_a_schedule_continues_below_it() {
+    let mut l = listed_schedule_fixture(&schedule("10", "2", 9, 21_600)).await;
+    let sent = no_broadcast(&mut l.r).await;
     let before = l.r.listing();
-    decline_if_asked();
-    let e = err_text(lower(&l, "3").await.expect_err("reverse auction"));
-    assert!(e.contains("reverse auctions are not supported yet"), "{e}");
-    assert_not_lowered(&l, &before);
+    let signed: Vec<sell::StoredStep> = serde_json::from_str(&before.steps_json).unwrap();
+    assert_eq!(signed.len(), 9);
+    assert_eq!(
+        sell::current_step_price(&signed, LISTED_MTP).unwrap(),
+        Some(6_000_000),
+        "step 4 is current a day after signing"
+    );
+    answer(true);
+    let s = lower(&l, "4.5").await.expect("lower a schedule");
+    sent.assert_async().await;
+    let reqs = take_test_requests();
+    assert_eq!(reqs.len(), 1);
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let row = |label: &str| {
+        rows.iter().find(|x| x["label"] == label).unwrap()["value"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(row("Current price"), "6.000000 HNS");
+    assert_eq!(row("New price"), "4.500000 HNS, valid at once");
+    assert_eq!(
+        row("Schedule"),
+        "3 later price steps below the new price still take over as they become valid; \
+         1 later step at or above it never will"
+    );
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!(s.steps.len(), 10);
+    assert_eq!(&s.steps[..9], &signed[..], "the schedule is kept as signed");
+    assert_eq!(
+        (s.steps[9].price, s.steps[9].lock_time),
+        (4_500_000, sell::buy_now_lock_time(LISTED_MTP))
+    );
+    let at = |i: usize| valid_from_mtp(signed[i].lock_time);
+    for (mtp, want, why) in [
+        (LISTED_MTP, 4_500_000, "the lowered price is current"),
+        (at(5), 4_500_000, "the dearer 5 HNS step is moot"),
+        (at(6), 4_000_000, "the schedule continues below it"),
+        (at(8), 2_000_000, "down to the floor"),
+    ] {
+        assert_eq!(
+            sell::current_step_price(&s.steps, mtp).unwrap(),
+            Some(want),
+            "{why}"
+        );
+    }
+    let file = ListingFile::parse(
+        l.r.listing().listing_file_json.as_deref().unwrap(),
+        Network::Regtest,
+    )
+    .unwrap();
+    assert_eq!(
+        file.steps.len(),
+        10,
+        "the file carries the schedule and the lowered step"
+    );
+    sell::verify_file_steps(&file, NAME_VALUE, Network::Regtest)
+        .expect("every step verifies over the lock coin");
 }
 
 /// R26: the lock key re-derived for the name must be the stored one: a

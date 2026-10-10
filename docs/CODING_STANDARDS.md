@@ -84,6 +84,7 @@ Locally `cargo test` is enough; CI uses nextest for its two-lane split (see
   f`) creates and truncates before it writes a byte. A poll loop keyed on
   `Some(_)` therefore exits on the empty window and asserts against nothing.
   Treat an empty read as "not ready" (see `node_lifecycle_tests::recorded_argv`).
+- **mockito's `matched()` is "exactly one hit".** A mock with no `.expect(n)` reads as not matched after zero hits and after two or more alike, so `!matched()` checked once after several calls passes even when every call hit it. Assert "not called" with `.expect(0)` and `.assert_async()`, or check `!matched()` after every single call (see `shakedex_sell_tests::assert_node_not_read`).
 - A test that passes alone and fails in the suite is a defect in the test, not
   a reason to retry it. Find the shared state; the two rules above are the two
   ways it has bitten so far.

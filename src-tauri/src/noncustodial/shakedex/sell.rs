@@ -548,12 +548,47 @@ pub struct LowerPriceRows<'a> {
     pub mtp: u64,
     pub payment_address: &'a str,
     pub lock_address: &'a str,
+    /// R26 on a schedule: the stored steps not valid yet at `mtp`, priced
+    /// below the new price and at or above it ([`steps_ahead`]).
+    pub ahead: (usize, usize),
 }
 
-/// R26: the rows of the Lower price confirmation, `{ "rows": [...] }`.
+/// R26: what a lowered price leaves of a schedule — the later steps below
+/// it still take over, those at or above it never will. `None` when no step
+/// is ahead (a Buy Now, or a schedule at its floor).
+fn schedule_ahead_text((below, moot): (usize, usize)) -> Option<String> {
+    let steps = |n: usize| if n == 1 { "step" } else { "steps" };
+    let below_text = match below {
+        0 => None,
+        1 => Some(
+            "1 later price step below the new price still takes over as it becomes valid"
+                .to_string(),
+        ),
+        n => Some(format!(
+            "{n} later price {} below the new price still take over as they become valid",
+            steps(n)
+        )),
+    };
+    match (below_text, moot) {
+        (None, 0) => None,
+        (Some(b), 0) => Some(b),
+        (Some(b), m) => Some(format!(
+            "{b}; {m} later {} at or above it never will",
+            steps(m)
+        )),
+        (None, m) => Some(format!(
+            "{m} later {} at or above the new price never will be current",
+            steps(m)
+        )),
+    }
+}
+
+/// R26: the rows of the Lower price confirmation, `{ "rows": [...] }`; for
+/// a schedule with steps ahead, a "Schedule" row after the new price
+/// ([`schedule_ahead_text`]).
 pub fn lower_price_rows(r: &LowerPriceRows) -> serde_json::Value {
     let row = |label: &str, value: String| serde_json::json!({ "label": label, "value": value });
-    serde_json::json!({ "rows": [
+    let mut rows = vec![
         row("Action", "Lower the price".into()),
         row("Name", r.name.into()),
         row("Current price", doos_to_hns_string(r.current_price)),
@@ -565,10 +600,16 @@ pub fn lower_price_rows(r: &LowerPriceRows) -> serde_json::Value {
                 step_validity(r.lock_time, r.mtp)
             ),
         ),
+    ];
+    if let Some(text) = schedule_ahead_text(r.ahead) {
+        rows.push(row("Schedule", text));
+    }
+    rows.extend([
         row("Paid to", r.payment_address.into()),
         row("Lock address", r.lock_address.into()),
         row("Warning", LOWER_PRICE_PERMANENCE.into()),
-    ] })
+    ]);
+    serde_json::json!({ "rows": rows })
 }
 
 /// Cancel and Lower price (R26, R28): the lock key this wallet derives for
@@ -2287,6 +2328,7 @@ mod tests {
             mtp,
             payment_address: "hs1qpay",
             lock_address: "hs1qlock",
+            ahead: (0, 0),
         });
         let rows = v["rows"].as_array().unwrap();
         let value = |label: &str| {
@@ -2308,6 +2350,49 @@ mod tests {
         assert!(LOWER_PRICE_PERMANENCE.contains("earlier"));
         assert!(LOWER_PRICE_PERMANENCE.contains("until the lock coin is spent"));
         assert!(LOWER_PRICE_PERMANENCE.contains("never raised"));
+    }
+
+    /// R26 on a schedule: the prompt says how many later steps still take
+    /// over below the new price and how many are moot; a listing with
+    /// nothing ahead has no such row.
+    #[test]
+    fn lower_price_rows_say_what_the_schedule_keeps() {
+        let rows = |ahead| {
+            lower_price_rows(&LowerPriceRows {
+                name: "dexreviews",
+                current_price: 6_000_000,
+                new_price: 4_500_000,
+                lock_time: 1_700_000_000,
+                mtp: 1_700_000_512,
+                payment_address: "hs1qpay",
+                lock_address: "hs1qlock",
+                ahead,
+            })["rows"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        let schedule = |r: &[serde_json::Value]| {
+            r.iter()
+                .find(|x| x["label"] == "Schedule")
+                .map(|x| x["value"].as_str().unwrap().to_string())
+        };
+        assert_eq!(schedule(&rows((0, 0))), None);
+        assert_eq!(
+            schedule(&rows((3, 1))).as_deref(),
+            Some(
+                "3 later price steps below the new price still take over as they become \
+                 valid; 1 later step at or above it never will"
+            )
+        );
+        assert_eq!(
+            schedule(&rows((1, 0))).as_deref(),
+            Some("1 later price step below the new price still takes over as it becomes valid")
+        );
+        assert_eq!(
+            schedule(&rows((0, 2))).as_deref(),
+            Some("2 later steps at or above the new price never will be current")
+        );
     }
 
     /// R3 on stored steps: the cheapest step valid at the MTP is the
