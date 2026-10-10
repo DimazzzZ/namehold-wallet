@@ -2371,7 +2371,7 @@ fn our_cancel(f: &Fx, status: &str) {
 /// our cancel address, linked from the stored lock coin) makes a Cancelling
 /// listing CancelAwaitingFinalize with that outpoint; our draft is the one
 /// mined, so nothing is released. In the mempool (the owner still the lock
-/// coin) it stays Cancelling.
+/// coin, or an owner coin hsd shows in the mempool) it stays Cancelling.
 #[tokio::test]
 async fn our_mined_cancel_awaits_its_finalize() {
     let c1 = txid("c1");
@@ -2390,6 +2390,22 @@ async fn our_mined_cancel_awaits_its_finalize() {
         listing(&f).state,
         ListingState::Cancelling,
         "in the mempool"
+    );
+    // hsd names a coin the owner only once its block is connected: an owner
+    // coin it shows in the mempool is no mined cancel.
+    run(
+        &f,
+        &node(
+            info((&c1, 0)),
+            vec![transfer_out_of_lock(&f, &c1, &f.cancel, -1)],
+            cancel_rest(&f, &c1, TIP, &f.cancel),
+        ),
+    )
+    .await;
+    assert_eq!(
+        listing(&f).state,
+        ListingState::Cancelling,
+        "the owner coin in the mempool"
     );
 
     run(
