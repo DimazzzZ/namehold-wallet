@@ -287,9 +287,17 @@ pub(crate) const PENDING_ACCEPTED: &str = r#"{"pending":{"actionRequired":true,"
 pub(crate) const CANCEL_RECORDED: &str = r#"{"cancelTxHash":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","cancelled":true,"cancelledAt":"2026-10-10T06:00:00.000000","status":"cancelled","url":"/listing/dexreviews"}"#;
 /// MKT `_mark_listing_sold_if_spent`'s reply (@3d117361, L729–737).
 pub(crate) const SALE_RECORDED: &str = r#"{"saleTxHash":"b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1","sold":true,"soldAt":"2026-10-10T06:00:00.000000","status":"sold","transferStartTxHash":"b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1","url":"/listing/dexreviews","verificationSource":"hsd"}"#;
-/// MKT `refresh_listing_status`'s 404 when it has no active or sale-pending
-/// listing of the name (@3d117361, L2462/L2475).
+/// MKT `refresh_listing_status`'s reply when it has no active or sale-pending
+/// listing of the name. We always send a txid, so it comes from
+/// `_refreshable_listing_for_spend` (@3d117361, L475–495) with its
+/// `last_status = 400` (L478) when the name has no listing to check; the same
+/// words come back as 404 on the paths without a txid (L2463/L2475).
 pub(crate) const NO_LISTING: &str = r#"{"error":"Listing not found"}"#;
+/// The upload's file name: the listing's name and lock txid, so no two
+/// uploads share a name in the market's shared upload folder (MKT api.py
+/// L2807–2808 saves under the file name as sent).
+const UPLOAD_FILE_NAME: &str =
+    "dexreviews-c44db193e4c815969db27870f49805cf6838a3f0ef700165e4d3c3660650abea.json";
 /// MKT main.py `listing_proof`'s 404 (@3d117361, L512–513).
 pub(crate) const PROOF_NOT_FOUND: &str = r#"{"error":"Active listing not found"}"#;
 
@@ -348,9 +356,10 @@ async fn no_http_off_mainnet() {
 }
 
 /// R23: the upload is `POST /api/upload-proof`, multipart, the listing file
-/// as written in field `proof` (filename `proof.json`, JSON), and the
-/// market's 201 reads as accepted; its own JSON refusal as refused, with its
-/// words; a proxy's HTML page, a 5xx or a 2xx not in its shape as no answer.
+/// as written in field `proof` (filename `<name>-<lockTxHash>.json`, JSON),
+/// and the market's 201 reads as accepted; its own JSON refusal as refused,
+/// with its words; a proxy's HTML page, a 5xx or a reply not in its shape as
+/// no answer.
 #[tokio::test]
 async fn upload_shape() {
     let mut s = mockito::Server::new_async().await;
@@ -374,7 +383,9 @@ async fn upload_shape() {
     assert_eq!(bodies.len(), 1);
     let (head, file) = proof_part(&bodies[0]);
     assert!(
-        head.contains(r#"form-data; name="proof"; filename="proof.json""#),
+        head.contains(&format!(
+            r#"form-data; name="proof"; filename="{UPLOAD_FILE_NAME}""#
+        )),
         "{head}"
     );
     assert!(
@@ -408,12 +419,14 @@ async fn upload_shape() {
         (500, r#"{"error":"Failed to pin to IPFS: timeout"}"#, "none"),
         (201, r#"{"success":false}"#, "none"),
         (201, "not json", "none"),
-    ] {
+    ]
+    .map(|(st, b, w)| (st, b.to_string(), w))
+    {
         let mut s = mockito::Server::new_async().await;
         let _m = s
             .mock("POST", "/api/upload-proof")
             .with_status(status)
-            .with_body(body)
+            .with_body(&body)
             .create_async()
             .await;
         let r = mainnet(&s).upload_proof(LISTING_FILE).await.unwrap();
@@ -426,6 +439,20 @@ async fn upload_shape() {
             _ => panic!("{status} {body}: {r:?}"),
         }
     }
+}
+
+/// R23: a file the client cannot name (not a mainnet listing file) is our
+/// own refusal, before any HTTP.
+#[tokio::test]
+async fn upload_refuses_a_file_it_cannot_name() {
+    let mut s = mockito::Server::new_async().await;
+    let any = s
+        .mock("POST", mockito::Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    assert!(mainnet(&s).upload_proof("{}").await.is_err());
+    any.assert_async().await;
 }
 
 /// R23 day 0: `POST /api/v2/pending-listings`, JSON with the name, network
@@ -480,8 +507,8 @@ async fn pending_listing_shape() {
 
 /// R28: `POST /api/v2/listings/<name>/refresh-status` with
 /// `{outcome: "cancelled", cancelTxHash}` or `{saleTxHash}`; the market's
-/// record reads as recorded, its "Listing not found" as nothing listed, its
-/// other JSON refusals as refused, anything else as no answer.
+/// record reads as recorded, its "Listing not found" (400 or 404) as nothing
+/// listed, its other JSON refusals as refused, anything else as no answer.
 #[tokio::test]
 async fn refresh_status_shape() {
     let cancel_txid = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
@@ -527,6 +554,7 @@ async fn refresh_status_shape() {
     assert_eq!(sent, serde_json::json!({"saleTxHash": sale_txid}));
 
     for (status, body, want) in [
+        (400, NO_LISTING, "nothing"),
         (404, NO_LISTING, "nothing"),
         (404, "<!doctype html><h1>Not found</h1>", "none"),
         (
