@@ -949,7 +949,7 @@ pub const FINALIZE_AND_SIGN_TITLE: &str = "Confirm Finalize & sign";
 const FINALIZE_AND_SIGN_MESSAGE: &str = "Review these details. This signs the finalize of \
      the name into its lock and every price below with the lock key.";
 
-/// A listing as the UI reads it (T7's "My listings").
+/// A listing as the UI reads it ("My listings").
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListingSummary {
@@ -964,8 +964,8 @@ pub struct ListingSummary {
     pub expires_at: Option<i64>,
     /// The FINALIZE into the lock, signed; `broadcast_tx_draft` sends it.
     pub finalize_draft_id: Option<String>,
-    /// The cancel's drafts, and blocks left until its FINALIZE, for T7's
-    /// actions (R28).
+    /// The cancel's drafts, and blocks left until its FINALIZE, for the
+    /// listing's cancel actions (R28).
     pub cancel_draft_id: Option<String>,
     pub cancel_finalize_draft_id: Option<String>,
     pub cancel_blocks_remaining: Option<i64>,
@@ -1158,8 +1158,8 @@ const CANCEL_MESSAGE: &str = "Review these details. This signs, with the lock ke
 /// R28: hsd answers 404 for a lock coin spent in a block or in its mempool.
 pub const CANCEL_LOCK_COIN_SPENT: &str = "the lock coin is no longer unspent (bought, \
      cancelled, or being spent in the node's mempool): there is nothing to cancel";
-/// T1b carry: the stored cancel address is not this profile's receive
-/// address at the stored index.
+/// R21: the stored cancel address is not this profile's receive address at
+/// the stored index.
 pub const CANCEL_NOT_OUR_ADDRESS: &str = "this listing's cancel address is not this wallet's \
      reserved receive address: nothing was signed";
 /// R28: a purchase the node already holds would beat the cancel.
@@ -1170,8 +1170,8 @@ const CANCEL_PURCHASE_PENDING: &str = "a purchase of this listing is in the node
 const CANCEL_LOCK_NOT_MINED: &str = "the finalize into the lock is not mined yet: the listing \
      can be cancelled once it is";
 
-/// Why Cancel refuses a listing in `state` (R28, deviation 6); `None` for
-/// the two it acts on, Listed and Restored.
+/// Why Cancel refuses a listing in `state` (R28); `None` for the two whose
+/// lock coin is mined and not being bought, Listed and Restored.
 fn cancel_refusal(state: ListingState) -> Option<&'static str> {
     match state {
         ListingState::Listed | ListingState::Restored => None,
@@ -1216,7 +1216,7 @@ fn cancel_could_not_check(what: &str) -> AppError {
     reply_could_not_check(what, "the cancel")
 }
 
-/// R21, deviation 7: reserve one receive address of `profile_id` and store
+/// R21, R32: reserve one receive address of `profile_id` and store
 /// it as the cancel address of the Restored listing `listing_id`, which has
 /// none, in one database transaction: when the row write does not apply
 /// (the row changed meanwhile), the reservation is rolled back too.
@@ -1352,8 +1352,8 @@ async fn lock_on_node(
 /// mined, a FINALIZE of the name at the lock address of the stored key, of
 /// the name's live registration, and the MTP (the current price the prompt
 /// shows); the cancel address reserved (a lock restored by name reserves
-/// one now, deviation 7) and the profile's receive address at its stored
-/// index (T1b carry); the lock key re-derived after the reads, its public
+/// one now, R32) and the profile's receive address at its stored index
+/// (R21); the lock key re-derived after the reads, its public
 /// key the stored one; the plan built and checked to be for the profile's
 /// account, that path, this name and the stored lock coin. Writes nothing
 /// but that reservation.
@@ -1405,7 +1405,7 @@ pub(crate) async fn prepare_cancel(
         },
     };
 
-    // R21, deviation 7: a lock restored by name reserves its cancel address
+    // R21, R32: a lock restored by name reserves its cancel address
     // now, after the node reads. The reservation and the row commit
     // together.
     let (cancel_address, cancel_index) =
@@ -1417,7 +1417,7 @@ pub(crate) async fn prepare_cancel(
             }
             _ => return Err(corrupted("cancel address")),
         };
-    // T1b carry: the profile's own receive address at the stored index.
+    // R21: the profile's own receive address at the stored index.
     {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let derived =
@@ -2762,6 +2762,8 @@ pub(crate) async fn finalize_cancel(
                         "the finalize of this cancel is already built: send it, or delete it to \
                          build another"
                     }
+                    // A state `listing_over` does not name (before the
+                    // lock, Finalizing, Listed, SalePending) has no cancel.
                     other => listing_over(other)
                         .unwrap_or("this listing has no mined cancel to finalize"),
                 }

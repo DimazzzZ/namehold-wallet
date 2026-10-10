@@ -1618,7 +1618,7 @@ async fn lock_coin_spent(
 ) -> Result<(), AppError> {
     // The lock TRANSFER a coin again: hsd answers 404 for a coin any mempool
     // transaction spends, so the FINALIZE into the lock is in no block and
-    // no mempool of this node (plan deviation 4).
+    // no mempool of this node.
     if let Some(lock_transfer_txid) = l.lock_transfer_txid.as_deref() {
         if client.get_coin(lock_transfer_txid, 0).await?.is_some() {
             match l.state {

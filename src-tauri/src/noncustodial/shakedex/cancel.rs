@@ -106,7 +106,7 @@ pub fn cancel_rows(r: &CancelRows) -> serde_json::Value {
     ] })
 }
 
-/// T1b carry (R21, R28), the command's half of the destination rule: the
+/// R21, R28: the command's half of the destination rule: the
 /// cancel plan is for the profile's `account`, and its lock-key input 0 is
 /// a `0x83` input carrying the listing's cancel path (receive branch,
 /// `cancel_index`), marked for this listing's lock key (`name`) and spending
@@ -476,7 +476,7 @@ mod tests {
         );
     }
 
-    /// T1b carry: the command refuses a cancel plan that is not for the
+    /// R21: the command refuses a cancel plan that is not for the
     /// profile's account, or whose lock input does not carry the listing's
     /// cancel path (the receive branch at the stored index): the signer
     /// re-derives the TRANSFER's commitment from that path, so the path is

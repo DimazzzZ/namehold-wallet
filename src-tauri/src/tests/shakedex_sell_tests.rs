@@ -1102,7 +1102,7 @@ fn a_losing_cancel_releases_its_coins() {
     );
 }
 
-/// R28, the T6 hook: the market jobs (R24, R25) keep a published Listed
+/// R28: the market jobs (R24, R25) keep a published Listed
 /// listing, and a Cancelling one only until its cancel is sent; an
 /// unpublished listing, and every other state, is never kept.
 #[test]
@@ -1211,7 +1211,7 @@ fn cancels_ready_to_finalize_are_listed_for_the_reminder() {
     );
 }
 
-/// T1b carry: the receive-branch address of the profile at an index, under
+/// R21: the receive-branch address of the profile at an index, under
 /// its account, as `derived_addresses` holds it; another branch, account or
 /// index is not it.
 #[test]
@@ -6206,8 +6206,8 @@ async fn cancel_needs_the_unlocked_signer() {
 
 /// R28: the cancel is signed after its own prompt (R28's two sentences and
 /// the current price) and stored as a signed draft with the listing's move
-/// to Cancelling; nothing is sent. The market jobs (R24, R25: the set T6
-/// reads) keep the listing until the cancel is sent and stop then; the
+/// to Cancelling; nothing is sent. The market jobs (R24, R25: the set they
+/// read) keep the listing until the cancel is sent and stop then; the
 /// after-lock job keeps following it, since a purchase may still beat it.
 #[tokio::test]
 async fn cancel_stops_jobs() {
@@ -6293,7 +6293,7 @@ async fn cancel_stops_jobs() {
     );
 }
 
-/// R28, the T1b carry: the cancel's lock input carries the listing's
+/// R28, R21: the cancel's lock input carries the listing's
 /// reserved cancel path and its TRANSFER, at the lock address, commits to
 /// that address. A stored cancel address that is not the profile's receive
 /// address at the stored index (an address not derived here, or the index
@@ -6352,7 +6352,7 @@ async fn cancel_commits_only_to_the_listings_reserved_receive_address() {
     }
 }
 
-/// R28 (deviation 6): Cancel acts on Listed and Restored listings only;
+/// R28: Cancel acts on Listed and Restored listings only;
 /// every other state is refused with its reason, nothing asked or written.
 #[tokio::test]
 async fn cancel_refused_outside_listed_and_restored() {
@@ -6438,7 +6438,7 @@ async fn cancel_refused_when_the_lock_coin_is_spent() {
     assert_no_cancel(&l, ListingState::Listed);
 }
 
-/// R21, R32, deviation 7: a lock restored by name has no cancel address;
+/// R21, R32: a lock restored by name has no cancel address;
 /// Cancel reserves one receive address (marked used, so it is not handed
 /// out again), stores it on the listing, and the cancel commits to it. The
 /// prompt says the current price is not known on this device.
@@ -6496,7 +6496,7 @@ async fn cancel_of_a_lock_restored_by_name_reserves_its_cancel_address() {
     assert_eq!(plan.inputs[0].child_index, index);
 }
 
-/// R28, R3 (Step 3 review carry): a listing with stored steps of which none
+/// R28, R3: a listing with stored steps of which none
 /// is valid at the node's MTP says so in the prompt's "Current price" row;
 /// it is not "not known on this device", which only a lock restored by
 /// name (no stored steps) says.
@@ -6622,7 +6622,7 @@ async fn cancel_refused_on_node_facts_that_do_not_hold() {
     assert_no_cancel(&l, ListingState::Listed);
 }
 
-/// R21, deviation 7: the cancel address of a restored lock is reserved and
+/// R21, R32: the cancel address of a restored lock is reserved and
 /// written on its row in one database transaction. When the row write does
 /// not apply (the row is no longer a Restored lock without a cancel
 /// address), the reservation is rolled back: no derived address is added
@@ -7595,8 +7595,8 @@ async fn cancel_and_lower_price_refused_for_ledger_and_watch_only() {
     }
 }
 
-/// Deviation 5: Lower price refuses a reverse auction until T8 (its
-/// schedule rule is T8's). Nothing asked or written.
+/// R26: Lower price refuses a reverse auction until its schedule rule is
+/// built (T8). Nothing asked or written.
 #[tokio::test]
 async fn lower_refused_for_a_reverse_auction_until_t8() {
     let l = listed_fixture().await;
