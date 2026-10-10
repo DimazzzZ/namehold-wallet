@@ -3155,9 +3155,9 @@ pub fn list_listings_ready_to_finalize(
 /// and Activity says why. Returns whether a draft was released (`false`: no
 /// evidence, no cancel draft, its row gone, or mined).
 ///
-/// The Step 5 call site (the after-lock job's purchase-beats-cancel and
-/// other-cancel paths) must pass the spender it read from hsd, never a txid
-/// taken from our own rows.
+/// Its callers (the after-lock job's purchase-beats-cancel and other-cancel
+/// paths) pass the spender they read from hsd, never a txid taken from our
+/// own rows.
 pub fn release_losing_cancel(
     conn: &rusqlite::Connection,
     id: &str,
@@ -3198,8 +3198,8 @@ pub fn release_losing_cancel(
     Ok(true)
 }
 
-/// The listings the market jobs keep on LearnHNS (R24, R25; T6's
-/// `keep_listed_step` and `advance_reverse_auctions_step` read this): the
+/// The listings the market jobs keep on LearnHNS (R24, R25: the jobs that
+/// re-upload and step listings read this): the
 /// published (`publish`) ones that are Listed, or Cancelling while their
 /// cancel draft is not sent yet (`draft`, `signed`): R28 stops the jobs once
 /// a cancel is broadcast. The mainnet rule (R23) is the jobs' own.
@@ -3226,8 +3226,8 @@ pub fn list_listings_kept_on_market(
 }
 
 /// The profile's receive-branch address at `child_index` under `account`,
-/// as `derived_addresses` holds it, or `None` (T1b carry: a cancel commits
-/// only to one of these, R21/R28).
+/// as `derived_addresses` holds it, or `None` (a cancel commits only to one
+/// of these, R21/R28).
 pub fn receive_address_at(
     conn: &rusqlite::Connection,
     profile_id: &str,
