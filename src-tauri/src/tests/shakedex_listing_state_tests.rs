@@ -2469,7 +2469,7 @@ async fn external_cancel_awaits_its_finalize() {
 /// (no transaction of the node spends it) is Listed again — Restored
 /// without a listing file — and forgets that cancel. An alive cancel (unsent
 /// or sent) leaves it Cancelling, and so does a lock coin back in the
-/// mempool (R22's unsell rule: no file is published over an unmined
+/// mempool (a listing is not put back on the market over an unmined
 /// FINALIZE). A dead cancel on a name that expired, or was opened again,
 /// ends the listing as Expired, never Listed first.
 #[tokio::test]
@@ -2681,6 +2681,405 @@ async fn cancel_finalized_home_before_a_sync_awaits_its_finalize() {
                 0,
                 "a FINALIZE at an address not ours is not read further"
             );
+        }
+    }
+}
+
+/// `getblockchaininfo` at `tip`.
+fn tip_at(tip: i64) -> crate::noncustodial::rpc::BlockchainInfo {
+    serde_json::from_value(json!({ "blocks": tip, "headers": tip, "mediantime": 1_700_000_000u64 }))
+        .unwrap()
+}
+
+/// The fixture cancelled: its cancel `c1…:0` mined, CancelAwaitingFinalize.
+fn cancel_mined_at(f: &Fx) -> (String, u32) {
+    let c1 = txid("c1");
+    assert_eq!(
+        queries::mark_listing_cancel_mined(&f.conn, &f.id, (&c1, 0), (&f.lock_txid, f.lock_vout))
+            .unwrap(),
+        1
+    );
+    (c1, 0)
+}
+
+/// `getnameinfo` with the cancel TRANSFER the owner, mined at `transfer`.
+fn info_transfer(owner: (&str, u32), transfer: i64) -> Value {
+    let mut v = info(owner);
+    v["info"]["transfer"] = transfer.into();
+    v
+}
+
+/// The fixture's cancel FINALIZE draft `cfin`, the listing CancelFinalizing.
+fn cancel_finalizing(f: &Fx, c: &(String, u32)) {
+    queries::insert_tx_draft(
+        &f.conn,
+        "cfin",
+        PROFILE,
+        "shakedex_cancel_finalize",
+        "00",
+        "{}",
+        "{}",
+    )
+    .unwrap();
+    let tx = f.conn.unchecked_transaction().unwrap();
+    assert_eq!(
+        queries::mark_listing_cancel_finalizing_in_tx(&tx, &f.id, "cfin", (&c.0, c.1)).unwrap(),
+        1
+    );
+    tx.commit().unwrap();
+}
+
+/// R28: while the cancel's TRANSFER is the owner, the job stores the blocks
+/// left until its FINALIZE is valid at tip + 1, from hsd's `info.transfer`
+/// (regtest lockup 10), not from the TRANSFER coin's height (3 blocks
+/// earlier here): one block early it is 1, then 0; an unchanged count is not
+/// written again. A mined TRANSFER coin that is not the name's owner is no
+/// consistent answer: nothing is stored. A name with no live state ends the
+/// listing.
+#[tokio::test]
+async fn mined_cancel_counts_down_to_its_finalize() {
+    let lockup = i64::from(NET.name_params().transfer_lockup);
+    let f = fx(ListingState::Listed);
+    let c = cancel_mined_at(&f);
+    let at = TIP - 30;
+    let coin_at = at - 3;
+    let chain = |owner: (&str, u32), tip: i64| {
+        node(
+            info_transfer(owner, at),
+            vec![transfer_out_of_lock(&f, &c.0, &f.cancel, coin_at)],
+            Value::Null,
+        )
+        .with_blockchain_info(tip_at(tip))
+    };
+    run(&f, &chain((&txid("d9"), 0), at + lockup - 2)).await;
+    assert_eq!(
+        listing(&f).cancel_blocks_remaining,
+        None,
+        "the owner is another coin"
+    );
+    run(&f, &chain((&c.0, 0), at + lockup - 2)).await;
+    assert_eq!(
+        listing(&f).cancel_blocks_remaining,
+        Some(1),
+        "one block early"
+    );
+    let before = listing(&f).updated_at;
+    run(&f, &chain((&c.0, 0), at + lockup - 1)).await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.cancel_blocks_remaining),
+        (ListingState::CancelAwaitingFinalize, Some(0))
+    );
+    assert_eq!(l.updated_at, before, "the count is not a state change");
+    // No live name: Expired.
+    let gone = node(
+        json!({ "info": null, "start": null }),
+        vec![transfer_out_of_lock(&f, &c.0, &f.cancel, coin_at)],
+        Value::Null,
+    )
+    .with_blockchain_info(tip_at(TIP));
+    run(&f, &gone).await;
+    assert_eq!(listing(&f).state, ListingState::Expired);
+}
+
+/// R28: a CancelFinalizing listing whose FINALIZE draft is dead (failed,
+/// dropped, deleted) while the cancel's TRANSFER is still a mined coin
+/// awaits its finalize again; an alive one stays.
+#[tokio::test]
+async fn dead_cancel_finalize_returns_to_awaiting() {
+    for (status, want) in [
+        (Some("failed"), ListingState::CancelAwaitingFinalize),
+        (Some("dropped"), ListingState::CancelAwaitingFinalize),
+        (None, ListingState::CancelAwaitingFinalize),
+        (Some("signed"), ListingState::CancelFinalizing),
+        (Some("broadcasted"), ListingState::CancelFinalizing),
+    ] {
+        let f = fx(ListingState::Listed);
+        let c = cancel_mined_at(&f);
+        cancel_finalizing(&f, &c);
+        match status {
+            Some(s) => queries::update_tx_draft_status(&f.conn, "cfin", s, None, None).unwrap(),
+            None => {
+                f.conn
+                    .execute("DELETE FROM wallet_tx_drafts WHERE id = 'cfin'", [])
+                    .unwrap();
+            }
+        }
+        let rpc = node(
+            info_transfer((&c.0, 0), TIP - 30),
+            vec![transfer_out_of_lock(&f, &c.0, &f.cancel, TIP - 30)],
+            Value::Null,
+        )
+        .with_blockchain_info(tip_at(TIP));
+        run(&f, &rpc).await;
+        let l = listing(&f);
+        assert_eq!(l.state, want, "{status:?}");
+        if want == ListingState::CancelAwaitingFinalize {
+            assert_eq!(l.cancel_finalize_draft_id, None, "{status:?}");
+        }
+    }
+}
+
+/// R28 and the T4 carry: the name is home — the owner a mined FINALIZE of
+/// the name at an address of ours spending the cancel's TRANSFER — so the
+/// listing is Cancelled, from CancelFinalizing (our FINALIZE) and from
+/// CancelAwaitingFinalize (one sent from another device). A FINALIZE to an
+/// address not ours, one still in the mempool (the owner still the
+/// TRANSFER, its coin hsd's 404), or one not spending this cancel is no
+/// verdict. A cancel mined and finalized home from another device before
+/// any sync is found from the FINALIZE first (CancelAwaitingFinalize,
+/// `cancel_of_lock`) and is Cancelled on the next sync, never finalized a
+/// second time.
+#[tokio::test]
+async fn cancel_finalized_home_is_cancelled() {
+    let d1 = txid("d1");
+    let stranger = address::encode_p2wpkh(NET, &[8; 20]).unwrap();
+    let home_coin = |to: &str| {
+        coin(
+            &d1,
+            0,
+            to,
+            COV_FINALIZE,
+            vec![name_hash(), height_item(NAME_HEIGHT)],
+            TIP,
+        )
+    };
+    for (case, finalizing) in [("ours", true), ("from another device", false)] {
+        let f = fx(ListingState::Listed);
+        let c = cancel_mined_at(&f);
+        if finalizing {
+            cancel_finalizing(&f, &c);
+            queries::update_tx_draft_status(&f.conn, "cfin", "broadcasted", None, Some(&d1))
+                .unwrap();
+        }
+        let rpc = node(
+            info((&d1, 0)),
+            vec![home_coin(&f.cancel)],
+            home_rest(&d1, (&c.0, 0), &f.cancel, TIP),
+        );
+        run(&f, &rpc).await;
+        let l = listing(&f);
+        assert_eq!(l.state, ListingState::Cancelled, "{case}");
+        assert_eq!(
+            (l.cancel_txid.as_deref(), l.cancel_vout),
+            (Some(c.0.as_str()), Some(0)),
+            "{case}"
+        );
+    }
+    // Not ours: the FINALIZE pays an address this profile has not derived.
+    let f = fx(ListingState::Listed);
+    let c = cancel_mined_at(&f);
+    let rpc = node(
+        info((&d1, 0)),
+        vec![home_coin(&stranger)],
+        home_rest(&d1, (&c.0, 0), &stranger, TIP),
+    );
+    run(&f, &rpc).await;
+    assert_eq!(
+        listing(&f).state,
+        ListingState::CancelAwaitingFinalize,
+        "not ours"
+    );
+    // In the mempool: the owner is still the cancel's TRANSFER, which hsd
+    // answers 404 for while a mempool transaction spends it.
+    let f = fx(ListingState::Listed);
+    let c = cancel_mined_at(&f);
+    let rpc = node(
+        info((&c.0, 0)),
+        vec![],
+        home_rest(&d1, (&c.0, 0), &f.cancel, -1),
+    );
+    run(&f, &rpc).await;
+    assert_eq!(
+        listing(&f).state,
+        ListingState::CancelAwaitingFinalize,
+        "in the mempool"
+    );
+    // A FINALIZE home of another cancel (another TRANSFER out of our lock).
+    let f = fx(ListingState::Listed);
+    cancel_mined_at(&f);
+    let rpc = node(
+        info((&d1, 0)),
+        vec![home_coin(&f.cancel)],
+        home_rest(&d1, (&txid("c9"), 0), &f.cancel, TIP),
+    );
+    run(&f, &rpc).await;
+    assert_eq!(
+        listing(&f).state,
+        ListingState::CancelAwaitingFinalize,
+        "another cancel"
+    );
+
+    // Mined and finalized home from another device before a sync: the
+    // first sync finds the cancel from the FINALIZE, the next ends it.
+    let c7 = txid("c7");
+    let f = fx(ListingState::Listed);
+    let transfer = cancel_rest(&f, &c7, TIP - 20, &f.cancel);
+    let home = home_rest(&d1, (&c7, 0), &f.cancel, TIP);
+    let (d, c) = (d1.clone(), c7.clone());
+    let rpc = node(info((&d1, 0)), vec![home_coin(&f.cancel)], Value::Null).with_tx_by_hash_fn(
+        move |t| {
+            Ok(if t == d {
+                home.clone()
+            } else if t == c {
+                transfer.clone()
+            } else {
+                Value::Null
+            })
+        },
+    );
+    run(&f, &rpc).await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.cancel_txid.as_deref(), l.cancel_vout),
+        (
+            ListingState::CancelAwaitingFinalize,
+            Some(c7.as_str()),
+            Some(0)
+        ),
+        "found from the FINALIZE home"
+    );
+    run(&f, &rpc).await;
+    let l = listing(&f);
+    assert_eq!(l.state, ListingState::Cancelled, "the next sync ends it");
+    assert_eq!(l.cancel_finalize_draft_id, None, "no FINALIZE of ours");
+}
+
+/// Deviation 11: a reorg that puts the mined cancel's TRANSFER back in the
+/// mempool, or takes it out of every block and mempool (the lock coin a
+/// coin again), makes the listing Cancelling again, the mined outpoint,
+/// count and FINALIZE draft link forgotten; a Cancelling listing without a
+/// cancel draft of its own (another device's cancel) is Listed again on the
+/// next sync while the lock coin stays a coin. hsd's 404 for both the
+/// TRANSFER and the lock coin (spent in a block or the mempool) is no
+/// reorg.
+#[tokio::test]
+async fn cancel_follows_a_reorg_of_its_transfer() {
+    // Back in the mempool.
+    let f = fx(ListingState::Listed);
+    let c = cancel_mined_at(&f);
+    cancel_finalizing(&f, &c);
+    queries::set_cancel_blocks_remaining(&f.conn, &f.id, 3).unwrap();
+    run(
+        &f,
+        &node(
+            info((&f.lock_txid, f.lock_vout)),
+            vec![transfer_out_of_lock(&f, &c.0, &f.cancel, -1)],
+            Value::Null,
+        ),
+    )
+    .await;
+    let l = listing(&f);
+    assert_eq!(
+        (
+            l.state,
+            l.cancel_txid.as_deref(),
+            l.cancel_vout,
+            l.cancel_blocks_remaining,
+            l.cancel_finalize_draft_id
+        ),
+        (
+            ListingState::Cancelling,
+            Some(c.0.as_str()),
+            None,
+            None,
+            None
+        )
+    );
+    // In no block and no mempool: the lock coin a coin again.
+    let f = fx(ListingState::Listed);
+    cancel_mined_at(&f);
+    let rpc = node(
+        info((&f.lock_txid, f.lock_vout)),
+        vec![lock_coin(&f, TIP - 20)],
+        Value::Null,
+    );
+    run(&f, &rpc).await;
+    assert_eq!(listing(&f).state, ListingState::Cancelling);
+    // Next sync: no cancel draft here, the lock coin a coin: Listed.
+    run(&f, &rpc).await;
+    let l = listing(&f);
+    assert_eq!((l.state, l.cancel_txid), (ListingState::Listed, None));
+    // Both 404 and the owner not yet home: no reorg, no verdict.
+    let f = fx(ListingState::Listed);
+    let c = cancel_mined_at(&f);
+    run(&f, &node(info((&c.0, 0)), vec![], Value::Null)).await;
+    assert_eq!(
+        listing(&f).state,
+        ListingState::CancelAwaitingFinalize,
+        "spent in the mempool"
+    );
+}
+
+/// R28 with R22's reorg rule: a Cancelling listing whose cancel can no
+/// longer land, while the FINALIZE into its lock is in no block and no
+/// mempool (the lock coin hsd's 404, the lock TRANSFER a coin again), goes
+/// where a Listed one goes, the cancel forgotten: Finalizing with its file;
+/// a Restored one adopted from our lock TRANSFER, Locking without its
+/// outpoint. An alive cancel, or a lock TRANSFER that is not a coin, leaves
+/// it Cancelling.
+#[tokio::test]
+async fn dead_cancel_follows_a_reorg_of_its_lock_finalize() {
+    let transfer_back = |f: &Fx| {
+        coin(
+            &f.transfer_txid,
+            0,
+            &f.payment,
+            COV_TRANSFER,
+            vec![],
+            TIP - 40,
+        )
+    };
+    for (case, from, status, back, want) in [
+        (
+            "listed, dropped",
+            ListingState::Listed,
+            "dropped",
+            true,
+            ListingState::Finalizing,
+        ),
+        (
+            "restored, failed",
+            ListingState::Restored,
+            "failed",
+            true,
+            ListingState::Locking,
+        ),
+        (
+            "alive",
+            ListingState::Listed,
+            "broadcasted",
+            true,
+            ListingState::Cancelling,
+        ),
+        (
+            "lock transfer spent",
+            ListingState::Listed,
+            "dropped",
+            false,
+            ListingState::Cancelling,
+        ),
+    ] {
+        let f = fx(from);
+        if from == ListingState::Restored {
+            f.conn
+                .execute(
+                    "UPDATE shakedex_listings SET listing_file_json = NULL, steps_json = '[]'",
+                    [],
+                )
+                .unwrap();
+        }
+        our_cancel(&f, status);
+        let coins = if back {
+            vec![transfer_back(&f)]
+        } else {
+            vec![]
+        };
+        run(&f, &node(info((&f.transfer_txid, 0)), coins, Value::Null)).await;
+        let l = listing(&f);
+        assert_eq!(l.state, want, "{case}");
+        if want != ListingState::Cancelling {
+            assert_eq!((l.cancel_draft_id, l.cancel_txid), (None, None), "{case}");
         }
     }
 }
