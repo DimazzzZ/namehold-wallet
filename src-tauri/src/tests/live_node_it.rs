@@ -1140,6 +1140,27 @@ async fn assert_spends_reveals(cl: &NodeRpcClient, txid: &str, reveals: &[(Strin
     }
 }
 
+/// The transaction `txid` spends the lock coin `lock` at some input, and hsd
+/// reports that coin spent.
+async fn assert_spends_lock(cl: &NodeRpcClient, txid: &str, lock: (&str, u32)) {
+    let tx = cl.get_tx_by_hash(txid).await.expect("tx lookup");
+    assert!(
+        tx["inputs"].as_array().expect("inputs").iter().any(|i| {
+            i["prevout"]["hash"].as_str() == Some(lock.0)
+                && i["prevout"]["index"].as_u64() == Some(u64::from(lock.1))
+        }),
+        "{txid} does not spend the lock coin {}:{}: {tx}",
+        lock.0,
+        lock.1
+    );
+    assert!(
+        cl.get_coin(lock.0, lock.1).await.expect("coin").is_none(),
+        "the lock coin {}:{} is still unspent",
+        lock.0,
+        lock.1
+    );
+}
+
 /// Acquire two names end-to-end so the wallet owns both. Convenience wrapper
 /// around `acquire_name` used by the E-series batch tests.
 async fn acquire_two_names(
@@ -7069,6 +7090,15 @@ async fn shakedex_cancel_mined_brings_the_name_home() {
     let cov = t.covenant.as_ref().expect("covenant");
     assert_eq!(cov.kind, crate::noncustodial::sync::COV_TRANSFER);
     let cancel_addr = l.cancel_address.clone().expect("reserved");
+    let cancel_index = u32::try_from(l.cancel_child_index.expect("reserved index")).unwrap();
+    let (_sk, _pk, derived) =
+        hd::derive_address(NET, &seed(), test_acct(), 0, cancel_index).unwrap();
+    assert_eq!(
+        cancel_addr,
+        derived,
+        "the cancel address is our receive address {}/0/{cancel_index}, derived from the phrase",
+        test_acct()
+    );
     let (v, h) = crate::noncustodial::address::decode(NET, &cancel_addr).unwrap();
     assert_eq!(
         cov.items[2..4],
@@ -7150,6 +7180,27 @@ async fn shakedex_cli_purchase_beats_our_cancel() {
     let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
     let file = exported_file(&app, &id);
     let cancel = cancel_signed(&app, &id, 1).await;
+    let reserved: Vec<(String, u32)> = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        let mut st = c
+            .prepare("SELECT txid, vout FROM tracked_utxos WHERE reserved_by_draft_id = ?1")
+            .unwrap();
+        st.query_map([&cancel.id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let reserved: Vec<(String, u32)> = reserved
+        .into_iter()
+        .filter(|(t, v)| !(t.eq_ignore_ascii_case(&lock_txid) && *v == lock_vout))
+        .collect();
+    assert!(
+        !reserved.is_empty(),
+        "the cancel holds coins of ours for its fee"
+    );
     let cancel_txid = listing_row(&app, &id)
         .cancel_txid
         .expect("the cancel's txid");
@@ -7207,18 +7258,7 @@ async fn shakedex_cli_purchase_beats_our_cancel() {
         fill_txid,
         "the purchase is mined"
     );
-    let ftx = cl.get_tx_by_hash(&fill_txid).await.expect("tx");
-    assert!(
-        ftx["inputs"]
-            .as_array()
-            .expect("inputs")
-            .iter()
-            .any(
-                |i| i["prevout"]["hash"].as_str() == Some(lock_txid.as_str())
-                    && i["prevout"]["index"].as_u64() == Some(u64::from(lock_vout))
-            ),
-        "the purchase spends the lock coin: {ftx}"
-    );
+    assert_spends_lock(&cl, &fill_txid, (&lock_txid, lock_vout)).await;
     assert!(
         cl.get_tx_by_hash(&cancel_txid)
             .await
@@ -7250,6 +7290,28 @@ async fn shakedex_cli_purchase_beats_our_cancel() {
         .unwrap()
     };
     assert_eq!(held, 0, "the cancel's coins are free again");
+    for (t, v) in &reserved {
+        let (spent_by, held_by): (Option<String>, Option<String>) = {
+            let state = app.state::<AppState>();
+            let c = state.db.lock().unwrap();
+            c.query_row(
+                "SELECT spent_by_txid, reserved_by_draft_id FROM tracked_utxos
+                 WHERE wallet_profile_id = ?1 AND txid = ?2 AND vout = ?3",
+                params![PROFILE, t, v],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("the coin is still tracked")
+        };
+        assert_eq!(
+            (spent_by, held_by),
+            (None, None),
+            "{t}:{v} is unspent and held by nothing"
+        );
+        assert!(
+            cl.get_coin(t, *v).await.expect("coin").is_some(),
+            "hsd still has {t}:{v} as a coin"
+        );
+    }
     let d = draft_status(&app, &cancel.id);
     assert!(
         !db::queries::draft_alive(&d.status),
@@ -7303,18 +7365,7 @@ async fn shakedex_lowered_price_is_bought_by_the_cli_at_the_lower_price() {
     cli.fill(&listing);
     let (fill_txid, _) = name_owner(&cl, &name).await;
     assert_ne!(fill_txid, lock_txid, "the name moved out of the lock");
-    let ftx = cl.get_tx_by_hash(&fill_txid).await.expect("tx");
-    assert!(
-        ftx["inputs"]
-            .as_array()
-            .expect("inputs")
-            .iter()
-            .any(
-                |i| i["prevout"]["hash"].as_str() == Some(lock_txid.as_str())
-                    && i["prevout"]["index"].as_u64() == Some(u64::from(lock_vout))
-            ),
-        "the purchase spends the lock coin: {ftx}"
-    );
+    assert_spends_lock(&cl, &fill_txid, (&lock_txid, lock_vout)).await;
     assert_eq!(
         paid_to(&cl, &fill_txid, &pay).await,
         3_000_000,
