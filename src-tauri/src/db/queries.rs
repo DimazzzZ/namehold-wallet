@@ -1861,19 +1861,26 @@ impl ListingWrite {
     }
 
     /// R25 (T6): the SET fragment that starts a listing's market bookkeeping
-    /// over when this write moves it to `to` = Listed — the listing is back
-    /// on the market set (a cancel that died, a reorg back, an upgrade, a
-    /// lowered price, a refreshed expiry), and the market may have been told
-    /// something else meanwhile, so the jobs announce it afresh. Empty for
-    /// every other target, including the other targets of a write that may
-    /// also go to Listed (Unsell to Finalizing or Restored, Uncancel to
-    /// Restored): those listings are off the market set.
+    /// over when this write moves it to `to` = Listed. A move into Listed
+    /// from another state (a cancel that died, a reorg back, an upgrade) is
+    /// a fresh listing: the market may have been told something else
+    /// meanwhile, so the bookkeeping and the acceptance are cleared and the
+    /// publish job uploads it afresh ([`MARKET_RESET_SQL`]). A Listed to
+    /// Listed write (a lowered price, a refreshed expiry) is not: the market
+    /// holds this lock's listing, so the acceptance stays and a listing the
+    /// market was told about is Retrying, due now, with no failure counted
+    /// ([`MARKET_CHANGED_SQL`]): keep-listed checks the market's copy and
+    /// uploads the new one at the next sync, a Refused one included (what
+    /// is sent changed). Empty for every other target, including the other
+    /// targets of a write that may also go to Listed (Unsell to Finalizing
+    /// or Restored, Uncancel to Restored): those listings are off the market
+    /// set.
     fn market_reset_sql(self, to: ListingState) -> &'static str {
         debug_assert!(self.to().contains(&to), "{self:?} to {to:?}");
-        if to == ListingState::Listed {
-            MARKET_RESET_SQL
-        } else {
-            ""
+        match (self, to) {
+            (Self::LowerPrice | Self::RefreshExpiry, _) => MARKET_CHANGED_SQL,
+            (_, ListingState::Listed) => MARKET_RESET_SQL,
+            _ => "",
         }
     }
 
@@ -1898,10 +1905,18 @@ impl ListingWrite {
     }
 }
 
-/// The SET fragment that starts a listing's market bookkeeping over
-/// ([`ListingWrite::market_reset_sql`], [`mark_listing_cancel_unmined`]).
+/// The SET fragment that starts a fresh listing's market bookkeeping over
+/// ([`ListingWrite::market_reset_sql`]).
 const MARKET_RESET_SQL: &str = ", market_status = NULL, market_retry_at = NULL, \
      market_attempts = 0, market_error = NULL, market_accepted = 0";
+
+/// The SET fragment of a Listed to Listed write that changes what is sent
+/// ([`ListingWrite::market_reset_sql`]): a listing the market was told about
+/// is Retrying, due now, no failure counted, its acceptance kept; one never
+/// told stays untold (its first upload is the publish job's). The spelling
+/// is [`MarketStatus::Retrying`]'s.
+const MARKET_CHANGED_SQL: &str = ", market_status = CASE WHEN market_status IS NULL THEN NULL \
+     ELSE 'retrying' END, market_retry_at = NULL, market_attempts = 0, market_error = NULL";
 
 /// R28 (T6): the SET fragment of the writes that record a mined sale or a
 /// mined cancel ([`sell_shakedex_listing`], [`mark_listing_cancel_mined`]):
@@ -3286,8 +3301,9 @@ pub struct RefreshedExpiry<'a> {
 
 /// R23: a Listed listing's file with its `expiresAt` moved ahead, only while
 /// it is still Listed on that lock coin with the file the job read
-/// ([`ListingWrite::RefreshExpiry`]); its market bookkeeping starts over, so
-/// the jobs upload the new file. Returns how many rows changed.
+/// ([`ListingWrite::RefreshExpiry`]); a listing the market was told about
+/// becomes Retrying, due now, its acceptance kept, so keep-listed uploads
+/// the new file. Returns how many rows changed.
 pub fn refresh_listing_expiry(
     conn: &rusqlite::Connection,
     id: &str,

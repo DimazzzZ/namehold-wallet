@@ -3708,7 +3708,15 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
                         Some("told".to_string()),
                         true,
                     );
-                if *to == S::Listed {
+                // Listed to Listed (a Lower price, an expiry refresh): the
+                // market already holds this lock's listing, so the new copy
+                // is due for keep-listed's check at once (Retrying, no
+                // failure counted) and the acceptance stays.
+                let changed = book == (Some(MarketStatus::Retrying), None, 0, None, true);
+                if matches!(w, ListingWrite::LowerPrice | ListingWrite::RefreshExpiry) {
+                    assert!(changed, "{w:?} {from:?} -> {to:?}: not due as changed");
+                    resets += 1;
+                } else if *to == S::Listed {
                     assert!(reset, "{w:?} {from:?} -> {to:?}: not reset");
                     resets += 1;
                 } else if matches!(w, ListingWrite::Sell | ListingWrite::CancelMined) {
@@ -3722,6 +3730,19 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
     // Listed (from Finalizing), Unsell (from SalePending and Sold), Upgrade,
     // Uncancel, LowerPrice, RefreshExpiry.
     assert_eq!(resets, 7);
+    // A Listed listing the market was never told about stays untold through
+    // a Listed to Listed write: its first upload is the publish job's.
+    for w in [ListingWrite::LowerPrice, ListingWrite::RefreshExpiry] {
+        f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
+        queries::insert_shakedex_listing(&f.conn, &base).unwrap();
+        assert_eq!(apply(&f, w, S::Listed).unwrap(), 1, "{w:?}");
+        let after = listing(&f);
+        assert_eq!(
+            (after.market_status, after.market_accepted),
+            (None, false),
+            "{w:?}"
+        );
+    }
 }
 
 /// The market jobs write their result only over the listing as they read

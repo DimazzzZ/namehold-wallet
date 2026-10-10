@@ -2811,9 +2811,9 @@ pub async fn publish_listings_with_client(
     }
     for l in queries::list_listings_kept_on_market(conn, profile_id)? {
         // Not taken by the market yet: unset. A Listed row is never Pending
-        // (every move to Listed starts the bookkeeping over,
-        // `ListingWrite::market_reset_sql`, and the day-0 announce never
-        // takes a Listed one).
+        // (every move into Listed clears the bookkeeping, a Listed to Listed
+        // write makes a told one Retrying, `ListingWrite::market_reset_sql`,
+        // and the day-0 announce never takes a Listed one).
         let first = l.market_status.is_none();
         // Only a Listed one: the FIRST upload puts a listing onto the
         // market. Keeping it there (`keep_listed_with_client`) also covers a
@@ -2996,20 +2996,22 @@ async fn upload(
 /// write that changes what is sent; only a Refused Listed listing's expiry
 /// is looked at, without a market call, and only once the stored
 /// `expires_at` is within [`EXPIRY_REFRESH_MARGIN_SECS`]: the refresh
-/// ([`market_copy`]) starts its bookkeeping over, and the next run's first
-/// upload sends the new file. The expiry is refreshed for Listed listings
+/// ([`market_copy`]) makes it Retrying, due now (what is sent changed), and
+/// the next run checks the market's copy and uploads the new file. The expiry is refreshed for Listed listings
 /// only ([`market_copy`], `ListingWrite::RefreshExpiry` is Listed to
 /// Listed). Reverse auctions are T8's.
 ///
 /// Per listing: [`market_copy`] first (our node: every step verified
 /// again, the expiry refreshed when near). StepsUnverified → recorded,
-/// backed off, nothing asked of the market. A refresh just started the
-/// bookkeeping over → uploaded at once (Listed). Otherwise the market's
+/// backed off, nothing asked of the market. The expiry just refreshed (the
+/// file changed) → uploaded at once (Listed). Otherwise the market's
 /// copy (`GET /listing/<name>/proof.json`): the same offer
 /// ([`listing_file::same_market_listing`]) → nothing uploaded, checked again
 /// in an hour (Retrying/StepsUnverified → Listed, ReplacedReuploaded
 /// stays); a copy that does not read as a listing file, or another offer →
-/// ours uploaded over it (ReplacedReuploaded); the market's own "not
+/// ours uploaded over it (ReplacedReuploaded; Listed when a Lower price or
+/// an expiry refresh changed ours since, Retrying with no failure counted:
+/// the market's copy is then our own older one); the market's own "not
 /// listed" → uploaded (Listed); no answer → Retrying, backed off
 /// ([`retry_delay_secs`]), nothing uploaded on it. The upload's answer is
 /// recorded by [`after_reply`] (a refusal → Refused, not retried). Reads the
@@ -3060,8 +3062,8 @@ fn expiry_near(l: &queries::ShakedexListing, now: i64) -> bool {
 
 /// R23 for a Refused Listed listing: [`market_copy`]'s expiry refresh, and
 /// nothing else — no market call, and nothing recorded (a refusal stays
-/// until what is sent changes; the refresh is such a change and starts the
-/// bookkeeping over itself).
+/// until what is sent changes; the refresh is such a change and makes the
+/// listing Retrying, due now, itself).
 async fn refresh_refused(
     conn: &rusqlite::Connection,
     node: &dyn NodeRpc,
@@ -3095,11 +3097,22 @@ async fn keep_listed(
         }
         MarketCopy::Ready { file, listing } => (file, listing),
     };
-    if l.market_status.is_some() && listing.market_status.is_none() {
-        // The expiry was just refreshed (which starts the bookkeeping
-        // over): the market holds the old file.
+    if listing.listing_file_json != l.listing_file_json {
+        // The expiry was just refreshed: the market holds the old file.
         return upload(conn, market, &file, &listing, S::Listed, now).await;
     }
+    // Retrying with no failure counted: a Listed to Listed write (a Lower
+    // price, an expiry refresh) changed what is sent
+    // (`ListingWrite::market_reset_sql`). A copy that differs is then our
+    // own older one, not someone else's.
+    let changed = listing.market_status == Some(S::Retrying)
+        && listing.market_attempts == 0
+        && listing.market_error.is_none();
+    let replaced = if changed {
+        S::Listed
+    } else {
+        S::ReplacedReuploaded
+    };
     match market.proof_copy(&listing.name).await? {
         ProofCopy::Copy(text) => {
             let ours = listing_file::ListingFile::parse(&file, Network::Main)?;
@@ -3116,7 +3129,7 @@ async fn keep_listed(
                 result.accepted = true;
                 record(conn, &listing, &result)
             } else {
-                upload(conn, market, &file, &listing, S::ReplacedReuploaded, now).await
+                upload(conn, market, &file, &listing, replaced, now).await
             }
         }
         ProofCopy::NotListed => upload(conn, market, &file, &listing, S::Listed, now).await,
