@@ -1202,11 +1202,18 @@ pub(crate) struct PreparedCancel {
     current_price: cancel::CancelPrice,
 }
 
+/// "could not check" for a field `what` of a node reply that a command
+/// signing over a listing's coin reads, `checked` naming what it checks
+/// ("the cancel", "the price").
+fn reply_could_not_check(what: &str, checked: &str) -> AppError {
+    AppError::Rpc(format!(
+        "node did not report {what}: could not check {checked}"
+    ))
+}
+
 /// "could not check" for a node reply the cancel reads.
 fn cancel_could_not_check(what: &str) -> AppError {
-    AppError::Rpc(format!(
-        "node did not report {what}: could not check the cancel"
-    ))
+    reply_could_not_check(what, "the cancel")
 }
 
 /// R21, deviation 7: reserve one receive address of `profile_id` and store
@@ -1276,12 +1283,7 @@ async fn lock_on_node(
     read_mtp: bool,
     words: &LockCoinWords,
 ) -> Result<LockOnNode, AppError> {
-    let could_not_check = |what: &str| {
-        AppError::Rpc(format!(
-            "node did not report {what}: could not check {}",
-            words.checked
-        ))
-    };
+    let could_not_check = |what: &str| reply_could_not_check(what, words.checked);
     let (lock_txid, lock_vout) = lock;
     let coin = ctx
         .node
