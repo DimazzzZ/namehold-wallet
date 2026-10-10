@@ -12,7 +12,8 @@ use tauri::State;
 
 use crate::commands::draft_ctx::{self, random_id, Ctx};
 use crate::db::queries::{
-    self, ListingMode, ListingState, NameCoin, PurchaseState, ShakedexListing, ShakedexPurchase,
+    self, ListingMode, ListingState, MarketStatus, NameCoin, PurchaseState, ShakedexListing,
+    ShakedexPurchase,
 };
 use crate::error::AppError;
 use crate::market::learnhns::{
@@ -950,6 +951,13 @@ pub struct ListingSummary {
     pub cancel_draft_id: Option<String>,
     pub cancel_finalize_draft_id: Option<String>,
     pub cancel_blocks_remaining: Option<i64>,
+    /// Where the listing stands on LearnHNS Market (R23, R25, R28); `None`
+    /// while nothing was told (unpublished, or not yet announced).
+    pub market_status: Option<MarketStatus>,
+    /// The market's own refusal, or why it gave no answer.
+    pub market_error: Option<String>,
+    /// RFC 3339 UTC: when the next market action on the listing is due.
+    pub market_retry_at: Option<String>,
 }
 
 impl ListingSummary {
@@ -969,6 +977,9 @@ impl ListingSummary {
             cancel_draft_id: l.cancel_draft_id.clone(),
             cancel_finalize_draft_id: l.cancel_finalize_draft_id.clone(),
             cancel_blocks_remaining: l.cancel_blocks_remaining,
+            market_status: l.market_status,
+            market_error: l.market_error.clone(),
+            market_retry_at: l.market_retry_at.clone(),
         })
     }
 }

@@ -1601,8 +1601,9 @@ async fn missing_purchase_node(
 
 /// The daemon runs the same sync steps as the app, and the purchase refresh in
 /// them holds the one path that can send. The daemon's real entry point makes
-/// no send call (SECURITY.md, "Daemon is read-only"), where the app's sync of
-/// the same wallet against the same node sends the purchase's one rebroadcast.
+/// no send call (SECURITY.md, "The daemon never signs or broadcasts"), where
+/// the app's sync of the same wallet against the same node sends the
+/// purchase's one rebroadcast.
 #[tokio::test]
 async fn daemon_sync_makes_no_send_call_where_the_apps_sync_does() {
     use crate::commands::sync::{run_sync_steps, SyncCaller, SyncStatus};

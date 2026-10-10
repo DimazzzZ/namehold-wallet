@@ -409,7 +409,7 @@ pub enum SyncCaller {
 
 impl SyncCaller {
     /// Whether this caller's sync may rebroadcast a missing purchase: the
-    /// daemon never may (SECURITY.md, "Daemon is read-only").
+    /// daemon never may (SECURITY.md, "The daemon never signs or broadcasts").
     pub fn rebroadcast(self) -> crate::shakedex_jobs::Rebroadcast {
         match self {
             SyncCaller::App => crate::shakedex_jobs::Rebroadcast::Allowed,
