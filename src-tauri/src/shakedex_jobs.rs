@@ -2219,7 +2219,7 @@ async fn cancel_on_its_way_home(
             return Ok(());
         };
         let owner = owner_of(info)?;
-        if !(owner.0 == cancel.0 && owner.1 == cancel.1) {
+        if !(owner.0.eq_ignore_ascii_case(cancel.0) && owner.1 == cancel.1) {
             // hsd names a coin the owner once its block is connected: a
             // mined cancel that is not the owner is no consistent answer.
             return Ok(());

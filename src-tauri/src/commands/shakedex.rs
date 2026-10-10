@@ -2424,10 +2424,11 @@ pub async fn shakedex_cancel_listing(
     cancel_listing_confirmed(&state, &app, &listing_id, fee_rate).await
 }
 
-/// R28: hsd answers 404 for the cancel's TRANSFER: a FINALIZE (or anything
-/// else) spends it in a block or in the mempool.
-pub const CANCEL_TRANSFER_SPENT: &str = "the cancel's transfer is already spent: the name is \
-     on its way home or already home, so no finalize was built";
+/// R28: hsd answers 404 for the cancel's TRANSFER: something spends it in a
+/// block or in the mempool (a FINALIZE home, from here or another device),
+/// or a reorg left the cancel in no block and no mempool. Only that is said.
+pub const CANCEL_TRANSFER_SPENT: &str = "the cancel's transfer is no longer an unspent coin \
+     on the node: it is on its way home, home, or undone by a reorg; nothing was built";
 
 /// R28: the FINALIZE that brings a cancelled listing's name home, built
 /// once its cancel TRANSFER is mined and the transfer lockup is over.
