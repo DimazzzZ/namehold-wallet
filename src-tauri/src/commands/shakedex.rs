@@ -177,32 +177,6 @@ pub struct PurchasePreview {
 
 // --- helpers ----------------------------------------------------------------
 
-/// Read the `learnhns_base_url` test seam, but ONLY in debug builds / tests.
-/// Release builds always talk to the real LearnHNS Market host.
-fn learnhns_base_url_override(_settings: &SettingsMap) -> String {
-    #[cfg(any(debug_assertions, test))]
-    {
-        // Unset is empty, which the caller reads as "use the real host".
-        _settings
-            .get("learnhns_base_url")
-            .cloned()
-            .unwrap_or_default()
-    }
-    #[cfg(not(any(debug_assertions, test)))]
-    {
-        String::new()
-    }
-}
-
-fn learnhns_client(settings: &SettingsMap) -> Result<LearnHnsClient, AppError> {
-    let base = learnhns_base_url_override(settings);
-    if base.trim().is_empty() {
-        Ok(LearnHnsClient::new())
-    } else {
-        LearnHnsClient::with_base_url(base.trim())
-    }
-}
-
 /// What browsing and importing need: no keys, any profile kind.
 struct BrowseCtx {
     network: Network,
@@ -374,9 +348,9 @@ struct Prepared {
     market_fee: Option<MarketFee>,
 }
 
-/// Why a market link cannot be imported off mainnet. The UI disables link
-/// import with the same words (`marketText.ts`).
-pub const MARKET_MAINNET_ONLY: &str = "LearnHNS Market lists mainnet names only";
+/// Why a market link cannot be imported off mainnet (and why every market
+/// write refuses off mainnet); defined next to the client.
+pub use crate::market::learnhns::MARKET_MAINNET_ONLY;
 
 /// Why a Shakedex draft is refused on a node that cannot send (R6). The UI
 /// shows the same sentence on the disabled Buy and Finalize
@@ -447,7 +421,10 @@ async fn prepare(
     let published = if from_market && step.fee > 0 {
         // Best-effort: a market that cannot say what it charges makes the fee
         // unpublished, so it is shown with a warning and not paid by default.
-        let info: Option<FeeInfo> = learnhns_client(&ctx.settings)?.fee_info().await.ok();
+        let info: Option<FeeInfo> = LearnHnsClient::from_settings(&ctx.settings)?
+            .fee_info()
+            .await
+            .ok();
         info.is_some_and(|i| {
             market_fee_is_published(step.fee, listing.fee_addr.as_deref(), step.price, &i)
         })
@@ -2019,7 +1996,7 @@ pub async fn shakedex_list_market(
             page_count: 1,
         });
     }
-    let client = learnhns_client(&ctx.settings)?;
+    let client = LearnHnsClient::from_settings(&ctx.settings)?;
     // No page asked for is the first page; pages count from 1.
     let page = page.unwrap_or(1).max(1);
     let (raw_rows, total) = client.list_available(page, MARKET_PER_PAGE).await?;
@@ -2109,7 +2086,7 @@ pub async fn shakedex_import_listing(
                 return Err(AppError::InvalidInput(MARKET_MAINNET_ONLY.into()));
             }
             linked_name = Some(name.clone());
-            learnhns_client(&ctx.settings)?
+            LearnHnsClient::from_settings(&ctx.settings)?
                 .listing_file(&name)
                 .await?
                 .ok_or_else(|| {
