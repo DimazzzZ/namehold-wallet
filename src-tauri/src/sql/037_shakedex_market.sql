@@ -12,8 +12,14 @@
 -- a told listing Retrying, due now, and sets market_changed, keeping
 -- market_accepted; a reorg back to an unsent cancel does the same
 -- (queries::mark_listing_cancel_unmined); an accepted upload or a matched
--- copy sets market_accepted and clears market_changed.
+-- copy sets market_accepted and clears market_changed. market_told is 1
+-- once the market took something of ours for this listing (its pending post
+-- accepted, an upload accepted, our copy served back): the listing is then
+-- reported when its cancel or sale is mined (R28). Sticky: no reset, change,
+-- reorg or failure clears it, since a listing row is one lock (a new lock is
+-- a new row).
 ALTER TABLE shakedex_listings ADD COLUMN market_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE shakedex_listings ADD COLUMN market_error TEXT;
 ALTER TABLE shakedex_listings ADD COLUMN market_accepted INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE shakedex_listings ADD COLUMN market_changed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE shakedex_listings ADD COLUMN market_told INTEGER NOT NULL DEFAULT 0;

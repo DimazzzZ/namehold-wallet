@@ -112,6 +112,7 @@ fn fx_at(state: ListingState, publish: bool, mtp: u64) -> Fx {
         market_error: None,
         market_accepted: false,
         market_changed: false,
+        market_told: false,
         expires_at: locked.then_some((mtp + sell::LISTING_LIFETIME_SECS) as i64),
         abort_draft_id: None,
         abort_txid: None,
@@ -969,13 +970,13 @@ fn rfc3339(secs: i64) -> String {
 }
 
 /// A Listed, published listing the market already took (an upload of it
-/// accepted), due for its hourly check.
+/// accepted: accepted and told), due for its hourly check.
 fn listed_on_market(status: MarketStatus) -> Fx {
     let f = fx(ListingState::Listed, true);
     f.conn
         .execute(
             "UPDATE shakedex_listings SET market_status = ?1, market_retry_at = ?2,
-             market_accepted = 1",
+             market_accepted = 1, market_told = 1",
             [status.as_str(), &rfc3339(NOW)],
         )
         .unwrap();
@@ -1956,7 +1957,10 @@ async fn untold_or_unpublished_listing_is_not_reported() {
     for case in ["untold", "unpublished"] {
         let f = listed_on_market(MarketStatus::Listed);
         let sql = match case {
-            "untold" => "UPDATE shakedex_listings SET market_status = NULL",
+            "untold" => {
+                "UPDATE shakedex_listings SET market_status = NULL, market_accepted = 0, \
+                 market_told = 0"
+            }
             _ => "UPDATE shakedex_listings SET publish = 0",
         };
         f.conn.execute(sql, []).unwrap();
@@ -2183,9 +2187,9 @@ async fn never_sent_steps_unverified_listing_does_not_report_its_mined_cancel() 
 }
 
 /// S1: a listing the market knows only from its day-0 pending post is told
-/// of its mined sale; while the report gets no answer it stays Pending (the
-/// pending post is what the market holds), backed off, and is reported
-/// once the market answers.
+/// of its mined sale; a report with no answer is Retrying, backed off (the
+/// sticky `market_told` keeps it in the report set), and is reported once
+/// the market answers.
 #[tokio::test]
 async fn pending_only_listing_reports_its_sale_after_no_answer() {
     let f = fx(ListingState::Finalizing, true);
@@ -2199,7 +2203,11 @@ async fn pending_only_listing_reports_its_sale_after_no_answer() {
         .await;
     publish(&f, &MockNodeRpc::new(), &s, NOW).await;
     post.assert_async().await;
-    assert_eq!(listing(&f).market_status, Some(MarketStatus::Pending));
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_told),
+        (Some(MarketStatus::Pending), true)
+    );
     f.conn
         .execute(
             "UPDATE shakedex_listings SET state = 'sold', sold_txid = ?1",
@@ -2227,7 +2235,7 @@ async fn pending_only_listing_reports_its_sale_after_no_answer() {
             l.market_attempts
         ),
         (
-            Some(MarketStatus::Pending),
+            Some(MarketStatus::Retrying),
             Some(rfc3339(NOW + 300).as_str()),
             1
         )
@@ -2239,6 +2247,199 @@ async fn pending_only_listing_reports_its_sale_after_no_answer() {
     publish(&f, &node(&f, TIP), &s, NOW + 86_400).await;
     m.assert_async().await;
     assert_eq!(listing(&f).market_status, Some(MarketStatus::Reported));
+}
+
+/// Fix round 2: what a first upload after the pending post got.
+#[derive(Debug, Clone, Copy)]
+enum FirstUpload {
+    /// None yet (the bookkeeping as the move into Listed left it).
+    NotYet,
+    NoAnswer,
+    Refused,
+    StepsUnverified,
+}
+
+/// Through the real writes: Finalizing, the pending post accepted (told),
+/// the FINALIZE into the lock mined (`mark_listing_listed`, which starts the
+/// bookkeeping over), then the first upload as `first`. Returns the listing
+/// with its status as that upload left it.
+async fn told_by_pending_post_then(first: FirstUpload) -> Fx {
+    let f = fx(ListingState::Finalizing, true);
+    let mut s = market().await;
+    let _post = s
+        .mock("POST", "/api/v2/pending-listings")
+        .with_status(201)
+        .with_body(PENDING_ACCEPTED)
+        .create_async()
+        .await;
+    publish(&f, &MockNodeRpc::new(), &s, NOW).await;
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Pending));
+    assert_eq!(queries::mark_listing_listed(&f.conn, &f.id).unwrap(), 1);
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.market_status, l.market_accepted),
+        (ListingState::Listed, None, false),
+        "the move into Listed starts the bookkeeping over"
+    );
+    let mut s = market().await;
+    let (status, body) = match first {
+        FirstUpload::NotYet => return f,
+        FirstUpload::NoAnswer => (503, "<html>unavailable</html>"),
+        FirstUpload::Refused => (
+            409,
+            r#"{"error":"An active listing for dexjobs already exists."}"#,
+        ),
+        FirstUpload::StepsUnverified => {
+            f.conn
+                .execute("UPDATE shakedex_listings SET steps_json = 'not json'", [])
+                .unwrap();
+            (201, "")
+        }
+    };
+    let _up = s
+        .mock("POST", "/api/upload-proof")
+        .with_status(status)
+        .with_body(body)
+        .create_async()
+        .await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    let want = match first {
+        FirstUpload::NoAnswer => MarketStatus::Retrying,
+        FirstUpload::Refused => MarketStatus::Refused,
+        _ => MarketStatus::StepsUnverified,
+    };
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_accepted),
+        (Some(want), false),
+        "{first:?}"
+    );
+    f
+}
+
+/// Fix round 2 (ruling): the market took our pending post, so it is told
+/// of the mined cancel whatever the first upload after the move into Listed
+/// got — none yet, no answer, refused, steps unverified: exactly one
+/// `refresh-status`.
+#[tokio::test]
+async fn told_by_its_pending_post_reports_its_mined_cancel_whatever_the_first_upload_got() {
+    for first in [
+        FirstUpload::NotYet,
+        FirstUpload::NoAnswer,
+        FirstUpload::Refused,
+        FirstUpload::StepsUnverified,
+    ] {
+        let f = told_by_pending_post_then(first).await;
+        assert!(listing(&f).market_told, "{first:?}: sticky");
+        cancelling(&f, "broadcasted");
+        cancel_mined(&f, ListingState::CancelAwaitingFinalize);
+        let mut s = market().await;
+        let (m, seen) = report_mock(&mut s, 200, CANCEL_RECORDED, 1).await;
+        for at in [NOW + 1, NOW + 3_600, NOW + 7 * 86_400] {
+            publish(&f, &node(&f, TIP), &s, at).await;
+        }
+        m.assert_async().await;
+        let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0]).unwrap();
+        assert_eq!(
+            sent,
+            json!({ "outcome": "cancelled", "cancelTxHash": txid("c1") }),
+            "{first:?}"
+        );
+        assert_eq!(
+            listing(&f).market_status,
+            Some(MarketStatus::Reported),
+            "{first:?}"
+        );
+    }
+}
+
+/// Fix round 2, the sale: the same, for a mined purchase.
+#[tokio::test]
+async fn told_by_its_pending_post_reports_its_sale_whatever_the_first_upload_got() {
+    for first in [
+        FirstUpload::NotYet,
+        FirstUpload::NoAnswer,
+        FirstUpload::Refused,
+        FirstUpload::StepsUnverified,
+    ] {
+        let f = told_by_pending_post_then(first).await;
+        f.conn
+            .execute(
+                "UPDATE shakedex_listings SET state = 'sold', sold_txid = ?1",
+                [txid("b1")],
+            )
+            .unwrap();
+        let mut s = market().await;
+        let (m, seen) = report_mock(&mut s, 200, SALE_RECORDED, 1).await;
+        for at in [NOW + 300, NOW + 3_600, NOW + 7 * 86_400] {
+            publish(&f, &node(&f, TIP), &s, at).await;
+        }
+        m.assert_async().await;
+        let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0]).unwrap();
+        assert_eq!(sent, json!({ "saleTxHash": txid("b1") }), "{first:?}");
+        assert_eq!(
+            listing(&f).market_status,
+            Some(MarketStatus::Reported),
+            "{first:?}"
+        );
+    }
+}
+
+/// Fix round 2: `market_told` is set by every outcome in which the market
+/// took something of ours — the pending post, an accepted upload, our copy
+/// served back — and by nothing else: a refused or unanswered post or
+/// upload leaves it unset.
+#[tokio::test]
+async fn market_told_is_set_only_when_the_market_took_something_of_ours() {
+    // A refused pending post: not told.
+    let f = fx(ListingState::Finalizing, true);
+    let mut s = market().await;
+    let _post = s
+        .mock("POST", "/api/v2/pending-listings")
+        .with_status(409)
+        .with_body(r#"{"error":"A pending listing with that transferTxHash already exists"}"#)
+        .create_async()
+        .await;
+    publish(&f, &MockNodeRpc::new(), &s, NOW).await;
+    assert_eq!(
+        (listing(&f).market_status, listing(&f).market_told),
+        (Some(MarketStatus::Refused), false)
+    );
+    // An unanswered then an accepted first upload: told only by the second.
+    let f = fx(ListingState::Listed, true);
+    let mut s = market().await;
+    let down = s
+        .mock("POST", "/api/upload-proof")
+        .with_status(503)
+        .with_body("<html>unavailable</html>")
+        .create_async()
+        .await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    assert!(!listing(&f).market_told, "no answer");
+    down.remove_async().await;
+    // Retrying now: keep-listed finds no copy and uploads.
+    let _gone = s
+        .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_status(404)
+        .with_body(PROOF_NOT_FOUND)
+        .create_async()
+        .await;
+    let (m, _) = upload_mock(&mut s, 1).await;
+    keep(&f, &s, NOW + 300).await;
+    m.assert_async().await;
+    assert!(listing(&f).market_told, "upload accepted");
+    // Our copy served back by a market we never uploaded to from here.
+    let f = fx(ListingState::Listed, true);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET market_status = 'retrying', market_retry_at = ?1",
+            [rfc3339(NOW)],
+        )
+        .unwrap();
+    let mut s = market().await;
+    let _get = copy_mock(&mut s, our_copy(&f), 1).await;
+    keep(&f, &s, NOW).await;
+    assert!(listing(&f).market_told, "our copy served back");
 }
 
 /// Carried from T5: the market was told the listing is cancelled, and then
