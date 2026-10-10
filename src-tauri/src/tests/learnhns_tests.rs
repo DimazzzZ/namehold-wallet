@@ -293,6 +293,18 @@ pub(crate) const SALE_RECORDED: &str = r#"{"saleTxHash":"b1b1b1b1b1b1b1b1b1b1b1b
 /// `last_status = 400` (L478) when the name has no listing to check; the same
 /// words come back as 404 on the paths without a txid (L2463/L2475).
 pub(crate) const NO_LISTING: &str = r#"{"error":"Listing not found"}"#;
+/// MKT `_verified_listing_spend` (@3d117361, L598–611) when neither its hsd
+/// (`_fetch_hsd_tx`, L997–1001) nor its explorer (`_fetch_explorer_tx`'s 404,
+/// L1004+) has seen the tx yet: chain lag, not a verdict.
+pub(crate) const TX_NOT_SEEN: &str = r#"{"error":"Transaction was not found","fallbackError":"Transaction was not found by explorer fallback"}"#;
+/// MKT `_verify_listing_proof_on_chain`'s chain-lag replies to an upload
+/// (@3d117361): the lock coin (`_fetch_hsd_coin`, L993), the name
+/// (`_fetch_hsd_name_info`, L1082), the owner not yet the lock (L1111).
+pub(crate) const COIN_NOT_SEEN: &str =
+    r#"{"error":"Listing coin was not found or is already spent"}"#;
+pub(crate) const NAME_NOT_SEEN: &str = r#"{"error":"Name was not found"}"#;
+pub(crate) const OWNER_NOT_SEEN: &str =
+    r#"{"error":"The proof locking output is not the name's current on-chain owner coin"}"#;
 /// The upload's file name: the listing's name and lock txid, so no two
 /// uploads share a name in the market's shared upload folder (MKT api.py
 /// L2807–2808 saves under the file name as sent).
@@ -358,8 +370,8 @@ async fn no_http_off_mainnet() {
 /// R23: the upload is `POST /api/upload-proof`, multipart, the listing file
 /// as written in field `proof` (filename `<name>-<lockTxHash>.json`, JSON),
 /// and the market's 201 reads as accepted; its own JSON refusal as refused,
-/// with its words; a proxy's HTML page, a 5xx or a reply not in its shape as
-/// no answer.
+/// with its words; its chain-lag replies as not seen yet; a proxy's HTML
+/// page, a 5xx or a reply not in its shape as no answer.
 #[tokio::test]
 async fn upload_shape() {
     let mut s = mockito::Server::new_async().await;
@@ -419,6 +431,11 @@ async fn upload_shape() {
         (500, r#"{"error":"Failed to pin to IPFS: timeout"}"#, "none"),
         (201, r#"{"success":false}"#, "none"),
         (201, "not json", "none"),
+        (404, COIN_NOT_SEEN, "not seen"),
+        (404, NAME_NOT_SEEN, "not seen"),
+        (409, OWNER_NOT_SEEN, "not seen"),
+        // The same words under another status are not the chain-lag reply.
+        (400, NAME_NOT_SEEN, "refused"),
     ]
     .map(|(st, b, w)| (st, b.to_string(), w))
     {
@@ -432,6 +449,10 @@ async fn upload_shape() {
         let r = mainnet(&s).upload_proof(LISTING_FILE).await.unwrap();
         match (want, &r) {
             ("refused", MarketReply::Refused { status: got, error }) => {
+                assert_eq!(*got as usize, status);
+                assert!(body.contains(error.as_str()), "{error}");
+            }
+            ("not seen", MarketReply::NotSeenYet { status: got, error }) => {
                 assert_eq!(*got as usize, status);
                 assert!(body.contains(error.as_str()), "{error}");
             }
@@ -508,7 +529,8 @@ async fn pending_listing_shape() {
 /// R28: `POST /api/v2/listings/<name>/refresh-status` with
 /// `{outcome: "cancelled", cancelTxHash}` or `{saleTxHash}`; the market's
 /// record reads as recorded, its "Listing not found" (400 or 404) as nothing
-/// listed, its other JSON refusals as refused, anything else as no answer.
+/// listed, its 404 "Transaction was not found" as not seen yet, its other
+/// JSON refusals as refused, anything else as no answer.
 #[tokio::test]
 async fn refresh_status_shape() {
     let cancel_txid = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
@@ -556,6 +578,9 @@ async fn refresh_status_shape() {
     for (status, body, want) in [
         (400, NO_LISTING, "nothing"),
         (404, NO_LISTING, "nothing"),
+        (404, TX_NOT_SEEN, "not seen"),
+        (503, TX_NOT_SEEN, "none"),
+        (400, r#"{"error":"Transaction was not found"}"#, "refused"),
         (404, "<!doctype html><h1>Not found</h1>", "none"),
         (
             400,
@@ -579,6 +604,9 @@ async fn refresh_status_shape() {
         match (want, &r) {
             ("nothing", MarketReply::Accepted(StatusRecorded::NoListing)) => {}
             ("refused", MarketReply::Refused { .. }) => {}
+            ("not seen", MarketReply::NotSeenYet { status: 404, error }) => {
+                assert_eq!(error, "Transaction was not found")
+            }
             ("none", MarketReply::NoAnswer(_)) => {}
             _ => panic!("{status} {body}: {r:?}"),
         }

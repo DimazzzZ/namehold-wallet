@@ -41,6 +41,17 @@ pub enum MarketReply<T> {
         status: u16,
         error: String,
     },
+    /// The market's own answer that its node has not seen our chain state
+    /// yet (the lock coin, the name's owner, a sale or cancel tx): one of the
+    /// exact status-and-words pairs in [`UPLOAD_NOT_SEEN_YET`] and
+    /// [`REPORT_NOT_SEEN_YET`], recognised here and nowhere else. Not a
+    /// verdict on the listing: the caller backs off as for `NoAnswer` and
+    /// checks the chain on our own node before each attempt; our node is the
+    /// final word.
+    NotSeenYet {
+        status: u16,
+        error: String,
+    },
     /// Why there was no answer, for the listing's status.
     NoAnswer(String),
 }
@@ -213,7 +224,7 @@ impl LearnHnsClient {
                     _ => no_shape(status),
                 }
             }
-            Ok((status, v)) => refusal_or_none(status, v),
+            Ok((status, v)) => refusal_or_none(status, v, UPLOAD_NOT_SEEN_YET),
             Err(why) => MarketReply::NoAnswer(why),
         })
     }
@@ -243,7 +254,7 @@ impl LearnHnsClient {
             {
                 MarketReply::Accepted(())
             }
-            Ok((status, v)) => refusal_or_none(status, v),
+            Ok((status, v)) => refusal_or_none(status, v, &[]),
             Err(why) => MarketReply::NoAnswer(why),
         })
     }
@@ -283,7 +294,7 @@ impl LearnHnsClient {
             Ok((400 | 404, Some(v))) if v["error"] == "Listing not found" => {
                 MarketReply::Accepted(StatusRecorded::NoListing)
             }
-            Ok((status, v)) => refusal_or_none(status, v),
+            Ok((status, v)) => refusal_or_none(status, v, REPORT_NOT_SEEN_YET),
             Err(why) => MarketReply::NoAnswer(why),
         })
     }
@@ -451,10 +462,38 @@ fn json_object(body: &[u8]) -> Option<Value> {
         .filter(Value::is_object)
 }
 
-/// The market's own refusal (a 4xx whose JSON body has a string `error`),
-/// or no answer: a 5xx, a 3xx, an HTML page, a 2xx not in the shape.
-fn refusal_or_none<T>(status: u16, v: Option<Value>) -> MarketReply<T> {
+/// The market's chain-lag replies to an upload (MKT api.py @3d117361,
+/// `_verify_listing_proof_on_chain`): its hsd has not seen the lock coin
+/// (`_fetch_hsd_coin`, L993) or the name (`_fetch_hsd_name_info`, L1082), or
+/// does not yet see the lock as the name's owner (L1111).
+const UPLOAD_NOT_SEEN_YET: &[(u16, &str)] = &[
+    (404, "Listing coin was not found or is already spent"),
+    (404, "Name was not found"),
+    (
+        409,
+        "The proof locking output is not the name's current on-chain owner coin",
+    ),
+];
+
+/// The market's chain-lag reply to a sale or cancel report: neither its hsd
+/// (`_fetch_hsd_tx`, L997–1001) nor its explorer has seen the tx
+/// (`_verified_listing_spend`, L598–611).
+const REPORT_NOT_SEEN_YET: &[(u16, &str)] = &[(404, "Transaction was not found")];
+
+/// The market's own answer that is not acceptance: its chain-lag reply (an
+/// exact pair of `not_seen_yet`), its refusal (any other 4xx whose JSON body
+/// has a string `error`), or no answer: a 5xx, a 3xx, an HTML page, a 2xx
+/// not in the shape.
+fn refusal_or_none<T>(
+    status: u16,
+    v: Option<Value>,
+    not_seen_yet: &[(u16, &str)],
+) -> MarketReply<T> {
     match v.as_ref().and_then(|v| v["error"].as_str()) {
+        Some(error) if not_seen_yet.contains(&(status, error)) => MarketReply::NotSeenYet {
+            status,
+            error: error.to_string(),
+        },
         Some(error) if (400..500).contains(&status) => MarketReply::Refused {
             status,
             error: error.to_string(),
