@@ -660,3 +660,80 @@ async fn listing_ready_respects_disabled_setting() {
     assert!(!outcome.enabled);
     assert!(outcome.notified.is_empty());
 }
+
+// --- Shakedex cancel ready to finalize (R28) ---
+
+/// R28, R14's pattern: a mined cancel notifies once its transfer lockup is
+/// over (0 blocks left at the last sync), not while blocks are left, and
+/// not again the next day; once its FINALIZE is sent the episode ends and
+/// its key leaves the persisted state.
+#[tokio::test]
+async fn cancel_finalize_ready_after_the_lockup() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "mainnet");
+        enable_notifications(&conn, "144", "30");
+        seed_listing(&conn, &id, "l1", "homeward", "cancel_awaiting_finalize");
+        conn.execute(
+            "UPDATE shakedex_listings
+             SET cancel_txid = 'c1-tx', cancel_vout = 0, cancel_blocks_remaining = 3
+             WHERE id = 'l1'",
+            [],
+        )
+        .unwrap();
+        id
+    };
+    let app = mock_app_with(state);
+    let scan = |day| scan_deadline_notifications_on_day(app.handle().clone(), app.state(), day);
+    let with = |sql: &str| {
+        let s: tauri::State<crate::AppState> = app.state();
+        let conn = s.db.lock().unwrap();
+        conn.execute(sql, []).unwrap();
+    };
+    assert!(
+        scan(20_000).await.unwrap().notified.is_empty(),
+        "3 blocks left"
+    );
+    with("UPDATE shakedex_listings SET cancel_blocks_remaining = 0 WHERE id = 'l1'");
+    let d = scan(20_000).await.unwrap();
+    assert_eq!(d.notified.len(), 1, "{:?}", d.notified);
+    assert_eq!(
+        d.notified[0].key,
+        format!("cancel_finalize:{profile_id}:homeward:c1-tx")
+    );
+    assert_eq!(d.notified[0].title, "Ready to finalize");
+    assert!(
+        d.notified[0].body.contains("bring the name home"),
+        "{}",
+        d.notified[0].body
+    );
+    assert!(
+        scan(20_001).await.unwrap().notified.is_empty(),
+        "once, not daily"
+    );
+    {
+        let s: tauri::State<crate::AppState> = app.state();
+        let conn = s.db.lock().unwrap();
+        db::queries::insert_tx_draft(
+            &conn,
+            "cfin",
+            &profile_id,
+            "shakedex_cancel_finalize",
+            "00",
+            "{}",
+            "{}",
+        )
+        .unwrap();
+    }
+    with(
+        "UPDATE shakedex_listings SET state = 'cancel_finalizing', \
+         cancel_finalize_draft_id = 'cfin' WHERE id = 'l1'",
+    );
+    with("UPDATE wallet_tx_drafts SET status = 'broadcasted' WHERE id = 'cfin'");
+    assert!(scan(20_002).await.unwrap().notified.is_empty(), "sent");
+    let s: tauri::State<crate::AppState> = app.state();
+    let conn = s.db.lock().unwrap();
+    let raw = db::queries::get_settings(&conn).unwrap()["deadline_notify_state"].clone();
+    assert!(!raw.contains("cancel_finalize:"), "{raw}");
+}
