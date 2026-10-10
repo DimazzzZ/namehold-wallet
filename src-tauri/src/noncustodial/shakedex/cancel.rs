@@ -65,15 +65,18 @@ pub enum CancelPrice {
     Step(u64),
     /// The listing has stored steps, none valid at the node's MTP.
     NoneValidYet,
-    /// A lock restored by name: this device stores none of its steps.
+    /// A Restored lock (restored by name, or finalized into our lock by
+    /// another device): this device stores none of its steps.
     NotKnown,
 }
 
 /// R28: the "Current price" row while no stored step is valid at the MTP.
 pub const CANCEL_PRICE_NONE_VALID_YET: &str =
     "none yet: no signed price step is valid at the node's median time";
-/// R28: the "Current price" row of a lock restored by name.
-pub const CANCEL_PRICE_NOT_KNOWN: &str = "not known on this device (a lock restored by name)";
+/// R28: the "Current price" row of a Restored lock (restored by name, or
+/// finalized into our lock by another device), which stores no steps.
+pub const CANCEL_PRICE_NOT_KNOWN: &str =
+    "not known on this device (a restored lock without its listing file)";
 
 /// R28: the rows of the cancel's own confirmation, `{ "rows": [...] }` as
 /// the secure window renders a `confirm` request.
@@ -412,7 +415,7 @@ mod tests {
     /// until it is mined; a purchase already in the node's mempool, which
     /// hsd still answers with the cancel's txid), the fee, where the name
     /// comes home to, and the current price, that no step is valid yet, or
-    /// that this device does not know it (a lock restored by name).
+    /// that this device does not know it (a Restored lock, no steps).
     #[test]
     fn cancel_rows_say_what_r28_says() {
         let rows = |price| {
@@ -460,7 +463,7 @@ mod tests {
         let r = rows(CancelPrice::NotKnown);
         assert_eq!(
             value(&r, "Current price").as_deref(),
-            Some("not known on this device (a lock restored by name)")
+            Some("not known on this device (a restored lock without its listing file)")
         );
         let r = rows(CancelPrice::NoneValidYet);
         assert_eq!(

@@ -6031,7 +6031,9 @@ async fn own_listing_file_refused_for_ledger_and_watch_only() {
 
 // --- Cancel (T5, R28) --------------------------------------------------------
 
-use crate::commands::shakedex::{cancel_listing_confirmed, CANCEL_TITLE};
+use crate::commands::shakedex::{
+    cancel_listing_confirmed, reserve_restored_cancel_address, CANCEL_TITLE,
+};
 use crate::noncustodial::shakedex::cancel::{
     CANCEL_ACTION, CANCEL_MEMPOOL_PURCHASE, CANCEL_PRICE_NONE_VALID_YET, CANCEL_PRICE_NOT_KNOWN,
     CANCEL_STILL_BUYABLE,
@@ -6461,8 +6463,9 @@ async fn cancel_of_a_lock_restored_by_name_reserves_its_cancel_address() {
         .as_array()
         .unwrap()
         .clone();
-    assert!(rows.iter().any(|r| r["label"] == "Current price"
-        && r["value"] == "not known on this device (a lock restored by name)"));
+    assert!(rows
+        .iter()
+        .any(|r| r["label"] == "Current price" && r["value"] == CANCEL_PRICE_NOT_KNOWN));
     let s = l.r.listing();
     assert_eq!(s.state, ListingState::Cancelling);
     let address = s.cancel_address.clone().expect("reserved");
@@ -6617,4 +6620,45 @@ async fn cancel_refused_on_node_facts_that_do_not_hold() {
     let e = err_text(cancel(&l).await.expect_err("key mismatch"));
     assert!(e.contains(sell::LISTING_KEY_MISMATCH), "{e}");
     assert_no_cancel(&l, ListingState::Listed);
+}
+
+/// R21, deviation 7: the cancel address of a restored lock is reserved and
+/// written on its row in one database transaction. When the row write does
+/// not apply (the row is no longer a Restored lock without a cancel
+/// address), the reservation is rolled back: no derived address is added
+/// or marked used.
+#[tokio::test]
+async fn a_restored_cancel_address_is_reserved_only_with_its_row() {
+    let l = listed_fixture().await;
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET cancel_address = NULL, cancel_child_index = NULL
+             WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap();
+    });
+    let used = |app: &App| -> i64 {
+        with_db(app, |c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM derived_addresses WHERE used = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        })
+    };
+    let (rows, used_before) = (count(&l.r.app, "derived_addresses"), used(&l.r.app));
+    let e = with_db(&l.r.app, |c| {
+        reserve_restored_cancel_address(c, PROFILE, &l.r.listing_id).expect_err("listed")
+    });
+    assert!(err_text(e).contains("changed meanwhile"));
+    assert_eq!(
+        count(&l.r.app, "derived_addresses"),
+        rows,
+        "nothing derived"
+    );
+    assert_eq!(used(&l.r.app), used_before, "nothing reserved");
+    let s = l.r.listing();
+    assert_eq!((s.cancel_address, s.cancel_child_index), (None, None));
 }
