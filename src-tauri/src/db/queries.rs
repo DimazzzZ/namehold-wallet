@@ -3504,6 +3504,42 @@ pub fn list_listings_kept_on_market(
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// R23 day 0: the published listings to announce as pending — Locking once
+/// its lock TRANSFER draft has been sent ([`REACHED_CHAIN_STATUSES`]),
+/// ReadyToFinalize and Finalizing — that the market has not taken yet
+/// (`market_status` unset, or retrying after no answer; a refused one waits
+/// for a change, see [`MarketStatus::Refused`]). The mainnet rule is the
+/// job's own.
+pub fn list_listings_to_announce(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<ShakedexListing>, AppError> {
+    let sql = format!(
+        "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
+         WHERE wallet_profile_id = ?1 AND publish = 1
+           AND (market_status IS NULL OR market_status = ?2)
+           AND (state IN (?3, ?4)
+                OR (state = ?5 AND EXISTS (
+                    SELECT 1 FROM wallet_tx_drafts d
+                    WHERE d.id = shakedex_listings.lock_transfer_draft_id
+                      AND d.status IN {})))
+         ORDER BY created_at, id",
+        reached_chain_sql()
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params![
+            profile_id,
+            MarketStatus::Retrying,
+            ListingState::ReadyToFinalize,
+            ListingState::Finalizing,
+            ListingState::Locking
+        ],
+        row_to_shakedex_listing,
+    )?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 /// The profile's receive-branch address at `child_index` under `account`,
 /// as `derived_addresses` holds it, or `None` (a cancel commits only to one
 /// of these, R21/R28).
