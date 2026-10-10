@@ -1869,18 +1869,18 @@ impl ListingWrite {
     /// Listed write (a lowered price, a refreshed expiry) is not: the market
     /// holds this lock's listing, so the acceptance stays and a listing the
     /// market was told about is Retrying, due now, with no failure counted
-    /// ([`MARKET_CHANGED_SQL`]): keep-listed checks the market's copy and
+    /// ([`market_changed_sql`]): keep-listed checks the market's copy and
     /// uploads the new one at the next sync, a Refused one included (what
     /// is sent changed). Empty for every other target, including the other
     /// targets of a write that may also go to Listed (Unsell to Finalizing
     /// or Restored, Uncancel to Restored): those listings are off the market
     /// set.
-    fn market_reset_sql(self, to: ListingState) -> &'static str {
+    fn market_reset_sql(self, to: ListingState) -> String {
         debug_assert!(self.to().contains(&to), "{self:?} to {to:?}");
         match (self, to) {
-            (Self::LowerPrice | Self::RefreshExpiry, _) => MARKET_CHANGED_SQL,
-            (_, ListingState::Listed) => MARKET_RESET_SQL,
-            _ => "",
+            (Self::LowerPrice | Self::RefreshExpiry, _) => market_changed_sql(),
+            (_, ListingState::Listed) => MARKET_RESET_SQL.to_owned(),
+            _ => String::new(),
         }
     }
 
@@ -1915,11 +1915,15 @@ const MARKET_RESET_SQL: &str = ", market_status = NULL, market_retry_at = NULL, 
 /// is Retrying, due now, no failure counted, its acceptance kept, and
 /// `market_changed` set (a differing market copy is then our own older
 /// one); one never told stays untold (its first upload is the publish
-/// job's). The spelling
-/// is [`MarketStatus::Retrying`]'s.
-const MARKET_CHANGED_SQL: &str = ", market_status = CASE WHEN market_status IS NULL THEN NULL \
-     ELSE 'retrying' END, market_retry_at = NULL, market_attempts = 0, market_error = NULL, \
-     market_changed = 1";
+/// job's). The status is spelled by [`MarketStatus::as_str`], never by
+/// hand.
+fn market_changed_sql() -> String {
+    format!(
+        ", market_status = CASE WHEN market_status IS NULL THEN NULL ELSE '{}' END, \
+         market_retry_at = NULL, market_attempts = 0, market_error = NULL, market_changed = 1",
+        MarketStatus::Retrying.as_str()
+    )
+}
 
 /// R28 (T6): the SET fragment of the writes that record a mined sale or a
 /// mined cancel ([`sell_shakedex_listing`], [`sell_listing_through_proven_lock`],
