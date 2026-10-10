@@ -2151,6 +2151,11 @@ pub struct ShakedexListing {
     /// cancel): a market copy that differs is then our own older one, not
     /// someone else's. Cleared only by an accepted upload or a matched copy.
     pub market_changed: bool,
+    /// The market took something of ours for this listing (its pending post
+    /// accepted, an upload accepted, our copy served back): its mined cancel
+    /// or sale is then reported (R28). Sticky: nothing clears it, since a
+    /// listing row is one lock (a new lock is a new row).
+    pub market_told: bool,
     pub expires_at: Option<i64>,
     pub abort_draft_id: Option<String>,
     /// The txid of the Cancel transfer `abort_draft_id` holds; kept when that
@@ -2178,7 +2183,7 @@ pub struct ShakedexListing {
 const SHAKEDEX_LISTING_COLS: &str = "id, wallet_profile_id, name, mode, state, lock_pubkey_hex, \
     lock_transfer_draft_id, lock_finalize_draft_id, lock_transfer_txid, lock_txid, lock_vout, \
     payment_address, cancel_address, cancel_child_index, steps_json, listing_file_json, publish, market_status, \
-    market_retry_at, market_attempts, market_error, market_accepted, market_changed, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout, \
+    market_retry_at, market_attempts, market_error, market_accepted, market_changed, market_told, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout, \
     cancel_finalize_draft_id, cancel_blocks_remaining, created_at, updated_at";
 
 fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShakedexListing> {
@@ -2206,6 +2211,7 @@ fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<Shakedex
         market_error: row.get("market_error")?,
         market_accepted: row.get::<_, i64>("market_accepted")? != 0,
         market_changed: row.get::<_, i64>("market_changed")? != 0,
+        market_told: row.get::<_, i64>("market_told")? != 0,
         expires_at: row.get("expires_at")?,
         abort_draft_id: row.get("abort_draft_id")?,
         abort_txid: row.get("abort_txid")?,
@@ -2240,9 +2246,10 @@ pub fn insert_shakedex_listing(
              cancel_address, cancel_child_index, steps_json, listing_file_json, publish,
              market_status, market_retry_at, market_attempts, market_error, expires_at,
              abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout,
-             cancel_finalize_draft_id, cancel_blocks_remaining, market_accepted, market_changed)
+             cancel_finalize_draft_id, cancel_blocks_remaining, market_accepted, market_changed,
+             market_told)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
+                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
         params![
             l.id,
             l.wallet_profile_id,
@@ -2275,7 +2282,8 @@ pub fn insert_shakedex_listing(
             l.cancel_finalize_draft_id,
             l.cancel_blocks_remaining,
             i64::from(l.market_accepted),
-            i64::from(l.market_changed)
+            i64::from(l.market_changed),
+            i64::from(l.market_told)
         ],
     )?;
     Ok(())
@@ -3368,6 +3376,9 @@ pub struct MarketUpdate<'a> {
     /// The market accepted an upload (or served our own copy back): sets
     /// `market_accepted`, which no later result clears.
     pub accepted: bool,
+    /// The market took something of ours (the pending post, an upload, our
+    /// copy served back): sets `market_told`, which nothing clears.
+    pub told: bool,
 }
 
 /// Write a market job's result. Not a state write (no `ListingWrite`): the
@@ -3399,6 +3410,7 @@ pub fn record_market_result(
          SET market_status = ?2, market_retry_at = ?3, market_attempts = ?4,
              market_error = ?5, market_accepted = MAX(market_accepted, ?9),
              market_changed = CASE WHEN ?9 THEN 0 ELSE market_changed END,
+             market_told = MAX(market_told, ?10),
              updated_at = datetime('now')
          WHERE id = ?1 AND state = ?6 AND steps_json = ?7 AND listing_file_json IS ?8",
         params![
@@ -3410,7 +3422,8 @@ pub fn record_market_result(
             seen.state,
             seen.steps_json,
             seen.listing_file_json,
-            i64::from(u.accepted)
+            i64::from(u.accepted),
+            i64::from(u.told)
         ],
     )?)
 }
@@ -3593,14 +3606,14 @@ pub fn list_listings_kept_on_market(
 /// without that txid is listed too, so the job records it rather than
 /// skipping it unseen. Never a Cancelling one
 /// (sent or not, the cancel is in no block and a purchase may still beat
-/// it) nor SalePending (a purchase in the mempool). Only while the market
-/// holds something of ours — it accepted an upload or served our own copy
-/// back (`market_accepted`, kept through a later refused or failed upload),
-/// or holds our day-0 pending post (`pending`) — and is not told yet
-/// (`reported`; a report the market refused is recorded as `reported` too:
-/// nothing more to tell). A listing never sent (unset, `steps_unverified`,
-/// a refused or unanswered pending post) is not told. The mainnet rule
-/// (R23) is the job's own.
+/// it) nor SalePending (a purchase in the mempool). Only once the market
+/// has taken our pending post or an upload of this listing (`market_told`,
+/// sticky: whatever later uploads got, and through the move into Listed)
+/// and not reported yet (`market_status` anything but `reported`, unset
+/// included; a report the market refused is recorded as `reported` too:
+/// nothing more to tell). A listing the market never took anything of
+/// (never sent, its steps unverified, a refused or unanswered post) is not
+/// reported. The mainnet rule (R23) is the job's own.
 pub fn list_listings_to_report(
     conn: &rusqlite::Connection,
     profile_id: &str,
@@ -3608,8 +3621,8 @@ pub fn list_listings_to_report(
     let sql = format!(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
          WHERE wallet_profile_id = ?1 AND publish = 1
-           AND (market_accepted = 1 OR market_status = ?3) AND market_status <> ?2
-           AND (state = ?4 OR state = ?5 OR state IN {})
+           AND market_told = 1 AND market_status IS NOT ?2
+           AND (state = ?3 OR state = ?4 OR state IN {})
          ORDER BY created_at, id",
         ListingState::cancel_mined_sql()
     );
@@ -3618,7 +3631,6 @@ pub fn list_listings_to_report(
         params![
             profile_id,
             MarketStatus::Reported,
-            MarketStatus::Pending,
             ListingState::Sold,
             ListingState::Cancelled
         ],
@@ -3632,8 +3644,10 @@ pub fn list_listings_to_report(
 /// ReadyToFinalize and Finalizing — that the market has not taken yet
 /// (`market_status` unset, retrying after no answer, or steps unverified: a
 /// row the post could not be built from, tried again after its backoff; a
-/// refused one waits for a change, see [`MarketStatus::Refused`]). The
-/// mainnet rule is the job's own.
+/// refused one waits for a change, see [`MarketStatus::Refused`]). A Listed
+/// listing a reorg takes back to Finalizing with its status Retrying or
+/// StepsUnverified (left by its uploads) gets a pending post again, as a
+/// Retrying one always did. The mainnet rule is the job's own.
 pub fn list_listings_to_announce(
     conn: &rusqlite::Connection,
     profile_id: &str,

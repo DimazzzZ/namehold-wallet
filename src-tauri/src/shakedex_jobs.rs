@@ -2480,6 +2480,9 @@ struct MarketResult {
     /// The market holds our listing file (`market_accepted`): set from
     /// [`Outcome::Taken`] only.
     accepted: bool,
+    /// The market took something of ours (`market_told`): set from
+    /// [`Outcome::Taken`] only.
+    told: bool,
 }
 
 /// A market call's outcome, as the market jobs record it ([`after_reply`]).
@@ -2538,6 +2541,7 @@ fn after_reply(
             attempts: 0,
             error: None,
             accepted: holds_ours,
+            told: true,
         },
         Outcome::Refused(why) => MarketResult {
             status: S::Refused,
@@ -2545,6 +2549,7 @@ fn after_reply(
             attempts,
             error: Some(why),
             accepted: false,
+            told: false,
         },
         Outcome::NoVerdict(why) => backing_off(S::Retrying, attempts, why, now),
     }
@@ -2565,6 +2570,7 @@ fn backing_off(
         attempts,
         error: Some(why),
         accepted: false,
+        told: false,
     }
 }
 
@@ -2595,6 +2601,7 @@ fn record(
             attempts: r.attempts,
             error: r.error.as_deref(),
             accepted: r.accepted,
+            told: r.told,
         },
     )?;
     Ok(())
@@ -2909,9 +2916,9 @@ pub async fn publish_listings_with_client(
 /// → Reported with that note; its own refusal → Reported with its words
 /// (nothing more to tell, not retried); no answer or "not seen yet" →
 /// Retrying, backed off ([`after_reply`]); a row without the txid it
-/// carries → StepsUnverified, backed off, nothing sent — but a listing the market knows
-/// only from its pending post stays Pending while it backs off: that post
-/// is what makes it told ([`queries::list_listings_to_report`]).
+/// carries → StepsUnverified, backed off, nothing sent. A failure leaves the
+/// listing in the report set: `market_told` is sticky
+/// ([`queries::list_listings_to_report`]).
 async fn report(
     conn: &rusqlite::Connection,
     market: &LearnHnsClient,
@@ -2931,13 +2938,14 @@ async fn report(
             .map(|cancel_txid| StatusReport::Cancelled { cancel_txid })
             .ok_or_else(|| corrupted("cancel txid"))
     };
-    let mut result = match what {
+    let result = match what {
         Err(why) => steps_unverified(l, why, now),
         Ok(what) => {
             let reply = market.refresh_status(&l.name, &what).await?;
             let mut result = match Outcome::of(&reply, false) {
                 Outcome::Refused(why) => MarketResult {
                     error: Some(why),
+                    told: false,
                     ..after_reply(Outcome::Taken { holds_ours: false }, S::Reported, 0, now)
                 },
                 outcome => after_reply(outcome, S::Reported, l.market_attempts, now),
@@ -2948,9 +2956,6 @@ async fn report(
             result
         }
     };
-    if result.status != S::Reported && !l.market_accepted {
-        result.status = S::Pending;
-    }
     record(conn, l, &result)
 }
 
@@ -3160,7 +3165,9 @@ pub async fn keep_listed_with_client(
 /// read from the row alone (no node read). A file without `expiresAt` is
 /// never refreshed, so never near; a file that is not stored or does not
 /// read is near: [`market_copy`] records it from the row, before any node
-/// read.
+/// read. The caller also gates on [`due`]; no code writes a
+/// `market_retry_at` on a Refused listing today, so for Refused it is
+/// always true.
 fn stored_file_near_expiry(l: &queries::ShakedexListing, now: i64) -> bool {
     match l
         .listing_file_json
@@ -3176,8 +3183,10 @@ fn stored_file_near_expiry(l: &queries::ShakedexListing, now: i64) -> bool {
 /// nothing else — no market call. A refusal stays until what is sent
 /// changes; the refresh is such a change and makes the listing Retrying,
 /// due now, itself. A row or file that does not read (StepsUnverified) is
-/// recorded and backed off like anywhere else; the node's no verdict is
-/// logged, nothing written.
+/// recorded and backed off like anywhere else, which takes the listing out
+/// of Refused: keep-listed checks it again after the backoff and, once it
+/// reads, may upload it again although what is sent did not change. The
+/// node's no verdict is logged, nothing written.
 async fn refresh_refused(
     conn: &rusqlite::Connection,
     node: &dyn NodeRpc,

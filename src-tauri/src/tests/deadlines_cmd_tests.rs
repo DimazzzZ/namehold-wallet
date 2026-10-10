@@ -554,6 +554,7 @@ fn seed_listing(conn: &rusqlite::Connection, profile_id: &str, id: &str, name: &
             market_error: None,
             market_accepted: false,
             market_changed: false,
+            market_told: false,
             expires_at: None,
             abort_draft_id: None,
             abort_txid: None,

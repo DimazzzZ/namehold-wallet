@@ -87,6 +87,7 @@ fn fx(state: ListingState) -> Fx {
         market_error: None,
         market_accepted: false,
         market_changed: false,
+        market_told: false,
         expires_at: Some(1_731_536_000),
         abort_draft_id: None,
         abort_txid: None,
@@ -3677,6 +3678,7 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
                     market_error: Some("told".into()),
                     market_accepted: true,
                     market_changed: true,
+                    market_told: true,
                     ..base.clone()
                 };
                 f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
@@ -3689,6 +3691,10 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
                     .unwrap();
                 assert_eq!(apply(&f, w, *to).unwrap(), 1, "{w:?} {from:?} -> {to:?}");
                 let after = listing(&f);
+                assert!(
+                    after.market_told,
+                    "{w:?} {from:?} -> {to:?}: market_told is never cleared"
+                );
                 let book = (
                     after.market_status,
                     after.market_retry_at.clone(),
@@ -3788,6 +3794,7 @@ fn market_result_is_written_only_over_the_listing_the_job_read() {
         attempts: 0,
         error: None,
         accepted: true,
+        told: true,
     };
     assert_eq!(
         queries::record_market_result(&f.conn, &f.id, &seen, &update).unwrap(),
@@ -3799,6 +3806,7 @@ fn market_result_is_written_only_over_the_listing_the_job_read() {
     let failed = queries::MarketUpdate {
         status: MarketStatus::Retrying,
         accepted: false,
+        told: false,
         ..update
     };
     f.conn
@@ -3807,6 +3815,10 @@ fn market_result_is_written_only_over_the_listing_the_job_read() {
     queries::record_market_result(&f.conn, &f.id, &seen, &failed).unwrap();
     assert!(listing(&f).market_accepted);
     assert!(listing(&f).market_changed, "a failure leaves the flag");
+    assert!(
+        listing(&f).market_told,
+        "a failure never clears market_told"
+    );
     queries::record_market_result(&f.conn, &f.id, &seen, &update).unwrap();
     assert!(!listing(&f).market_changed, "an acceptance clears it");
     f.conn
