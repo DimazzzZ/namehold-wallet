@@ -78,6 +78,11 @@ pub fn buy_now_lock_time(mtp: u64) -> u64 {
 /// lock address.
 pub const LOCK_ACTION: &str = "shakedex_lock";
 
+/// The output of the lock TRANSFER that carries the name: its output 0
+/// (`actions::build_plan` puts the covenant output first). The lock
+/// TRANSFER's outpoint is `(lock_transfer_txid, LOCK_TRANSFER_NAME_VOUT)`.
+pub const LOCK_TRANSFER_NAME_VOUT: u32 = 0;
+
 /// R19, day 0: the TRANSFER covenant committing `name` (registered at
 /// `name_height`) to the lock of `lock_pubkey`: version 0, and the program
 /// SHA3-256 of the lock script.
@@ -189,7 +194,8 @@ pub fn expires_before_the_lock(name: &str, expiry_end: i64) -> AppError {
     ))
 }
 
-/// R18/R19: whether the lock TRANSFER `(lock_transfer_txid, 0)` owns the
+/// R18/R19: whether the lock TRANSFER `(lock_transfer_txid,
+/// [`LOCK_TRANSFER_NAME_VOUT`])` owns the
 /// name, from hsd's `getnameinfo`: `info.owner` is that outpoint and
 /// `info.revoked` is 0 (a REVOKE leaves `owner` at the coin it spent and
 /// sets `revoked`, hsd `chain.js`). Finalize & sign and the sync job ask it
@@ -200,7 +206,9 @@ pub fn lock_transfer_owns_name(
     revoked: u64,
     lock_transfer_txid: &str,
 ) -> bool {
-    revoked == 0 && owner_index == 0 && owner_hash == lock_transfer_txid
+    revoked == 0
+        && owner_index == u64::from(LOCK_TRANSFER_NAME_VOUT)
+        && owner_hash == lock_transfer_txid
 }
 
 /// The block of the name's TRANSFER, hsd's `info.transfer` in a

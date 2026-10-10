@@ -854,8 +854,9 @@ enum CancelOnChain {
 }
 
 /// Read [`CancelOnChain`] for the cancel `cancel_txid`, which spends the
-/// lock TRANSFER at `lock_transfer_txid:0`. The cancel's UPDATE is its
-/// output 0 (`actions::build_plan` puts the covenant output first).
+/// lock TRANSFER at `lock_transfer_txid`:[`sell::LOCK_TRANSFER_NAME_VOUT`].
+/// The cancel's UPDATE is its output 0 (`actions::build_plan` puts the
+/// covenant output first).
 async fn cancel_on_chain(
     client: &dyn NodeRpc,
     cancel_txid: &str,
@@ -867,7 +868,10 @@ async fn cancel_on_chain(
             Ok(None) => CancelOnChain::NotMined,
             Err(_) => CancelOnChain::Unknown,
         },
-        Ok(None) => match client.get_coin(lock_transfer_txid, 0).await {
+        Ok(None) => match client
+            .get_coin(lock_transfer_txid, sell::LOCK_TRANSFER_NAME_VOUT)
+            .await
+        {
             Ok(Some(_)) => CancelOnChain::NotMined,
             Ok(None) | Err(_) => CancelOnChain::Unknown,
         },
@@ -935,7 +939,10 @@ async fn lock_on_chain(
         Ok(LockOnChain::Owner {
             transfer: sell::transfer_height(info),
         })
-    } else if let Some(coin) = client.get_coin(lock_transfer_txid, 0).await? {
+    } else if let Some(coin) = client
+        .get_coin(lock_transfer_txid, sell::LOCK_TRANSFER_NAME_VOUT)
+        .await?
+    {
         // Mined in a block, it would be the owner (or revoked): a node that
         // says otherwise is not consistent, so no verdict — unless the
         // registration it belongs to is gone: the name expired and was
@@ -1339,7 +1346,7 @@ async fn finalize_into_lock(
     let spends_our_transfer = tx
         .inputs
         .get(k)
-        .is_some_and(|(t, v)| t == lock_transfer_txid && *v == 0);
+        .is_some_and(|(t, v)| t == lock_transfer_txid && *v == sell::LOCK_TRANSFER_NAME_VOUT);
     let is_our_lock = tx
         .outputs
         .get(k)
@@ -1638,7 +1645,11 @@ async fn lock_coin_spent(
     // transaction spends, so the FINALIZE into the lock is in no block and
     // no mempool of this node.
     if let Some(lock_transfer_txid) = l.lock_transfer_txid.as_deref() {
-        if client.get_coin(lock_transfer_txid, 0).await?.is_some() {
+        if client
+            .get_coin(lock_transfer_txid, sell::LOCK_TRANSFER_NAME_VOUT)
+            .await?
+            .is_some()
+        {
             match l.state {
                 // Our FINALIZE never landed: Finalize & sign may run again.
                 queries::ListingState::Finalizing if finalize_dead(conn, l)? => {
@@ -2970,7 +2981,7 @@ async fn announce(
         .post_pending_listing(&PendingListing {
             name: &l.name,
             transfer_txid,
-            transfer_vout: 0,
+            transfer_vout: sell::LOCK_TRANSFER_NAME_VOUT,
             lock_address: &lock.address,
             kind: match l.mode {
                 queries::ListingMode::BuyNow => ListingKind::FixedPrice,

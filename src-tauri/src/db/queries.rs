@@ -2490,8 +2490,7 @@ pub fn link_shakedex_listing_abort(
     draft_id: &str,
     cancel_txid: &str,
 ) -> Result<usize, AppError> {
-    // The lock TRANSFER is output 0 of its draft (the plan's covenant output).
-    if transfer_vout != 0 {
+    if transfer_vout != crate::noncustodial::shakedex::sell::LOCK_TRANSFER_NAME_VOUT {
         return Ok(0);
     }
     let sql = format!(
