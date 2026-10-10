@@ -475,10 +475,72 @@ fn same_market_listing_compares_what_a_buyer_gets() {
     let ours = ListingFile::parse(&json, network).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     let parse = |v: &serde_json::Value| ListingFile::parse(&v.to_string(), network).unwrap();
-    // Flask's own key order and an extra field: still ours.
+    // An extra field: still ours.
     let mut same = v.clone();
     same["served"] = true.into();
     assert!(same_market_listing(&parse(&same), &ours));
+    // The same offer spelled otherwise, as raw text: keys in another order,
+    // hex in upper case, `expiresAt` as the feed's naive UTC ISO-8601 string
+    // of the same instant, a `feeAddr` beside zero fees. Each is still ours.
+    let pk = hex::encode(ours.public_key);
+    let pay = ours.payment_addr.clone();
+    let lt = ours.steps[0].lock_time;
+    let txid = hex::encode(W_LOCK_TXID);
+    let sig = hex::encode(ours.steps[0].signature);
+    let exp = ours.expires_at.unwrap();
+    let raw = |txid: &str, sig: &str, price: &str, exp: &str, fee_addr: &str| {
+        format!(
+            r#"{{"version":2,"publicKey":"{pk}","paymentAddr":"{pay}","name":"{W_NAME}","lockingTxHash":"{txid}","lockingOutputIdx":0,"feeAddr":{fee_addr},"expiresAt":{exp},"data":[{{"signature":"{sig}","price":{price},"lockTime":{lt},"fee":0}}]}}"#
+        )
+    };
+    let iso = format!(
+        "\"{}\"",
+        chrono::DateTime::from_timestamp(i64::try_from(exp).unwrap(), 0)
+            .unwrap()
+            .naive_utc()
+            .format("%Y-%m-%dT%H:%M:%S")
+    );
+    let named_fee = format!(
+        "\"{}\"",
+        crate::noncustodial::address::encode_p2wpkh(network, &[8; 20]).unwrap()
+    );
+    let exp_s = exp.to_string();
+    for (case, text) in [
+        (
+            "reordered keys",
+            raw(&txid, &sig, "5000000", &exp_s, "null"),
+        ),
+        (
+            "upper-case hex",
+            raw(
+                &txid.to_uppercase(),
+                &sig.to_uppercase(),
+                "5000000",
+                &exp_s,
+                "null",
+            ),
+        ),
+        ("ISO expiresAt", raw(&txid, &sig, "5000000", &iso, "null")),
+        (
+            "feeAddr beside zero fees",
+            raw(&txid, &sig, "5000000", &exp_s, &named_fee),
+        ),
+    ] {
+        let copy = ListingFile::parse(&text, network).expect(case);
+        assert!(same_market_listing(&copy, &ours), "{case}");
+    }
+    // Numbers are integers in every recorded market reply (proof.json, the
+    // feed); a float-spelled price or expiry does not parse, so such a copy
+    // is never taken for ours.
+    for (case, text) in [
+        ("float price", raw(&txid, &sig, "5000000.0", &exp_s, "null")),
+        (
+            "float expiresAt",
+            raw(&txid, &sig, "5000000", "1.8e9", "null"),
+        ),
+    ] {
+        assert!(ListingFile::parse(&text, network).is_err(), "{case}");
+    }
     let mutate = |f: &dyn Fn(&mut serde_json::Value)| {
         let mut m = v.clone();
         f(&mut m);
