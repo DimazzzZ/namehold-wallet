@@ -7650,3 +7650,110 @@ async fn lower_refused_for_a_lock_key_this_wallet_does_not_derive() {
     assert!(e.contains(sell::LISTING_KEY_MISMATCH), "{e}");
     assert_not_lowered(&l, &before);
 }
+
+/// R23, R32: a listing whose file was imported without `expiresAt` (its row
+/// has no expiry) gets R23's at its first Lower price: the node's MTP plus
+/// 365 days, in the row and in the rewritten file read back strictly.
+#[tokio::test]
+async fn lower_price_gives_a_file_without_expiry_r23s() {
+    let l = listed_fixture().await;
+    let mut file: Value =
+        serde_json::from_str(l.r.listing().listing_file_json.as_deref().unwrap()).unwrap();
+    file.as_object_mut().unwrap().remove("expiresAt");
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET expires_at = NULL, listing_file_json = ?2 WHERE id = ?1",
+            params![l.r.listing_id, file.to_string()],
+        )
+        .unwrap();
+    });
+    answer(true);
+    lower(&l, "3").await.expect("lower");
+    let _ = take_test_requests();
+    let want = LISTED_MTP + sell::LISTING_LIFETIME_SECS;
+    let after = l.r.listing();
+    assert_eq!(after.expires_at, Some(i64::try_from(want).unwrap()));
+    let back = ListingFile::parse(
+        after.listing_file_json.as_deref().unwrap(),
+        Network::Regtest,
+    )
+    .unwrap();
+    assert_eq!(back.expires_at, Some(want));
+}
+
+/// R23, R26: after Lower price the exported file is the row's, reads back
+/// strictly, and every step in it verifies over the stored lock outpoint,
+/// the lock coin's value and the listing's payment address.
+#[tokio::test]
+async fn lowered_listing_exports_a_file_whose_every_step_verifies() {
+    let l = listed_fixture().await;
+    answer(true);
+    lower(&l, "3").await.expect("lower");
+    let _ = take_test_requests();
+    let row = l.r.listing();
+    let exported = with_db(&l.r.app, |c| {
+        export_listing_file_from_conn(c, PROFILE, &l.r.listing_id).unwrap()
+    });
+    assert_eq!(Some(exported.as_str()), row.listing_file_json.as_deref());
+    let file = ListingFile::parse(&exported, Network::Regtest).unwrap();
+    let mut outpoint = [0u8; 32];
+    hex::decode_to_slice(&l.lock.0, &mut outpoint).unwrap();
+    assert_eq!((file.lock_txid, file.lock_vout), (outpoint, l.lock.1));
+    let payment = crate::noncustodial::tx::output_address_from_string(
+        Network::Regtest,
+        row.payment_address.as_deref().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        Some(file.payment_addr.as_str()),
+        row.payment_address.as_deref()
+    );
+    assert_eq!(
+        file.steps.iter().map(|s| s.price).collect::<Vec<_>>(),
+        vec![5_000_000, 3_000_000]
+    );
+    for s in &file.steps {
+        verify_step_signature(
+            &StepTemplate {
+                lock_outpoint: (outpoint, l.lock.1),
+                lock_value: NAME_VALUE,
+                lock_pubkey: &file.public_key,
+                payment: payment.clone(),
+                price: s.price,
+                lock_time_secs: s.lock_time,
+            },
+            &s.signature,
+        )
+        .unwrap_or_else(|e| panic!("step at {}: {e}", s.price));
+    }
+}
+
+/// R26: the steps are stored only while the listing still has the steps it
+/// was read with: a row changed while the prompt was open is left as it
+/// changed, and the command says so.
+#[tokio::test]
+async fn lower_price_saves_nothing_when_the_listing_changed_meanwhile() {
+    let l = listed_fixture().await;
+    let handle = l.r.app.handle().clone();
+    let id = l.r.listing_id.clone();
+    crate::commands::secure_prompt::on_next_test_answer(move || {
+        let db = &handle.state::<AppState>().db;
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE shakedex_listings SET steps_json = '[]' WHERE id = ?1",
+                [&id],
+            )
+            .unwrap();
+    });
+    let before = l.r.listing();
+    answer(true);
+    let e = err_text(lower(&l, "3").await.expect_err("changed"));
+    assert!(e.contains("changed meanwhile"), "{e}");
+    assert_eq!(take_test_requests().len(), 1, "it was asked");
+    let after = l.r.listing();
+    assert_eq!(after.steps_json, "[]", "the change is kept");
+    assert_eq!(after.listing_file_json, before.listing_file_json);
+    assert_eq!(after.expires_at, before.expires_at);
+    assert_eq!(after.state, ListingState::Listed);
+}
