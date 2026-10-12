@@ -2151,9 +2151,14 @@ pub struct ShakedexListing {
     /// listing for the first time.
     pub market_accepted: bool,
     /// What is sent changed since the market last accepted or served our
-    /// copy (a Lower price, an expiry refresh, a reorg back to an unsent
-    /// cancel): a market copy that differs is then our own older one, not
-    /// someone else's. Cleared only by an accepted upload or a matched copy.
+    /// copy: a market copy that differs is then our own older one, not
+    /// someone else's. Set by a Lower price or an expiry refresh and by a
+    /// moved step not taken (T8), each only once the market accepted the
+    /// listing (`market_accepted`; one it never took has no copy of ours
+    /// there), and by a reorg back to an unsent cancel of a told listing
+    /// (`market_status` set, not Refused: [`mark_listing_cancel_unmined`]).
+    /// Cleared only by an accepted upload or a matched copy, and by a move
+    /// into Listed.
     pub market_changed: bool,
     /// The market took something of ours for this listing (its pending post
     /// accepted, an upload accepted, our copy served back): its mined cancel

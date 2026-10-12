@@ -2833,6 +2833,9 @@ fn is_our_sent_step(
     let Some(sent) = l.market_sent_step.as_deref() else {
         return false;
     };
+    // A stored file that does not read (`market_copy` read it already, so
+    // never here in practice) is not ours: the copy is then labelled
+    // ReplacedReuploaded, a warning, never a claim we cannot check.
     let Some(stored) = l
         .listing_file_json
         .as_deref()
@@ -3475,6 +3478,8 @@ async fn keep_listed(
     }
     match market.proof_copy(&listing.name).await? {
         ProofCopy::Copy(text) => {
+            // A copy that does not read as a listing file differs from ours
+            // and is no step of ours: ours is uploaded over it.
             let theirs = listing_file::ListingFile::parse(&text, Network::Main).ok();
             let same = theirs
                 .as_ref()

@@ -3,5 +3,6 @@
 -- (R24). A reverse auction's current step moves with time; the advance job
 -- (shakedex_jobs::advance_reverse_auctions_step) uploads the current one
 -- when it is not this. Cleared with the rest of the bookkeeping by a move
--- into Listed (ListingWrite::market_reset_sql); every other write keeps it.
+-- into Listed (ListingWrite::market_reset_sql); every other state write
+-- keeps it; queries::record_market_result sets it to the step sent.
 ALTER TABLE shakedex_listings ADD COLUMN market_sent_step TEXT;
