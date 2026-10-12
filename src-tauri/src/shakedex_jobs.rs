@@ -2967,22 +2967,22 @@ pub async fn advance_reverse_auctions_step(db_path: &str, profile_id: &str) {
 /// [`queries::list_listings_kept_on_market`] whose market copy is ours or
 /// was refused (`market_status` Listed, ReplacedReuploaded, Refused: a
 /// refusal is final only until what is sent changes, and a new step is a
-/// change); never one the market has not taken yet (the publish job's
-/// first upload) nor one Retrying or StepsUnverified (keep-listed's
-/// backoff, which uploads the current step itself). Reads the node's median
-/// time once, and for each such listing compares its current step there
-/// (R3, [`current_file_step`] of the stored file: the step the copy is cut
-/// to) with the one the market was last sent (`market_sent_step`); when
-/// they differ, uploads the current step at once, cut at that same median
-/// time
+/// change); never one the market has not taken yet (the publish job's first
+/// upload) nor one Retrying or StepsUnverified (keep-listed's backoff,
+/// which uploads the current step itself). Reads the node's median time
+/// once, and for each such listing compares its current step there (R3,
+/// [`current_file_step`] of the stored file: the step the copy is cut to)
+/// with the one the market was last sent (`market_sent_step`); when they
+/// differ, uploads the current step at once, cut at that same median time
 /// ([`upload_current`]: every step re-verified over hsd's lock coin first,
 /// the answer recorded by [`after_reply`]; an acceptance keeps the label,
 /// [`kept_label`]: Listed and ReplacedReuploaded stay, Refused is Listed),
-/// whatever the hourly check's `market_retry_at` says. The same step is never uploaded twice: the step
-/// is recorded as sent whatever the answer, a refusal included. No step
-/// valid at that median time (a reorg took it back) is no move. A row or
-/// stored file that does not read ([`row_for_market`]) goes to
-/// [`upload_current`], which records it as StepsUnverified. Reads the node, writes only to the market and the
+/// whatever the hourly check's `market_retry_at` says. The same step is
+/// never uploaded twice: the step is recorded as sent whatever the answer,
+/// a refusal included. No step valid at that median time (a reorg took it
+/// back) is no move. A row or stored file that does not read
+/// ([`row_for_market`]) goes to [`upload_current`], which records it as
+/// StepsUnverified. Reads the node, writes only to the market and the
 /// listing's market bookkeeping: never signs, never broadcasts
 /// (SECURITY.md). A failure on one listing is logged and leaves it for the
 /// next sync.
