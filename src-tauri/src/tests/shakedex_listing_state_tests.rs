@@ -3650,7 +3650,8 @@ async fn a_stable_sold_listing_is_not_written_again() {
 /// market was told, a reorg back from Sold, a restored lock upgraded. A
 /// Listed to Listed write (a lowered price, a refreshed expiry) makes it
 /// Retrying, due now, with no failure counted, keeps the acceptance and
-/// sets the change flag. R28: a write recording a mined sale (Sell,
+/// sets the change flag once the market took it (T8 code review). R28: a
+/// write recording a mined sale (Sell,
 /// ProvenLockSale) or a mined cancel (CancelMined) clears only
 /// `market_retry_at`, so the report is due at once. Every other write, and
 /// every other target of a write that may also go to Listed (Unsell to
@@ -3776,17 +3777,31 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
             "{w:?}"
         );
     }
-    // A told listing whose change flag is clear gets it set.
+    // A listing the market took whose change flag is clear gets it set; one
+    // told but never taken (its upload refused, or never answered) claims
+    // no copy there: the flag stays clear (T8 code review).
     for w in [ListingWrite::LowerPrice, ListingWrite::RefreshExpiry] {
-        let told = ShakedexListing {
-            market_status: Some(MarketStatus::Listed),
-            market_accepted: true,
-            ..base.clone()
-        };
-        f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
-        queries::insert_shakedex_listing(&f.conn, &told).unwrap();
-        assert_eq!(apply(&f, w, S::Listed).unwrap(), 1, "{w:?}");
-        assert!(listing(&f).market_changed, "{w:?}: change flag set");
+        for (status, accepted) in [
+            (MarketStatus::Listed, true),
+            (MarketStatus::Refused, false),
+            (MarketStatus::Retrying, false),
+        ] {
+            let told = ShakedexListing {
+                market_status: Some(status),
+                market_accepted: accepted,
+                market_told: true,
+                ..base.clone()
+            };
+            f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
+            queries::insert_shakedex_listing(&f.conn, &told).unwrap();
+            assert_eq!(apply(&f, w, S::Listed).unwrap(), 1, "{w:?} {status:?}");
+            let after = listing(&f);
+            assert_eq!(
+                (after.market_status, after.market_changed),
+                (Some(MarketStatus::Retrying), accepted),
+                "{w:?} {status:?}: change flag set only once taken"
+            );
+        }
     }
 }
 

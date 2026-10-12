@@ -1496,6 +1496,79 @@ async fn never_taken_auction_does_not_claim_the_markets_copy() {
     );
 }
 
+/// R25 (T8, code review): a Lower price claims the market's differing copy
+/// as our own older one only when the market took this listing before
+/// (`market_accepted`), as a moved step does. A reverse auction whose step
+/// the market refused, lowered, finds someone else's copy there:
+/// ReplacedReuploaded, the lowered step uploaded over it.
+#[tokio::test]
+async fn lowered_never_taken_auction_does_not_claim_the_markets_copy() {
+    let f = fx(ListingState::Listed, true);
+    let steps = as_schedule(&f, &schedule());
+    let mut s = market().await;
+    let _refuse = s
+        .mock("POST", "/api/upload-proof")
+        .with_status(409)
+        .with_body(r#"{"error":"An active listing for dexjobs already exists."}"#)
+        .expect(1)
+        .create_async()
+        .await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Refused));
+
+    let old = listing(&f);
+    let lower = signed_step(&f.key, &f.payment, 5_000_000, sell::buy_now_lock_time(MTP));
+    let mut lowered = steps.clone();
+    lowered.push(lower.clone());
+    let file = file_of(
+        &f.key,
+        &f.payment,
+        &lowered,
+        MTP + sell::LISTING_LIFETIME_SECS,
+    );
+    let txid_f1 = txid("f1");
+    assert_eq!(
+        queries::lower_listing_price(
+            &f.conn,
+            &f.id,
+            &queries::LoweredPrice {
+                lock: (&txid_f1, 0),
+                old_steps_json: &old.steps_json,
+                steps_json: &stored(&lowered),
+                listing_file_json: &file,
+                expires_at: old.expires_at.unwrap(),
+            },
+        )
+        .unwrap(),
+        1
+    );
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_accepted, l.market_changed),
+        (Some(MarketStatus::Retrying), false, false)
+    );
+
+    let foreign = signed_step(&f.key, &f.payment, 7_000_000, schedule()[2].1);
+    let theirs = listing_file_market_copy(&file_of(
+        &f.key,
+        &f.payment,
+        &[foreign],
+        MTP + sell::LISTING_LIFETIME_SECS,
+    ));
+    let mut s = market().await;
+    let get = copy_mock(&mut s, theirs, 1).await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    keep(&f, &s, NOW + 60).await;
+    get.assert_async().await;
+    m.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(ListingFile::parse(&sent, NET).unwrap().steps, vec![lower]);
+    assert_eq!(
+        listing(&f).market_status,
+        Some(MarketStatus::ReplacedReuploaded)
+    );
+}
+
 /// Deviation 7 (T8): the advance job takes reverse auctions only — a Buy
 /// Now (its current step moves only by Lower price, whose write already
 /// makes it due) is not looked at, even with no step recorded as sent; and

@@ -1914,14 +1914,17 @@ const MARKET_RESET_SQL: &str = ", market_status = NULL, market_retry_at = NULL, 
 /// The SET fragment of a Listed to Listed write that changes what is sent
 /// ([`ListingWrite::market_reset_sql`]): a listing the market was told about
 /// is Retrying, due now, no failure counted, its acceptance kept, and
-/// `market_changed` set (a differing market copy is then our own older
-/// one); one never told stays untold (its first upload is the publish
-/// job's). The status is spelled by [`MarketStatus::as_str`], never by
-/// hand.
+/// `market_changed` set once the market took it (`market_accepted`: a
+/// differing market copy is then our own older one; a listing the market
+/// never took has no copy of ours there, the rule of
+/// [`record_market_result`]'s moved step); one never told stays untold
+/// (its first upload is the publish job's). The status is spelled by
+/// [`MarketStatus::as_str`], never by hand.
 fn market_changed_sql() -> String {
     format!(
         ", market_status = CASE WHEN market_status IS NULL THEN NULL ELSE '{}' END, \
-         market_retry_at = NULL, market_attempts = 0, market_error = NULL, market_changed = 1",
+         market_retry_at = NULL, market_attempts = 0, market_error = NULL, \
+         market_changed = CASE WHEN market_accepted = 1 THEN 1 ELSE market_changed END",
         MarketStatus::Retrying.as_str()
     )
 }
