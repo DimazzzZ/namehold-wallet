@@ -1353,6 +1353,80 @@ async fn replaced_auction_advances_and_keeps_its_warning() {
     assert_eq!(l.market_sent_step, Some(hex::encode(steps[3].signature)));
 }
 
+/// R3, R24 (T8, code review): the advance job's "current step" is the step
+/// the market copy is cut to, ties included. A schedule lowered to 4 HNS (a
+/// step appended, equal to step 3's price) offers the lowered step first;
+/// once step 3 is valid too, the cheapest valid step is the first of the
+/// two (step 3): the advance job uploads exactly that once, the median
+/// time read once for both the move and the copy, and leaves it there.
+#[tokio::test]
+async fn advance_moves_to_the_step_the_copy_is_cut_to_on_equal_prices() {
+    let (f, steps) = auction_on_market().await;
+    let old = listing(&f);
+    let earlier = listing_file_market_copy_at(&f, 2);
+    let lower = signed_step(&f.key, &f.payment, 4_000_000, sell::buy_now_lock_time(MTP));
+    assert_eq!(lower.price, steps[3].price, "equal-priced");
+    let mut lowered = steps.clone();
+    lowered.push(lower.clone());
+    let file = file_of(
+        &f.key,
+        &f.payment,
+        &lowered,
+        MTP + sell::LISTING_LIFETIME_SECS,
+    );
+    let txid_f1 = txid("f1");
+    assert_eq!(
+        queries::lower_listing_price(
+            &f.conn,
+            &f.id,
+            &queries::LoweredPrice {
+                lock: (&txid_f1, 0),
+                old_steps_json: &old.steps_json,
+                steps_json: &stored(&lowered),
+                listing_file_json: &file,
+                expires_at: old.expires_at.unwrap(),
+            },
+        )
+        .unwrap(),
+        1
+    );
+    let mut s = market().await;
+    let _get = copy_mock(&mut s, earlier, 1).await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    keep(&f, &s, NOW + 60).await;
+    m.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(
+        ListingFile::parse(&sent, NET).unwrap().steps,
+        vec![lower.clone()]
+    );
+    let l = listing(&f);
+    assert_eq!(l.market_status, Some(MarketStatus::Listed));
+    assert_eq!(l.market_sent_step, Some(hex::encode(lower.signature)));
+
+    let (mtp, later) = moved();
+    let mut s = market().await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    let n = node_at(&f, TIP, mtp);
+    advance(&f, &n, &s, later).await;
+    m.assert_async().await;
+    assert_eq!(n.call_count(), 2, "the median time once, the lock coin");
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(
+        ListingFile::parse(&sent, NET).unwrap().steps,
+        vec![steps[3].clone()]
+    );
+    assert_eq!(
+        listing(&f).market_sent_step,
+        Some(hex::encode(steps[3].signature))
+    );
+
+    let mut s = market().await;
+    let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    advance(&f, &node_at(&f, TIP, mtp), &s, later + 60).await;
+    any.assert_async().await;
+}
+
 /// R25 with R24 (T8): a moved step whose upload got no answer is retried by
 /// keep-listed after its backoff; the market's copy is then our earlier
 /// step, so ours is uploaded over it as Listed, not "replaced by someone

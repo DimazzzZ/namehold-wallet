@@ -2664,6 +2664,20 @@ pub(crate) async fn market_copy(
     l: &queries::ShakedexListing,
     now: i64,
 ) -> Result<MarketCopy, AppError> {
+    market_copy_at(conn, node, network, l, now, None).await
+}
+
+/// [`market_copy`] at the median time `mtp` a caller already read (the
+/// advance job, which decided the step moved at it: the copy is cut at the
+/// same median time, [`current_file_step`]); `None` reads it from the node.
+async fn market_copy_at(
+    conn: &rusqlite::Connection,
+    node: &dyn NodeRpc,
+    network: Network,
+    l: &queries::ShakedexListing,
+    now: i64,
+    mtp: Option<u64>,
+) -> Result<MarketCopy, AppError> {
     let not_now = |why: &str| Ok(MarketCopy::NotNow(why.into()));
     let unverified = |why: String| Ok(MarketCopy::StepsUnverified(why));
     // The row first: what it stores either reads or is recorded once as
@@ -2679,8 +2693,12 @@ pub(crate) async fn market_copy(
         at,
         file,
     } = row;
-    let Some(mtp) = node.get_blockchain_info().await?.mediantime else {
-        return not_now("the node reported no median time");
+    let mtp = match mtp {
+        Some(mtp) => mtp,
+        None => match node.get_blockchain_info().await?.mediantime {
+            Some(mtp) => mtp,
+            None => return not_now("the node reported no median time"),
+        },
     };
     let Some(coin) = node.get_coin(lock.0, lock.1).await? else {
         return not_now("the node reports the lock coin spent");
@@ -2695,12 +2713,10 @@ pub(crate) async fn market_copy(
     if let Err(e) = sell::verify_file_steps(&file, value, network) {
         return unverified(e.to_string());
     }
-    let encoded = match file.encoded_steps() {
-        Ok(e) => e,
+    let index = match current_file_step(&file, mtp) {
+        Ok(Some(index)) => index,
+        Ok(None) => return not_now("no price step is valid yet"),
         Err(e) => return unverified(e.to_string()),
-    };
-    let Some(index) = template::current_step_index(&encoded, mtp) else {
-        return not_now("no price step is valid yet");
     };
     let refreshed = mtp.saturating_add(sell::LISTING_LIFETIME_SECS);
     let refresh = l.state == queries::ListingState::Listed
@@ -2752,6 +2768,20 @@ pub(crate) async fn market_copy(
         copy: Box::new(parsed),
         listing: Box::new(listing),
     })
+}
+
+/// R3's current step of listing file `file` at the median time `mtp`: the
+/// index of the cheapest step valid for the next block, the first of
+/// equal-priced ones ([`template::current_step_index`]); `None` when no step
+/// is valid yet. The one source of "the current step" for the market jobs:
+/// [`market_copy`] cuts the copy to it and the advance job compares it with
+/// the step last sent, so the two never disagree. A lock time past R3's 40
+/// bits is the file's error.
+fn current_file_step(
+    file: &listing_file::ListingFile,
+    mtp: u64,
+) -> Result<Option<usize>, AppError> {
+    Ok(template::current_step_index(&file.encoded_steps()?, mtp))
 }
 
 /// The signature (hex) of `copy`'s one step, as `market_sent_step` records
@@ -2915,17 +2945,19 @@ pub async fn advance_reverse_auctions_step(db_path: &str, profile_id: &str) {
 /// change); never one the market has not taken yet (the publish job's
 /// first upload) nor one Retrying or StepsUnverified (keep-listed's
 /// backoff, which uploads the current step itself). Reads the node's median
-/// time once, and for each such listing compares its current stored step
-/// there ([`sell::current_step`], R3) with the one the market was last sent
-/// (`market_sent_step`); when they differ, uploads the current step at once
+/// time once, and for each such listing compares its current step there
+/// (R3, [`current_file_step`] of the stored file: the step the copy is cut
+/// to) with the one the market was last sent (`market_sent_step`); when
+/// they differ, uploads the current step at once, cut at that same median
+/// time
 /// ([`upload_current`]: every step re-verified over hsd's lock coin first,
 /// the answer recorded by [`after_reply`]; an acceptance keeps the label,
 /// [`kept_label`]: Listed and ReplacedReuploaded stay, Refused is Listed),
 /// whatever the hourly check's `market_retry_at` says. The same step is never uploaded twice: the step
 /// is recorded as sent whatever the answer, a refusal included. No step
-/// valid at that median time (a reorg took it back) is no move. A row whose
-/// steps do not read goes to [`upload_current`], which records it as
-/// StepsUnverified. Reads the node, writes only to the market and the
+/// valid at that median time (a reorg took it back) is no move. A row or
+/// stored file that does not read ([`row_for_market`]) goes to
+/// [`upload_current`], which records it as StepsUnverified. Reads the node, writes only to the market and the
 /// listing's market bookkeeping: never signs, never broadcasts
 /// (SECURITY.md). A failure on one listing is logged and leaves it for the
 /// next sync.
@@ -2974,8 +3006,12 @@ async fn advance_one(
     mtp: u64,
     now: i64,
 ) -> Result<(), AppError> {
-    let current = stored_steps(l).and_then(|steps| {
-        Ok(sell::current_step(&steps, mtp)?.map(|s| s.signature.to_ascii_lowercase()))
+    // The step the copy would be cut to ([`current_file_step`]), from the
+    // stored file as `market_copy` reads it.
+    let current = row_for_market(l, Network::Main).and_then(|row| {
+        Ok(current_file_step(&row.file, mtp)?
+            .and_then(|i| row.file.steps.get(i))
+            .map(|s| hex::encode(s.signature)))
     });
     let moved = match current {
         Ok(Some(step)) => l.market_sent_step.as_deref() != Some(step.as_str()),
@@ -2985,7 +3021,7 @@ async fn advance_one(
         Err(_) => true,
     };
     if moved {
-        upload_current(conn, node, market, l, now).await
+        upload_current(conn, node, market, l, now, Some(mtp)).await
     } else {
         Ok(())
     }
@@ -3064,7 +3100,7 @@ pub async fn publish_listings_with_client(
         // Cancelling one whose cancel is not sent yet.
         let listed = l.state == queries::ListingState::Listed;
         if first && listed && due(&l, now) {
-            if let Err(e) = upload_current(conn, node, market, &l, now).await {
+            if let Err(e) = upload_current(conn, node, market, &l, now, None).await {
                 eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
             }
         }
@@ -3172,15 +3208,18 @@ async fn announce(
 
 /// R23, R24: upload `l`'s current step ([`market_copy`], every stored step
 /// verified on our node first) and record the market's answer and the step
-/// sent; an acceptance keeps the listing's label ([`kept_label`]).
+/// sent; an acceptance keeps the listing's label ([`kept_label`]). `mtp`:
+/// the median time the caller read, or `None` to read it
+/// ([`market_copy_at`]).
 async fn upload_current(
     conn: &rusqlite::Connection,
     node: &dyn NodeRpc,
     market: &LearnHnsClient,
     l: &queries::ShakedexListing,
     now: i64,
+    mtp: Option<u64>,
 ) -> Result<(), AppError> {
-    match market_copy(conn, node, Network::Main, l, now).await? {
+    match market_copy_at(conn, node, Network::Main, l, now, mtp).await? {
         MarketCopy::NotNow(why) => {
             not_now(l, &why);
             Ok(())
