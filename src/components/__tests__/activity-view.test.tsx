@@ -67,11 +67,13 @@ function wrapper() {
 }
 
 /** Route the base commands ActivityView + useActiveProfile need. */
-function routes(historyResult: unknown) {
+function routes(historyResult: unknown, drafts: unknown[] = []) {
   return (cmd: string) => {
     switch (cmd) {
       case "list_wallet_profiles":
         return Promise.resolve([profile]);
+      case "list_tx_drafts":
+        return Promise.resolve(drafts);
       case "read_action_history":
         if (historyResult instanceof Error) return Promise.reject(historyResult);
         return Promise.resolve(historyResult);
@@ -86,6 +88,64 @@ beforeEach(() => {
 });
 
 describe("ActivityView", () => {
+  // The values are the draft actions of `sell.rs::{LOCK_ACTION,
+  // LOCK_FINALIZE_ACTION}` and `cancel.rs::{CANCEL_ACTION,
+  // CANCEL_FINALIZE_ACTION}`.
+  it.each([
+    ["shakedex_lock", "Lock for sale"],
+    ["shakedex_lock_finalize", "Finalize into lock"],
+    ["shakedex_cancel", "Cancel listing"],
+    ["shakedex_cancel_finalize", "Finalize cancel"],
+  ])("labels the selling draft %s as %s, in the filter and on its row", async (action, label) => {
+    invokeMock.mockImplementation(
+      routes([row({ txid: "cc", action, name: "dexsale", direction: "send", height: 300 })]),
+    );
+    render(<ActivityView />, { wrapper: wrapper() });
+    const option = await screen.findByRole("option", { name: label });
+    expect(option).toHaveValue(action);
+    await waitFor(() =>
+      expect(screen.getAllByText(label).some((el) => el.tagName === "SPAN")).toBe(true),
+    );
+  });
+
+  it("a Lock for sale row seen on chain still shows the name's value, not a spend", async () => {
+    // The lock TRANSFER re-homes the name's 0.5 HNS onto our own coin: net 0.
+    invokeMock.mockImplementation(
+      routes(
+        [
+          row({
+            txid: "cc",
+            action: "transfer",
+            name: "dexsale",
+            valueDoos: 0,
+            nameValueDoos: 500_000,
+            direction: "send",
+            height: 300,
+          }),
+        ],
+        [
+          {
+            id: "d1",
+            walletProfileId: "p1",
+            action: "shakedex_lock",
+            status: "confirmed",
+            summary: null,
+            errorMessage: null,
+            txid: "cc",
+            confirmationHeight: 300,
+            purchaseLostReason: null,
+            createdAt: "2026-10-14 12:00:00",
+          },
+        ],
+      ),
+    );
+    render(<ActivityView />, { wrapper: wrapper() });
+    await waitFor(() =>
+      expect(screen.getAllByText("Lock for sale").some((el) => el.tagName === "SPAN")).toBe(true),
+    );
+    expect(screen.getByText(/⤷\s*0\.5/)).toBeInTheDocument();
+  });
+
   it("renders classified rows with action badges", async () => {
     invokeMock.mockImplementation(
       routes([

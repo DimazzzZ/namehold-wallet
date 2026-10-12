@@ -448,6 +448,12 @@ Once the transfer lockup is over the row reads Ready to Finalize & sign, and Fin
 
 A wallet restored from its recovery phrase does not find its listings on its own. Under the list, "Restore a lock by name" takes the name of a listing it had: the wallet checks on your node that the name sits in this wallet's lock, finalized into it, and adopts it as "Locked — listing details unknown"; anything else (an expired or revoked name, a name not in this wallet's lock, a name still on its way into the lock, a lock already cancelled or bought) is refused with the reason. It needs a recovery-phrase wallet, a node that can send and the unlocked signer. A restored lock can be cancelled at once. Import its listing file, on its row, takes the listing file saved for that lock, pasted or chosen on disk, and makes the lock a full listing again, Listed for sale with its prices; a file for another lock key or another lock coin, paying an address that is not this wallet's, or naming a market fee is refused with the reason.
 
+#### On Owned Names and in Activity
+
+A name you are selling shows its listing's state on its Owned Names row, in place of what the name needs next: "Locking · N blocks" while the transfer lockup runs (counted once the lock transfer is mined; "Locking" before that), then the states of My listings ("Ready to Finalize & sign", "Listed for sale", "Cancelled · finalize to bring it home", and so on), and "Sold" for a week after a sale. A lock restored by name reads "Locked — listing details unknown". A name in your lock that is no longer a coin at your own addresses still has its row, at the lock address. The row's My listings button opens Market › My listings, where the listing's actions are; while the listing is open, the name's own Update, Transfer, Renew and Revoke are disabled with "this name is locked for sale through Shakedex". Once a cancelled listing's name is home, the row is an ordinary name again.
+
+Activity names the selling transactions while they are drafts: "Lock for sale" (the transfer into the lock), "Finalize into lock" (the finalize Finalize & sign sends), "Cancel listing" (the cancel) and "Finalize cancel" (the finalize that brings the name home). Each can be picked in Activity's action filter.
+
 ### Paid name swaps
 
 Not available. The wallet once offered "Sell with payment" and "Buy with

@@ -75,7 +75,12 @@ import { ReceiveAddressList } from "./ReceiveAddressList";
 import type { NameActionCapabilities, TxDraftSummary } from "../types";
 import { subscribeAction } from "../lib/actionBus";
 import { Tooltip } from "./ui/Tooltip";
-import { canUseShakedex, shakedexRefusal } from "./market/marketText";
+import {
+  MY_LISTINGS_TAB,
+  canUseShakedex,
+  listingStateLabel,
+  shakedexRefusal,
+} from "./market/marketText";
 
 type BatchAction = "renew" | "reveal" | "redeem" | "finalize" | "transfer";
 
@@ -1334,6 +1339,18 @@ export function WalletView() {
                               );
                               return <Badge variant={s.variant}>{s.label}</Badge>;
                             }
+                            // R19: a name we listed shows the listing's
+                            // state; its owner actions are the lock's now.
+                            if (n.listing) {
+                              return (
+                                <Badge variant="info">
+                                  {listingStateLabel(
+                                    n.listing.state,
+                                    n.listing.blocksUntilFinalize,
+                                  )}
+                                </Badge>
+                              );
+                            }
                             const task = taskSummaryFromCapabilities(capsByName.get(n.name));
                             // A transaction of ours for this name is in flight:
                             // the task is a verdict the chain has not reached
@@ -1410,14 +1427,26 @@ export function WalletView() {
                                 </Tooltip>
                               )
                             ) : (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                data-testid="owned-name-manage"
-                                onClick={() => setManageName(n.name)}
-                              >
-                                Manage
-                              </Button>
+                              <>
+                                {n.listing && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    data-testid="owned-name-my-listings"
+                                    onClick={() => navigate("/market?tab=mine")}
+                                  >
+                                    {MY_LISTINGS_TAB}
+                                  </Button>
+                                )}
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  data-testid="owned-name-manage"
+                                  onClick={() => setManageName(n.name)}
+                                >
+                                  Manage
+                                </Button>
+                              </>
                             ))}
                         </td>
                       </tr>

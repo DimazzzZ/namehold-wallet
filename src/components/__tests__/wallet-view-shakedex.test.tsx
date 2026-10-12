@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 
 const invokeMock = vi.fn();
@@ -24,7 +24,7 @@ import { WalletView } from "../WalletView";
 import { dispatchAction } from "../../lib/actionBus";
 import { useUiStore } from "../../stores/ui";
 import { makeProfile, makeSession } from "../../test/fixtures/wallet";
-import type { ShakedexNameState, WalletProfileSummary } from "../../types";
+import type { ShakedexListingState, ShakedexNameState, WalletProfileSummary } from "../../types";
 
 // `DNS_RECORDS_HINT` in commands/shakedex.rs.
 const DNS_HINT = "The name still carries the seller's DNS records: update them once it is yours.";
@@ -359,4 +359,72 @@ describe("WalletView purchases", () => {
       expect(screen.getByTestId("owned-name-finalize")).toBeInTheDocument();
     },
   );
+});
+
+// The row `read_names` sends for a name with a listing of ours
+// (`ListingNameState` on the owned name's row).
+function listedRow(state: ShakedexListingState, blocksUntilFinalize: number | null) {
+  return {
+    name: "dexsale",
+    state: "CLOSED",
+    height: 100,
+    renewal: 100,
+    owner: { hash: "aa", index: 0 },
+    owner_address: "rs1qlock",
+    registered: true,
+    expired: false,
+    stats: null,
+    listing: { listingId: "l1", state, blocksUntilFinalize },
+  };
+}
+
+function AtMarket() {
+  const location = useLocation();
+  return <div data-testid="at-market">{location.search}</div>;
+}
+
+function renderWithMarketRoute() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={["/wallet"]}>
+        <Routes>
+          <Route path="/wallet" element={<WalletView />} />
+          <Route path="/market" element={<AtMarket />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe("WalletView listings", () => {
+  it("shows a name's listing state on its row, the lockup counted while Locking", async () => {
+    invokeMock.mockImplementation(route([listedRow("locking", 4)]));
+    render(<WalletView />, { wrapper: wrapper() });
+    expect(await screen.findByText("Locking · 4 blocks")).toBeInTheDocument();
+  });
+
+  it("names a Listed name's state on its row", async () => {
+    invokeMock.mockImplementation(route([listedRow("listed", null)]));
+    render(<WalletView />, { wrapper: wrapper() });
+    expect(await screen.findByText("Listed for sale")).toBeInTheDocument();
+  });
+
+  it("names a restored lock as R32 does and links to My listings", async () => {
+    invokeMock.mockImplementation(route([listedRow("restored", null)]));
+    renderWithMarketRoute();
+    expect(await screen.findByText("Locked — listing details unknown")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("owned-name-my-listings"));
+    expect(await screen.findByTestId("at-market")).toHaveTextContent("?tab=mine");
+  });
+
+  it("offers My listings only on a name with a listing", async () => {
+    const plain = { ...listedRow("listed", null), name: "plain", listing: undefined };
+    invokeMock.mockImplementation(route([plain]));
+    render(<WalletView />, { wrapper: wrapper() });
+    expect(await screen.findByTestId("owned-name-manage")).toBeInTheDocument();
+    expect(screen.queryByTestId("owned-name-my-listings")).toBeNull();
+  });
 });
