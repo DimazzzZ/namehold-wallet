@@ -2796,6 +2796,28 @@ fn copy_step(copy: &listing_file::ListingFile) -> Result<String, AppError> {
     }
 }
 
+/// [`copy_step`] of `listing`'s market copy `copy`, or `None` once a copy
+/// that does not hold exactly one step is recorded on `listing` as
+/// StepsUnverified ([`steps_unverified`]): nothing is sent then.
+fn step_or_record(
+    conn: &rusqlite::Connection,
+    listing: &queries::ShakedexListing,
+    copy: &listing_file::ListingFile,
+    now: i64,
+) -> Result<Option<String>, AppError> {
+    match copy_step(copy) {
+        Ok(step) => Ok(Some(step)),
+        Err(e) => {
+            record(
+                conn,
+                listing,
+                &steps_unverified(listing, e.to_string(), now),
+            )?;
+            Ok(None)
+        }
+    }
+}
+
 /// R25 (T8): whether `theirs`, the market's copy of `l`, is the step we
 /// last sent it (`market_sent_step`): `ours` (the copy we would upload now)
 /// with its one step replaced by the stored step of that signature, offered
@@ -3229,17 +3251,13 @@ async fn upload_current(
             file,
             copy,
             listing,
-        } => match copy_step(&copy) {
-            Ok(step) => {
-                let ok = kept_label(&listing);
-                upload(conn, market, &file, &step, &listing, ok, now).await
-            }
-            Err(e) => record(
-                conn,
-                &listing,
-                &steps_unverified(&listing, e.to_string(), now),
-            ),
-        },
+        } => {
+            let Some(step) = step_or_record(conn, &listing, &copy, now)? else {
+                return Ok(());
+            };
+            let ok = kept_label(&listing);
+            upload(conn, market, &file, &step, &listing, ok, now).await
+        }
     }
 }
 
@@ -3448,15 +3466,8 @@ async fn keep_listed(
             listing,
         } => (file, copy, listing),
     };
-    let step = match copy_step(&ours) {
-        Ok(step) => step,
-        Err(e) => {
-            return record(
-                conn,
-                &listing,
-                &steps_unverified(&listing, e.to_string(), now),
-            )
-        }
+    let Some(step) = step_or_record(conn, &listing, &ours, now)? else {
+        return Ok(());
     };
     if listing.listing_file_json != l.listing_file_json {
         // The expiry was just refreshed: the market holds the old file.
