@@ -1324,6 +1324,35 @@ async fn uploads_again_when_the_step_moves() {
     any.assert_async().await;
 }
 
+/// R24 with R25 (T8, code review): a reverse auction whose market copy was
+/// replaced by someone else's and re-uploaded (ReplacedReuploaded) is
+/// advanced too: once its step moves, the current step goes up once. The
+/// accepted upload keeps the warning (ReplacedReuploaded stays, as for a
+/// Buy Now, until keep-listed finds our copy served back).
+#[tokio::test]
+async fn replaced_auction_advances_and_keeps_its_warning() {
+    let (f, steps) = auction_on_market().await;
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET market_status = ?1",
+            [MarketStatus::ReplacedReuploaded.as_str()],
+        )
+        .unwrap();
+    let (mtp, later) = moved();
+    let mut s = market().await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    advance(&f, &node_at(&f, TIP, mtp), &s, later).await;
+    m.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(
+        ListingFile::parse(&sent, NET).unwrap().steps,
+        vec![steps[3].clone()]
+    );
+    let l = listing(&f);
+    assert_eq!(l.market_status, Some(MarketStatus::ReplacedReuploaded));
+    assert_eq!(l.market_sent_step, Some(hex::encode(steps[3].signature)));
+}
+
 /// R25 with R24 (T8): a moved step whose upload got no answer is retried by
 /// keep-listed after its backoff; the market's copy is then our earlier
 /// step, so ours is uploaded over it as Listed, not "replaced by someone

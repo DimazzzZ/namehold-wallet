@@ -2919,8 +2919,9 @@ pub async fn advance_reverse_auctions_step(db_path: &str, profile_id: &str) {
 /// there ([`sell::current_step`], R3) with the one the market was last sent
 /// (`market_sent_step`); when they differ, uploads the current step at once
 /// ([`upload_current`]: every step re-verified over hsd's lock coin first,
-/// the answer recorded by [`after_reply`]), whatever the hourly check's
-/// `market_retry_at` says. The same step is never uploaded twice: the step
+/// the answer recorded by [`after_reply`]; an acceptance keeps the label,
+/// [`kept_label`]: Listed and ReplacedReuploaded stay, Refused is Listed),
+/// whatever the hourly check's `market_retry_at` says. The same step is never uploaded twice: the step
 /// is recorded as sent whatever the answer, a refusal included. No step
 /// valid at that median time (a reorg took it back) is no move. A row whose
 /// steps do not read goes to [`upload_current`], which records it as
@@ -3171,7 +3172,7 @@ async fn announce(
 
 /// R23, R24: upload `l`'s current step ([`market_copy`], every stored step
 /// verified on our node first) and record the market's answer and the step
-/// sent.
+/// sent; an acceptance keeps the listing's label ([`kept_label`]).
 async fn upload_current(
     conn: &rusqlite::Connection,
     node: &dyn NodeRpc,
@@ -3191,16 +3192,8 @@ async fn upload_current(
             listing,
         } => match copy_step(&copy) {
             Ok(step) => {
-                upload(
-                    conn,
-                    market,
-                    &file,
-                    &step,
-                    &listing,
-                    queries::MarketStatus::Listed,
-                    now,
-                )
-                .await
+                let ok = kept_label(&listing);
+                upload(conn, market, &file, &step, &listing, ok, now).await
             }
             Err(e) => record(
                 conn,
@@ -3208,6 +3201,19 @@ async fn upload_current(
                 &steps_unverified(&listing, e.to_string(), now),
             ),
         },
+    }
+}
+
+/// The label `l` gets when the market takes its current copy (an accepted
+/// upload of a first or a moved step, our copy served back):
+/// ReplacedReuploaded stays, as keep-listed keeps it on a matched copy (the
+/// warning is the user's to see); anything else is Listed (a first upload,
+/// a Refused one whose step moved).
+fn kept_label(l: &queries::ShakedexListing) -> queries::MarketStatus {
+    use queries::MarketStatus as S;
+    match l.market_status {
+        Some(S::ReplacedReuploaded) => S::ReplacedReuploaded,
+        _ => S::Listed,
     }
 }
 
@@ -3438,10 +3444,7 @@ async fn keep_listed(
                 S::ReplacedReuploaded
             };
             if same {
-                let ok = match listing.market_status {
-                    Some(S::ReplacedReuploaded) => S::ReplacedReuploaded,
-                    _ => S::Listed,
-                };
+                let ok = kept_label(&listing);
                 // The market serves our own copy: it holds our listing.
                 let matched = Outcome::Taken { holds_ours: true };
                 record_sent(
