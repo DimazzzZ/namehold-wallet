@@ -462,6 +462,24 @@ pub fn parse_step_price(text: &str) -> Result<u64, AppError> {
     Ok(doos)
 }
 
+/// R19/R24: a reverse auction's schedule as typed: both prices by R19's rule
+/// ([`parse_step_price`], the start first), then [`reverse_schedule`]'s rules
+/// with the steps counted from lock time 0, so the last step's
+/// `(steps − 1) · interval_secs` must fit R3's 40 bits; the lock times are
+/// built and checked again from the node's median time. Finalize & sign and
+/// the UI's twin (`marketText.ts::scheduleProblem`) refuse in this order.
+pub fn parse_schedule(
+    start: &str,
+    floor: &str,
+    steps: u32,
+    interval_secs: u64,
+) -> Result<(u64, u64), AppError> {
+    let start = parse_step_price(start)?;
+    let floor = parse_step_price(floor)?;
+    reverse_schedule(start, floor, steps, interval_secs, 0)?;
+    Ok((start, floor))
+}
+
 /// One signed price step as `shakedex_listings.steps_json` stores it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

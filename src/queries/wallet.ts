@@ -293,8 +293,27 @@ export function useDeleteTxDraft() {
  *  `error.rs::AppError::WalletLocked` and its `sign_tx_draft`-style profile
  *  -mismatch message, which is deliberately NOT matched here — only the
  *  literal locked-signer error should trigger an automatic unlock+retry). */
-function isWalletLockedError(e: unknown): boolean {
+export function isWalletLockedError(e: unknown): boolean {
   return /wallet (is )?locked/i.test(String(e));
+}
+
+/**
+ * Run a command that needs the unlocked signer (the selling commands check
+ * it before anything else): on "Wallet locked", unlock this profile's signer
+ * once and run it again — `useSignNameMessage`'s pattern.
+ */
+export function useWithSigner() {
+  const unlock = useUnlockSigner();
+  const run = async <T>(profileId: string, fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await fn();
+    } catch (e) {
+      if (!isWalletLockedError(e)) throw e;
+      await unlock.mutateAsync(profileId);
+      return fn();
+    }
+  };
+  return { run, unlocking: unlock.isPending };
 }
 
 /**

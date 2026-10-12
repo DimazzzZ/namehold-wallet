@@ -8619,3 +8619,31 @@ async fn lower_price_saves_nothing_when_the_listing_changed_meanwhile() {
     assert_eq!(after.expires_at, before.expires_at);
     assert_eq!(after.state, ListingState::Listed);
 }
+
+/// The UI refuses a typed price or schedule in the backend's own words
+/// (`marketText.ts::{parseStepPrice, scheduleProblem}`): both languages
+/// read this one table.
+#[test]
+fn typed_prices_and_schedules_are_refused_in_the_uis_words() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../src/test/fixtures/sell-price-cases.json"
+    ))
+    .unwrap();
+    let want = |c: &Value| c["error"].as_str().map(|w| format!("Invalid input: {w}"));
+    for c in cases["prices"].as_array().unwrap() {
+        let text = c["text"].as_str().unwrap();
+        let got = sell::parse_step_price(text).err().map(|e| e.to_string());
+        assert_eq!(got, want(c), "{text:?}");
+    }
+    for c in cases["schedules"].as_array().unwrap() {
+        let got = sell::parse_schedule(
+            c["startPrice"].as_str().unwrap(),
+            c["floorPrice"].as_str().unwrap(),
+            u32::try_from(c["steps"].as_u64().unwrap()).unwrap(),
+            c["intervalSecs"].as_u64().unwrap(),
+        )
+        .err()
+        .map(|e| e.to_string());
+        assert_eq!(got, want(c), "{c}");
+    }
+}

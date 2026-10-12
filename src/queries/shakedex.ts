@@ -5,6 +5,10 @@ import type {
   MarketPage,
   MarketRow,
   PurchasePreview,
+  ShakedexListingMode,
+  ShakedexListingSummary,
+  ShakedexMyListing,
+  ShakedexScheduleInput,
   TxDraftSummary,
 } from "../types";
 
@@ -90,3 +94,102 @@ export function useBuildPurchaseFinalize() {
     },
   });
 }
+
+// --- Selling (T7) ---
+
+/** Every listing of the active profile, with what each can do now (`shakedex_list_listings`). */
+export function useMyListings(enabled = true) {
+  return useQuery<ShakedexMyListing[]>({
+    queryKey: ["shakedex", "listings"],
+    queryFn: () => invoke<ShakedexMyListing[]>("shakedex_list_listings"),
+    enabled,
+    retry: false,
+    refetchInterval: 30_000,
+  });
+}
+
+/** A selling command: listings, drafts and names change together. */
+function useSellingMutation<A, R>(fn: (a: A) => Promise<R>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["shakedex"] });
+      qc.invalidateQueries({ queryKey: ["wallet"] });
+      qc.invalidateQueries({ queryKey: ["read"] });
+    },
+  });
+}
+
+export interface BuildLockArgs {
+  name: string;
+  mode: ShakedexListingMode;
+  publish: boolean;
+  feeRate: number | null;
+}
+
+/** Stage the day-0 lock TRANSFER of a name (R19: the mode and the publish box). */
+export const useBuildLock = () =>
+  useSellingMutation((a: BuildLockArgs) =>
+    invoke<TxDraftSummary>("shakedex_build_lock_draft", { ...a }),
+  );
+
+export interface FinalizeAndSignArgs {
+  listingId: string;
+  /** A Buy Now's one price; empty for a reverse auction. */
+  prices: { price: string }[];
+  /** A reverse auction's schedule; null for a Buy Now. */
+  schedule: ShakedexScheduleInput | null;
+  feeRate: number | null;
+}
+
+/** Finalize into the lock and sign the prices (R20); the secure window asks first. */
+export const useFinalizeAndSign = () =>
+  useSellingMutation((a: FinalizeAndSignArgs) =>
+    invoke<ShakedexListingSummary>("shakedex_finalize_and_sign", { ...a }),
+  );
+
+/** Stage and sign the cancel of a listing (R28); the secure window asks first. */
+export const useCancelListing = () =>
+  useSellingMutation((a: { listingId: string; feeRate: number | null }) =>
+    invoke<TxDraftSummary>("shakedex_cancel_listing", { ...a }),
+  );
+
+/** Stage the FINALIZE that brings a cancelled listing's name home (R28). */
+export const useFinalizeCancel = () =>
+  useSellingMutation((a: { listingId: string; feeRate: number | null }) =>
+    invoke<TxDraftSummary>("shakedex_finalize_cancel", { ...a }),
+  );
+
+/** Sign one more, lower price (R26); the price as typed, the secure window asks first. */
+export const useLowerPrice = () =>
+  useSellingMutation((a: { listingId: string; price: string }) =>
+    invoke<ShakedexListingSummary>("shakedex_lower_price", { ...a }),
+  );
+
+/** Restore a lock of ours by the name's chain state (R32). */
+export const useRestoreLock = () =>
+  useSellingMutation((name: string) =>
+    invoke<ShakedexListingSummary>("shakedex_restore_lock", { name }),
+  );
+
+/** Import our own listing file, pasted or by its path (the backend reads the file). */
+export const useImportOwnListing = () =>
+  useSellingMutation((s: { kind: "text"; text: string } | { kind: "file"; path: string }) =>
+    s.kind === "text"
+      ? invoke<ShakedexListingSummary>("shakedex_import_own_listing_file", { text: s.text })
+      : invoke<ShakedexListingSummary>("shakedex_import_own_listing_from_file", { path: s.path }),
+  );
+
+/** Save a listing's stored file at the path the save dialog gave. Changes nothing stored. */
+export const useSaveListingFile = () =>
+  useMutation({
+    mutationFn: (a: { listingId: string; path: string }) =>
+      invoke<void>("shakedex_save_listing_file", { ...a }),
+  });
+
+/** Turn publishing on for a Listed listing (carry 1; never off). */
+export const usePublishListing = () =>
+  useSellingMutation((listingId: string) =>
+    invoke<ShakedexListingSummary>("shakedex_publish_listing", { listingId }),
+  );

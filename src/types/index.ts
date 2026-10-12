@@ -1000,6 +1000,17 @@ export type ShakedexListingPrices =
       floorPrice: number;
     };
 
+/**
+ * A reverse auction's schedule as the seller typed it (`commands/shakedex.rs::ScheduleInput`):
+ * prices in HNS as text, so the backend refuses what it cannot represent.
+ */
+export interface ShakedexScheduleInput {
+  startPrice: string;
+  floorPrice: string;
+  steps: number;
+  intervalSecs: number;
+}
+
 /** One row of My listings (`shakedex_list_listings`). */
 export interface ShakedexMyListing {
   listing: ShakedexListingSummary;

@@ -1824,8 +1824,58 @@ fn refusal_sentences_match_the_uis_word_for_word() {
             "MARKET_MAINNET_ONLY",
             crate::commands::shakedex::MARKET_MAINNET_ONLY,
         ),
+        (
+            "MAINNET_SELLING_EXPERIMENTAL",
+            crate::noncustodial::shakedex::MAINNET_SELLING_EXPERIMENTAL,
+        ),
+        (
+            "LOCK_COSTS",
+            crate::noncustodial::shakedex::sell::LOCK_COSTS,
+        ),
+        (
+            "REVERSE_NEEDS_SCHEDULE",
+            crate::commands::shakedex::REVERSE_NEEDS_SCHEDULE,
+        ),
+        (
+            "STEP_SIGNATURE_PERMANENCE",
+            crate::noncustodial::shakedex::sell::STEP_SIGNATURE_PERMANENCE,
+        ),
+        (
+            "LOWER_PRICE_PERMANENCE",
+            crate::noncustodial::shakedex::sell::LOWER_PRICE_PERMANENCE,
+        ),
+        (
+            "CANCEL_STILL_BUYABLE",
+            crate::noncustodial::shakedex::cancel::CANCEL_STILL_BUYABLE,
+        ),
+        (
+            "CANCEL_STILL_BUYABLE_AS_IT_FALLS",
+            crate::noncustodial::shakedex::cancel::CANCEL_STILL_BUYABLE_AS_IT_FALLS,
+        ),
+        (
+            "CANCEL_MEMPOOL_PURCHASE",
+            crate::noncustodial::shakedex::cancel::CANCEL_MEMPOOL_PURCHASE,
+        ),
+        (
+            "CANCEL_THEN_FINALIZE",
+            crate::noncustodial::shakedex::cancel::CANCEL_THEN_FINALIZE,
+        ),
+        (
+            "CANCEL_MARKET_TOLD",
+            crate::noncustodial::shakedex::cancel::CANCEL_MARKET_TOLD,
+        ),
+        (
+            "LOWER_DURING_CANCEL",
+            crate::commands::shakedex::LOWER_DURING_CANCEL,
+        ),
     ] {
         let decl = format!("export const {name} = {sentence:?};");
         assert!(ui.contains(&decl), "marketText.ts lacks `{decl}`");
     }
+    // The numbers the UI copies (`scheduleWarning`'s year).
+    let decl = format!(
+        "const LISTING_LIFETIME_SECS = {};",
+        crate::noncustodial::shakedex::sell::LISTING_LIFETIME_SECS
+    );
+    assert!(ui.contains(&decl), "marketText.ts lacks `{decl}`");
 }

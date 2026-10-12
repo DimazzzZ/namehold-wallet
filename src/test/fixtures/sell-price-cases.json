@@ -1,0 +1,123 @@
+{
+  "prices": [
+    { "text": "5", "error": null },
+    { "text": " 0.001 ", "error": null },
+    { "text": "", "error": "price \"\": enter a price in HNS" },
+    { "text": "abc", "error": "price \"abc\": not a number of HNS" },
+    { "text": "1.2.3", "error": "price \"1.2.3\": not a number of HNS" },
+    { "text": "1.1234567", "error": "price \"1.1234567\": HNS has at most 6 decimals" },
+    { "text": "0", "error": "price \"0\": a price must be above 0" },
+    { "text": "0.000999", "error": "price \"0.000999\": below the dust limit of 0.001000 HNS" },
+    { "text": "2040000000.000001", "error": "price \"2040000000.000001\": above the money supply" },
+    {
+      "text": "99999999999999999999",
+      "error": "price \"99999999999999999999\": above the money supply"
+    },
+    { "text": "\u00855", "error": null },
+    { "text": "\u3000 7 ", "error": null },
+    { "text": "\u00a05\u00a0", "error": null },
+    { "text": "\ufeff5", "error": "price \"\\u{feff}5\": not a number of HNS" },
+    { "text": "\u00a0x", "error": "price \"\\u{a0}x\": not a number of HNS" },
+    { "text": "5\u200b", "error": "price \"5\\u{200b}\": not a number of HNS" },
+    { "text": "1\t2", "error": "price \"1\\t2\": not a number of HNS" },
+    { "text": "\u0301", "error": "price \"\\u{301}\": not a number of HNS" },
+    { "text": "\u2028", "error": "price \"\\u{2028}\": enter a price in HNS" },
+    { "text": "a\"b", "error": "price \"a\\\"b\": not a number of HNS" },
+    { "text": "\u0001", "error": "price \"\\u{1}\": not a number of HNS" },
+    { "text": "\u00e9", "error": "price \"\u00e9\": not a number of HNS" }
+  ],
+  "schedules": [
+    { "startPrice": "5", "floorPrice": "3", "steps": 3, "intervalSecs": 900, "error": null },
+    {
+      "startPrice": "x",
+      "floorPrice": "3",
+      "steps": 3,
+      "intervalSecs": 900,
+      "error": "price \"x\": not a number of HNS"
+    },
+    {
+      "startPrice": "x",
+      "floorPrice": "0",
+      "steps": 3,
+      "intervalSecs": 900,
+      "error": "price \"x\": not a number of HNS"
+    },
+    {
+      "startPrice": "5",
+      "floorPrice": "0",
+      "steps": 3,
+      "intervalSecs": 900,
+      "error": "price \"0\": a price must be above 0"
+    },
+    {
+      "startPrice": "5",
+      "floorPrice": "3",
+      "steps": 1,
+      "intervalSecs": 900,
+      "error": "reverse auction: 1 steps: a schedule has 2 to 1000 steps"
+    },
+    {
+      "startPrice": "5",
+      "floorPrice": "3",
+      "steps": 1001,
+      "intervalSecs": 900,
+      "error": "reverse auction: 1001 steps: a schedule has 2 to 1000 steps"
+    },
+    {
+      "startPrice": "5",
+      "floorPrice": "3",
+      "steps": 3,
+      "intervalSecs": 899,
+      "error": "reverse auction: steps 899 s apart: steps must be at least 15 minutes apart"
+    },
+    {
+      "startPrice": "3",
+      "floorPrice": "3",
+      "steps": 3,
+      "intervalSecs": 900,
+      "error": "reverse auction: the floor 3.000000 HNS is not below the start 3.000000 HNS"
+    },
+    {
+      "startPrice": "0.001005",
+      "floorPrice": "0.001",
+      "steps": 10,
+      "intervalSecs": 900,
+      "error": "reverse auction: prices would not be strictly falling: 10 steps need the start at least 9 doos above the floor"
+    },
+    {
+      "startPrice": "5",
+      "floorPrice": "3",
+      "steps": 2,
+      "intervalSecs": 1099511627775,
+      "error": null
+    },
+    {
+      "startPrice": "5",
+      "floorPrice": "3",
+      "steps": 2,
+      "intervalSecs": 1099511627776,
+      "error": "reverse auction: the last step's time does not fit a lock time"
+    },
+    {
+      "startPrice": "5",
+      "floorPrice": "3",
+      "steps": 1000,
+      "intervalSecs": 1100612240,
+      "error": null
+    },
+    {
+      "startPrice": "5",
+      "floorPrice": "3",
+      "steps": 1000,
+      "intervalSecs": 1100612241,
+      "error": "reverse auction: the last step's time does not fit a lock time"
+    },
+    {
+      "startPrice": "5",
+      "floorPrice": "3",
+      "steps": 3,
+      "intervalSecs": 18446744073709551615,
+      "error": "reverse auction: the last step's time does not fit a lock time"
+    }
+  ]
+}

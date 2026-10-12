@@ -792,10 +792,10 @@ pub(crate) async fn prepare_lock_finalize(
             ))
         }
         (ListingMode::ReverseAuction, Some(s)) => {
-            let start = sell::parse_step_price(&s.start_price)?;
-            let floor = sell::parse_step_price(&s.floor_price)?;
-            // Every rule but the lock times' fit, before the node is read.
-            sell::reverse_schedule(start, floor, s.steps, s.interval_secs, 0)?;
+            // Every rule before the node is read; the lock times again
+            // from its median time.
+            let (start, floor) =
+                sell::parse_schedule(&s.start_price, &s.floor_price, s.steps, s.interval_secs)?;
             Pricing::Schedule {
                 start,
                 floor,
