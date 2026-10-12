@@ -2156,7 +2156,8 @@ pub struct ShakedexListing {
     /// moved step not taken (T8), each only once the market accepted the
     /// listing (`market_accepted`; one it never took has no copy of ours
     /// there), and by a reorg back to an unsent cancel of a told listing
-    /// (`market_status` set, not Refused: [`mark_listing_cancel_unmined`]).
+    /// (`market_status` set, not Refused: [`mark_listing_cancel_unmined`]),
+    /// also only once accepted.
     /// Cleared only by an accepted upload or a matched copy, and by a move
     /// into Listed.
     pub market_changed: bool,
@@ -3173,7 +3174,9 @@ pub fn mark_listing_cancel_mined(
 /// the market bookkeeping of a listing the market was told about
 /// (`market_status` set) starts over as Retrying, due now (a `Reported` left
 /// from the mined cancel would stop the jobs), `market_accepted` kept: the
-/// market may still hold the copy it accepted. One the market was never told
+/// market may still hold the copy it accepted, and `market_changed` set only
+/// then (once `market_accepted`: one the market never took has no copy of
+/// ours there, as for a Lower price). One the market was never told
 /// about stays untold, and a Refused one stays Refused (not retried until
 /// what is sent changes). With the cancel sent it all stays. Returns how
 /// many rows changed (0 or 1).
@@ -3197,7 +3200,8 @@ pub fn mark_listing_cancel_unmined(
              market_retry_at = CASE WHEN {told} THEN NULL ELSE market_retry_at END,
              market_attempts = CASE WHEN {told} THEN 0 ELSE market_attempts END,
              market_error = CASE WHEN {told} THEN NULL ELSE market_error END,
-             market_changed = CASE WHEN {told} THEN 1 ELSE market_changed END
+             market_changed = CASE WHEN {told} AND market_accepted = 1 THEN 1
+                                   ELSE market_changed END
          WHERE id = ?1 AND {} AND cancel_txid = ?3",
         w.source_sql()
     );

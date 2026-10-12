@@ -3955,9 +3955,10 @@ fn market_result_records_the_step_it_sent() {
 /// listing is kept on the market again ([`queries::list_listings_kept_on_market`]),
 /// so the bookkeeping of a listing the market was told about starts over as
 /// Retrying, due now (a `Reported` left from the mined cancel would stop
-/// the jobs); with the cancel sent the bookkeeping stays. A listing the
-/// market was never told about stays untold: keep-listed takes only told
-/// ones, so a cancel in progress never publishes it for the first time.
+/// the jobs), its change flag set only once the market accepted it; with
+/// the cancel sent the bookkeeping stays. A listing the market was never
+/// told about stays untold: keep-listed takes only told ones, so a cancel
+/// in progress never publishes it for the first time.
 #[test]
 fn cancel_unmined_back_to_an_unsent_cancel_resets_its_market_status() {
     let f = fx(ListingState::Listed);
@@ -4016,11 +4017,16 @@ fn cancel_unmined_back_to_an_unsent_cancel_resets_its_market_status() {
     );
     // Told but never accepted (e.g. Retrying after no answer to its first
     // upload): Retrying, yet not kept while Cancelling — nothing of it is on
-    // the market to keep.
+    // the market to keep — and the change flag stays clear: the market holds
+    // no copy of ours to call our own older one (T8 code review).
     let never_accepted = unmined(Some(MarketStatus::Retrying));
     assert_eq!(
-        (never_accepted.market_status, never_accepted.market_accepted),
-        (Some(MarketStatus::Retrying), false)
+        (
+            never_accepted.market_status,
+            never_accepted.market_accepted,
+            never_accepted.market_changed
+        ),
+        (Some(MarketStatus::Retrying), false, false)
     );
     assert!(queries::list_listings_kept_on_market(&f.conn, PROFILE)
         .unwrap()
