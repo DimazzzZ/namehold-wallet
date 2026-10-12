@@ -16,7 +16,8 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
     const onKeyDown = (e: KeyboardEvent) => {
       // Every open dialog listens on the document. A dialog opened inside
       // this one (the Lock dialog in a name's actions) takes Escape alone:
-      // closing this one too would unmount it mid-flow.
+      // closing this one too would unmount it mid-flow. This relies on a
+      // nested dialog rendering inside this panel: Dialog uses no portal.
       if (e.key === "Escape" && !panel.current?.querySelector("[data-dialog-panel]")) {
         onClose();
       }

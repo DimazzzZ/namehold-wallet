@@ -92,13 +92,13 @@ function mockMarket(p: unknown, kind = "mnemonic_hot", canSend = true, network =
   });
 }
 
-function renderPage() {
+function renderPage(entry = "/market") {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/market"]}>
+      <MemoryRouter initialEntries={[entry]}>
         <MarketPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -108,6 +108,28 @@ function renderPage() {
 describe("MarketPage", () => {
   beforeEach(() => {
     invokeMock.mockReset();
+  });
+
+  it("opens on Browse, and on My listings with ?tab=mine", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "list_wallet_profiles") return Promise.resolve([profile()]);
+      if (cmd === "get_write_capability") return Promise.resolve(writeCapability());
+      if (cmd === "shakedex_list_market") return Promise.resolve(page());
+      if (cmd === "shakedex_list_listings") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+    renderPage("/market?tab=mine");
+    expect(
+      await screen.findByText("No listings yet. Sell a name from its actions in Owned Names."),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("market-row")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "My listings" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Browse" }));
+    expect(await screen.findByText(".dexreviews")).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some((c) => c[0] === "shakedex_list_listings")).toBe(true);
   });
 
   it("shows buyable rows in a canonical table and a hidden counter", async () => {

@@ -975,11 +975,16 @@ export interface ShakedexListingActions {
   publish: ShakedexListingAction;
 }
 
-/** The listing's own draft never sent (`PendingSend`); `signed`: only the broadcast is left. */
+/**
+ * The listing's own draft never sent, or whose send the node may not hold
+ * (`PendingSend`); `signed`: only the broadcast is left; `discardable`: never
+ * sent, so `delete_tx_draft` takes it.
+ */
 export interface ShakedexPendingSend {
   draftId: string;
   action: string;
   signed: boolean;
+  discardable: boolean;
 }
 
 /**

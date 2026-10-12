@@ -1962,16 +1962,20 @@ pub struct ListingActions {
     pub publish: ListingAction,
 }
 
-/// The listing's own draft that was never sent (`queries::never_sent`): the
-/// lock TRANSFER (Locking), the FINALIZE into the lock (Finalizing), the
-/// cancel (Cancelling) or the cancel's FINALIZE (CancelFinalizing).
-/// `signed`: only the broadcast is left.
+/// The listing's own draft that was never sent (`queries::never_sent`), or
+/// whose send the node may not hold (`broadcast_pending`, which
+/// `broadcast_tx_draft` sends again): the lock TRANSFER (Locking), the
+/// FINALIZE into the lock (Finalizing), the cancel (Cancelling) or the
+/// cancel's FINALIZE (CancelFinalizing). `signed`: only the broadcast is
+/// left. `discardable`: never sent, so `delete_tx_draft` takes it; it
+/// refuses a `broadcast_pending` one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingSend {
     pub draft_id: String,
     pub action: String,
     pub signed: bool,
+    pub discardable: bool,
 }
 
 /// A row's prices (R12), or why it has none: each case its own variant.
@@ -2050,9 +2054,10 @@ fn pending_send(
     };
     let Some(id) = id else { return Ok(None) };
     Ok(queries::get_tx_draft(conn, id)?
-        .filter(|d| queries::never_sent(&d.status))
+        .filter(|d| queries::never_sent(&d.status) || d.status == queries::BROADCAST_PENDING_STATUS)
         .map(|d| PendingSend {
             signed: d.signed_tx_hex.is_some(),
+            discardable: queries::never_sent(&d.status),
             draft_id: d.id,
             action: d.action,
         }))

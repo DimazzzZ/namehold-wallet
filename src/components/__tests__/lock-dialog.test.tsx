@@ -14,12 +14,24 @@ import {
   NEEDS_SENDING_NODE,
   PUBLISH_PRIVACY,
   RECOVERY_PHRASE_ONLY,
+  SEND_AGAIN_KEPT,
   SHARED_AS_FILE_ONLY,
+  UNSENT_KEPT,
 } from "../market/marketText";
+import { makeMyListing } from "../../test/fixtures/listings";
 import { loadSettings } from "../../test/fixtures/settings";
 import { makeProfile, makeSession } from "../../test/fixtures/wallet";
 import { useUiStore } from "../../stores/ui";
-import type { TxDraftSummary, WalletNetwork, WalletProfileKind } from "../../types";
+import type {
+  ShakedexMyListing,
+  TxDraftSummary,
+  WalletNetwork,
+  WalletProfileKind,
+} from "../../types";
+
+/** `tx_evidence::NOT_TAKEN`: the draft is held `broadcast_pending`. */
+const NOT_TAKEN =
+  "The node did not take the transaction. hsd does not say why; often its coins are already spent elsewhere. You can try again; the coins stay held until the node is checked again.";
 
 /** `sell.rs::near_expiry_warning(2000)`: the dialog shows the backend's warning as written. */
 const NEAR =
@@ -64,6 +76,8 @@ interface Opts {
   broadcasterAvailable?: boolean;
   /** The signer session lapses right after the lock is built. */
   lapseAfterBuild?: boolean;
+  /** My listings as the backend gives it after the send (default: no rows). */
+  listings?: ShakedexMyListing[];
 }
 
 function setup(o: Opts = {}) {
@@ -100,9 +114,18 @@ function setup(o: Opts = {}) {
         return o.broadcast
           ? o.broadcast()
           : Promise.resolve({ draftId: "lock-1", txid: "ab", status: "broadcasted" });
+      case "shakedex_list_listings":
+        return Promise.resolve(o.listings ?? []);
       default:
         return Promise.resolve(null);
     }
+  });
+}
+
+/** The Locking row of the lock draft `lock-1`, as `pending_send` gives it. */
+function lockingRow(discardable: boolean): ShakedexMyListing {
+  return makeMyListing("locking", {
+    pendingSend: { draftId: "lock-1", action: "shakedex_lock", signed: true, discardable },
   });
 }
 
@@ -294,21 +317,37 @@ describe("LockDialog", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("a broadcast that fails keeps the error, deletes nothing and offers no second send", async () => {
-    setup({ broadcast: () => Promise.reject("The node did not take the transaction") });
-    const onClose = renderIt();
-    fireEvent.click(await lockButton());
-    fireEvent.click(await screen.findByTestId("lock-send"));
-    expect(await screen.findByTestId("lock-error")).toHaveTextContent(
-      "The node did not take the transaction",
-    );
-    // The backend discarded a draft it refused before sending, or keeps one
-    // it sent for Activity: neither is this dialog's to delete or send again.
-    expect(screen.queryByTestId("lock-send")).not.toBeInTheDocument();
-    expect(calls("delete_tx_draft")).toHaveLength(0);
-    expect(calls("broadcast_tx_draft")).toHaveLength(1);
-    expect(onClose).not.toHaveBeenCalled();
-  });
+  // `broadcast_tx_draft` after the sign: refused at its gates, the signed
+  // lock stays with its Locking listing; not taken, it is held
+  // `broadcast_pending`; refused by R31's recheck, it is deleted with its
+  // listing. The dialog says what the refreshed My listings shows.
+  it.each([
+    ["refused at the gates", "remote broadcasting is not allowed", [lockingRow(true)], UNSENT_KEPT],
+    ["not taken by the node", NOT_TAKEN, [lockingRow(false)], SEND_AGAIN_KEPT],
+    [
+      "refused by the expiry recheck",
+      "Invalid input: 'dexsale' expires at block 6000, before its transfer into the lock could be finalized: renew it first",
+      [],
+      null,
+    ],
+  ] as const)(
+    "a broadcast %s says where the lock is, deletes nothing and offers no second send",
+    async (_, why, listings, kept) => {
+      setup({ broadcast: () => Promise.reject(why), listings: [...listings] });
+      const onClose = renderIt();
+      fireEvent.click(await lockButton());
+      fireEvent.click(await screen.findByTestId("lock-send"));
+      await waitFor(() => expect(calls("shakedex_list_listings")).toHaveLength(1));
+      const err = await screen.findByTestId("lock-error");
+      await waitFor(() => expect(err).toHaveTextContent(why.slice(0, 40)));
+      if (kept) expect(err).toHaveTextContent(kept);
+      else expect(err).not.toHaveTextContent(/stays in My listings/);
+      expect(screen.queryByTestId("lock-send")).not.toBeInTheDocument();
+      expect(calls("delete_tx_draft")).toHaveLength(0);
+      expect(calls("broadcast_tx_draft")).toHaveLength(1);
+      expect(onClose).not.toHaveBeenCalled();
+    },
+  );
 
   it("Back after the build deletes the unsent draft, and its Locking listing with it", async () => {
     setup();

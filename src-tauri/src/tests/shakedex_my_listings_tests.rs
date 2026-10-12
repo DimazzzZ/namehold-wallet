@@ -275,11 +275,13 @@ fn finalize_cancel_waits_for_the_lockup_left_at_the_last_sync() {
     }
 }
 
-/// The listing's own draft that was never sent, for the row's Send button:
-/// the lock TRANSFER while Locking, the FINALIZE into the lock while
-/// Finalizing, the cancel while Cancelling, the cancel's FINALIZE while
-/// CancelFinalizing. Every draft field holds its own unsent draft, so the
-/// row names the one its state reads.
+/// The listing's own draft that was never sent, or whose send the node may
+/// not hold (`broadcast_pending`), for the row's Send button: the lock
+/// TRANSFER while Locking, the FINALIZE into the lock while Finalizing, the
+/// cancel while Cancelling, the cancel's FINALIZE while CancelFinalizing.
+/// Every draft field holds its own unsent draft, so the row names the one
+/// its state reads. Only a draft never sent can be discarded
+/// (`delete_tx_draft` refuses a `broadcast_pending` one).
 #[test]
 fn pending_send_names_the_unsent_draft_of_the_state() {
     const DRAFTS: [(&str, &str); 4] = [
@@ -288,15 +290,55 @@ fn pending_send_names_the_unsent_draft_of_the_state() {
         ("dcan", "shakedex_cancel"),
         ("dcf", "shakedex_cancel_finalize"),
     ];
-    // (state, the draft it reads, that draft's status, the row's `signed`)
+    // (state, the draft it reads, that draft's status, the row's
+    // `(signed, discardable)`)
     let cases = [
-        (ListingState::Locking, "dlock", "signed", Some(true)),
+        (ListingState::Locking, "dlock", "signed", Some((true, true))),
+        (
+            ListingState::Locking,
+            "dlock",
+            "broadcast_pending",
+            Some((true, false)),
+        ),
         (ListingState::Locking, "dlock", "broadcasted", None),
-        (ListingState::Finalizing, "dfin", "signed", Some(true)),
+        (
+            ListingState::Finalizing,
+            "dfin",
+            "signed",
+            Some((true, true)),
+        ),
+        (
+            ListingState::Finalizing,
+            "dfin",
+            "broadcast_pending",
+            Some((true, false)),
+        ),
         (ListingState::Finalizing, "dfin", "broadcasted", None),
-        (ListingState::Cancelling, "dcan", "signed", Some(true)),
+        (
+            ListingState::Cancelling,
+            "dcan",
+            "signed",
+            Some((true, true)),
+        ),
+        (
+            ListingState::Cancelling,
+            "dcan",
+            "broadcast_pending",
+            Some((true, false)),
+        ),
         (ListingState::Cancelling, "dcan", "confirmed", None),
-        (ListingState::CancelFinalizing, "dcf", "draft", Some(false)),
+        (
+            ListingState::CancelFinalizing,
+            "dcf",
+            "draft",
+            Some((false, true)),
+        ),
+        (
+            ListingState::CancelFinalizing,
+            "dcf",
+            "broadcast_pending",
+            Some((true, false)),
+        ),
         (ListingState::CancelFinalizing, "dcf", "failed", None),
         (ListingState::Listed, "dfin", "signed", None),
     ];
@@ -305,7 +347,7 @@ fn pending_send_names_the_unsent_draft_of_the_state() {
         for (id, action) in DRAFTS {
             let status = if id == own { status } else { "signed" };
             insert_draft(&conn, id, action, status);
-            if status == "signed" {
+            if status == "signed" || status == "broadcast_pending" {
                 conn.execute(
                     "UPDATE wallet_tx_drafts SET signed_tx_hex = '00' WHERE id = ?1",
                     [id],
@@ -321,9 +363,11 @@ fn pending_send_names_the_unsent_draft_of_the_state() {
         insert(&conn, &l);
         let got = row_of(&conn, "l")
             .pending_send
-            .map(|p| (p.draft_id, p.action, p.signed));
+            .map(|p| (p.draft_id, p.action, p.signed, p.discardable));
         let action = DRAFTS.iter().find(|(id, _)| *id == own).unwrap().1;
-        let want = want.map(|signed| (own.to_string(), action.to_string(), signed));
+        let want = want.map(|(signed, discardable)| {
+            (own.to_string(), action.to_string(), signed, discardable)
+        });
         assert_eq!(got, want, "{state:?} {status}");
     }
 }
@@ -586,6 +630,7 @@ fn ts_my_listing_mirrors_list_every_field() {
         draft_id: "d1".into(),
         action: "shakedex_cancel".into(),
         signed: true,
+        discardable: true,
     })
     .unwrap();
     for (iface, json) in [

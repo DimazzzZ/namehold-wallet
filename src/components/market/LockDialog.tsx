@@ -9,7 +9,7 @@ import { parseFeeRateArg } from "../../lib/feeRate";
 import { mapError, stageOf, unwrapStaged } from "../../lib/errors";
 import { formatHns } from "../../lib/utils";
 import { displayName } from "../../lib/idn";
-import { useBuildLock } from "../../queries/shakedex";
+import { useBuildLock, useKeptDraft } from "../../queries/shakedex";
 import {
   useActiveProfile,
   useDeleteTxDraft,
@@ -26,6 +26,7 @@ import {
   SHARED_AS_FILE_ONLY,
   canSellShakedex,
   sellRefusal,
+  withKept,
 } from "./marketText";
 
 export interface LockDialogProps {
@@ -56,6 +57,7 @@ export function LockDialog({ open, name, onClose }: LockDialogProps) {
   const [busy, setBusy] = useState(false);
   const signer = useWithSigner();
   const build = useBuildLock();
+  const keptDraft = useKeptDraft();
   const exec = useExecuteDraft();
   const deleteDraft = useDeleteTxDraft();
 
@@ -111,12 +113,21 @@ export function LockDialog({ open, name, onClose }: LockDialogProps) {
       qc.invalidateQueries({ queryKey: ["read"] });
       onClose();
     } catch (e) {
-      setError(mapError(unwrapStaged(e), stageOf(e)));
-      // A broadcast the backend refused before sending discarded its draft
-      // there; any other broadcast failure keeps it, as Activity shows.
-      // Either way it is not this dialog's to delete or to send again.
-      if (stageOf(e) === "broadcast") setDraft(null);
-      else await discard();
+      const why = mapError(unwrapStaged(e), stageOf(e));
+      // After a failed broadcast the lock is not this dialog's to delete or
+      // to send again. Refused at the gates it stays signed with its Locking
+      // listing (Send or Discard in My listings); not taken, or no answer,
+      // it is held `broadcast_pending` (Send again); refused by the node it
+      // is Activity's; refused by R31's recheck the backend deleted it with
+      // its listing. A fresh read of My listings says which.
+      if (stageOf(e) === "broadcast") {
+        const id = draft.id;
+        setDraft(null);
+        setError(withKept(why, await keptDraft(id)));
+      } else {
+        setError(why);
+        await discard();
+      }
     } finally {
       setBusy(false);
     }

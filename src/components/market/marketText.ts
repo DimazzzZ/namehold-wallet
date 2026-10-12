@@ -8,6 +8,7 @@ import type {
   ShakedexListingPrices,
   ShakedexListingState,
   ShakedexListingSummary,
+  ShakedexPendingSend,
   ShakedexScheduleInput,
   WalletNetwork,
   WalletProfileKind,
@@ -162,6 +163,14 @@ export function nodeReason(reason: string): string {
 
 /** How a listing's status reads on the Market: a tone and one sentence. */
 export type StatusTone = "ok" | "warn" | "muted" | "bad";
+
+/** The colour of a status's dot, on the Market and in My listings. */
+export const TONE_DOT: Record<StatusTone, string> = {
+  ok: "bg-green-500",
+  warn: "bg-amber-500",
+  muted: "bg-gray-300",
+  bad: "bg-red-500",
+};
 
 export function listingStatus(row: MarketRow): { tone: StatusTone; text: string } {
   const v = row.verdict;
@@ -367,6 +376,81 @@ export function scheduleProblem(s: ShakedexScheduleInput): string | null {
     return bad("the last step's time does not fit a lock time");
   }
   return null;
+}
+
+/**
+ * R26, the twin of `sell::check_lower_price` after R19's price rule: the
+ * backend's reason for a new price that cannot be signed, or null. The
+ * current price is the node's (`ListingPrices.at`); without one only the
+ * price rule is checked here and the backend compares at the median time.
+ */
+export function lowerPriceProblem(text: string, currentPrice: number | null): string | null {
+  const p = parseStepPrice(text);
+  if ("error" in p) return p.error;
+  if (currentPrice != null && p.doos >= BigInt(currentPrice)) {
+    return `${doosText(p.doos)} is not below the current price ${doosText(BigInt(currentPrice))}: a price can only be lowered; raising it needs a cancel`;
+  }
+  return null;
+}
+
+/**
+ * A listing's transaction that failed to broadcast and that its My listings
+ * row still offers (`pending_send`): never sent, so it can be discarded too
+ * (`discardable`), or held as `broadcast_pending`, which only a new send
+ * resolves.
+ */
+export const UNSENT_KEPT =
+  "The signed transaction stays in My listings, where it can be sent or discarded.";
+export const SEND_AGAIN_KEPT =
+  "The signed transaction stays in My listings, where it can be sent again.";
+
+/**
+ * A broadcast failure's reason, followed by where its draft is kept when a
+ * fresh read of My listings shows a row offering it (`kept`); the reason
+ * alone otherwise (the node refused it, or R31's recheck deleted a lock with
+ * its listing: the backend's error says why).
+ */
+export function withKept(why: string, kept: ShakedexPendingSend | null): string {
+  if (!kept) return why;
+  return `${why.replace(/[.\s]+$/, "")}. ${kept.discardable ? UNSENT_KEPT : SEND_AGAIN_KEPT}`;
+}
+
+/**
+ * Where a listing goes once its unsent draft is discarded, as
+ * `queries::delete_tx_draft` moves it: a Locking listing goes with its lock,
+ * an unsent FINALIZE into the lock takes its steps back to Ready to
+ * Finalize & sign, an unsent cancel leaves the listing as it was (Listed, or
+ * Restored without a file), an unsent cancel FINALIZE awaits it again.
+ */
+export function discardedText(state: ShakedexListingState): string {
+  switch (state) {
+    case "locking":
+      return "Lock discarded. Nothing was sent: the name stays yours.";
+    case "finalizing":
+      return `Finalize discarded. The listing is back to ${listingStateLabel("readyToFinalize", null)}.`;
+    case "cancelling":
+      return "Cancel discarded. The listing is back as it was before the cancel.";
+    case "cancelFinalizing":
+      return `Finalize discarded. The listing is back to ${listingStateLabel("cancelAwaitingFinalize", null)}.`;
+    default:
+      return "Discarded";
+  }
+}
+
+/**
+ * R28's first sentence for a cancel, the twin of the backend's
+ * `cheaper_ahead` (`commands/shakedex.rs`, `cancel::still_buyable`) over the
+ * row's prices: a cheaper step ahead of the current one (`nextPrice`, which
+ * `template::next_step_index` gives only below it); with no step valid yet,
+ * any step ahead, for a reverse auction only; never without the node's
+ * median time. The secure window shows the backend's own at the cancel.
+ */
+export function cancelStillBuyable(l: ShakedexListingSummary, p: ShakedexListingPrices): string {
+  const cheaperAhead =
+    p.kind === "at" &&
+    p.nextPrice != null &&
+    (p.currentPrice != null || l.mode === "reverseAuction");
+  return cheaperAhead ? CANCEL_STILL_BUYABLE_AS_IT_FALLS : CANCEL_STILL_BUYABLE;
 }
 
 /** Carry 6: the warning for a schedule whose last step comes more than a year after its first. */

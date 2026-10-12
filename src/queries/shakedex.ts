@@ -8,6 +8,7 @@ import type {
   ShakedexListingMode,
   ShakedexListingSummary,
   ShakedexMyListing,
+  ShakedexPendingSend,
   ShakedexScheduleInput,
   TxDraftSummary,
 } from "../types";
@@ -106,6 +107,28 @@ export function useMyListings(enabled = true) {
     retry: false,
     refetchInterval: 30_000,
   });
+}
+
+/**
+ * After a failed broadcast: the My listings row that still offers draft
+ * `draftId` to send, from a fresh read of the listings (which also brings
+ * every row up to date), or null when none does — the node refused it, or
+ * the backend deleted it with its listing (R31).
+ */
+export function useKeptDraft() {
+  const qc = useQueryClient();
+  return async (draftId: string): Promise<ShakedexPendingSend | null> => {
+    try {
+      const rows = await qc.fetchQuery({
+        queryKey: ["shakedex", "listings"],
+        queryFn: () => invoke<ShakedexMyListing[]>("shakedex_list_listings"),
+        staleTime: 0,
+      });
+      return rows?.find((r) => r.pendingSend?.draftId === draftId)?.pendingSend ?? null;
+    } catch {
+      return null;
+    }
+  };
 }
 
 /** A selling command: listings, drafts and names change together. */
