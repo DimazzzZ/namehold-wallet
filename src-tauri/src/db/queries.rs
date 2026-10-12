@@ -3630,6 +3630,22 @@ fn release_cancel(
     Ok(true)
 }
 
+/// R23 later (T7): publish a Listed listing that was not published. Only
+/// this field changes; the market jobs take it from the next sync
+/// ([`list_listings_kept_on_market`]). Never unpublishes: R28's report of a
+/// mined cancel or sale reads `publish`. Returns the rows written (0 or 1).
+pub fn publish_shakedex_listing(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    id: &str,
+) -> Result<usize, AppError> {
+    Ok(conn.execute(
+        "UPDATE shakedex_listings SET publish = 1, updated_at = datetime('now')
+         WHERE id = ?1 AND wallet_profile_id = ?2 AND state = ?3 AND publish = 0",
+        params![id, profile_id, ListingState::Listed],
+    )?)
+}
+
 /// The listings the market jobs keep on LearnHNS (R24, R25: the jobs that
 /// re-upload and step listings read this): the
 /// published (`publish`) ones that are Listed, or Cancelling while their

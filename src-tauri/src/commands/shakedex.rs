@@ -1959,6 +1959,7 @@ pub struct ListingActions {
     pub cancel: ListingAction,
     pub finalize_cancel: ListingAction,
     pub export: ListingAction,
+    pub publish: ListingAction,
 }
 
 /// The listing's own draft that was never sent (`queries::never_sent`): the
@@ -2063,12 +2064,11 @@ fn pending_send(
 /// refused, so it does not hide the others.
 pub(crate) fn my_listing_from_conn(
     conn: &rusqlite::Connection,
+    network: Network,
     l: &ShakedexListing,
     chain: Option<&Result<u64, String>>,
 ) -> Result<MyListing, AppError> {
-    let read = shakedex_jobs::stored_steps(l)
-        .and_then(|steps| sell::check_stored_steps(&steps).map(|()| steps));
-    let steps = match read {
+    let steps = match readable_steps(l) {
         Ok(steps) => steps,
         // One unreadable row must not hide the others: it is listed with
         // every action refused in the read's words, and nothing to send.
@@ -2082,6 +2082,7 @@ pub(crate) fn my_listing_from_conn(
                     cancel: refused(),
                     finalize_cancel: refused(),
                     export: refused(),
+                    publish: refused(),
                 },
                 prices: ListingPrices::Unreadable {
                     reason: e.to_string(),
@@ -2114,6 +2115,7 @@ pub(crate) fn my_listing_from_conn(
             cancel: ListingAction::refused_by(cancel_refusal(l.state).map(str::to_string)),
             finalize_cancel: ListingAction::refused_by(finalize_cancel),
             export: ListingAction::refused_by(export_refusal(l).map(str::to_string)),
+            publish: ListingAction::refused_by(publish_refusal(l, network)),
         },
         prices,
         pending_send: pending_send(conn, l)?,
@@ -2121,18 +2123,36 @@ pub(crate) fn my_listing_from_conn(
     })
 }
 
-/// Every listing of the profile, newest first, as My listings shows it.
-/// `chain` is the one median time every row's prices are read at: `None`
+/// The stored steps of `l` as My listings and publishing read them: steps
+/// that cannot be parsed, or a lock time past R3's 40 bits, make a corrupted
+/// row, refused in this error's words.
+fn readable_steps(l: &ShakedexListing) -> Result<Vec<sell::StoredStep>, AppError> {
+    shakedex_jobs::stored_steps(l)
+        .and_then(|steps| sell::check_stored_steps(&steps).map(|()| steps))
+}
+
+/// Whether My listings needs the node's median time: only when a readable
+/// row has steps (an unreadable row is listed as such).
+pub(crate) fn needs_median_time(listings: &[ShakedexListing]) -> bool {
+    listings
+        .iter()
+        .any(|l| readable_steps(l).is_ok_and(|s| !s.is_empty()))
+}
+
+/// Every listing of the profile, newest first, as My listings shows it, on
+/// the profile's `network` (publishing is mainnet only). `chain` is the one
+/// median time every row's prices are read at: `None`
 /// when no node can say it (SPV, Explorer), `Some(Err(reason))` when the
 /// node did not say it, `Some(Ok(mtp))`.
 pub(crate) fn my_listings_from_conn(
     conn: &rusqlite::Connection,
     profile_id: &str,
+    network: Network,
     chain: Option<Result<u64, String>>,
 ) -> Result<Vec<MyListing>, AppError> {
     queries::list_shakedex_listings(conn, profile_id)?
         .iter()
-        .map(|l| my_listing_from_conn(conn, l, chain.as_ref()))
+        .map(|l| my_listing_from_conn(conn, network, l, chain.as_ref()))
         .collect()
 }
 
@@ -2145,6 +2165,97 @@ pub(crate) fn export_refusal(l: &ShakedexListing) -> Option<&'static str> {
         ));
     }
     l.listing_file_json.is_none().then_some(EXPORT_NO_FILE)
+}
+
+/// Whether a listing file names a market fee: this wallet writes
+/// `feeAddr: null` and every `fee` 0 (`listing_file::write_listing_file`).
+fn names_a_market_fee(f: &ListingFile) -> bool {
+    f.names_a_fee_address() || f.steps.iter().any(|s| s.fee != 0)
+}
+
+/// Why `l` cannot be published on LearnHNS Market now (R23, carries 1 and
+/// 2 of T6); `None` when it can: on mainnet only, a Listed listing not
+/// published yet, with its own file here naming no market fee (R25
+/// compares the market's copy with one that has none, so a fee would be
+/// uploaded again every hour). Publishing is never switched off: R28's
+/// report of a mined cancel or sale reads it. The command and My listings
+/// ask this one function.
+pub(crate) fn publish_refusal(l: &ShakedexListing, network: Network) -> Option<String> {
+    if network != Network::Main {
+        return Some(MARKET_MAINNET_ONLY.into());
+    }
+    if l.publish {
+        return Some("this listing is already published on LearnHNS Market".into());
+    }
+    if l.state != ListingState::Listed {
+        return Some(
+            match l.state {
+                ListingState::Locking
+                | ListingState::ReadyToFinalize
+                | ListingState::Finalizing => {
+                    "a listing is published once its finalize into the lock is mined"
+                }
+                other => listing_over(other)
+                    .unwrap_or("only a Listed listing can be published on LearnHNS Market"),
+            }
+            .into(),
+        );
+    }
+    let Some(text) = l.listing_file_json.as_deref() else {
+        return Some(EXPORT_NO_FILE.into());
+    };
+    match ListingFile::parse(text, network) {
+        Ok(f) if names_a_market_fee(&f) => Some(
+            "this listing file names a market fee, which this wallet never writes: it is not \
+             published"
+                .into(),
+        ),
+        Ok(_) => None,
+        Err(e) => Some(format!("this listing's file cannot be read: {e}")),
+    }
+}
+
+/// R23 later (T7): publish one of the profile's listings on LearnHNS
+/// Market, refused as its My listings row is (a corrupted row,
+/// [`readable_steps`], then [`publish_refusal`]) and written by
+/// `queries::publish_shakedex_listing`, which guards the same state again.
+/// Writes the one field; the market jobs upload it from the next sync.
+pub(crate) fn publish_listing_from_conn(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    network: Network,
+    listing_id: &str,
+) -> Result<ListingSummary, AppError> {
+    let l = queries::get_shakedex_listing(conn, listing_id)?
+        .filter(|l| l.wallet_profile_id == profile_id)
+        .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
+    // A corrupted row is refused as its My listings row is, in its words.
+    readable_steps(&l)?;
+    if let Some(why) = publish_refusal(&l, network) {
+        return Err(AppError::InvalidInput(why));
+    }
+    if queries::publish_shakedex_listing(conn, profile_id, listing_id)? != 1 {
+        return Err(AppError::InvalidInput(
+            "this listing changed meanwhile: nothing was saved; try again".into(),
+        ));
+    }
+    let l = queries::get_shakedex_listing(conn, listing_id)?
+        .ok_or_else(|| AppError::Other("listing vanished after publish".into()))?;
+    ListingSummary::of(&l)
+}
+
+/// R23: write the saved listing file of one of the profile's listings to
+/// `path` (chosen in the native save dialog), as written; refused as the
+/// export is ([`export_listing_file_from_conn`]), writing nothing.
+pub(crate) fn save_listing_file_from_conn(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    listing_id: &str,
+    path: &std::path::Path,
+) -> Result<(), AppError> {
+    let text = export_listing_file_from_conn(conn, profile_id, listing_id)?;
+    std::fs::write(path, text)?;
+    Ok(())
 }
 
 /// What a restore by name (R32) decides from: every node read, and the lock
@@ -2929,6 +3040,38 @@ pub async fn shakedex_export_listing_file(
     export_listing_file_from_conn(&conn, &profile.id, &listing_id)
 }
 
+/// R23: save the listing file of one of the active profile's listings to
+/// `path`, a path the renderer took from the native save dialog; see
+/// [`save_listing_file_from_conn`].
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_save_listing_file(
+    state: State<'_, AppState>,
+    listing_id: String,
+    path: String,
+) -> Result<(), AppError> {
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let profile = draft_ctx::active_profile(&conn)?;
+    save_listing_file_from_conn(&conn, &profile.id, &listing_id, std::path::Path::new(&path))
+}
+
+/// R23 (carry 1 of T6): publish a Listed listing on LearnHNS Market after
+/// the lock. Authorized as every selling write is (recovery-phrase profile,
+/// a node that can send, the unlocked signer), then refused by
+/// [`publish_refusal`] on the profile's network; see
+/// [`publish_listing_from_conn`].
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_publish_listing(
+    state: State<'_, AppState>,
+    listing_id: String,
+) -> Result<ListingSummary, AppError> {
+    let ctx = software_writer_ctx(&state)?;
+    authorize_signer(&state, &ctx)?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    publish_listing_from_conn(&conn, &ctx.profile_id, ctx.network, &listing_id)
+}
+
 /// Restore a lock by name (R32): the name's owner coin is read on the node
 /// (`getnameinfo`, then `GET /coin`), the lock key of `name` is derived from
 /// the seed of the unlocked session after those reads (for its public key
@@ -2984,9 +3127,7 @@ pub async fn shakedex_import_own_listing_file(
     let ctx = software_writer_ctx(&state)?;
     authorize_signer(&state, &ctx)?;
     let file = ListingFile::parse(&text, ctx.network)?;
-    // This wallet writes `feeAddr: null` and every `fee` 0
-    // (`listing_file::write_listing_file`).
-    if file.names_a_fee_address() || file.steps.iter().any(|s| s.fee != 0) {
+    if names_a_market_fee(&file) {
         return Err(AppError::InvalidInput(
             "this listing file names a market fee, which this wallet never writes: it is not \
              this wallet's own listing file"
@@ -3013,6 +3154,22 @@ pub async fn shakedex_import_own_listing_file(
             coin: coin.as_ref(),
         },
     )
+}
+
+/// R32: [`shakedex_import_own_listing_file`] for a file the renderer took
+/// from the native open dialog. The writer gates come before the path is
+/// opened; the file is read with the listing-file size limit
+/// ([`read_listing_file`]) before anything is parsed.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_import_own_listing_from_file(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<ListingSummary, AppError> {
+    let ctx = software_writer_ctx(&state)?;
+    authorize_signer(&state, &ctx)?;
+    let text = read_listing_file(&path)?;
+    shakedex_import_own_listing_file(state, text).await
 }
 
 /// Cancel a listing (R28): see [`cancel_listing_confirmed`]. Returns the
@@ -3250,10 +3407,7 @@ pub async fn shakedex_list_listings(
     let needs_chain = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let profile = draft_ctx::active_profile(&conn)?;
-        queries::list_shakedex_listings(&conn, &profile.id)?
-            .iter()
-            // An unreadable row is listed as such; it needs no median time.
-            .any(|l| shakedex_jobs::stored_steps(l).is_ok_and(|s| !s.is_empty()))
+        needs_median_time(&queries::list_shakedex_listings(&conn, &profile.id)?)
     };
     let chain = if needs_chain {
         let ctx = browse_ctx(&state)?;
@@ -3276,7 +3430,8 @@ pub async fn shakedex_list_listings(
     };
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let profile = draft_ctx::active_profile(&conn)?;
-    my_listings_from_conn(&conn, &profile.id, chain)
+    let network = derivation::network_from_profile(&profile.network)?;
+    my_listings_from_conn(&conn, &profile.id, network, chain)
 }
 
 #[cfg(test)]

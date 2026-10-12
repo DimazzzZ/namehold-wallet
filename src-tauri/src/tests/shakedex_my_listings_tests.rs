@@ -7,9 +7,11 @@ use rusqlite::Connection;
 use super::shakedex_sell_tests::{insert_draft, listing, store_conn};
 use crate::commands::shakedex::{
     cancel_refusal, export_refusal, finalize_cancel_refusal, finalize_refusal, lower_refusal,
-    my_listings_from_conn, ListingAction, ListingPrices, MyListing,
+    my_listings_from_conn, needs_median_time, publish_listing_from_conn, publish_refusal,
+    save_listing_file_from_conn, ListingAction, ListingPrices, MyListing,
 };
 use crate::db::queries::{self, ListingState, ShakedexListing};
+use crate::noncustodial::network::Network;
 
 fn insert(conn: &Connection, l: &ShakedexListing) {
     queries::insert_shakedex_listing(conn, l).unwrap();
@@ -26,7 +28,7 @@ fn with_steps(mut l: ShakedexListing) -> ShakedexListing {
 }
 
 fn row_of(conn: &Connection, id: &str) -> MyListing {
-    my_listings_from_conn(conn, "sell1", None)
+    my_listings_from_conn(conn, "sell1", Network::Main, None)
         .unwrap()
         .into_iter()
         .find(|r| r.listing.id == id)
@@ -62,7 +64,7 @@ fn my_listings_lists_every_listing_of_the_profile_newest_first() {
     let mut theirs = listing("theirs", "gamma", ListingState::Listed);
     theirs.wallet_profile_id = "other".into();
     insert(&conn, &theirs);
-    let ids: Vec<String> = my_listings_from_conn(&conn, "sell1", None)
+    let ids: Vec<String> = my_listings_from_conn(&conn, "sell1", Network::Main, None)
         .unwrap()
         .into_iter()
         .map(|r| r.listing.id)
@@ -130,6 +132,14 @@ fn listing_actions_follow_the_commands_refusals_in_every_state() {
             "{state:?}"
         );
         assert_eq!(a.export.reason, words(export_refusal(&l)), "{state:?}");
+        // `with_steps` stores an unreadable file ("{}"): refused in every
+        // state, each in the words of `publish_refusal`.
+        assert!(!allowed(&a.publish), "{state:?}");
+        assert_eq!(
+            a.publish.reason,
+            publish_refusal(&l, Network::Main),
+            "{state:?}"
+        );
     }
 }
 
@@ -149,7 +159,9 @@ fn an_unreadable_listing_is_listed_with_every_action_refused() {
     bad.cancel_draft_id = Some("dcan".into());
     insert(&conn, &bad);
     assert_eq!(
-        my_listings_from_conn(&conn, "sell1", None).unwrap().len(),
+        my_listings_from_conn(&conn, "sell1", Network::Main, None)
+            .unwrap()
+            .len(),
         2
     );
     let row = row_of(&conn, "bad");
@@ -160,6 +172,7 @@ fn an_unreadable_listing_is_listed_with_every_action_refused() {
         &a.cancel,
         &a.finalize_cancel,
         &a.export,
+        &a.publish,
     ] {
         assert!(!allowed(action), "{action:?}");
         let why = action.reason.as_deref().unwrap();
@@ -326,7 +339,7 @@ fn listing_prices_say_why_they_are_missing() {
     );
     insert(&conn, &listing("n", "other", ListingState::Restored));
     let prices = |chain: Option<Result<u64, String>>, id: &str| {
-        my_listings_from_conn(&conn, "sell1", chain)
+        my_listings_from_conn(&conn, "sell1", Network::Main, chain)
             .unwrap()
             .into_iter()
             .find(|r| r.listing.id == id)
@@ -367,7 +380,7 @@ fn a_listing_with_an_unreadable_lock_time_is_listed_with_nothing_allowed() {
     bad.steps_json = r#"[{"price":1,"lockTime":2199023255552,"signature":"00"}]"#.into();
     insert(&conn, &bad);
     for chain in [None, Some(Err("node down".into())), Some(Ok(1_700_000_000))] {
-        let rows = my_listings_from_conn(&conn, "sell1", chain.clone()).unwrap();
+        let rows = my_listings_from_conn(&conn, "sell1", Network::Main, chain.clone()).unwrap();
         let of = |id: &str| rows.iter().find(|r| r.listing.id == id).unwrap();
         let row = of("bad");
         let ListingPrices::Unreadable { reason } = &row.prices else {
@@ -381,11 +394,186 @@ fn a_listing_with_an_unreadable_lock_time_is_listed_with_nothing_allowed() {
             &a.cancel,
             &a.finalize_cancel,
             &a.export,
+            &a.publish,
         ] {
             assert_eq!(action.reason.as_ref(), Some(reason), "{chain:?}");
         }
         assert!(allowed(&of("good").actions.lower_price), "{chain:?}");
     }
+}
+
+const LISTING_FILE: &str = include_str!("../../tests/vectors/shakedex/proof_dexreviews.json");
+
+/// A Listed listing with the vector's mainnet file, unpublished.
+fn listed_with_file(file: &str) -> ShakedexListing {
+    let mut l = with_steps(listing("l", "dexreviews", ListingState::Listed));
+    l.listing_file_json = Some(file.into());
+    l
+}
+
+fn file_with_fee(fee: u64) -> String {
+    let mut j: serde_json::Value = serde_json::from_str(LISTING_FILE).unwrap();
+    j["data"][0]["fee"] = fee.into();
+    j.to_string()
+}
+
+/// Carry 1: publishing is turned on later only for a Listed listing that
+/// is not published yet, on mainnet, with its own readable file here.
+#[test]
+fn publish_refusal_allows_only_an_unpublished_listed_listing_on_mainnet() {
+    let base = listed_with_file(&file_with_fee(0));
+    assert_eq!(publish_refusal(&base, Network::Main), None);
+    for network in [Network::Regtest, Network::Testnet] {
+        assert_eq!(
+            publish_refusal(&base, network).as_deref(),
+            Some(crate::commands::shakedex::MARKET_MAINNET_ONLY),
+            "{network:?}"
+        );
+    }
+    let mut published = base.clone();
+    published.publish = true;
+    let why = publish_refusal(&published, Network::Main).expect("refused");
+    assert!(why.contains("already published"), "{why}");
+    for state in ListingState::ALL
+        .into_iter()
+        .filter(|s| *s != ListingState::Listed)
+    {
+        let mut l = base.clone();
+        l.state = state;
+        assert!(publish_refusal(&l, Network::Main).is_some(), "{state:?}");
+    }
+    let mut no_file = base.clone();
+    no_file.listing_file_json = None;
+    let why = publish_refusal(&no_file, Network::Main).expect("refused");
+    assert!(why.contains("import its saved file"), "{why}");
+    let mut unreadable = base.clone();
+    unreadable.listing_file_json = Some("{}".into());
+    let why = publish_refusal(&unreadable, Network::Main).expect("refused");
+    assert!(why.contains("cannot be read"), "{why}");
+}
+
+/// Carry 2 (T6 s2): a file with a market fee in effect never matches the
+/// market's copy (R25), so it would be uploaded again every hour.
+#[test]
+fn publishing_a_listing_whose_file_names_a_market_fee_is_refused() {
+    let l = listed_with_file(&file_with_fee(1_000));
+    let why = publish_refusal(&l, Network::Main).expect("refused");
+    assert!(why.contains("market fee"), "{why}");
+    let mut j: serde_json::Value = serde_json::from_str(&file_with_fee(0)).unwrap();
+    j["feeAddr"] = "hs1qfee".into();
+    let l = listed_with_file(&j.to_string());
+    let why = publish_refusal(&l, Network::Main).expect("refused");
+    assert!(why.contains("market fee"), "{why}");
+}
+
+#[test]
+fn publish_listing_turns_publish_on_and_the_market_jobs_keep_it() {
+    let conn = store_conn();
+    insert(&conn, &listed_with_file(&file_with_fee(0)));
+    let before = my_listings_from_conn(&conn, "sell1", Network::Main, None)
+        .unwrap()
+        .remove(0);
+    assert!(allowed(&before.actions.publish));
+    assert!(queries::list_listings_kept_on_market(&conn, "sell1")
+        .unwrap()
+        .is_empty());
+    let s = publish_listing_from_conn(&conn, "sell1", Network::Main, "l").unwrap();
+    assert!(s.publish);
+    assert_eq!(
+        queries::list_listings_kept_on_market(&conn, "sell1")
+            .unwrap()
+            .len(),
+        1
+    );
+    // Once published, My listings offers no publish, in the refusal's words.
+    let row = my_listings_from_conn(&conn, "sell1", Network::Main, None)
+        .unwrap()
+        .remove(0);
+    assert!(!allowed(&row.actions.publish));
+    assert!(row
+        .actions
+        .publish
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("already published"));
+    let e = publish_listing_from_conn(&conn, "sell1", Network::Main, "l").unwrap_err();
+    assert!(e.to_string().contains("already published"), "{e}");
+}
+
+/// A refused publish writes nothing; another profile's listing is not found.
+#[test]
+fn a_refused_publish_writes_nothing() {
+    let conn = store_conn();
+    insert(&conn, &listed_with_file(&file_with_fee(1_000)));
+    assert!(publish_listing_from_conn(&conn, "sell1", Network::Main, "l").is_err());
+    assert!(publish_listing_from_conn(&conn, "sell1", Network::Regtest, "l").is_err());
+    assert!(publish_listing_from_conn(&conn, "other", Network::Main, "l").is_err());
+    let l = queries::get_shakedex_listing(&conn, "l").unwrap().unwrap();
+    assert!(!l.publish);
+}
+
+/// The database write guards the same facts again: a listing that changed
+/// state after the refusal was asked is not published.
+#[test]
+fn publish_write_takes_only_an_unpublished_listed_row() {
+    let conn = store_conn();
+    insert(&conn, &listed_with_file(&file_with_fee(0)));
+    conn.execute(
+        "UPDATE shakedex_listings SET state = 'cancelling' WHERE id = 'l'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        queries::publish_shakedex_listing(&conn, "sell1", "l").unwrap(),
+        0
+    );
+    assert_eq!(
+        queries::publish_shakedex_listing(&conn, "other", "l").unwrap(),
+        0
+    );
+    conn.execute(
+        "UPDATE shakedex_listings SET state = 'listed', publish = 1 WHERE id = 'l'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        queries::publish_shakedex_listing(&conn, "sell1", "l").unwrap(),
+        0
+    );
+}
+
+#[test]
+fn save_listing_file_writes_the_stored_file_as_written_and_nothing_when_refused() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let path = |tag: &str| {
+        std::env::temp_dir().join(format!(
+            "namehold_listing_{tag}_{}_{}.json",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ))
+    };
+    let conn = store_conn();
+    let file = file_with_fee(0);
+    insert(&conn, &listed_with_file(&file));
+    let ok = path("ok");
+    save_listing_file_from_conn(&conn, "sell1", "l", &ok).unwrap();
+    assert_eq!(std::fs::read_to_string(&ok).unwrap(), file);
+    std::fs::remove_file(&ok).unwrap();
+
+    let other = path("other");
+    assert!(save_listing_file_from_conn(&conn, "other", "l", &other).is_err());
+    assert!(!other.exists());
+
+    conn.execute(
+        "UPDATE shakedex_listings SET state = 'finalizing' WHERE id = 'l'",
+        [],
+    )
+    .unwrap();
+    let refused = path("refused");
+    assert!(save_listing_file_from_conn(&conn, "sell1", "l", &refused).is_err());
+    assert!(!refused.exists());
 }
 
 /// The TS mirrors (`src/types/index.ts`) list exactly the Rust fields.
@@ -414,6 +602,122 @@ fn ts_my_listing_mirrors_list_every_field() {
             .collect();
         rust.sort_unstable();
         assert_eq!(ts_interface_keys(iface), rust, "{iface}");
+    }
+}
+
+/// `ListingPrices` serializes to exactly the members of the TS union
+/// `ShakedexListingPrices`: each variant's `kind` tag and its other keys,
+/// and every TS member has a Rust variant.
+#[test]
+fn ts_listing_prices_mirror_every_variant() {
+    let variants = [
+        ListingPrices::NoSteps,
+        ListingPrices::Unverified,
+        ListingPrices::CouldNotCheck { reason: "r".into() },
+        ListingPrices::Unreadable { reason: "r".into() },
+        ListingPrices::At {
+            current_price: Some(1),
+            next_price: None,
+            next_valid_in_secs: None,
+            floor_price: 1,
+        },
+    ];
+    let mut rust: Vec<(String, Vec<String>)> = variants
+        .iter()
+        .map(|v| {
+            let json = serde_json::to_value(v).unwrap();
+            let obj = json.as_object().unwrap();
+            let kind = obj["kind"].as_str().unwrap().to_string();
+            let mut keys: Vec<String> = obj.keys().filter(|k| *k != "kind").cloned().collect();
+            keys.sort_unstable();
+            (kind, keys)
+        })
+        .collect();
+    rust.sort_unstable();
+    let mut ts = ts_union_members("ShakedexListingPrices");
+    ts.sort_unstable();
+    assert_eq!(rust, ts);
+    let kinds: Vec<&str> = rust.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["at", "couldNotCheck", "noSteps", "unreadable", "unverified"]
+    );
+    let reason = vec!["reason".to_string()];
+    assert_eq!(rust[1].1, reason, "couldNotCheck");
+    assert_eq!(rust[3].1, reason, "unreadable");
+}
+
+/// `(kind, other keys sorted)` of each `| { kind: "…"; … }` member of
+/// `export type <name> =` in `src/types/index.ts`.
+pub(super) fn ts_union_members(name: &str) -> Vec<(String, Vec<String>)> {
+    const TS: &str = include_str!("../../../src/types/index.ts");
+    let start = TS
+        .find(&format!("export type {name} ="))
+        .unwrap_or_else(|| panic!("type {name}"));
+    let block = &TS[start..start + TS[start..].find("\n\n").unwrap()];
+    block
+        .split("| {")
+        .skip(1)
+        .map(|member| {
+            let body = &member[..member.find('}').expect("member end")];
+            let mut kind = None;
+            let mut keys = Vec::new();
+            for field in body.split([';', '\n']).map(str::trim) {
+                let Some((k, v)) = field.split_once(':') else {
+                    continue;
+                };
+                let k = k.trim();
+                if k == "kind" {
+                    kind = Some(v.trim().trim_matches('"').to_string());
+                } else {
+                    keys.push(k.to_string());
+                }
+            }
+            keys.sort_unstable();
+            (kind.expect("kind"), keys)
+        })
+        .collect()
+}
+
+/// The list reads the node's median time only when a readable row has
+/// steps: no rows, rows without steps, or only an unreadable row need none.
+#[test]
+fn the_median_time_is_needed_only_for_a_readable_row_with_steps() {
+    let none = listing("n", "alpha", ListingState::Restored);
+    let mut bad = with_steps(listing("b", "beta", ListingState::Listed));
+    bad.steps_json = "not json".into();
+    let good = with_steps(listing("g", "gamma", ListingState::Listed));
+    assert!(!needs_median_time(&[]));
+    assert!(!needs_median_time(std::slice::from_ref(&none)));
+    assert!(!needs_median_time(&[none.clone(), bad.clone()]));
+    assert!(needs_median_time(&[none, bad, good]));
+}
+
+/// Publishing a corrupted row is refused as its row's publish action is,
+/// in the same words, and writes nothing: unreadable steps, or a stored
+/// lock time past 40 bits.
+#[test]
+fn publishing_a_corrupted_row_is_refused_in_the_rows_words() {
+    for steps in [
+        "not json",
+        r#"[{"price":1,"lockTime":2199023255552,"signature":"00"}]"#,
+    ] {
+        let conn = store_conn();
+        let mut l = listed_with_file(&file_with_fee(0));
+        l.steps_json = steps.into();
+        insert(&conn, &l);
+        let row = my_listings_from_conn(&conn, "sell1", Network::Main, None)
+            .unwrap()
+            .remove(0);
+        let e = publish_listing_from_conn(&conn, "sell1", Network::Main, "l").unwrap_err();
+        assert_eq!(Some(e.to_string()), row.actions.publish.reason, "{steps}");
+        assert!(
+            !queries::get_shakedex_listing(&conn, "l")
+                .unwrap()
+                .unwrap()
+                .publish,
+            "{steps}"
+        );
     }
 }
 

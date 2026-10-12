@@ -6357,6 +6357,167 @@ async fn own_listing_file_refused_for_ledger_and_watch_only() {
     }
 }
 
+// --- Own listing file from a path, publish later (T7) ------------------------
+
+use crate::commands::shakedex::{shakedex_import_own_listing_from_file, shakedex_publish_listing};
+
+fn scratch_file(text: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let p = std::env::temp_dir().join(format!(
+        "namehold_own_file_{}_{}.json",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::write(&p, text).unwrap();
+    p
+}
+
+/// R32: the saved file, chosen from disk, upgrades the Restored lock as a
+/// pasted one does.
+#[tokio::test]
+async fn own_listing_file_from_a_path_upgrades_a_restored_lock() {
+    let coin = our_lock_coin();
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(coin.clone())).await;
+    restore(&app).await.expect("restored");
+    answer_coin(&mut node, &mut mocks, Some(coin)).await;
+    let p = scratch_file(&good_file());
+    let s = shakedex_import_own_listing_from_file(app.state(), p.display().to_string())
+        .await
+        .expect("imported");
+    std::fs::remove_file(p).unwrap();
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!((s.steps.len(), s.steps[0].price), (1, 5_000_000));
+}
+
+/// The file on disk is read with the listing-file size limit before
+/// anything is parsed, and a path that is not a regular file is refused.
+#[tokio::test]
+async fn own_listing_file_from_a_path_over_the_size_limit_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let p = scratch_file(&format!(
+        "{}{}",
+        good_file(),
+        " ".repeat(MAX_LISTING_FILE_BYTES)
+    ));
+    let e = err_text(
+        shakedex_import_own_listing_from_file(app.state(), p.display().to_string())
+            .await
+            .unwrap_err(),
+    );
+    std::fs::remove_file(p).unwrap();
+    assert!(e.contains("larger than"), "{e}");
+    let dir = std::env::temp_dir().display().to_string();
+    let e = err_text(
+        shakedex_import_own_listing_from_file(app.state(), dir)
+            .await
+            .unwrap_err(),
+    );
+    assert!(e.contains("not a regular file"), "{e}");
+    assert_still_restored(&app, "path");
+}
+
+/// The gates come before the file is read: a locked wallet is refused
+/// without opening the path (a missing file would be an I/O error).
+#[tokio::test]
+async fn own_listing_file_from_a_path_needs_the_unlocked_signer_first() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    *app.state::<AppState>().signer.lock().unwrap() = None;
+    let missing = std::env::temp_dir().join("namehold_no_such_listing_file.json");
+    assert!(matches!(
+        shakedex_import_own_listing_from_file(app.state(), missing.display().to_string())
+            .await
+            .unwrap_err(),
+        crate::error::AppError::WalletLocked
+    ));
+}
+
+const MAINNET_LISTING_FILE: &str =
+    include_str!("../../tests/vectors/shakedex/proof_dexreviews.json");
+
+/// A Listed, unpublished listing of the active profile with the vector's
+/// mainnet file.
+fn insert_listed_with_file(app: &App) {
+    with_db(app, |c| {
+        let mut l = listing("pub", "dexreviews", ListingState::Listed);
+        l.wallet_profile_id = PROFILE.into();
+        l.listing_file_json = Some(MAINNET_LISTING_FILE.into());
+        queries::insert_shakedex_listing(c, &l).unwrap();
+    });
+}
+
+fn is_published(app: &App) -> bool {
+    with_db(app, |c| {
+        queries::get_shakedex_listing(c, "pub")
+            .unwrap()
+            .unwrap()
+            .publish
+    })
+}
+
+/// Carry 1: on a mainnet recovery-phrase profile with the signer unlocked,
+/// publishing is turned on and nothing else changes.
+#[tokio::test]
+async fn publish_listing_on_mainnet_turns_publish_on() {
+    let node = mockito::Server::new_async().await;
+    let app = app_with(seeded("mainnet", "mnemonic_hot", &node.url()));
+    unlock(&app, Network::Main);
+    insert_listed_with_file(&app);
+    let s = shakedex_publish_listing(app.state(), "pub".into())
+        .await
+        .expect("published");
+    assert!(s.publish);
+    assert!(is_published(&app));
+}
+
+/// Publishing authorizes as every selling write does: recovery-phrase
+/// profiles only (R16) and the unlocked signer, both before the listing is
+/// judged; then the profile's network (here regtest) is refused. Nothing is
+/// written on a refusal.
+#[tokio::test]
+async fn publish_listing_follows_the_writer_gates_and_the_profiles_network() {
+    let node = mockito::Server::new_async().await;
+    for kind in ["ledger_hardware", "xpriv_hot", "watch_only_xpub"] {
+        let app = app_with(seeded("mainnet", kind, &node.url()));
+        unlock(&app, Network::Main);
+        insert_listed_with_file(&app);
+        let e = err_text(
+            shakedex_publish_listing(app.state(), "pub".into())
+                .await
+                .unwrap_err(),
+        );
+        assert!(
+            e.contains(crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY),
+            "{kind}: {e}"
+        );
+        assert!(!is_published(&app), "{kind}");
+    }
+    let app = app_with(seeded("mainnet", "mnemonic_hot", &node.url()));
+    insert_listed_with_file(&app);
+    assert!(matches!(
+        shakedex_publish_listing(app.state(), "pub".into())
+            .await
+            .unwrap_err(),
+        crate::error::AppError::WalletLocked
+    ));
+    assert!(!is_published(&app), "locked");
+    let app = app_with(seeded("regtest", "mnemonic_hot", &node.url()));
+    unlock(&app, Network::Regtest);
+    insert_listed_with_file(&app);
+    let e = err_text(
+        shakedex_publish_listing(app.state(), "pub".into())
+            .await
+            .unwrap_err(),
+    );
+    assert!(
+        e.contains(crate::commands::shakedex::MARKET_MAINNET_ONLY),
+        "{e}"
+    );
+    assert!(!is_published(&app), "regtest");
+}
+
 // --- Cancel (T5, R28) --------------------------------------------------------
 
 use crate::commands::shakedex::{

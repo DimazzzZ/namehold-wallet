@@ -971,6 +971,8 @@ export interface ShakedexListingActions {
   cancel: ShakedexListingAction;
   finalizeCancel: ShakedexListingAction;
   export: ShakedexListingAction;
+  /** Turn publishing on later (`publish_refusal`): mainnet, Listed, not published, own file without a market fee. */
+  publish: ShakedexListingAction;
 }
 
 /** The listing's own draft never sent (`PendingSend`); `signed`: only the broadcast is left. */
