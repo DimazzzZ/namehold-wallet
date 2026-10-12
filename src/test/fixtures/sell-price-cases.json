@@ -21,6 +21,7 @@
     { "text": "5\u200b", "error": "price \"5\\u{200b}\": not a number of HNS" },
     { "text": "1\t2", "error": "price \"1\\t2\": not a number of HNS" },
     { "text": "\u0301", "error": "price \"\\u{301}\": not a number of HNS" },
+    { "text": "5\u0301", "error": "price \"5\\u{301}\": not a number of HNS" },
     { "text": "\u2028", "error": "price \"\\u{2028}\": enter a price in HNS" },
     { "text": "a\"b", "error": "price \"a\\\"b\": not a number of HNS" },
     { "text": "\u0001", "error": "price \"\\u{1}\": not a number of HNS" },

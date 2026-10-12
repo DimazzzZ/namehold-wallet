@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 interface DialogProps {
   open: boolean;
@@ -10,10 +10,14 @@ interface DialogProps {
 }
 
 export function Dialog({ open, onClose, title, children, className }: DialogProps) {
+  const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      // Every open dialog listens on the document. A dialog opened inside
+      // this one (the Lock dialog in a name's actions) takes Escape alone:
+      // closing this one too would unmount it mid-flow.
+      if (e.key === "Escape" && !panel.current?.querySelector("[data-dialog-panel]")) {
         onClose();
       }
     };
@@ -28,6 +32,8 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
       {/* `role="dialog"` and nothing stronger: `aria-modal` would claim the
           rest of the page is inert, and this component does not trap focus. */}
       <div
+        ref={panel}
+        data-dialog-panel
         role="dialog"
         className={`relative bg-white rounded-lg shadow-xl w-full mx-4 max-h-[90vh] overflow-auto ${className ?? "max-w-lg"}`}
       >

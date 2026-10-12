@@ -252,7 +252,7 @@ Paid name swaps were withdrawn on 2026-09-21 (`docs/specs/2026-09-21-paid-name-s
 - [ ] SPV and Explorer modes can browse but Buy is disabled with a reason
 - [ ] Remote node with "Allow sending via remote node" off: the purchase dialog shows "Could not price this purchase" with the backend's reason and Buy stays disabled
 - [ ] Ledger, watch-only and extended-private-key wallets cannot buy: every Buy is disabled with "Shakedex works with a recovery-phrase wallet for now". On a purchase row, Finalize is disabled with the same reason for Ledger and extended-private-key wallets, and not shown at all for watch-only ones
-- [ ] Mainnet without "Allow buying names on mainnet through Shakedex (experimental)" in Settings: every Buy on the Market page is disabled with "Shakedex purchases on mainnet are experimental: enable them in Settings"; testnet and regtest need no flag; Finalize works regardless
+- [ ] Mainnet without "Allow buying and selling names on mainnet through Shakedex (experimental)" in Settings: every Buy on the Market page is disabled with "Shakedex purchases on mainnet are experimental: enable them in Settings"; testnet and regtest need no flag; Finalize works regardless
 - [ ] Regtest: buy a listing created by the shakedex CLI end to end
 - [ ] Legacy: saved offers list still shows offers recorded before the withdrawal, and claim_paid_transfer verifies the broadcast tx before marking paid
 

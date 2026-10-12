@@ -174,6 +174,43 @@ describe("Dialog", () => {
     );
     expect(screen.queryByText("Test Dialog")).toBeNull();
   });
+
+  it("closes on Escape", () => {
+    const onClose = vi.fn();
+    render(
+      <Dialog open onClose={onClose} title="Test Dialog">
+        <p>Content</p>
+      </Dialog>,
+    );
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("a dialog opened inside another takes Escape alone, and the outer one gets it back", () => {
+    const outer = vi.fn();
+    const inner = vi.fn();
+    const { rerender } = render(
+      <Dialog open onClose={outer} title="Outer">
+        <Dialog open onClose={inner} title="Inner">
+          <p>Content</p>
+        </Dialog>
+      </Dialog>,
+    );
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(outer).not.toHaveBeenCalled();
+
+    rerender(
+      <Dialog open onClose={outer} title="Outer">
+        <Dialog open={false} onClose={inner} title="Inner">
+          <p>Content</p>
+        </Dialog>
+      </Dialog>,
+    );
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(outer).toHaveBeenCalledTimes(1);
+    expect(inner).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("StatusBadge", () => {

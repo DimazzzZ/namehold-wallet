@@ -236,6 +236,9 @@ export const CANCEL_MARKET_TOLD =
 export const PUBLISH_PRIVACY =
   "Publishing makes the name, its price and its lock public on LearnHNS Market, and the market sees your IP address every time the wallet checks or uploads the listing.";
 
+/** R23, R29: off mainnet a listing is shared as its file only (no publish box, no market status). */
+export const SHARED_AS_FILE_ONLY = `Shared as a file only: ${MARKET_MAINNET_ONLY}`;
+
 /** R32: a lock restored by name, without its listing file. */
 export const RESTORED_LABEL = "Locked — listing details unknown";
 
@@ -504,7 +507,7 @@ export function marketStatusText(
   if (!l.publish) {
     return network === "mainnet"
       ? { tone: "muted", text: "Not published on LearnHNS Market — shared as a file only" }
-      : { tone: "muted", text: `Shared as a file only: ${MARKET_MAINNET_ONLY}` };
+      : { tone: "muted", text: SHARED_AS_FILE_ONLY };
   }
   const why = l.marketError ? `: “${l.marketError}”` : "";
   switch (l.marketStatus) {

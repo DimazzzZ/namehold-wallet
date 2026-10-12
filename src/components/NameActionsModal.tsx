@@ -28,6 +28,9 @@ import { OwnershipActions } from "./name-actions/OwnershipActions";
 import { UpcomingSection } from "./name-actions/UpcomingSection";
 import { resolveSections } from "../lib/nameSections";
 import { PaidSwapClaim } from "./name-actions/PaidSwapClaim";
+import { LockDialog } from "./market/LockDialog";
+import { sellRefusal } from "./market/marketText";
+import { useSettingsStore } from "../stores/settings";
 import { useUiStore } from "../stores/ui";
 import { FeeRateOverride } from "./ui/FeeRateOverride";
 import { parseFeeRateArg } from "../lib/feeRate";
@@ -123,6 +126,8 @@ export function NameActionsModal({
   const [advanced, setAdvanced] = useState(false);
   const [recordsJson, setRecordsJson] = useState("[]");
   const [showAllActions, setShowAllActions] = useState(false);
+  const [selling, setSelling] = useState(false);
+  const experimental = useSettingsStore((s) => s.settings?.shakedex_experimental);
   const [busy, setBusy] = useState<string | null>(null);
   // Reveal confirm-panel + pending-card state (this PR).
   const [revealConfirming, setRevealConfirming] = useState(false);
@@ -1062,6 +1067,8 @@ export function NameActionsModal({
                   onCancelTransfer={() => run("CANCEL", () => build.cancel.mutateAsync({ name }))}
                   onRenew={() => run("RENEW", () => build.renew.mutateAsync({ name }))}
                   onRevoke={() => run("REVOKE", () => build.revoke.mutateAsync({ name }))}
+                  onSell={() => setSelling(true)}
+                  sellRefusal={sellRefusal(profile?.kind, writeCap, profile?.network, experimental)}
                 />
                 {/* Proving ownership belongs to the ownership section, and needs
                   the same registration: a signature over a name the wallet has
@@ -1074,6 +1081,8 @@ export function NameActionsModal({
             <PaidSwapClaim name={name} />
           </div>
         )}
+
+        {selling && <LockDialog open name={name} onClose={() => setSelling(false)} />}
 
         <div className="flex justify-end">
           <Button variant="ghost" onClick={onClose} disabled={!!busy}>

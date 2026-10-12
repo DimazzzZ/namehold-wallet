@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -15,6 +15,15 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 }));
 
 import { NameActionsModal } from "../NameActionsModal";
+import { allowed, makeCapabilities, refused } from "../../test/fixtures/capabilities";
+import { makeProfile, makeSession } from "../../test/fixtures/wallet";
+import { loadSettings } from "../../test/fixtures/settings";
+import {
+  MAINNET_SELLING_EXPERIMENTAL,
+  NEEDS_SENDING_NODE,
+  RECOVERY_PHRASE_ONLY,
+} from "../market/marketText";
+import type { NameActionCapabilities, WalletNetwork, WalletProfileKind } from "../../types";
 
 const profile = {
   id: "p1",
@@ -194,3 +203,144 @@ async function waitForWritable() {
   const { waitFor } = await import("@testing-library/react");
   await waitFor(() => expect(screen.queryByTestId("name-actions-blocked")).toBeNull());
 }
+
+describe("NameActionsModal — Sell", () => {
+  /** A registered name of ours on a node that can write; Sell's gates vary. */
+  function sellRoute(
+    o: {
+      kind?: WalletProfileKind;
+      network?: WalletNetwork;
+      caps?: Partial<NameActionCapabilities>;
+      /** False: a node that cannot send (`get_write_capability`). */
+      broadcasterAvailable?: boolean;
+      build?: () => Promise<unknown>;
+    } = {},
+  ) {
+    return (cmd: string) => {
+      switch (cmd) {
+        case "get_name_action_capabilities":
+          return Promise.resolve(
+            makeCapabilities({
+              name: "examplename",
+              ownsName: true,
+              nameIsRegistered: true,
+              hasOwnerCoin: true,
+              canTransfer: allowed,
+              ...o.caps,
+            }),
+          );
+        case "list_wallet_profiles":
+          return Promise.resolve([
+            makeProfile({ kind: o.kind ?? "mnemonic_hot", network: o.network ?? "regtest" }),
+          ]);
+        case "get_signer_session":
+          return Promise.resolve(makeSession({ unlocked: true }));
+        case "get_write_capability": {
+          const sends = o.broadcasterAvailable ?? true;
+          return Promise.resolve({
+            signerUnlocked: true,
+            broadcasterAvailable: sends,
+            canWrite: sends,
+            reason: sends ? null : "Sending is not allowed through this node",
+          });
+        }
+        case "shakedex_build_lock_draft":
+          return o.build ? o.build() : Promise.resolve(null);
+        default:
+          return Promise.resolve(null);
+      }
+    };
+  }
+
+  async function openSell(onClose: () => void = () => {}) {
+    render(<NameActionsModal name="examplename" open onClose={onClose} />, {
+      wrapper: wrapper(),
+    });
+    // A registered name of ours opens with its management section expanded.
+    return screen.findByTestId("name-sell");
+  }
+
+  async function hint(button: HTMLElement) {
+    fireEvent.mouseEnter(button.parentElement!);
+    return screen.findByRole("tooltip");
+  }
+
+  beforeEach(() => loadSettings());
+
+  it("Sell opens the Lock dialog for the name", async () => {
+    invokeMock.mockImplementation(sellRoute());
+    const sell = await openSell();
+    await waitFor(() => expect(sell).toBeEnabled());
+    fireEvent.click(sell);
+    expect(await screen.findByText("Sell .examplename")).toBeInTheDocument();
+    expect(screen.getByTestId("lock-build")).toBeInTheDocument();
+  });
+
+  it("Sell is disabled with the backend's reason when the name cannot be transferred (R27)", async () => {
+    // A lock is a TRANSFER to the lock address: `canTransfer` is its covenant gate.
+    invokeMock.mockImplementation(
+      sellRoute({
+        caps: { canTransfer: refused("this name is locked for sale through Shakedex") },
+      }),
+    );
+    const sell = await openSell();
+    await waitFor(() => expect(sell).toBeDisabled());
+    expect(await hint(sell)).toHaveTextContent("this name is locked for sale through Shakedex");
+  });
+
+  it.each(["ledger_hardware", "watch_only_xpub"] as const)(
+    "Sell is disabled with the R16 sentence for a %s profile",
+    async (kind) => {
+      invokeMock.mockImplementation(sellRoute({ kind }));
+      const sell = await openSell();
+      await waitFor(() => expect(sell).toBeDisabled());
+      expect(await hint(sell)).toHaveTextContent(RECOVERY_PHRASE_ONLY);
+    },
+  );
+
+  it("Sell is disabled with the node sentence when the node cannot send (R6)", async () => {
+    invokeMock.mockImplementation(sellRoute({ broadcasterAvailable: false }));
+    const sell = await openSell();
+    await waitFor(() => expect(sell).toBeDisabled());
+    expect(await hint(sell)).toHaveTextContent(NEEDS_SENDING_NODE);
+  });
+
+  it("Escape in the Lock dialog leaves the name's actions open, even while a lock is being built", async () => {
+    // The build never answers: closing the parent now would unmount the
+    // Lock dialog with its draft on the way and nothing left to delete it.
+    invokeMock.mockImplementation(sellRoute({ build: () => new Promise(() => {}) }));
+    const onClose = vi.fn();
+    const sell = await openSell(onClose);
+    await waitFor(() => expect(sell).toBeEnabled());
+    fireEvent.click(sell);
+    const lock = await screen.findByTestId("lock-build");
+    await waitFor(() => expect(lock).toBeEnabled());
+    fireEvent.click(lock);
+    await waitFor(() => expect(lock).toBeDisabled());
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId("lock-build")).toBeInTheDocument();
+  });
+
+  it("Escape closes the Lock dialog alone; the next one closes the name's actions", async () => {
+    invokeMock.mockImplementation(sellRoute());
+    const onClose = vi.fn();
+    const sell = await openSell(onClose);
+    await waitFor(() => expect(sell).toBeEnabled());
+    fireEvent.click(sell);
+    await screen.findByTestId("lock-build");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("lock-build")).not.toBeInTheDocument());
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Sell is disabled on mainnet until Settings allows selling (R29)", async () => {
+    loadSettings({ shakedex_experimental: "false" });
+    invokeMock.mockImplementation(sellRoute({ network: "mainnet" }));
+    const sell = await openSell();
+    await waitFor(() => expect(sell).toBeDisabled());
+    expect(await hint(sell)).toHaveTextContent(MAINNET_SELLING_EXPERIMENTAL);
+  });
+});
