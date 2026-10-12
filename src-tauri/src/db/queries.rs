@@ -2318,6 +2318,20 @@ pub fn get_shakedex_listing(
     Ok(row)
 }
 
+/// Every listing of the profile, newest first ("My listings", T7).
+pub fn list_shakedex_listings(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<ShakedexListing>, AppError> {
+    let sql = format!(
+        "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
+         WHERE wallet_profile_id = ?1 ORDER BY created_at DESC, id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![profile_id], row_to_shakedex_listing)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 /// The listing of `name` that is still open (not in a terminal state), newest
 /// first: while there is one, the name is locking or locked (R27).
 pub fn open_shakedex_listing_for_name(

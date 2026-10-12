@@ -9,7 +9,7 @@ use crate::db::{self, queries};
 
 const STORE_PROFILE: &str = "sell1";
 
-fn store_conn() -> Connection {
+pub(super) fn store_conn() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
@@ -27,7 +27,7 @@ fn store_conn() -> Connection {
     conn
 }
 
-fn listing(id: &str, name: &str, state: ListingState) -> ShakedexListing {
+pub(super) fn listing(id: &str, name: &str, state: ListingState) -> ShakedexListing {
     ShakedexListing {
         id: id.into(),
         wallet_profile_id: STORE_PROFILE.into(),
@@ -181,6 +181,7 @@ fn ts_listing_summary_lists_every_field() {
         market_status: None,
         market_error: None,
         market_retry_at: None,
+        publish: false,
     };
     let json = serde_json::to_value(&summary).unwrap();
     let mut in_rust: Vec<&str> = json
@@ -482,7 +483,7 @@ fn deleting_another_draft_keeps_a_locking_listing() {
         .is_some());
 }
 
-fn insert_draft(conn: &Connection, id: &str, action: &str, status: &str) {
+pub(super) fn insert_draft(conn: &Connection, id: &str, action: &str, status: &str) {
     queries::insert_tx_draft(conn, id, STORE_PROFILE, action, "00", "{}", "{}").unwrap();
     conn.execute(
         "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = ?2",

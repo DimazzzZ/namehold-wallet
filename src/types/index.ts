@@ -954,6 +954,37 @@ export interface ShakedexListingSummary {
   marketError: string | null;
   /** RFC 3339 UTC: when the next market action on the listing is due. */
   marketRetryAt: string | null;
+  /** R23: "Publish on LearnHNS Market" was ticked (or the listing was published later from My listings). */
+  publish: boolean;
+}
+
+/** One action of My listings (`commands/shakedex.rs::ListingAction`): the command's own sentence when it is refused now. */
+export interface ShakedexListingAction {
+  allowed: boolean;
+  reason: string | null;
+}
+
+/** What a listing can do now (`ListingActions`), from the refusal function each command runs. */
+export interface ShakedexListingActions {
+  finalizeAndSign: ShakedexListingAction;
+  lowerPrice: ShakedexListingAction;
+  cancel: ShakedexListingAction;
+  finalizeCancel: ShakedexListingAction;
+  export: ShakedexListingAction;
+}
+
+/** The listing's own draft never sent (`PendingSend`); `signed`: only the broadcast is left. */
+export interface ShakedexPendingSend {
+  draftId: string;
+  action: string;
+  signed: boolean;
+}
+
+/** One row of My listings (`shakedex_list_listings`). */
+export interface ShakedexMyListing {
+  listing: ShakedexListingSummary;
+  actions: ShakedexListingActions;
+  pendingSend: ShakedexPendingSend | null;
 }
 
 export type ImportSource =

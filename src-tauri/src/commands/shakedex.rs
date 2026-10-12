@@ -757,28 +757,12 @@ pub(crate) async fn prepare_lock_finalize(
         let listing = queries::get_shakedex_listing(&conn, listing_id)?
             .filter(|l| l.wallet_profile_id == ctx.profile_id)
             .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
-        match listing.state {
-            ListingState::ReadyToFinalize => {}
-            ListingState::Locking => {
-                return Err(AppError::InvalidInput(
-                    "Finalize & sign opens after the transfer lockup".into(),
-                ))
-            }
-            other => {
-                return Err(AppError::InvalidInput(
-                    listing_over(other)
-                        .unwrap_or("this listing is already finalized into its lock")
-                        .into(),
-                ))
-            }
+        if let Some(why) = finalize_refusal(listing.state) {
+            return Err(AppError::InvalidInput(why.into()));
         }
         // The Cancel transfer and the FINALIZE spend the same TRANSFER coin.
-        if let Some(cancel_id) = &listing.abort_draft_id {
-            if let Some(cancel) = queries::get_tx_draft(&conn, cancel_id)? {
-                if queries::draft_may_still_land(&cancel.status) {
-                    return Err(AppError::InvalidInput(sell::CANCEL_TRANSFER_PENDING.into()));
-                }
-            }
+        if abort_may_still_land(&conn, &listing)? {
+            return Err(AppError::InvalidInput(sell::CANCEL_TRANSFER_PENDING.into()));
         }
         let owner = queries::get_name_coin(&conn, &ctx.profile_id, &listing.name)?;
         (listing, owner)
@@ -1026,12 +1010,18 @@ pub struct ListingSummary {
     pub market_error: Option<String>,
     /// RFC 3339 UTC: when the next market action on the listing is due.
     pub market_retry_at: Option<String>,
+    /// R23: whether the seller ticked "Publish on LearnHNS Market" (or
+    /// published it later from My listings).
+    pub publish: bool,
 }
 
 impl ListingSummary {
     fn of(l: &ShakedexListing) -> Result<Self, AppError> {
-        let steps = shakedex_jobs::stored_steps(l)?;
-        Ok(Self {
+        Ok(Self::with_steps(l, shakedex_jobs::stored_steps(l)?))
+    }
+
+    fn with_steps(l: &ShakedexListing, steps: Vec<sell::StoredStep>) -> Self {
+        Self {
             id: l.id.clone(),
             name: l.name.clone(),
             mode: l.mode,
@@ -1048,7 +1038,8 @@ impl ListingSummary {
             market_status: l.market_status,
             market_error: l.market_error.clone(),
             market_retry_at: l.market_retry_at.clone(),
-        })
+            publish: l.publish,
+        }
     }
 }
 
@@ -1212,6 +1203,60 @@ fn listing_over(state: ListingState) -> Option<&'static str> {
     }
 }
 
+/// Why Finalize & sign refuses a listing in `state` (R19); `None` for
+/// ReadyToFinalize. The command and My listings ask this one function.
+pub(crate) fn finalize_refusal(state: ListingState) -> Option<&'static str> {
+    match state {
+        ListingState::ReadyToFinalize => None,
+        ListingState::Locking => Some("Finalize & sign opens after the transfer lockup"),
+        other => {
+            Some(listing_over(other).unwrap_or("this listing is already finalized into its lock"))
+        }
+    }
+}
+
+/// R19: the listing's Cancel transfer may still be mined (its draft alive
+/// and not confirmed); it spends the coin the FINALIZE into the lock would.
+pub(crate) fn abort_may_still_land(
+    conn: &rusqlite::Connection,
+    l: &ShakedexListing,
+) -> Result<bool, AppError> {
+    let Some(id) = l.abort_draft_id.as_deref() else {
+        return Ok(false);
+    };
+    Ok(queries::get_tx_draft(conn, id)?.is_some_and(|d| queries::draft_may_still_land(&d.status)))
+}
+
+/// Why the cancel's FINALIZE cannot be built for a listing in `state`
+/// (R28); `None` for CancelAwaitingFinalize. The command and My listings ask
+/// this one function.
+pub(crate) fn finalize_cancel_refusal(state: ListingState) -> Option<&'static str> {
+    match state {
+        ListingState::CancelAwaitingFinalize => None,
+        ListingState::Cancelling => Some(
+            "the cancel is not mined yet: its finalize opens after the transfer lockup that \
+             follows",
+        ),
+        ListingState::CancelFinalizing => Some(
+            "the finalize of this cancel is already built: send it, or delete it to build \
+             another",
+        ),
+        // A state `listing_over` does not name (before the lock, Finalizing,
+        // Listed, SalePending) has no cancel.
+        other => {
+            Some(listing_over(other).unwrap_or("this listing has no mined cancel to finalize"))
+        }
+    }
+}
+
+/// R28: the lockup left before the cancel's FINALIZE is valid.
+pub(crate) fn cancel_finalize_wait(remaining: i64) -> String {
+    format!(
+        "the cancel can be finalized in {remaining} block{}",
+        if remaining == 1 { "" } else { "s" }
+    )
+}
+
 /// R28: the cancel's own prompt title, never the transaction prompt's.
 pub const CANCEL_TITLE: &str = "Confirm cancel";
 const CANCEL_MESSAGE: &str = "Review these details. This signs, with the lock key, a \
@@ -1232,8 +1277,9 @@ const CANCEL_LOCK_NOT_MINED: &str = "the finalize into the lock is not mined yet
      can be cancelled once it is";
 
 /// Why Cancel refuses a listing in `state` (R28); `None` for the two whose
-/// lock coin is mined and not being bought, Listed and Restored.
-fn cancel_refusal(state: ListingState) -> Option<&'static str> {
+/// lock coin is mined and not being bought, Listed and Restored. The command
+/// and My listings ask this one function.
+pub(crate) fn cancel_refusal(state: ListingState) -> Option<&'static str> {
     match state {
         ListingState::Listed | ListingState::Restored => None,
         ListingState::Locking | ListingState::ReadyToFinalize => {
@@ -1653,9 +1699,12 @@ const LOWER_LOCK_WORDS: LockCoinWords = LockCoinWords {
     nothing: "the price cannot be lowered",
 };
 
-/// Why Lower price refuses a listing in `state` (R26); `None` for Listed.
-fn lower_refusal(state: ListingState) -> Option<&'static str> {
+/// Why Lower price refuses a listing in `state` (R26) whose stored steps
+/// are `no_steps` empty; `None` for Listed with signed steps here. The
+/// command and My listings ask this one function.
+pub(crate) fn lower_refusal(state: ListingState, no_steps: bool) -> Option<&'static str> {
     match state {
+        ListingState::Listed if no_steps => Some(LOWER_NO_PRICE_HERE),
         ListingState::Listed => None,
         ListingState::Cancelling => Some(LOWER_DURING_CANCEL),
         ListingState::CancelAwaitingFinalize | ListingState::CancelFinalizing => {
@@ -1705,20 +1754,17 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
 ) -> Result<ListingSummary, AppError> {
     let ctx = software_writer_ctx(state)?;
     authorize_signer(state, &ctx)?;
-    let listing = {
+    let (listing, stored) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let l = queries::get_shakedex_listing(&conn, listing_id)?
             .filter(|l| l.wallet_profile_id == ctx.profile_id)
             .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
-        if let Some(why) = lower_refusal(l.state) {
+        let stored = shakedex_jobs::stored_steps(&l)?;
+        if let Some(why) = lower_refusal(l.state, stored.is_empty()) {
             return Err(AppError::InvalidInput(why.into()));
         }
-        l
+        (l, stored)
     };
-    let stored = shakedex_jobs::stored_steps(&listing)?;
-    if stored.is_empty() {
-        return Err(AppError::InvalidInput(LOWER_NO_PRICE_HERE.into()));
-    }
     let new_price = sell::parse_step_price(price)?;
     let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
     let (lock_txid, lock_vout) = shakedex_jobs::stored_lock(&listing)?
@@ -1871,18 +1917,168 @@ pub(crate) fn export_listing_file_from_conn(
     let l = queries::get_shakedex_listing(conn, listing_id)?
         .filter(|l| l.wallet_profile_id == profile_id)
         .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
+    if let Some(why) = export_refusal(&l) {
+        return Err(AppError::InvalidInput(why.into()));
+    }
+    // `export_refusal` refused a listing without its file; this keeps the
+    // command's sentence the same if that check ever moves.
+    l.listing_file_json
+        .ok_or_else(|| AppError::InvalidInput(EXPORT_NO_FILE.into()))
+}
+
+/// R23: a lock with no listing file here (restored by name, or finalized by
+/// another wallet) has nothing to export.
+const EXPORT_NO_FILE: &str = "this lock has no listing file here: import its saved file";
+
+/// Whether one action of My listings can run now, and the command's own
+/// sentence when it cannot (the button is shown disabled with it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListingAction {
+    pub allowed: bool,
+    pub reason: Option<String>,
+}
+
+impl ListingAction {
+    fn refused_by(why: Option<String>) -> Self {
+        Self {
+            allowed: why.is_none(),
+            reason: why,
+        }
+    }
+}
+
+/// What a listing can do now, each from the refusal function its command
+/// runs first (the state and stored facts; the node's checks come when it
+/// runs).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListingActions {
+    pub finalize_and_sign: ListingAction,
+    pub lower_price: ListingAction,
+    pub cancel: ListingAction,
+    pub finalize_cancel: ListingAction,
+    pub export: ListingAction,
+}
+
+/// The listing's own draft that was never sent (`queries::never_sent`): the
+/// lock TRANSFER (Locking), the FINALIZE into the lock (Finalizing), the
+/// cancel (Cancelling) or the cancel's FINALIZE (CancelFinalizing).
+/// `signed`: only the broadcast is left.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingSend {
+    pub draft_id: String,
+    pub action: String,
+    pub signed: bool,
+}
+
+/// One row of My listings.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MyListing {
+    pub listing: ListingSummary,
+    pub actions: ListingActions,
+    pub pending_send: Option<PendingSend>,
+}
+
+fn pending_send(
+    conn: &rusqlite::Connection,
+    l: &ShakedexListing,
+) -> Result<Option<PendingSend>, AppError> {
+    let id = match l.state {
+        ListingState::Locking => l.lock_transfer_draft_id.as_deref(),
+        ListingState::Finalizing => l.lock_finalize_draft_id.as_deref(),
+        ListingState::Cancelling => l.cancel_draft_id.as_deref(),
+        ListingState::CancelFinalizing => l.cancel_finalize_draft_id.as_deref(),
+        _ => None,
+    };
+    let Some(id) = id else { return Ok(None) };
+    Ok(queries::get_tx_draft(conn, id)?
+        .filter(|d| queries::never_sent(&d.status))
+        .map(|d| PendingSend {
+            signed: d.signed_tx_hex.is_some(),
+            draft_id: d.id,
+            action: d.action,
+        }))
+}
+
+/// One row of My listings (T7): the listing, its actions and its unsent
+/// draft. Each action is refused by the function its command runs first; a
+/// listing whose stored steps cannot be read is listed with every action
+/// refused, so it does not hide the others.
+pub(crate) fn my_listing_from_conn(
+    conn: &rusqlite::Connection,
+    l: &ShakedexListing,
+) -> Result<MyListing, AppError> {
+    let steps = match shakedex_jobs::stored_steps(l) {
+        Ok(steps) => steps,
+        // One unreadable row must not hide the others: it is listed with
+        // every action refused in the read's words, and nothing to send.
+        Err(e) => {
+            let refused = || ListingAction::refused_by(Some(e.to_string()));
+            return Ok(MyListing {
+                listing: ListingSummary::with_steps(l, Vec::new()),
+                actions: ListingActions {
+                    finalize_and_sign: refused(),
+                    lower_price: refused(),
+                    cancel: refused(),
+                    finalize_cancel: refused(),
+                    export: refused(),
+                },
+                pending_send: None,
+            });
+        }
+    };
+    let listing = ListingSummary::with_steps(l, steps);
+    let finalize = match finalize_refusal(l.state) {
+        Some(why) => Some(why.to_string()),
+        None if abort_may_still_land(conn, l)? => Some(sell::CANCEL_TRANSFER_PENDING.to_string()),
+        None => None,
+    };
+    let lower = lower_refusal(l.state, listing.steps.is_empty()).map(str::to_string);
+    // The stored lockup is the last sync's count; the command counts again
+    // on the node's tip when it runs.
+    let finalize_cancel = finalize_cancel_refusal(l.state)
+        .map(str::to_string)
+        .or_else(|| {
+            l.cancel_blocks_remaining
+                .filter(|n| *n > 0)
+                .map(cancel_finalize_wait)
+        });
+    Ok(MyListing {
+        actions: ListingActions {
+            finalize_and_sign: ListingAction::refused_by(finalize),
+            lower_price: ListingAction::refused_by(lower),
+            cancel: ListingAction::refused_by(cancel_refusal(l.state).map(str::to_string)),
+            finalize_cancel: ListingAction::refused_by(finalize_cancel),
+            export: ListingAction::refused_by(export_refusal(l).map(str::to_string)),
+        },
+        pending_send: pending_send(conn, l)?,
+        listing,
+    })
+}
+
+/// Every listing of the profile, newest first, as My listings shows it.
+pub(crate) fn my_listings_from_conn(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<MyListing>, AppError> {
+    queries::list_shakedex_listings(conn, profile_id)?
+        .iter()
+        .map(|l| my_listing_from_conn(conn, l))
+        .collect()
+}
+
+/// Why the listing file of `l` cannot leave the wallet (R23); `None` when
+/// it can. The command and My listings ask this one function.
+pub(crate) fn export_refusal(l: &ShakedexListing) -> Option<&'static str> {
     if !ListingState::EXPORT_ALLOWED.contains(&l.state) {
-        return Err(AppError::InvalidInput(
-            listing_over(l.state)
-                .unwrap_or(
-                    "the listing file can be exported once the finalize into the lock is mined",
-                )
-                .into(),
+        return Some(listing_over(l.state).unwrap_or(
+            "the listing file can be exported once the finalize into the lock is mined",
         ));
     }
-    l.listing_file_json.ok_or_else(|| {
-        AppError::InvalidInput("this lock has no listing file here: import its saved file".into())
-    })
+    l.listing_file_json.is_none().then_some(EXPORT_NO_FILE)
 }
 
 /// What a restore by name (R32) decides from: every node read, and the lock
@@ -2798,24 +2994,8 @@ pub(crate) async fn finalize_cancel(
         let l = queries::get_shakedex_listing(&conn, listing_id)?
             .filter(|l| l.wallet_profile_id == ctx.profile_id)
             .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
-        if l.state != ListingState::CancelAwaitingFinalize {
-            return Err(AppError::InvalidInput(
-                match l.state {
-                    ListingState::Cancelling => {
-                        "the cancel is not mined yet: its finalize opens after the transfer \
-                         lockup that follows"
-                    }
-                    ListingState::CancelFinalizing => {
-                        "the finalize of this cancel is already built: send it, or delete it to \
-                         build another"
-                    }
-                    // A state `listing_over` does not name (before the
-                    // lock, Finalizing, Listed, SalePending) has no cancel.
-                    other => listing_over(other)
-                        .unwrap_or("this listing has no mined cancel to finalize"),
-                }
-                .into(),
-            ));
+        if let Some(why) = finalize_cancel_refusal(l.state) {
+            return Err(AppError::InvalidInput(why.into()));
         }
         let own: std::collections::HashSet<String> =
             queries::get_profile_addresses(&conn, &ctx.profile_id)?
@@ -2907,10 +3087,7 @@ pub(crate) async fn finalize_cancel(
         .name_params()
         .blocks_until_finalize(transfer_height, tip);
     if remaining > 0 {
-        return Err(AppError::InvalidInput(format!(
-            "the cancel can be finalized in {remaining} block{}",
-            if remaining == 1 { "" } else { "s" }
-        )));
+        return Err(AppError::InvalidInput(cancel_finalize_wait(remaining)));
     }
     let ns = draft_ctx::name_state_strict(&reply, &name)?;
     if cov_height != ns.height {
@@ -2994,6 +3171,18 @@ pub async fn shakedex_lower_price(
     price: String,
 ) -> Result<ListingSummary, AppError> {
     lower_price_confirmed(&state, &app, &listing_id, &price).await
+}
+
+/// The active profile's listings ("My listings", T7), each with what it can
+/// do now ([`my_listings_from_conn`]); reads the database only.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_list_listings(
+    state: State<'_, AppState>,
+) -> Result<Vec<MyListing>, AppError> {
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let profile = draft_ctx::active_profile(&conn)?;
+    my_listings_from_conn(&conn, &profile.id)
 }
 
 #[cfg(test)]
