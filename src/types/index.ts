@@ -980,10 +980,29 @@ export interface ShakedexPendingSend {
   signed: boolean;
 }
 
+/**
+ * A row's prices (`ListingPrices`, tagged by `kind`), or why it has none:
+ * no steps here, no node that can say the median time, a node that did not
+ * say it, or a corrupted row (every action refused in the same words).
+ */
+export type ShakedexListingPrices =
+  | { kind: "noSteps" }
+  | { kind: "unverified" }
+  | { kind: "couldNotCheck"; reason: string }
+  | { kind: "unreadable"; reason: string }
+  | {
+      kind: "at";
+      currentPrice: number | null;
+      nextPrice: number | null;
+      nextValidInSecs: number | null;
+      floorPrice: number;
+    };
+
 /** One row of My listings (`shakedex_list_listings`). */
 export interface ShakedexMyListing {
   listing: ShakedexListingSummary;
   actions: ShakedexListingActions;
+  prices: ShakedexListingPrices;
   pendingSend: ShakedexPendingSend | null;
 }
 

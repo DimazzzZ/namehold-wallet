@@ -52,5 +52,11 @@ export function makeMyListing(
   state: ShakedexListingState = "listed",
   over: Partial<ShakedexMyListing> = {},
 ): ShakedexMyListing {
-  return { listing: makeListing({ state }), actions: makeActions(), pendingSend: null, ...over };
+  return {
+    listing: makeListing({ state }),
+    actions: makeActions(),
+    prices: { kind: "noSteps" },
+    pendingSend: null,
+    ...over,
+  };
 }

@@ -18,8 +18,8 @@ use crate::noncustodial::shakedex::lock_key::LockKey;
 use crate::noncustodial::shakedex::purchase::MAX_MONEY;
 use crate::noncustodial::shakedex::script;
 use crate::noncustodial::shakedex::template::{
-    current_step_index, encode_lock_time, is_valid_at, secs_until_valid, valid_from_mtp,
-    verify_step_signature, StepTemplate, STEP_SIGHASH,
+    current_step_index, encode_lock_time, is_valid_at, next_step_index, secs_until_valid,
+    valid_from_mtp, verify_step_signature, StepTemplate, STEP_SIGHASH,
 };
 use crate::noncustodial::sync::{COV_FINALIZE, COV_NONE, COV_TRANSFER};
 use crate::noncustodial::tx::{output_address_from_string, Covenant, OutputAddress};
@@ -657,6 +657,40 @@ pub fn steps_ahead(steps: &[StoredStep], mtp: u64, price: u64) -> Result<(usize,
         }
     }
     Ok((below, ahead.len() - below))
+}
+
+/// R12 for our own listing: its current price at `mtp` (R3), the next one
+/// and the seconds of median time until it is valid, and the floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepView {
+    pub current_price: Option<u64>,
+    pub next_price: Option<u64>,
+    pub next_valid_in_secs: Option<u64>,
+    pub floor_price: u64,
+}
+
+/// [`StepView`] of the stored steps at `mtp`, from
+/// `template::{current_step_index, next_step_index}`; `None` when there are
+/// none. A stored lock time past R3's 40 bits is a corrupted row.
+pub fn step_view(steps: &[StoredStep], mtp: u64) -> Result<Option<StepView>, AppError> {
+    let encoded = encoded_stored(steps)?;
+    let Some(floor_price) = steps.iter().map(|s| s.price).min() else {
+        return Ok(None);
+    };
+    let current = current_step_index(&encoded, mtp);
+    let next = next_step_index(&encoded, mtp, current);
+    Ok(Some(StepView {
+        current_price: current.map(|i| steps[i].price),
+        next_price: next.map(|i| steps[i].price),
+        next_valid_in_secs: next.map(|i| secs_until_valid(steps[i].lock_time, mtp)),
+        floor_price,
+    }))
+}
+
+/// Refuses stored steps a lock time of which is past R3's 40 bits (a
+/// corrupted row), as every function reading them at a median time does.
+pub fn check_stored_steps(steps: &[StoredStep]) -> Result<(), AppError> {
+    encoded_stored(steps).map(|_| ())
 }
 
 /// `(price, encoded lock time)` of stored steps; a lock time past 40 bits
@@ -2637,5 +2671,47 @@ mod tests {
         );
         assert!(commitment_address(&items("zz", "ab"), Network::Regtest).is_err());
         assert!(commitment_address(&[nh()], Network::Regtest).is_err());
+    }
+
+    fn stored(price: u64, lock_time: u64) -> StoredStep {
+        StoredStep {
+            price,
+            lock_time,
+            signature: "00".into(),
+        }
+    }
+
+    #[test]
+    fn step_view_reads_now_next_and_floor_at_the_mtp() {
+        let steps = [
+            stored(5_000_000, 0),
+            stored(4_000_000, 1_000_448),
+            stored(3_000_000, 1_001_472),
+        ];
+        let v = step_view(&steps, 1_000_000).unwrap().unwrap();
+        assert_eq!(v.current_price, Some(5_000_000));
+        assert_eq!(v.next_price, Some(4_000_000));
+        assert_eq!(
+            v.next_valid_in_secs,
+            Some(secs_until_valid(1_000_448, 1_000_000))
+        );
+        assert_eq!(v.floor_price, 3_000_000);
+    }
+
+    #[test]
+    fn step_view_with_no_step_valid_yet_names_the_first_to_come() {
+        let steps = [stored(5_000_000, 2_000_000), stored(4_000_000, 2_001_024)];
+        let v = step_view(&steps, 1_000_000).unwrap().unwrap();
+        assert_eq!((v.current_price, v.next_price), (None, Some(5_000_000)));
+    }
+
+    #[test]
+    fn step_view_of_no_steps_is_none() {
+        assert_eq!(step_view(&[], 1_000_000).unwrap(), None);
+    }
+
+    #[test]
+    fn step_view_of_a_lock_time_past_40_bits_is_a_corrupted_row() {
+        assert!(step_view(&[stored(1, 1 << 41)], 1_000_000).is_err());
     }
 }

@@ -7,7 +7,7 @@ use rusqlite::Connection;
 use super::shakedex_sell_tests::{insert_draft, listing, store_conn};
 use crate::commands::shakedex::{
     cancel_refusal, export_refusal, finalize_cancel_refusal, finalize_refusal, lower_refusal,
-    my_listings_from_conn, ListingAction, MyListing,
+    my_listings_from_conn, ListingAction, ListingPrices, MyListing,
 };
 use crate::db::queries::{self, ListingState, ShakedexListing};
 
@@ -26,7 +26,7 @@ fn with_steps(mut l: ShakedexListing) -> ShakedexListing {
 }
 
 fn row_of(conn: &Connection, id: &str) -> MyListing {
-    my_listings_from_conn(conn, "sell1")
+    my_listings_from_conn(conn, "sell1", None)
         .unwrap()
         .into_iter()
         .find(|r| r.listing.id == id)
@@ -62,7 +62,7 @@ fn my_listings_lists_every_listing_of_the_profile_newest_first() {
     let mut theirs = listing("theirs", "gamma", ListingState::Listed);
     theirs.wallet_profile_id = "other".into();
     insert(&conn, &theirs);
-    let ids: Vec<String> = my_listings_from_conn(&conn, "sell1")
+    let ids: Vec<String> = my_listings_from_conn(&conn, "sell1", None)
         .unwrap()
         .into_iter()
         .map(|r| r.listing.id)
@@ -148,7 +148,10 @@ fn an_unreadable_listing_is_listed_with_every_action_refused() {
     insert_draft(&conn, "dcan", "shakedex_cancel", "signed");
     bad.cancel_draft_id = Some("dcan".into());
     insert(&conn, &bad);
-    assert_eq!(my_listings_from_conn(&conn, "sell1").unwrap().len(), 2);
+    assert_eq!(
+        my_listings_from_conn(&conn, "sell1", None).unwrap().len(),
+        2
+    );
     let row = row_of(&conn, "bad");
     let a = &row.actions;
     for action in [
@@ -166,6 +169,11 @@ fn an_unreadable_listing_is_listed_with_every_action_refused() {
         );
     }
     assert!(row.listing.steps.is_empty());
+    assert!(
+        matches!(&row.prices, ListingPrices::Unreadable { reason } if reason.starts_with("corrupted listing bad")),
+        "{:?}",
+        row.prices
+    );
     assert_eq!(row.pending_send, None);
     assert!(allowed(&row_of(&conn, "good").actions.lower_price));
 }
@@ -304,6 +312,79 @@ fn pending_send_names_the_unsent_draft_of_the_state() {
         let action = DRAFTS.iter().find(|(id, _)| *id == own).unwrap().1;
         let want = want.map(|signed| (own.to_string(), action.to_string(), signed));
         assert_eq!(got, want, "{state:?} {status}");
+    }
+}
+
+/// Why a row has no price is a variant of its own: no steps here, no node
+/// that can say the median time (SPV, Explorer), or a node that failed.
+#[test]
+fn listing_prices_say_why_they_are_missing() {
+    let conn = store_conn();
+    insert(
+        &conn,
+        &with_steps(listing("s", "dexsale", ListingState::Listed)),
+    );
+    insert(&conn, &listing("n", "other", ListingState::Restored));
+    let prices = |chain: Option<Result<u64, String>>, id: &str| {
+        my_listings_from_conn(&conn, "sell1", chain)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.listing.id == id)
+            .unwrap()
+            .prices
+    };
+    assert_eq!(prices(Some(Ok(1_700_000_000)), "n"), ListingPrices::NoSteps);
+    assert_eq!(prices(None, "n"), ListingPrices::NoSteps);
+    assert_eq!(prices(None, "s"), ListingPrices::Unverified);
+    assert_eq!(
+        prices(Some(Err("node down".into())), "s"),
+        ListingPrices::CouldNotCheck {
+            reason: "node down".into()
+        }
+    );
+    assert_eq!(
+        prices(Some(Ok(1_700_000_000)), "s"),
+        ListingPrices::At {
+            current_price: Some(5_000_000),
+            next_price: None,
+            next_valid_in_secs: None,
+            floor_price: 5_000_000,
+        }
+    );
+}
+
+/// A stored lock time past R3's 40 bits is a corrupted row, whether or not
+/// a node can say the median time: every action is refused and its prices
+/// are unreadable, in the read's words, and the other rows keep theirs.
+#[test]
+fn a_listing_with_an_unreadable_lock_time_is_listed_with_nothing_allowed() {
+    let conn = store_conn();
+    insert(
+        &conn,
+        &with_steps(listing("good", "alpha", ListingState::Listed)),
+    );
+    let mut bad = with_steps(listing("bad", "beta", ListingState::Listed));
+    bad.steps_json = r#"[{"price":1,"lockTime":2199023255552,"signature":"00"}]"#.into();
+    insert(&conn, &bad);
+    for chain in [None, Some(Err("node down".into())), Some(Ok(1_700_000_000))] {
+        let rows = my_listings_from_conn(&conn, "sell1", chain.clone()).unwrap();
+        let of = |id: &str| rows.iter().find(|r| r.listing.id == id).unwrap();
+        let row = of("bad");
+        let ListingPrices::Unreadable { reason } = &row.prices else {
+            panic!("{chain:?}: {:?}", row.prices)
+        };
+        assert!(reason.starts_with("corrupted listing"), "{reason}");
+        let a = &row.actions;
+        for action in [
+            &a.finalize_and_sign,
+            &a.lower_price,
+            &a.cancel,
+            &a.finalize_cancel,
+            &a.export,
+        ] {
+            assert_eq!(action.reason.as_ref(), Some(reason), "{chain:?}");
+        }
+        assert!(allowed(&of("good").actions.lower_price), "{chain:?}");
     }
 }
 

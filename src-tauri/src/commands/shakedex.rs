@@ -1973,12 +1973,66 @@ pub struct PendingSend {
     pub signed: bool,
 }
 
+/// A row's prices (R12), or why it has none: each case its own variant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ListingPrices {
+    /// No signed steps here: before Finalize & sign, or a Restored lock
+    /// without its listing file.
+    NoSteps,
+    /// SPV or Explorer: no node can say the median time.
+    Unverified,
+    /// The node did not say its median time.
+    CouldNotCheck { reason: String },
+    /// The stored steps cannot be read (a corrupted row); every action of
+    /// the row is refused in the same words.
+    Unreadable { reason: String },
+    /// The prices at the node's median time (`sell::step_view`).
+    #[serde(rename_all = "camelCase")]
+    At {
+        current_price: Option<u64>,
+        next_price: Option<u64>,
+        next_valid_in_secs: Option<u64>,
+        floor_price: u64,
+    },
+}
+
+/// The prices of readable stored `steps` at the median time `chain` gives
+/// (see [`my_listings_from_conn`]).
+fn listing_prices(
+    steps: &[sell::StoredStep],
+    chain: Option<&Result<u64, String>>,
+) -> ListingPrices {
+    if steps.is_empty() {
+        return ListingPrices::NoSteps;
+    }
+    match chain {
+        None => ListingPrices::Unverified,
+        Some(Err(reason)) => ListingPrices::CouldNotCheck {
+            reason: reason.clone(),
+        },
+        Some(Ok(mtp)) => match sell::step_view(steps, *mtp) {
+            Ok(None) => ListingPrices::NoSteps,
+            Ok(Some(v)) => ListingPrices::At {
+                current_price: v.current_price,
+                next_price: v.next_price,
+                next_valid_in_secs: v.next_valid_in_secs,
+                floor_price: v.floor_price,
+            },
+            Err(e) => ListingPrices::Unreadable {
+                reason: e.to_string(),
+            },
+        },
+    }
+}
+
 /// One row of My listings.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MyListing {
     pub listing: ListingSummary,
     pub actions: ListingActions,
+    pub prices: ListingPrices,
     pub pending_send: Option<PendingSend>,
 }
 
@@ -2010,8 +2064,11 @@ fn pending_send(
 pub(crate) fn my_listing_from_conn(
     conn: &rusqlite::Connection,
     l: &ShakedexListing,
+    chain: Option<&Result<u64, String>>,
 ) -> Result<MyListing, AppError> {
-    let steps = match shakedex_jobs::stored_steps(l) {
+    let read = shakedex_jobs::stored_steps(l)
+        .and_then(|steps| sell::check_stored_steps(&steps).map(|()| steps));
+    let steps = match read {
         Ok(steps) => steps,
         // One unreadable row must not hide the others: it is listed with
         // every action refused in the read's words, and nothing to send.
@@ -2026,10 +2083,14 @@ pub(crate) fn my_listing_from_conn(
                     finalize_cancel: refused(),
                     export: refused(),
                 },
+                prices: ListingPrices::Unreadable {
+                    reason: e.to_string(),
+                },
                 pending_send: None,
             });
         }
     };
+    let prices = listing_prices(&steps, chain);
     let listing = ListingSummary::with_steps(l, steps);
     let finalize = match finalize_refusal(l.state) {
         Some(why) => Some(why.to_string()),
@@ -2054,19 +2115,24 @@ pub(crate) fn my_listing_from_conn(
             finalize_cancel: ListingAction::refused_by(finalize_cancel),
             export: ListingAction::refused_by(export_refusal(l).map(str::to_string)),
         },
+        prices,
         pending_send: pending_send(conn, l)?,
         listing,
     })
 }
 
 /// Every listing of the profile, newest first, as My listings shows it.
+/// `chain` is the one median time every row's prices are read at: `None`
+/// when no node can say it (SPV, Explorer), `Some(Err(reason))` when the
+/// node did not say it, `Some(Ok(mtp))`.
 pub(crate) fn my_listings_from_conn(
     conn: &rusqlite::Connection,
     profile_id: &str,
+    chain: Option<Result<u64, String>>,
 ) -> Result<Vec<MyListing>, AppError> {
     queries::list_shakedex_listings(conn, profile_id)?
         .iter()
-        .map(|l| my_listing_from_conn(conn, l))
+        .map(|l| my_listing_from_conn(conn, l, chain.as_ref()))
         .collect()
 }
 
@@ -3174,15 +3240,43 @@ pub async fn shakedex_lower_price(
 }
 
 /// The active profile's listings ("My listings", T7), each with what it can
-/// do now ([`my_listings_from_conn`]); reads the database only.
+/// do now and its prices ([`my_listings_from_conn`]). The node's median time
+/// is read once for every row, and only when a row has steps.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn shakedex_list_listings(
     state: State<'_, AppState>,
 ) -> Result<Vec<MyListing>, AppError> {
+    let needs_chain = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let profile = draft_ctx::active_profile(&conn)?;
+        queries::list_shakedex_listings(&conn, &profile.id)?
+            .iter()
+            // An unreadable row is listed as such; it needs no median time.
+            .any(|l| shakedex_jobs::stored_steps(l).is_ok_and(|s| !s.is_empty()))
+    };
+    let chain = if needs_chain {
+        let ctx = browse_ctx(&state)?;
+        if ctx.can_verify() {
+            Some(
+                verify::chain_point(&ctx.node)
+                    .await
+                    .map(|p| p.mtp)
+                    .map_err(|h| match h {
+                        Hidden::CouldNotCheck { reason } => reason,
+                        // `chain_point` answers CouldNotCheck only.
+                        other => format!("{other:?}"),
+                    }),
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let profile = draft_ctx::active_profile(&conn)?;
-    my_listings_from_conn(&conn, &profile.id)
+    my_listings_from_conn(&conn, &profile.id, chain)
 }
 
 #[cfg(test)]
