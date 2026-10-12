@@ -44,6 +44,7 @@ export function makeActions(over: Partial<ShakedexListingActions> = {}): Shakede
     finalizeCancel: ok,
     export: ok,
     publish: ok,
+    importFile: ok,
     ...over,
   };
 }

@@ -973,6 +973,8 @@ export interface ShakedexListingActions {
   export: ShakedexListingAction;
   /** Turn publishing on later (`publish_refusal`): mainnet, Listed, not published, own file without a market fee. */
   publish: ShakedexListingAction;
+  /** Import a Restored lock's saved listing file (`import_refusal`): Restored only; it reads no stored step. */
+  importFile: ShakedexListingAction;
 }
 
 /**

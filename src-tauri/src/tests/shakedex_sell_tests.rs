@@ -6092,6 +6092,40 @@ async fn own_listing_file_upgrades_a_restored_lock() {
     assert_eq!(count(&app, "shakedex_listings"), 1);
 }
 
+/// R32: the import reads no stored step (the file replaces them), so a
+/// Restored lock whose stored steps cannot be read takes its file as any
+/// other does; My listings offers the import on that row in the import's
+/// own words (`import_refusal`), while every other action is refused.
+#[tokio::test]
+async fn own_listing_file_upgrades_a_restored_lock_whose_stored_steps_are_unreadable() {
+    let coin = restored_coin(
+        &lock_address(Network::Regtest),
+        COV_FINALIZE,
+        NAME_HEIGHT,
+        None,
+    );
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(coin.clone())).await;
+    let r = restore(&app).await.expect("restored");
+    with_db(&app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET steps_json = 'not json' WHERE id = ?1",
+            [&r.id],
+        )
+        .unwrap();
+    });
+    let row = with_db(&app, |c| {
+        crate::commands::shakedex::my_listings_from_conn(c, PROFILE, Network::Regtest, None)
+            .unwrap()
+            .remove(0)
+    });
+    assert!(row.actions.import_file.allowed, "{:?}", row.actions);
+    assert!(!row.actions.cancel.allowed, "{:?}", row.actions);
+    answer_coin(&mut node, &mut mocks, Some(coin)).await;
+    let s = import(&app, good_file()).await.expect("imported");
+    assert_eq!((s.id, s.state), (r.id, ListingState::Listed));
+    assert_eq!(s.steps.len(), 1);
+}
+
 /// R32: a file for another key, or for another lock coin, is refused, and
 /// the Restored lock stays as it was.
 #[tokio::test]

@@ -19,6 +19,7 @@ import {
   hiddenSummary,
   listedUntilText,
   listingStatus,
+  MY_LISTINGS_TAB,
   purchaseRefusal,
 } from "./marketText";
 import { useMarketPage } from "../../queries/shakedex";
@@ -220,7 +221,7 @@ type MarketTab = "browse" | "mine";
 
 const TABS: { key: MarketTab; label: string }[] = [
   { key: "browse", label: "Browse" },
-  { key: "mine", label: "My listings" },
+  { key: "mine", label: MY_LISTINGS_TAB },
 ];
 
 /** The Market: Browse (buying) or My listings (selling), `?tab=mine`. */

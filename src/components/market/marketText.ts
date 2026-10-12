@@ -641,8 +641,22 @@ export function stepTimeText(lockTime: number): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toLocaleString();
 }
 
-/** A button of My listings: an action of `ShakedexListingActions`, or importing a Restored lock's file. */
-export type ListingButton = keyof ShakedexListingActions | "importFile";
+/** A button of My listings: an action of `ShakedexListingActions`. */
+export type ListingButton = keyof ShakedexListingActions;
+
+/** The Market page's tab that holds the seller's listings. */
+export const MY_LISTINGS_TAB = "My listings";
+
+/** Each My listings button's label, as other screens name it too. */
+export const LISTING_BUTTON_LABEL: Record<ListingButton, string> = {
+  finalizeAndSign: "Finalize & sign",
+  lowerPrice: "Lower price",
+  cancel: "Cancel listing",
+  finalizeCancel: "Finalize home",
+  export: "Export listing file",
+  publish: "Publish on LearnHNS Market",
+  importFile: "Import its listing file",
+};
 
 /** The buttons each state shows in My listings; whether each is enabled is the backend's `actions`. */
 export const LISTING_BUTTONS: Record<ShakedexListingState, ListingButton[]> = {

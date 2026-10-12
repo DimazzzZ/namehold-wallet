@@ -1960,6 +1960,8 @@ pub struct ListingActions {
     pub finalize_cancel: ListingAction,
     pub export: ListingAction,
     pub publish: ListingAction,
+    /// Import the saved listing file of a Restored lock (R32).
+    pub import_file: ListingAction,
 }
 
 /// The listing's own draft that was never sent (`queries::never_sent`), or
@@ -2076,7 +2078,8 @@ pub(crate) fn my_listing_from_conn(
     let steps = match readable_steps(l) {
         Ok(steps) => steps,
         // One unreadable row must not hide the others: it is listed with
-        // every action refused in the read's words, and nothing to send.
+        // every action that reads its steps refused in the read's words, and
+        // nothing to send. The import reads none (the file replaces them).
         Err(e) => {
             let refused = || ListingAction::refused_by(Some(e.to_string()));
             return Ok(MyListing {
@@ -2088,6 +2091,9 @@ pub(crate) fn my_listing_from_conn(
                     finalize_cancel: refused(),
                     export: refused(),
                     publish: refused(),
+                    import_file: ListingAction::refused_by(
+                        import_refusal(l.state).map(str::to_string),
+                    ),
                 },
                 prices: ListingPrices::Unreadable {
                     reason: e.to_string(),
@@ -2121,6 +2127,7 @@ pub(crate) fn my_listing_from_conn(
             finalize_cancel: ListingAction::refused_by(finalize_cancel),
             export: ListingAction::refused_by(export_refusal(l).map(str::to_string)),
             publish: ListingAction::refused_by(publish_refusal(l, network)),
+            import_file: ListingAction::refused_by(import_refusal(l.state).map(str::to_string)),
         },
         prices,
         pending_send: pending_send(conn, l)?,
@@ -2170,6 +2177,16 @@ pub(crate) fn export_refusal(l: &ShakedexListing) -> Option<&'static str> {
         ));
     }
     l.listing_file_json.is_none().then_some(EXPORT_NO_FILE)
+}
+
+/// R32: why the saved listing file of a listing in `state` cannot be
+/// imported; `None` for a Restored lock, the only listing without its own
+/// file details. The import reads no stored step: the file replaces them.
+/// The command ([`restored_lock_for_file`]) and My listings ask this one
+/// function.
+pub(crate) fn import_refusal(state: ListingState) -> Option<&'static str> {
+    (state != ListingState::Restored)
+        .then_some("only a lock restored by name takes its saved listing file")
 }
 
 /// Whether a listing file names a market fee: this wallet writes
@@ -2352,7 +2369,7 @@ pub(crate) fn restored_lock_for_file(
     file: &ListingFile,
 ) -> Result<ShakedexListing, AppError> {
     let listing = queries::open_shakedex_listing_for_name(conn, profile_id, &file.name)?
-        .filter(|l| l.state == ListingState::Restored)
+        .filter(|l| import_refusal(l.state).is_none())
         .ok_or_else(|| {
             AppError::InvalidInput(format!(
                 "there is no Restored lock of '{}' here: restore it by name first",

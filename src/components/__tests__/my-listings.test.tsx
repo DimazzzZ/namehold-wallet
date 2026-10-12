@@ -7,7 +7,11 @@ import type { ReactNode } from "react";
 const invokeMock = vi.fn();
 vi.mock("../../lib/invoke", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 const saveMock = vi.fn();
-vi.mock("../../lib/dialog", () => ({ save: (...a: unknown[]) => saveMock(...a), open: vi.fn() }));
+const openMock = vi.fn();
+vi.mock("../../lib/dialog", () => ({
+  save: (...a: unknown[]) => saveMock(...a),
+  open: (...a: unknown[]) => openMock(...a),
+}));
 
 import { MyListings } from "../market/MyListings";
 import {
@@ -23,6 +27,7 @@ import {
   NEEDS_SENDING_NODE,
   PUBLISH_PRIVACY,
   RECOVERY_PHRASE_ONLY,
+  RESTORED_LABEL,
   SEND_AGAIN_KEPT,
   UNSENT_KEPT,
 } from "../market/marketText";
@@ -191,6 +196,7 @@ beforeEach(() => {
   loadSettings({ shakedex_experimental: "true" });
   useUiStore.setState({ toastQueue: [], toastMessage: null });
   saveMock.mockReset();
+  openMock.mockReset();
 });
 
 describe("MyListings", () => {
@@ -823,5 +829,303 @@ describe("MyListings", () => {
     await waitFor(() => expect(calls("shakedex_list_listings").length).toBeGreaterThan(1));
     expect(err).toHaveTextContent("Broadcast failed: insufficient fee");
     expect(err).not.toHaveTextContent(/stays in My listings/);
+  });
+
+  it("Finalize & sign opens its form for the row's listing", async () => {
+    setup([
+      makeMyListing("readyToFinalize", {
+        listing: makeListing({ state: "readyToFinalize", steps: [] }),
+      }),
+    ]);
+    renderIt();
+    const button = await screen.findByTestId("listing-finalize-and-sign");
+    // The label the Lock dialog's toast names (`LISTING_BUTTON_LABEL`).
+    expect(button).toHaveTextContent(/^Finalize & sign$/);
+    fireEvent.click(button);
+    expect(await screen.findByText("Finalize & sign .dexsale")).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("fas-price"), { target: { value: "5" } });
+    const submit = screen.getByTestId("fas-submit");
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(calls("shakedex_finalize_and_sign")).toHaveLength(1));
+    expect(calls("shakedex_finalize_and_sign")[0]![1]).toMatchObject({ listingId: "l1" });
+  });
+
+  it("Import its listing file opens its dialog for the restored lock", async () => {
+    setup([makeMyListing("restored", { listing: makeListing({ state: "restored", steps: [] }) })]);
+    renderIt();
+    fireEvent.click(await screen.findByTestId("listing-import-file"));
+    expect(await screen.findByText("Import the listing file of .dexsale")).toBeInTheDocument();
+    expect(screen.getByTestId("own-file-text")).toBeInTheDocument();
+  });
+
+  it("disables Import its listing file with the backend's reason when the row refuses it", async () => {
+    const why = "only a lock restored by name takes its saved listing file";
+    setup([
+      makeMyListing("restored", {
+        actions: makeActions({ importFile: { allowed: false, reason: why } }),
+      }),
+    ]);
+    renderIt();
+    expect(await screen.findByTestId("listing-import-file")).toBeDisabled();
+    expect(screen.getByText(why)).toBeInTheDocument();
+  });
+
+  it("an unreadable Restored lock still offers its file import, as the import's own refusal allows", async () => {
+    const corrupted = "corrupted listing l1: unreadable steps";
+    const refused = { allowed: false, reason: corrupted };
+    setup([
+      makeMyListing("restored", {
+        listing: makeListing({ state: "restored", steps: [] }),
+        prices: { kind: "unreadable", reason: corrupted },
+        actions: {
+          finalizeAndSign: refused,
+          lowerPrice: refused,
+          cancel: refused,
+          finalizeCancel: refused,
+          export: refused,
+          publish: refused,
+          importFile: { allowed: true, reason: null },
+        },
+      }),
+    ]);
+    renderIt();
+    expect(await screen.findByTestId("listing-cancel")).toBeDisabled();
+    expect(screen.getByTestId("listing-import-file")).toBeEnabled();
+  });
+
+  it("restore by name shows the lock as 'Locked — listing details unknown'", async () => {
+    let restored = false;
+    const restoredRow = makeMyListing("restored", {
+      listing: makeListing({ state: "restored", steps: [] }),
+    });
+    setup([], {
+      answers: {
+        shakedex_restore_lock: () => {
+          restored = true;
+          return Promise.resolve(restoredRow.listing);
+        },
+        shakedex_list_listings: () => Promise.resolve(restored ? [restoredRow] : []),
+      },
+    });
+    renderIt();
+    expect(await screen.findByText("Restore a lock by name")).toBeInTheDocument();
+    const submit = screen.getByTestId("restore-submit");
+    expect(submit).toBeDisabled();
+    fireEvent.change(screen.getByTestId("restore-name"), { target: { value: " dexsale " } });
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+    expect(await screen.findByText(RESTORED_LABEL)).toBeInTheDocument();
+    expect(calls("shakedex_restore_lock")).toEqual([
+      ["shakedex_restore_lock", { name: "dexsale" }],
+    ]);
+    expect(toasts()).toContain(`Restored .dexsale: ${RESTORED_LABEL}`);
+  });
+
+  it.each([
+    [" .DexSale ", "dexsale"],
+    ["сбер", "xn--90ai7ab"],
+  ])("restore sends %j as the on-chain name %s", async (typed, sent) => {
+    setup([], {
+      answers: {
+        shakedex_restore_lock: () => Promise.resolve(makeListing({ state: "restored", steps: [] })),
+      },
+    });
+    renderIt();
+    fireEvent.change(await screen.findByTestId("restore-name"), { target: { value: typed } });
+    const submit = screen.getByTestId("restore-submit");
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(calls("shakedex_restore_lock")).toEqual([["shakedex_restore_lock", { name: sent }]]),
+    );
+  });
+
+  it("restore is disabled while the typed name is no name at all", async () => {
+    setup([]);
+    renderIt();
+    fireEvent.change(await screen.findByTestId("restore-name"), { target: { value: " ... " } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByTestId("restore-submit")).toBeDisabled();
+  });
+
+  it("shows the name it restores when that is not the name as typed", async () => {
+    setup([]);
+    renderIt();
+    const field = await screen.findByTestId("restore-name");
+    fireEvent.change(field, { target: { value: "dex sale" } });
+    expect(await screen.findByTestId("restore-target")).toHaveTextContent("Restores .dexsale");
+    // Case, a leading dot and the Unicode form of an IDN are the name as typed.
+    for (const same of [" .DexSale ", "сбер"]) {
+      fireEvent.change(field, { target: { value: same } });
+      await waitFor(() => expect(screen.queryByTestId("restore-target")).toBeNull());
+    }
+  });
+
+  it("restore says why the backend refused it", async () => {
+    setup([], {
+      answers: {
+        shakedex_restore_lock: () =>
+          Promise.reject("Invalid input: 'dexsale' is not at this wallet's lock address"),
+      },
+    });
+    renderIt();
+    fireEvent.change(await screen.findByTestId("restore-name"), { target: { value: "dexsale" } });
+    const submit = screen.getByTestId("restore-submit");
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "'dexsale' is not at this wallet's lock address",
+    );
+  });
+
+  it("restore on a locked wallet unlocks this profile's signer once and restores", async () => {
+    setup([], {
+      unlocked: false,
+      answers: {},
+    });
+    const base = invokeMock.getMockImplementation()!;
+    let unlocked = false;
+    invokeMock.mockImplementation((cmd: string, args: unknown) => {
+      if (cmd === "unlock_local_signer") unlocked = true;
+      if (cmd === "shakedex_restore_lock")
+        return unlocked
+          ? Promise.resolve(makeListing({ state: "restored", steps: [] }))
+          : Promise.reject("Wallet locked");
+      return base(cmd, args);
+    });
+    renderIt();
+    fireEvent.change(await screen.findByTestId("restore-name"), { target: { value: "dexsale" } });
+    const submit = screen.getByTestId("restore-submit");
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(calls("shakedex_restore_lock")).toHaveLength(2));
+    expect(calls("unlock_local_signer")).toEqual([
+      ["unlock_local_signer", { walletProfileId: "p1" }],
+    ]);
+  });
+
+  it("restore is disabled for a Ledger profile with the R16 sentence", async () => {
+    setup([], { kind: "ledger_hardware" });
+    renderIt();
+    fireEvent.change(await screen.findByTestId("restore-name"), { target: { value: "dexsale" } });
+    expect(screen.getByTestId("restore-submit")).toBeDisabled();
+    expect(screen.getAllByText(RECOVERY_PHRASE_ONLY).length).toBeGreaterThan(0);
+  });
+
+  it("imports a restored lock's own file, pasted or chosen on disk", async () => {
+    openMock.mockResolvedValue("/tmp/f.json");
+    const listed = makeListing({ state: "listed" });
+    setup([makeMyListing("restored", { listing: makeListing({ state: "restored", steps: [] }) })], {
+      answers: {
+        shakedex_import_own_listing_file: () => Promise.resolve(listed),
+        shakedex_import_own_listing_from_file: () => Promise.resolve(listed),
+      },
+    });
+    renderIt();
+    fireEvent.click(await screen.findByTestId("listing-import-file"));
+    const importButton = await screen.findByTestId("own-file-import");
+    expect(importButton).toBeDisabled();
+    fireEvent.change(screen.getByTestId("own-file-text"), { target: { value: '{"version":2}' } });
+    fireEvent.click(importButton);
+    await waitFor(() =>
+      expect(calls("shakedex_import_own_listing_file")).toEqual([
+        ["shakedex_import_own_listing_file", { text: '{"version":2}' }],
+      ]),
+    );
+    expect(toasts()).toContain("Listing file imported: the listing is Listed for sale.");
+    await waitFor(() => expect(screen.queryByTestId("own-file-text")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId("listing-import-file"));
+    fireEvent.click(await screen.findByTestId("own-file-pick"));
+    await waitFor(() =>
+      expect(calls("shakedex_import_own_listing_from_file")).toEqual([
+        ["shakedex_import_own_listing_from_file", { path: "/tmp/f.json" }],
+      ]),
+    );
+    expect(openMock.mock.calls[0]![0]).toMatchObject({
+      filters: [{ name: "Listing file", extensions: ["json"] }],
+    });
+  });
+
+  it("says why the file picker could not open", async () => {
+    openMock.mockRejectedValue("dialog plugin unavailable");
+    setup([makeMyListing("restored", { listing: makeListing({ state: "restored", steps: [] }) })]);
+    renderIt();
+    fireEvent.click(await screen.findByTestId("listing-import-file"));
+    fireEvent.click(await screen.findByTestId("own-file-pick"));
+    expect(await screen.findByTestId("own-file-error")).toHaveTextContent(
+      "dialog plugin unavailable",
+    );
+    expect(calls("shakedex_import_own_listing_from_file")).toHaveLength(0);
+  });
+
+  it("the own-file import is disabled with the node sentence when the node cannot send", async () => {
+    // The row's button is gated too; the dialog says why on its own once open.
+    setup([makeMyListing("restored", { listing: makeListing({ state: "restored", steps: [] }) })]);
+    const { OwnFileImport } = await import("../market/RestoreLock");
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "list_wallet_profiles") return Promise.resolve([makeProfile()]);
+      if (cmd === "get_write_capability")
+        return Promise.resolve({
+          signerUnlocked: true,
+          broadcasterAvailable: false,
+          canWrite: false,
+          reason: null,
+        });
+      return Promise.resolve(null);
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <OwnFileImport listing={makeListing({ state: "restored", steps: [] })} onClose={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(NEEDS_SENDING_NODE)).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("own-file-text"), { target: { value: "{}" } });
+    expect(screen.getByTestId("own-file-import")).toBeDisabled();
+    expect(screen.getByTestId("own-file-pick")).toBeDisabled();
+  });
+
+  it("the own-file import on a locked wallet unlocks this profile's signer once and imports", async () => {
+    setup([makeMyListing("restored", { listing: makeListing({ state: "restored", steps: [] }) })], {
+      unlocked: false,
+    });
+    const base = invokeMock.getMockImplementation()!;
+    let unlocked = false;
+    invokeMock.mockImplementation((cmd: string, args: unknown) => {
+      if (cmd === "unlock_local_signer") unlocked = true;
+      if (cmd === "shakedex_import_own_listing_file")
+        return unlocked ? Promise.resolve(makeListing()) : Promise.reject("Wallet locked");
+      return base(cmd, args);
+    });
+    renderIt();
+    fireEvent.click(await screen.findByTestId("listing-import-file"));
+    fireEvent.change(await screen.findByTestId("own-file-text"), { target: { value: "{}" } });
+    fireEvent.click(screen.getByTestId("own-file-import"));
+    await waitFor(() => expect(calls("shakedex_import_own_listing_file")).toHaveLength(2));
+    expect(calls("unlock_local_signer")).toEqual([
+      ["unlock_local_signer", { walletProfileId: "p1" }],
+    ]);
+  });
+
+  it("imports nothing when the open dialog is closed, and shows the backend's refusal", async () => {
+    openMock.mockResolvedValue(null);
+    setup([makeMyListing("restored", { listing: makeListing({ state: "restored", steps: [] }) })], {
+      answers: {
+        shakedex_import_own_listing_file: () =>
+          Promise.reject("Invalid input: this listing file is for another lock coin"),
+      },
+    });
+    renderIt();
+    fireEvent.click(await screen.findByTestId("listing-import-file"));
+    fireEvent.click(await screen.findByTestId("own-file-pick"));
+    await waitFor(() => expect(openMock).toHaveBeenCalled());
+    expect(calls("shakedex_import_own_listing_from_file")).toHaveLength(0);
+    fireEvent.change(screen.getByTestId("own-file-text"), { target: { value: "{}" } });
+    fireEvent.click(screen.getByTestId("own-file-import"));
+    expect(await screen.findByTestId("own-file-error")).toHaveTextContent(
+      "this listing file is for another lock coin",
+    );
   });
 });

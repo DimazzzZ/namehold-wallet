@@ -6,9 +6,9 @@ use rusqlite::Connection;
 
 use super::shakedex_sell_tests::{insert_draft, listing, store_conn};
 use crate::commands::shakedex::{
-    cancel_refusal, export_refusal, finalize_cancel_refusal, finalize_refusal, lower_refusal,
-    my_listings_from_conn, needs_median_time, publish_listing_from_conn, publish_refusal,
-    save_listing_file_from_conn, ListingAction, ListingPrices, MyListing,
+    cancel_refusal, export_refusal, finalize_cancel_refusal, finalize_refusal, import_refusal,
+    lower_refusal, my_listings_from_conn, needs_median_time, publish_listing_from_conn,
+    publish_refusal, save_listing_file_from_conn, ListingAction, ListingPrices, MyListing,
 };
 use crate::db::queries::{self, ListingState, ShakedexListing};
 use crate::noncustodial::network::Network;
@@ -132,6 +132,16 @@ fn listing_actions_follow_the_commands_refusals_in_every_state() {
             "{state:?}"
         );
         assert_eq!(a.export.reason, words(export_refusal(&l)), "{state:?}");
+        assert_eq!(
+            allowed(&a.import_file),
+            state == ListingState::Restored,
+            "{state:?}"
+        );
+        assert_eq!(
+            a.import_file.reason,
+            words(import_refusal(state)),
+            "{state:?}"
+        );
         // `with_steps` stores an unreadable file ("{}"): refused in every
         // state, each in the words of `publish_refusal`.
         assert!(!allowed(&a.publish), "{state:?}");
@@ -144,8 +154,9 @@ fn listing_actions_follow_the_commands_refusals_in_every_state() {
 }
 
 /// One listing whose stored steps cannot be read does not hide the others:
-/// its row is listed with every action refused, in the read's own words,
-/// and nothing to send.
+/// its row is listed with every action that reads them refused, in the
+/// read's own words, and nothing to send. Importing its listing file reads
+/// no stored step (the file replaces them): it keeps its own refusal.
 #[test]
 fn an_unreadable_listing_is_listed_with_every_action_refused() {
     let conn = store_conn();
@@ -181,6 +192,10 @@ fn an_unreadable_listing_is_listed_with_every_action_refused() {
             "{why}"
         );
     }
+    assert_eq!(
+        a.import_file.reason.as_deref(),
+        import_refusal(ListingState::Cancelling)
+    );
     assert!(row.listing.steps.is_empty());
     assert!(
         matches!(&row.prices, ListingPrices::Unreadable { reason } if reason.starts_with("corrupted listing bad")),
@@ -189,6 +204,23 @@ fn an_unreadable_listing_is_listed_with_every_action_refused() {
     );
     assert_eq!(row.pending_send, None);
     assert!(allowed(&row_of(&conn, "good").actions.lower_price));
+}
+
+/// A Restored lock whose stored steps cannot be read can still take its
+/// listing file: the import refuses only what is not a Restored lock
+/// (`import_refusal`), and every other action of the row is refused in the
+/// read's words. The import itself is pinned by
+/// `own_listing_file_upgrades_a_restored_lock_whose_stored_steps_are_unreadable`.
+#[test]
+fn an_unreadable_restored_lock_can_still_import_its_listing_file() {
+    let conn = store_conn();
+    let mut bad = listing("bad", "beta", ListingState::Restored);
+    bad.steps_json = "not json".into();
+    insert(&conn, &bad);
+    let row = row_of(&conn, "bad");
+    assert!(allowed(&row.actions.import_file));
+    assert!(!allowed(&row.actions.cancel));
+    assert!(matches!(row.prices, ListingPrices::Unreadable { .. }));
 }
 
 #[test]

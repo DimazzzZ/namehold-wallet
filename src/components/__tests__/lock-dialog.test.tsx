@@ -258,6 +258,17 @@ describe("LockDialog", () => {
     expect(screen.getByTestId("lock-build")).toBeDisabled();
   });
 
+  it("a sent lock's toast names the tab and the button where the price is set", async () => {
+    setup();
+    const onClose = renderIt();
+    fireEvent.click(await lockButton());
+    fireEvent.click(await screen.findByTestId("lock-send"));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(useUiStore.getState().toastQueue.map((t) => t.message)).toEqual([
+      "Lock sent. Once the transfer lockup is over, set the price with Finalize & sign in Market › My listings.",
+    ]);
+  });
+
   it("on a locked wallet unlocks this profile's signer, then builds, signs and sends", async () => {
     setup({ unlocked: false });
     const onClose = renderIt();

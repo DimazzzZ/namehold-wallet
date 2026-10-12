@@ -21,7 +21,9 @@ import { useSettingsStore } from "../../stores/settings";
 import { useUiStore } from "../../stores/ui";
 import type { ShakedexListingMode, TxDraftSummary } from "../../types";
 import {
+  LISTING_BUTTON_LABEL,
   LOCK_COSTS,
+  MY_LISTINGS_TAB,
   PUBLISH_PRIVACY,
   SHARED_AS_FILE_ONLY,
   canSellShakedex,
@@ -107,7 +109,9 @@ export function LockDialog({ open, name, onClose }: LockDialogProps) {
       // before signing, the sign is refused "Wallet locked" and run again
       // after one unlock.
       await signer.run(profile.id, () => exec.run(draft.id, profile.id, true));
-      showToast("Lock sent. Finalize & sign opens in My listings after the transfer lockup.");
+      showToast(
+        `Lock sent. Once the transfer lockup is over, set the price with ${LISTING_BUTTON_LABEL.finalizeAndSign} in Market › ${MY_LISTINGS_TAB}.`,
+      );
       // The listing and the name's actions follow the sent lock.
       qc.invalidateQueries({ queryKey: ["shakedex"] });
       qc.invalidateQueries({ queryKey: ["read"] });

@@ -31,12 +31,15 @@ import {
 } from "../../queries/wallet";
 import { useSettingsStore } from "../../stores/settings";
 import { useUiStore } from "../../stores/ui";
-import type { ShakedexListingAction, ShakedexMyListing } from "../../types";
+import type { ShakedexMyListing } from "../../types";
+import { FinalizeAndSign } from "./FinalizeAndSign";
+import { OwnFileImport, RestoreLock } from "./RestoreLock";
 import {
   CANCEL_MARKET_TOLD,
   CANCEL_MEMPOOL_PURCHASE,
   CANCEL_THEN_FINALIZE,
   LISTING_BUTTONS,
+  LISTING_BUTTON_LABEL,
   LOWER_PRICE_PERMANENCE,
   PUBLISH_PRIVACY,
   TONE_DOT,
@@ -55,18 +58,8 @@ import {
   withKept,
 } from "./marketText";
 
-/** A row's dialog; Finalize & sign and the file import open theirs in step 7. */
+/** A row's dialog. */
 type RowDialog = "finalize" | "importFile" | "cancel" | "lower" | null;
-
-const LABEL: Record<ListingButton, string> = {
-  finalizeAndSign: "Finalize & sign",
-  lowerPrice: "Lower price",
-  cancel: "Cancel listing",
-  finalizeCancel: "Finalize home",
-  export: "Export listing file",
-  publish: "Publish on LearnHNS Market",
-  importFile: "Import its listing file",
-};
 
 const TEST_ID: Record<ListingButton, string> = {
   finalizeAndSign: "listing-finalize-and-sign",
@@ -78,14 +71,12 @@ const TEST_ID: Record<ListingButton, string> = {
   importFile: "listing-import-file",
 };
 
-/** Importing a Restored lock's file is refused only by the profile's gates. */
-const ALWAYS: ShakedexListingAction = { allowed: true, reason: null };
-
 /**
  * The seller's listings (R25, R26, R28): one row per listing with its
  * state, where it stands on LearnHNS Market, its prices and the actions its
  * state shows. Whether an action can run is the backend's (`actions`, from
  * the refusal each command runs first); the profile's gates come first.
+ * "Restore a lock by name" (R32) follows the list, empty or not.
  */
 export function MyListings() {
   const listings = useMyListings();
@@ -102,27 +93,26 @@ export function MyListings() {
   if (listings.isLoading || profile.isLoading || writeCap.isLoading) {
     return <p className="text-sm text-gray-500">Loading your listings…</p>;
   }
-  if (listings.isError) {
-    return (
-      <Alert tone="error" title="Could not load your listings">
-        {mapError(listings.error)}
-      </Alert>
-    );
-  }
   const rows = listings.data ?? [];
-  if (rows.length === 0) {
-    return (
-      <p className="text-sm text-gray-500">
-        No listings yet. Sell a name from its actions in Owned Names.
-      </p>
-    );
-  }
   return (
-    <ul className="divide-y divide-gray-100 border-y border-gray-100 bg-white">
-      {rows.map((row) => (
-        <ListingRow key={row.listing.id} row={row} />
-      ))}
-    </ul>
+    <div>
+      {listings.isError ? (
+        <Alert tone="error" title="Could not load your listings">
+          {mapError(listings.error)}
+        </Alert>
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-gray-500">
+          No listings yet. Sell a name from its actions in Owned Names.
+        </p>
+      ) : (
+        <ul className="divide-y divide-gray-100 border-y border-gray-100 bg-white">
+          {rows.map((row) => (
+            <ListingRow key={row.listing.id} row={row} />
+          ))}
+        </ul>
+      )}
+      <RestoreLock />
+    </div>
   );
 }
 
@@ -154,7 +144,6 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
   const publishGate = sellRefusal(profile?.kind, writeCap, profile?.network, experimental);
   const gateOf = (b: ListingButton) =>
     b === "export" ? null : b === "publish" ? publishGate : signingGate;
-  const actionOf = (b: ListingButton) => (b === "importFile" ? ALWAYS : actions[b]);
 
   const buttons = LISTING_BUTTONS[listing.state].filter(
     // Carry 1: off → on only, on mainnet only.
@@ -292,7 +281,7 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
   // Each disabled button's reason, once: the gate first, then the backend's.
   const reasons = new Set<string>();
   const button = (b: ListingButton) => {
-    const action = actionOf(b);
+    const action = actions[b];
     const gate = gateOf(b);
     const reason = gate ?? (action.allowed ? null : action.reason);
     if (reason) reasons.add(reason);
@@ -304,7 +293,7 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
           disabled={busy || gate !== null || !action.allowed}
           onClick={onClick[b]}
         >
-          {LABEL[b]}
+          {LISTING_BUTTON_LABEL[b]}
         </Button>
       </ActionHint>
     );
@@ -394,6 +383,12 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
         <Alert tone="error" className="mt-2">
           <span data-testid="listing-error">{error}</span>
         </Alert>
+      )}
+      {dialog === "finalize" && (
+        <FinalizeAndSign open listing={listing} onClose={() => setDialog(null)} />
+      )}
+      {dialog === "importFile" && (
+        <OwnFileImport listing={listing} onClose={() => setDialog(null)} />
       )}
       {dialog === "cancel" && <CancelDialog row={row} onClose={() => setDialog(null)} />}
       {dialog === "lower" && <LowerPriceDialog row={row} onClose={() => setDialog(null)} />}
