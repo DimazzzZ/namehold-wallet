@@ -470,7 +470,10 @@ export function GuidedAction({
           // cancelTransfer/renew/revoke) is force-disabled by the backend.
           // Surface that reason here so the user isn't left staring at
           // buttons that quietly do nothing.
-          const ownerCoinNotSynced = caps.hasOwnerCoin === false;
+          // A name locked for sale has no owner coin of ours by design: it
+          // sits at the Shakedex lock address, which no sync changes.
+          const inLock = caps.lockedForSale === true;
+          const ownerCoinNotSynced = caps.hasOwnerCoin === false && !inLock;
           const notSyncedReason =
             caps.canUpdate?.reason ?? caps.canRenew?.reason ?? caps.canTransfer?.reason ?? null;
           return (
@@ -485,6 +488,15 @@ export function GuidedAction({
                 >
                   This name is yours, but its owner coin hasn&apos;t synced locally yet.{" "}
                   {notSyncedReason ?? "Connect a node and Refresh to manage it."}
+                </div>
+              )}
+              {inLock && caps.hasOwnerCoin === false && (
+                <div
+                  className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded p-2"
+                  data-testid="owner-coin-in-lock"
+                >
+                  Its owner coin is in the Shakedex lock; manage the listing in Market › My
+                  listings.
                 </div>
               )}
             </div>

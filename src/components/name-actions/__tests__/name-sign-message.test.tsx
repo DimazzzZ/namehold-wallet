@@ -70,6 +70,7 @@ function capsFor(name: string, ownsName: boolean): NameActionCapabilities {
     pendingBroadcastAction: null,
     strandedBidCount: 0,
     strandedLockupDoos: 0,
+    lockedForSale: false,
   };
 }
 
@@ -81,6 +82,16 @@ beforeEach(() => {
 describe("NameSignMessage — sign an arbitrary message with the owning key (Task 3)", () => {
   it("does not render for a name the wallet does not own", () => {
     render(<NameSignMessage name="notmine" profileId="p1" caps={capsFor("notmine", false)} />, {
+      wrapper: wrapper(),
+    });
+    expect(screen.queryByTestId("name-sign-message")).not.toBeInTheDocument();
+  });
+
+  it("does not render for a name locked for sale, whose coin sits at the lock address", () => {
+    // Still ours and registered (R27), but there is no owner coin to sign
+    // with: `sign_name_message` would refuse it.
+    const caps = { ...capsFor("listed", true), hasOwnerCoin: false };
+    render(<NameSignMessage name="listed" profileId="p1" caps={caps} />, {
       wrapper: wrapper(),
     });
     expect(screen.queryByTestId("name-sign-message")).not.toBeInTheDocument();

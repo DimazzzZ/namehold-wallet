@@ -311,9 +311,12 @@ function buildCapabilities(name: string): Record<string, unknown> {
     name,
     phase,
     taskState,
-    ownsName: won,
+    // A name with an open listing stays ours, its owner actions refused
+    // (`derive_name_ownership`), even when the mock never won it (a restore).
+    ownsName: won || listing !== undefined,
+    lockedForSale: listing !== undefined,
     // The mock's won names are registered: it allows update/transfer on them.
-    nameIsRegistered: won,
+    nameIsRegistered: won || listing !== undefined,
     transferPending: false,
     // A lost auction leaves exactly one reveal to reclaim in this mock — the
     // same condition `canRedeem` below is built from.
@@ -338,7 +341,7 @@ function buildCapabilities(name: string): Record<string, unknown> {
       phase === "REVEAL" && a.hasBid && hasBidCoin && a.revealStatus !== "broadcasted",
     ),
     canRedeem: cap(closed && !won && a.hasBid),
-    canRegister: cap(won),
+    canRegister: ownerAction(won),
     canUpdate: ownerAction(won),
     canTransfer: ownerAction(won),
     canFinalize: cap(false),

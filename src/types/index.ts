@@ -721,6 +721,12 @@ export interface NameActionCapabilities {
    */
   redeemableRevealCount: number;
   redeemableValueDoos: number;
+  /**
+   * The name is locked for sale through Shakedex (R27): an open listing of
+   * this wallet holds it, its owner coin may sit at the lock address, and
+   * every owner action is refused for the sale.
+   */
+  lockedForSale: boolean;
 }
 
 // ---------------------------------------------------------------------------

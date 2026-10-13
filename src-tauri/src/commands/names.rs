@@ -150,6 +150,11 @@ pub struct NameActionCapabilities {
     pub phase: String,
     pub task_state: AuctionTaskState,
     pub owns_name: bool,
+    /// R27: an open Shakedex listing of this wallet holds the name (the
+    /// context's `listing_state`): its owner coin may sit at the lock
+    /// address, and every owner action is refused for the sale. The UI says
+    /// so instead of calling the missing owner coin a sync gap.
+    pub locked_for_sale: bool,
     /// Whether the name is actually REGISTERED — an owner coin at
     /// `COV_REGISTER` or later. `owns_name` is NOT this: during REVEAL
     /// `getnameinfo` already names the highest revealer as the owner, so a
@@ -927,9 +932,11 @@ pub(crate) fn build_name_action_capabilities(
     // already names the highest revealer as the owner, so the wallet looked
     // like it owned a name it had not won yet, and offered Update, Transfer,
     // Renew and Revoke on it.
+    // A name with an open listing is registered whatever the wallet holds:
+    // only a registered name can be transferred to a lock.
     let name_is_registered = crate::noncustodial::covenants::is_registered_owner_covenant(
         action_ctx.owner_covenant_type,
-    );
+    ) || action_ctx.listing_state.is_some();
     let can_spend_as_owner = owns_name && name_is_registered;
     let transfer_pending = action_ctx.transfer_has_items.unwrap_or(false);
     // Why an ownership action is refused before its own condition is looked
@@ -1092,6 +1099,9 @@ pub(crate) fn build_name_action_capabilities(
     let abortable = action_ctx
         .listing_state
         .is_some_and(|s| s.aborts_by_cancel_transfer());
+    // Register too: a listed name has no owner coin of ours, and the spend
+    // lock's "not synced" sentence would send the user to Refresh for nothing.
+    let can_register = for_sale(can_register, false);
     let can_update = for_sale(can_update, false);
     let can_transfer = for_sale(can_transfer, false);
     let can_finalize = for_sale(can_finalize, false);
@@ -1163,6 +1173,7 @@ pub(crate) fn build_name_action_capabilities(
         phase,
         task_state,
         owns_name,
+        locked_for_sale: action_ctx.listing_state.is_some(),
         name_is_registered,
         transfer_pending,
         has_bid_commitment: action_ctx.has_bid_commitment,
@@ -1211,6 +1222,7 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         phase: "UNKNOWN".into(),
         task_state: AuctionTaskState::UnavailableOther,
         owns_name: false,
+        locked_for_sale: false,
         // No node-synced owner coin reached us, so nothing proves the name is
         // registered. Claiming it would unlock the ownership sections on a
         // name we cannot even read.
@@ -1296,7 +1308,14 @@ pub(crate) fn derive_name_ownership(
         .map(|a| profile_addrs.iter().any(|p| p == a))
         .unwrap_or(false);
     NameOwnership {
-        owns_name: ctx.has_owner_coin || ctx.owner_spend_in_flight || explorer_owned,
+        // A name locked for sale (R27) is still ours while its listing is
+        // open, though its coin sits at the lock address: the owner actions
+        // stay on screen, each refused with `NAME_LOCKED_FOR_SALE`, instead of
+        // the modal reading it as somebody else's registered name.
+        owns_name: ctx.has_owner_coin
+            || ctx.owner_spend_in_flight
+            || explorer_owned
+            || ctx.listing_state.is_some(),
         spend_locked: !ctx.has_owner_coin,
     }
 }

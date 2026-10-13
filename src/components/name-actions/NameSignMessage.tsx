@@ -16,7 +16,9 @@ import type { NameActionCapabilities, NameSignature } from "../../types";
  * Registered-only: renders nothing unless `caps.nameIsRegistered`. `ownsName`
  * is not the same question — during REVEAL hsd reports the highest revealer as
  * the owner, and a signature over a name nobody has won yet is a claim every
- * verifier resolves as false. The backend refuses it too.
+ * verifier resolves as false. The backend refuses it too. Nor without an owner
+ * coin: a name locked for sale is still ours and registered, but its coin sits
+ * at the lock address and `sign_name_message` has no key to sign with.
  * The RAW name is sent to the backend; only the heading/placeholder render
  * through `displayName` for IDN labels.
  */
@@ -37,7 +39,7 @@ export function NameSignMessage({
   const [showDetails, setShowDetails] = useState(false);
   const [copied, setCopied] = useState<"signature" | "publicKey" | "address" | null>(null);
 
-  if (!caps?.nameIsRegistered) return null;
+  if (!caps?.nameIsRegistered || !caps.hasOwnerCoin) return null;
 
   const handleSign = async () => {
     setError(null);

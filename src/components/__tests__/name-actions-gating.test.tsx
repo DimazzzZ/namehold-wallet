@@ -25,6 +25,9 @@ import {
 } from "../market/marketText";
 import type { NameActionCapabilities, WalletNetwork, WalletProfileKind } from "../../types";
 
+/** `shakedex::NAME_LOCKED_FOR_SALE`, word for word. */
+const NAME_LOCKED_FOR_SALE = "this name is locked for sale through Shakedex";
+
 const profile = {
   id: "p1",
   label: "Primary",
@@ -286,6 +289,61 @@ describe("NameActionsModal — Sell", () => {
     const sell = await openSell();
     await waitFor(() => expect(sell).toBeDisabled());
     expect(await hint(sell)).toHaveTextContent("this name is locked for sale through Shakedex");
+  });
+
+  it("a Listed name keeps its owner actions, each refused because it is locked for sale (R27)", async () => {
+    // What the backend reports once the coin sits at the lock address: still
+    // ours and registered, no owner coin, every owner action refused for the
+    // sale. The modal must not fall back to a stranger's "already registered".
+    const forSale = refused(NAME_LOCKED_FOR_SALE);
+    const listed = sellRoute({
+      caps: {
+        taskState: "ownedNoUrgentAction",
+        hasOwnerCoin: false,
+        lockedForSale: true,
+        canRegister: forSale,
+        canUpdate: forSale,
+        canTransfer: forSale,
+        canFinalize: forSale,
+        canCancelTransfer: forSale,
+        canRenew: forSale,
+        canRevoke: forSale,
+      },
+    });
+    // The name's chain state, so the guided panel renders as in the app.
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "read_name_info"
+        ? Promise.resolve({
+            name: "examplename",
+            state: "CLOSED",
+            registered: true,
+            height: 5040,
+            renewal: 329999,
+            owner: { hash: "deadbeef", address: "rs1qlock" },
+            value: 100000,
+            highest: 100000,
+            stats: { openPeriodStart: 5000, biddingPeriodEnd: 5040, revealPeriodEnd: 5540 },
+          })
+        : listed(cmd),
+    );
+    const sell = await openSell();
+    await screen.findByText(/You own this name/);
+    expect(screen.queryByText(/This name is already registered/)).toBeNull();
+    expect(screen.getByTestId("ownership-indicator")).toBeInTheDocument();
+    for (const label of [/^Transfer$/, /^Renew$/, /^Revoke$/]) {
+      const button = screen.getByRole("button", { name: label });
+      expect(button).toBeDisabled();
+      expect(await hint(button)).toHaveTextContent(NAME_LOCKED_FOR_SALE);
+      fireEvent.mouseLeave(button.parentElement!);
+      await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+    }
+    expect(sell).toBeDisabled();
+    expect(await hint(sell)).toHaveTextContent(NAME_LOCKED_FOR_SALE);
+    // Its owner coin sits at the lock address by design: not a sync gap.
+    expect(screen.queryByTestId("owner-coin-not-synced")).toBeNull();
+    expect(screen.getByTestId("owner-coin-in-lock")).toHaveTextContent(
+      "Its owner coin is in the Shakedex lock; manage the listing in Market › My listings.",
+    );
   });
 
   it.each(["ledger_hardware", "watch_only_xpub"] as const)(

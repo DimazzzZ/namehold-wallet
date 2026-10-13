@@ -4311,6 +4311,9 @@ async fn locked_name_offers_no_owner_actions() {
             [],
         )
         .unwrap();
+        // The lock TRANSFER is long mined: no spend of ours in flight
+        // keeps the name counted as ours.
+        db::queries::update_tx_draft_status(&conn, "d-lock", "confirmed", None, None).unwrap();
     }
     set_listing_state("listed");
     let c = caps().await.unwrap();
@@ -4325,6 +4328,49 @@ async fn locked_name_offers_no_owner_actions() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains(NAME_LOCKED_FOR_SALE), "{err}");
+
+    // The name is still this wallet's while the coin sits at its lock: the
+    // modal keeps the owner sections, each action refused for the sale,
+    // instead of a third party's "already registered" details. Every state
+    // in which the coin is still locked counts.
+    for open in [
+        "listed",
+        "sale_pending",
+        "cancelling",
+        "cancel_awaiting_finalize",
+        "cancel_finalizing",
+        "restored",
+    ] {
+        set_listing_state(open);
+        let c = caps().await.unwrap();
+        assert!(c.owns_name, "{open}: the name is not counted as ours");
+        assert!(c.name_is_registered, "{open}: the name is not registered");
+        assert!(c.locked_for_sale, "{open}: not said to be locked for sale");
+        assert_owner_actions_refused(&c, open);
+        assert_eq!(
+            c.can_register.reason.as_deref(),
+            Some(NAME_LOCKED_FOR_SALE),
+            "{open}: register"
+        );
+    }
+    // Once the listing has ended the lock no longer stands for us: sold
+    // (the buyer's), cancelled or aborted (back home, where the owner coin
+    // says so), expired. With no owner coin of ours the name is not ours.
+    for ended in ["sold", "cancelled", "aborted", "expired"] {
+        set_listing_state(ended);
+        let c = caps().await.unwrap();
+        assert!(!c.owns_name, "{ended}: still counted as ours");
+        assert!(!c.locked_for_sale, "{ended}: still locked for sale");
+        assert!(
+            !c.name_is_registered,
+            "{ended}: still counted as registered"
+        );
+        assert_ne!(
+            c.can_update.reason.as_deref(),
+            Some(NAME_LOCKED_FOR_SALE),
+            "{ended}"
+        );
+    }
 }
 
 /// R27 (ruling, fix round 1): a Locking listing whose lock TRANSFER draft is
