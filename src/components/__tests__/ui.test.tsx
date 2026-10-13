@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
+import { useState } from "react";
+import { flushSync } from "react-dom";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { Button } from "../ui/Button";
 import { Badge } from "../ui/Badge";
@@ -210,6 +212,49 @@ describe("Dialog", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(outer).toHaveBeenCalledTimes(1);
     expect(inner).toHaveBeenCalledTimes(1);
+  });
+
+  it("the inner dialog keeps Escape when the outer re-registers after it and the inner closes synchronously", () => {
+    // The name actions' parents pass a fresh inline onClose, so the outer
+    // dialog re-subscribes after the nested one has opened. WebKit flushes
+    // the inner close (a microtask) before the next listener runs; flushSync
+    // reproduces that here. Only the inner dialog may close.
+    const outer = vi.fn();
+    function Actions() {
+      const [innerOpen, setInnerOpen] = useState(false);
+      return (
+        <>
+          <button onClick={() => setInnerOpen(true)}>Open inner</button>
+          <Dialog
+            open={innerOpen}
+            onClose={() => flushSync(() => setInnerOpen(false))}
+            title="Inner"
+          >
+            <p>Content</p>
+          </Dialog>
+        </>
+      );
+    }
+    const tree = () => (
+      <Dialog open onClose={() => outer()} title="Outer">
+        <Actions />
+      </Dialog>
+    );
+    const { rerender } = render(tree());
+    fireEvent.click(screen.getByText("Open inner"));
+    expect(screen.getByText("Inner")).toBeTruthy();
+    rerender(tree());
+
+    // Dispatched outside act(), as the browser does: act would batch the
+    // inner flushSync until after every listener had run.
+    const escape = () =>
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    escape();
+    expect(screen.queryByText("Inner")).toBeNull();
+    expect(outer).not.toHaveBeenCalled();
+
+    escape();
+    expect(outer).toHaveBeenCalledTimes(1);
   });
 });
 
