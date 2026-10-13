@@ -1868,6 +1868,10 @@ fn refusal_sentences_match_the_uis_word_for_word() {
             "LOWER_DURING_CANCEL",
             crate::commands::shakedex::LOWER_DURING_CANCEL,
         ),
+        (
+            "CANCEL_LOCKUP_NOT_COUNTED",
+            crate::commands::shakedex::CANCEL_LOCKUP_NOT_COUNTED,
+        ),
     ] {
         let decl = format!("export const {name} = {sentence:?};");
         assert!(ui.contains(&decl), "marketText.ts lacks `{decl}`");

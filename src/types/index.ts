@@ -954,6 +954,8 @@ export interface ShakedexListingSummary {
   cancelFinalizeDraftId: string | null;
   /** Blocks left until the cancel's FINALIZE is valid, at the last sync. */
   cancelBlocksRemaining: number | null;
+  /** Blocks left in the transfer lockup while Locking, counted as the Owned Names row counts them; null before the lock is seen mined and in every other state. */
+  blocksUntilFinalize: number | null;
   /** Where the listing stands on LearnHNS Market; null while our current listing is not yet told. */
   marketStatus: ShakedexMarketStatus | null;
   /** The market's own refusal, or why it gave no answer. */

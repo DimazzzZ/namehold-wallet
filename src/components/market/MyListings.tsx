@@ -308,7 +308,7 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
           .{displayName(listing.name)}
         </span>
         {mode && <span className="text-xs text-gray-500">{mode}</span>}
-        <Badge>{listingStateLabel(listing.state, null)}</Badge>
+        <Badge>{listingStateLabel(listing.state, listing.blocksUntilFinalize)}</Badge>
       </div>
       <div className="mt-1 flex items-start gap-2 text-sm text-gray-700">
         <span

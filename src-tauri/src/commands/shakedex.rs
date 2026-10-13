@@ -757,12 +757,8 @@ pub(crate) async fn prepare_lock_finalize(
         let listing = queries::get_shakedex_listing(&conn, listing_id)?
             .filter(|l| l.wallet_profile_id == ctx.profile_id)
             .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
-        if let Some(why) = finalize_refusal(listing.state) {
-            return Err(AppError::InvalidInput(why.into()));
-        }
-        // The Cancel transfer and the FINALIZE spend the same TRANSFER coin.
-        if abort_may_still_land(&conn, &listing)? {
-            return Err(AppError::InvalidInput(sell::CANCEL_TRANSFER_PENDING.into()));
+        if let Some(why) = finalize_and_sign_refusal(&conn, &listing)? {
+            return Err(AppError::InvalidInput(why));
         }
         let owner = queries::get_name_coin(&conn, &ctx.profile_id, &listing.name)?;
         (listing, owner)
@@ -1002,6 +998,10 @@ pub struct ListingSummary {
     pub cancel_draft_id: Option<String>,
     pub cancel_finalize_draft_id: Option<String>,
     pub cancel_blocks_remaining: Option<i64>,
+    /// Blocks left in the transfer lockup while Locking, counted as the
+    /// Owned Names row counts them ([`queries::locking_blocks_until_finalize`]);
+    /// `None` before the lock TRANSFER is seen mined and in every other state.
+    pub blocks_until_finalize: Option<i64>,
     /// Where the listing stands on LearnHNS Market (R23, R25, R28); `None`
     /// while our current listing is not yet told (unpublished, not yet
     /// announced, or reset by a move back to Listed).
@@ -1016,11 +1016,19 @@ pub struct ListingSummary {
 }
 
 impl ListingSummary {
-    fn of(l: &ShakedexListing) -> Result<Self, AppError> {
-        Ok(Self::with_steps(l, shakedex_jobs::stored_steps(l)?))
+    fn of(conn: &rusqlite::Connection, l: &ShakedexListing) -> Result<Self, AppError> {
+        Ok(Self::with_steps(
+            l,
+            shakedex_jobs::stored_steps(l)?,
+            lockup_left(conn, l)?,
+        ))
     }
 
-    fn with_steps(l: &ShakedexListing, steps: Vec<sell::StoredStep>) -> Self {
+    fn with_steps(
+        l: &ShakedexListing,
+        steps: Vec<sell::StoredStep>,
+        blocks_until_finalize: Option<i64>,
+    ) -> Self {
         Self {
             id: l.id.clone(),
             name: l.name.clone(),
@@ -1035,12 +1043,40 @@ impl ListingSummary {
             cancel_draft_id: l.cancel_draft_id.clone(),
             cancel_finalize_draft_id: l.cancel_finalize_draft_id.clone(),
             cancel_blocks_remaining: l.cancel_blocks_remaining,
+            blocks_until_finalize,
             market_status: l.market_status,
             market_error: l.market_error.clone(),
             market_retry_at: l.market_retry_at.clone(),
             publish: l.publish,
         }
     }
+}
+
+/// The lockup left on a Locking listing `l`, by the rule the Owned Names
+/// row uses: its lock TRANSFER draft's confirmation height and the wallet's
+/// sync height on the profile's network.
+fn lockup_left(conn: &rusqlite::Connection, l: &ShakedexListing) -> Result<Option<i64>, AppError> {
+    if l.state != ListingState::Locking {
+        return Ok(None);
+    }
+    let Some(draft) = l
+        .lock_transfer_draft_id
+        .as_deref()
+        .map(|id| queries::get_tx_draft(conn, id))
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    let params = queries::profile_network(conn, &l.wallet_profile_id)?.name_params();
+    let tip = crate::noncustodial::sync::get_sync_height(conn, &l.wallet_profile_id)?;
+    Ok(queries::locking_blocks_until_finalize(
+        l.state,
+        Some(draft.status.as_str()),
+        draft.confirmation_height,
+        params,
+        tip,
+    ))
 }
 
 /// R19 day 2, generic over the runtime so tests drive it: check
@@ -1178,7 +1214,7 @@ pub(crate) async fn finalize_and_sign_confirmed<R: tauri::Runtime>(
     tx.commit()?;
     let l = queries::get_shakedex_listing(&conn, &p.listing.id)?
         .ok_or_else(|| AppError::Other("listing vanished after Finalize & sign".into()))?;
-    ListingSummary::of(&l)
+    ListingSummary::of(&conn, &l)
 }
 
 /// Why Finalize & sign and the export refuse a listing that is over or was
@@ -1204,7 +1240,8 @@ fn listing_over(state: ListingState) -> Option<&'static str> {
 }
 
 /// Why Finalize & sign refuses a listing in `state` (R19); `None` for
-/// ReadyToFinalize. The command and My listings ask this one function.
+/// ReadyToFinalize. [`finalize_and_sign_refusal`] asks it after the
+/// pending abort.
 pub(crate) fn finalize_refusal(state: ListingState) -> Option<&'static str> {
     match state {
         ListingState::ReadyToFinalize => None,
@@ -1213,6 +1250,21 @@ pub(crate) fn finalize_refusal(state: ListingState) -> Option<&'static str> {
             Some(listing_over(other).unwrap_or("this listing is already finalized into its lock"))
         }
     }
+}
+
+/// Why Finalize & sign refuses listing `l` now (R19); `None` when it may
+/// run. The command and My listings ask this one function. A Cancel
+/// transfer that may still land is named first, while the lockup runs as
+/// after it: it spends the coin the FINALIZE would, and once mined the
+/// listing is Aborted, so the lockup is not what Finalize & sign waits for.
+pub(crate) fn finalize_and_sign_refusal(
+    conn: &rusqlite::Connection,
+    l: &ShakedexListing,
+) -> Result<Option<String>, AppError> {
+    if l.state.aborts_by_cancel_transfer() && abort_may_still_land(conn, l)? {
+        return Ok(Some(sell::CANCEL_TRANSFER_PENDING.to_string()));
+    }
+    Ok(finalize_refusal(l.state).map(str::to_string))
 }
 
 /// R19: the listing's Cancel transfer may still be mined (its draft alive
@@ -1248,6 +1300,12 @@ pub(crate) fn finalize_cancel_refusal(state: ListingState) -> Option<&'static st
         }
     }
 }
+
+/// R28: a mined cancel whose transfer lockup no sync has counted yet
+/// (`cancel_blocks_remaining` NULL): its FINALIZE is not offered on a guess.
+/// The UI's twin is `marketText.ts::CANCEL_LOCKUP_NOT_COUNTED`.
+pub const CANCEL_LOCKUP_NOT_COUNTED: &str =
+    "the cancel is mined, but its transfer lockup is not counted yet: sync, then finalize it";
 
 /// R28: the lockup left before the cancel's FINALIZE is valid.
 pub(crate) fn cancel_finalize_wait(remaining: i64) -> String {
@@ -1903,7 +1961,7 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
     }
     let l = queries::get_shakedex_listing(&conn, &listing.id)?
         .ok_or_else(|| AppError::Other("listing vanished after Lower price".into()))?;
-    ListingSummary::of(&l)
+    ListingSummary::of(&conn, &l)
 }
 
 /// R23: the saved listing file of one of the profile's listings, once its
@@ -2083,7 +2141,12 @@ pub(crate) fn my_listing_from_conn(
         Err(e) => {
             let refused = || ListingAction::refused_by(Some(e.to_string()));
             return Ok(MyListing {
-                listing: ListingSummary::with_steps(l, Vec::new()),
+                // The degraded row must not fail on the lockup count either.
+                listing: ListingSummary::with_steps(
+                    l,
+                    Vec::new(),
+                    lockup_left(conn, l).ok().flatten(),
+                ),
                 actions: ListingActions {
                     finalize_and_sign: refused(),
                     lower_price: refused(),
@@ -2103,21 +2166,16 @@ pub(crate) fn my_listing_from_conn(
         }
     };
     let prices = listing_prices(&steps, chain);
-    let listing = ListingSummary::with_steps(l, steps);
-    let finalize = match finalize_refusal(l.state) {
-        Some(why) => Some(why.to_string()),
-        None if abort_may_still_land(conn, l)? => Some(sell::CANCEL_TRANSFER_PENDING.to_string()),
-        None => None,
-    };
+    let listing = ListingSummary::with_steps(l, steps, lockup_left(conn, l)?);
+    let finalize = finalize_and_sign_refusal(conn, l)?;
     let lower = lower_refusal(l.state, listing.steps.is_empty()).map(str::to_string);
     // The stored lockup is the last sync's count; the command counts again
     // on the node's tip when it runs.
     let finalize_cancel = finalize_cancel_refusal(l.state)
         .map(str::to_string)
-        .or_else(|| {
-            l.cancel_blocks_remaining
-                .filter(|n| *n > 0)
-                .map(cancel_finalize_wait)
+        .or_else(|| match l.cancel_blocks_remaining {
+            None => Some(CANCEL_LOCKUP_NOT_COUNTED.to_string()),
+            Some(n) => (n > 0).then(|| cancel_finalize_wait(n)),
         });
     Ok(MyListing {
         actions: ListingActions {
@@ -2263,7 +2321,7 @@ pub(crate) fn publish_listing_from_conn(
     }
     let l = queries::get_shakedex_listing(conn, listing_id)?
         .ok_or_else(|| AppError::Other("listing vanished after publish".into()))?;
-    ListingSummary::of(&l)
+    ListingSummary::of(conn, &l)
 }
 
 /// R23: write the saved listing file of one of the profile's listings to
@@ -2354,7 +2412,7 @@ pub(crate) fn restore_lock_inner(
     queries::insert_shakedex_listing(conn, &l)?;
     let l = queries::get_shakedex_listing(conn, &l.id)?
         .ok_or_else(|| AppError::Other("listing vanished after the restore".into()))?;
-    ListingSummary::of(&l)
+    ListingSummary::of(conn, &l)
 }
 
 /// R32: the active profile's Restored lock that `file` (our own listing
@@ -2473,7 +2531,7 @@ pub(crate) fn upgrade_restored_lock_inner(
     }
     let l = queries::get_shakedex_listing(conn, &i.listing.id)?
         .ok_or_else(|| AppError::Other("listing vanished after the import".into()))?;
-    ListingSummary::of(&l)
+    ListingSummary::of(conn, &l)
 }
 
 // --- commands ---------------------------------------------------------------
@@ -3241,6 +3299,11 @@ pub(crate) async fn finalize_cancel(
             .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
         if let Some(why) = finalize_cancel_refusal(l.state) {
             return Err(AppError::InvalidInput(why.into()));
+        }
+        // As My listings refuses it; the count itself is taken again on the
+        // node's tip below.
+        if l.cancel_blocks_remaining.is_none() {
+            return Err(AppError::InvalidInput(CANCEL_LOCKUP_NOT_COUNTED.into()));
         }
         let own: std::collections::HashSet<String> =
             queries::get_profile_addresses(&conn, &ctx.profile_id)?

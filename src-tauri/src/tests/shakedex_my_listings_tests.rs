@@ -72,6 +72,52 @@ fn my_listings_lists_every_listing_of_the_profile_newest_first() {
     assert_eq!(ids, ["new", "old"]);
 }
 
+/// R19: a Locking row carries the lockup left as the Owned Names row counts
+/// it (`read_shakedex_listing_names`, one rule): from the lock TRANSFER
+/// draft's confirmation height and the wallet's sync height; `None` before
+/// the lock is seen mined, and in every other state.
+#[test]
+fn a_locking_row_counts_the_lockup_as_owned_names_does() {
+    use crate::noncustodial::sync::set_sync_cursor;
+    let params = Network::Regtest.name_params();
+    let conn = store_conn();
+    insert_draft(&conn, "dlock", "shakedex_lock", "confirmed");
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET confirmation_height = 100 WHERE id = 'dlock'",
+        [],
+    )
+    .unwrap();
+    set_sync_cursor(&conn, "sell1", 101).unwrap();
+    let mut l = listing("l", "dexsale", ListingState::Locking);
+    l.lock_transfer_draft_id = Some("dlock".into());
+    insert(&conn, &l);
+    let left = row_of(&conn, "l").listing.blocks_until_finalize;
+    assert_eq!(left, Some(params.blocks_until_finalize(100, 101)));
+    assert_eq!(left, Some(8), "regtest lockup 10, judged at tip + 1");
+    let owned = queries::read_shakedex_listing_names(&conn, "sell1", params, 101, 1).unwrap();
+    assert_eq!(owned[0].listing.blocks_until_finalize, left, "one count");
+
+    // Sent but not mined yet: no count.
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET status = 'broadcasted' WHERE id = 'dlock'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(row_of(&conn, "l").listing.blocks_until_finalize, None);
+    // Past Locking: no count.
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET status = 'confirmed' WHERE id = 'dlock'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE shakedex_listings SET state = 'ready_to_finalize'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(row_of(&conn, "l").listing.blocks_until_finalize, None);
+}
+
 /// Which state allows which action: Finalize & sign only ReadyToFinalize,
 /// Lower price only Listed, Cancel Listed and Restored, Finalize cancel
 /// only CancelAwaitingFinalize, export the EXPORT_ALLOWED states with a file.
@@ -81,11 +127,15 @@ fn my_listings_lists_every_listing_of_the_profile_newest_first() {
 fn listing_actions_follow_the_commands_refusals_in_every_state() {
     for state in ListingState::ALL {
         let conn = store_conn();
-        let l = if state == ListingState::Restored {
+        let mut l = if state == ListingState::Restored {
             listing("l", "dexsale", state) // no steps, no file
         } else {
             with_steps(listing("l", "dexsale", state))
         };
+        // A mined cancel's lockup counted and over at the last sync.
+        if ListingState::CANCEL_MINED.contains(&state) {
+            l.cancel_blocks_remaining = Some(0);
+        }
         insert(&conn, &l);
         let a = row_of(&conn, "l").actions;
         assert_eq!(
@@ -268,31 +318,40 @@ fn export_is_refused_for_a_listed_lock_without_its_file() {
 /// sign waits while the cancel may still land, and not after it failed.
 #[test]
 fn finalize_and_sign_is_refused_while_its_cancel_transfer_may_land() {
-    for (status, refused) in [("broadcasted", true), ("signed", true), ("failed", false)] {
-        let conn = store_conn();
-        insert_draft(&conn, "abort", "cancel", status);
-        let mut l = listing("l", "dexsale", ListingState::ReadyToFinalize);
-        l.abort_draft_id = Some("abort".into());
-        insert(&conn, &l);
-        let a = row_of(&conn, "l").actions.finalize_and_sign;
-        assert_eq!(!a.allowed, refused, "{status}");
-        if refused {
-            assert_eq!(
-                a.reason.as_deref(),
-                Some(crate::noncustodial::shakedex::sell::CANCEL_TRANSFER_PENDING)
-            );
+    use crate::noncustodial::shakedex::sell::CANCEL_TRANSFER_PENDING;
+    // During the lockup too: the pending abort is the reason that matters,
+    // since once it lands the listing never opens Finalize & sign at all.
+    for state in [ListingState::Locking, ListingState::ReadyToFinalize] {
+        for (status, pending) in [("broadcasted", true), ("signed", true), ("failed", false)] {
+            let conn = store_conn();
+            insert_draft(&conn, "abort", "cancel", status);
+            let mut l = listing("l", "dexsale", state);
+            l.abort_draft_id = Some("abort".into());
+            insert(&conn, &l);
+            let a = row_of(&conn, "l").actions.finalize_and_sign;
+            let want = if pending {
+                Some(CANCEL_TRANSFER_PENDING)
+            } else {
+                finalize_refusal(state)
+            };
+            assert_eq!(a.reason.as_deref(), want, "{state:?} {status}");
+            assert_eq!(a.allowed, want.is_none(), "{state:?} {status}");
         }
     }
 }
 
-/// R28: the cancel's FINALIZE waits for the lockup the last sync counted.
+/// R28: the cancel's FINALIZE waits for the lockup the last sync counted;
+/// with no count taken yet it is refused, never offered on a guess.
 #[test]
 fn finalize_cancel_waits_for_the_lockup_left_at_the_last_sync() {
     for (left, want) in [
         (Some(3), Some("the cancel can be finalized in 3 blocks")),
         (Some(1), Some("the cancel can be finalized in 1 block")),
         (Some(0), None),
-        (None, None),
+        (
+            None,
+            Some(crate::commands::shakedex::CANCEL_LOCKUP_NOT_COUNTED),
+        ),
     ] {
         let conn = store_conn();
         let mut l = with_steps(listing(
@@ -844,6 +903,11 @@ fn listing_actions_fixture() -> serde_json::Value {
                     listing("l", "dexreviews", state)
                 };
                 l.publish = published;
+                // A mined cancel's lockup counted and over: the mock fills
+                // in the count it keeps (`cancelFinalizeWait`).
+                if ListingState::CANCEL_MINED.contains(&state) {
+                    l.cancel_blocks_remaining = Some(0);
+                }
                 insert(&conn, &l);
                 cases.push(serde_json::json!({
                     "state": state,
@@ -861,6 +925,7 @@ fn listing_actions_fixture() -> serde_json::Value {
         "cancelFinalizeWaitOne": crate::commands::shakedex::cancel_finalize_wait(1),
         "cancelFinalizeWait": crate::commands::shakedex::cancel_finalize_wait(WAIT_PLACEHOLDER)
             .replace(&WAIT_PLACEHOLDER.to_string(), "{n}"),
+        "cancelLockupNotCounted": crate::commands::shakedex::CANCEL_LOCKUP_NOT_COUNTED,
         "cases": cases,
     })
 }

@@ -265,6 +265,13 @@ describe("MyListings", () => {
     expect(screen.getByText(LOWER_DURING_CANCEL)).toBeInTheDocument();
   });
 
+  it("names the lockup left on a Locking row, as the Owned Names row does", async () => {
+    const row = makeMyListing("locking");
+    setup([{ ...row, listing: { ...row.listing, blocksUntilFinalize: 9 } }]);
+    renderIt();
+    expect(await screen.findByText("Locking · 9 blocks")).toBeInTheDocument();
+  });
+
   it("shows a refused action disabled with its reason, never hides it", async () => {
     setup([
       makeMyListing("locking", {

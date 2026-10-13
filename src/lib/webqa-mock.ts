@@ -426,6 +426,7 @@ interface ActionsFixture {
   cancelTransferPending: string;
   cancelFinalizeWait: string;
   cancelFinalizeWaitOne: string;
+  cancelLockupNotCounted: string;
   cases: {
     state: string;
     withFile: boolean;
@@ -599,8 +600,11 @@ function settleListings(firstMined: number): void {
  * The listing's actions as `my_listing_from_conn` gives them on mainnet for
  * its state, its stored steps and file (the mock keeps both or neither) and
  * its publish flag; the counts the fixture cannot hold are filled in: the
- * lockup left after a mined cancel (`cancel_finalize_wait`), and Finalize &
- * sign while a Cancel transfer may still land (`abort_may_still_land`).
+ * lockup left after a mined cancel (`cancel_finalize_wait`; counted when the
+ * mock mines the cancel, as the sync that sees it mined does, so
+ * `CANCEL_LOCKUP_NOT_COUNTED` only guards a count it never took), and Finalize &
+ * sign while a Cancel transfer may still land (`abort_may_still_land`), before
+ * the lockup's own reason.
  */
 function actionsOf(l: MockListing): ShakedexListingActions {
   const c = ACTIONS.cases.find(
@@ -608,8 +612,10 @@ function actionsOf(l: MockListing): ShakedexListingActions {
   );
   if (!c) throw new Error(`listing-actions.json has no case for ${l.state}`);
   const actions = structuredClone(c.actions);
-  const wait = cancelBlocksRemaining(l) ?? 0;
-  if (actions.finalizeCancel.allowed && wait > 0) {
+  const wait = cancelBlocksRemaining(l);
+  if (actions.finalizeCancel.allowed && wait === null) {
+    actions.finalizeCancel = { allowed: false, reason: ACTIONS.cancelLockupNotCounted };
+  } else if (actions.finalizeCancel.allowed && wait !== null && wait > 0) {
     actions.finalizeCancel = {
       allowed: false,
       reason:
@@ -618,7 +624,9 @@ function actionsOf(l: MockListing): ShakedexListingActions {
           : ACTIONS.cancelFinalizeWait.replace("{n}", String(wait)),
     };
   }
-  if (actions.finalizeAndSign.allowed && abortMayStillLand(l)) {
+  // `finalize_and_sign_refusal`: the pending abort is named first, in
+  // Locking as in ReadyToFinalize.
+  if ((l.state === "locking" || l.state === "readyToFinalize") && abortMayStillLand(l)) {
     actions.finalizeAndSign = { allowed: false, reason: ACTIONS.cancelTransferPending };
   }
   return actions;
@@ -658,6 +666,7 @@ function listingSummary(l: MockListing): ShakedexListingSummary {
     cancelDraftId: l.cancelDraftId,
     cancelFinalizeDraftId: l.cancelFinalizeDraftId,
     cancelBlocksRemaining: cancelBlocksRemaining(l),
+    blocksUntilFinalize: lockupLeft(l),
     marketStatus: null,
     marketError: null,
     marketRetryAt: null,
@@ -727,9 +736,16 @@ function nameListing(name: string): ShakedexNameListing | undefined {
   return {
     listingId: l.id,
     state: l.state,
-    blocksUntilFinalize:
-      l.state === "locking" && l.lockMinedAt != null ? blocksUntilFinalize(l.lockMinedAt) : null,
+    blocksUntilFinalize: lockupLeft(l),
   };
+}
+
+/**
+ * The lockup left on a Locking listing whose lock is mined, for its Owned
+ * Names row and its My listings row alike (`locking_blocks_until_finalize`).
+ */
+function lockupLeft(l: MockListing): number | null {
+  return l.state === "locking" && l.lockMinedAt != null ? blocksUntilFinalize(l.lockMinedAt) : null;
 }
 
 /** The listing file this wallet writes (`listing_file::write_listing_file`), in short. */

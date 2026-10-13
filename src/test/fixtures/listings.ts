@@ -25,6 +25,7 @@ export function makeListing(over: Partial<ShakedexListingSummary> = {}): Shakede
     cancelDraftId: null,
     cancelFinalizeDraftId: null,
     cancelBlocksRemaining: null,
+    blocksUntilFinalize: null,
     marketStatus: null,
     marketError: null,
     marketRetryAt: null,

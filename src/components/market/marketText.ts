@@ -221,6 +221,10 @@ export const LOWER_PRICE_PERMANENCE =
 export const LOWER_DURING_CANCEL =
   "a cancel of this listing is not mined yet: its price cannot be lowered";
 
+/** `commands/shakedex.rs::CANCEL_LOCKUP_NOT_COUNTED` (R28): Finalize home before any sync has counted the cancel's lockup. */
+export const CANCEL_LOCKUP_NOT_COUNTED =
+  "the cancel is mined, but its transfer lockup is not counted yet: sync, then finalize it";
+
 /** `cancel.rs::CANCEL_STILL_BUYABLE` (R28). */
 export const CANCEL_STILL_BUYABLE =
   "Anyone holding the listing file can still buy the name at its current price until this cancel is mined.";

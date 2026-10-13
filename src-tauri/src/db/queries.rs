@@ -2478,16 +2478,8 @@ pub fn read_shakedex_listing_names(
         if !listing_holds_the_name(state, status.as_deref()) {
             continue;
         }
-        // A display estimate: the lock TRANSFER draft's confirmation height
-        // as the wallet's sync recorded it and the wallet's sync height. The
-        // listing's state itself moves on hsd's `info.transfer` (the
-        // before-lock job), which a reorg can change before the sync does.
-        let blocks_until_finalize = match (state, status.as_deref(), confirmed) {
-            (ListingState::Locking, Some(CONFIRMED_STATUS), Some(h)) => {
-                Some(params_net.blocks_until_finalize(h, tip))
-            }
-            _ => None,
-        };
+        let blocks_until_finalize =
+            locking_blocks_until_finalize(state, status.as_deref(), confirmed, params_net, tip);
         out.push(ListingNameRow {
             name,
             lock_pubkey_hex: pubkey,
@@ -2499,6 +2491,28 @@ pub fn read_shakedex_listing_names(
         });
     }
     Ok(out)
+}
+
+/// R19: the blocks left in a Locking listing's transfer lockup, for the
+/// Owned Names row and My listings alike: from its lock TRANSFER draft's
+/// confirmation height (`confirmed` with that status) and the wallet's sync
+/// height `tip`; `None` before that draft is seen mined, and in every other
+/// state. A display estimate: the listing's state itself moves on hsd's
+/// `info.transfer` (the before-lock job), which a reorg can change before
+/// the sync does.
+pub fn locking_blocks_until_finalize(
+    state: ListingState,
+    lock_draft_status: Option<&str>,
+    confirmed: Option<i64>,
+    params_net: crate::noncustodial::network::NameParams,
+    tip: i64,
+) -> Option<i64> {
+    match (state, lock_draft_status, confirmed) {
+        (ListingState::Locking, Some(CONFIRMED_STATUS), Some(h)) => {
+            Some(params_net.blocks_until_finalize(h, tip))
+        }
+        _ => None,
+    }
 }
 
 /// The status of the listing's lock TRANSFER draft, `None` when the listing

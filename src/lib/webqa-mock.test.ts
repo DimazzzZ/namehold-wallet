@@ -250,6 +250,7 @@ describe("webqa-mock selling", () => {
     // The regtest transfer lockup, counted from the lock's block as hsd
     // judges a FINALIZE at tip + 1.
     expect(nameRow("example")?.listing?.blocksUntilFinalize).toBe(9);
+    expect(row().listing.blocksUntilFinalize).toBe(9);
     __mineForTests(9);
     expect(row().listing.state).toBe("readyToFinalize");
     expect(allowed()).toEqual(["finalizeAndSign"]);
@@ -486,7 +487,19 @@ describe("webqa-mock selling", () => {
     });
     expect(capsOf().canCancelTransfer.allowed).toBe(false);
     mockInvoke("broadcast_tx_draft", { draftId: lock.id });
-    __mineForTests(10);
+    __mineForTests(1);
+    expect(row().listing.state).toBe("locking");
+    // During the lockup the pending abort is the reason, not the lockup
+    // (`finalize_and_sign_refusal`).
+    const lockupReason = row().actions.finalizeAndSign.reason;
+    const early = mockInvoke<{ id: string }>("build_cancel_draft", { name: "won" });
+    expect(row().actions.finalizeAndSign).toEqual({
+      allowed: false,
+      reason: fixture.cancelTransferPending,
+    });
+    mockInvoke("delete_tx_draft", { draftId: early.id });
+    expect(row().actions.finalizeAndSign).toEqual({ allowed: false, reason: lockupReason });
+    __mineForTests(9);
     expect(row().listing.state).toBe("readyToFinalize");
     expect(capsOf().canCancelTransfer).toEqual({ allowed: true, reason: null });
 

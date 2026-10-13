@@ -178,6 +178,7 @@ fn ts_listing_summary_lists_every_field() {
         cancel_draft_id: None,
         cancel_finalize_draft_id: None,
         cancel_blocks_remaining: None,
+        blocks_until_finalize: None,
         market_status: None,
         market_error: None,
         market_retry_at: None,
@@ -3621,6 +3622,19 @@ async fn finalize_and_sign_refused_while_the_cancel_transfer_is_alive() {
     with_db(&r.app, |c| queries::delete_tx_draft(c, &id).unwrap());
     assert_eq!(r.listing().abort_draft_id, None, "deleted: unlinked");
     prepare(&r, &price("5")).await.expect("deleted cancel");
+
+    // Still Locking: the pending abort is named before the lockup, as My
+    // listings names it.
+    link("cancel-locking", "broadcasted");
+    with_db(&r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET state = 'locking' WHERE id = ?1",
+            params![r.listing_id],
+        )
+        .unwrap();
+    });
+    let e = err_text(prepare(&r, &price("5")).await.err().expect("locking"));
+    assert!(e.contains(sell::CANCEL_TRANSFER_PENDING), "locking: {e}");
 }
 
 /// R16/R6: the Shakedex gates, and the unlocked signer.
@@ -7686,6 +7700,11 @@ async fn cancel_mined_fixture(height: i64, tip: i64, to: Option<String>) -> (Lis
                 .unwrap(),
             1
         );
+        // The sync that saw it mined counted its lockup.
+        let left = Network::Regtest
+            .name_params()
+            .blocks_until_finalize(height, tip);
+        queries::set_cancel_blocks_remaining(db, &l.r.listing_id, left).unwrap();
     });
     let to = to.unwrap_or_else(|| l.r.listing().cancel_address.unwrap());
     let mut info = name_info(RENEWAL, 0, &c);
@@ -7783,6 +7802,32 @@ fn assert_no_cancel_finalize(l: &Listed) {
         3,
         "lock, FINALIZE and cancel only"
     );
+}
+
+/// R28: a mined cancel whose lockup no sync has counted yet is refused as
+/// My listings refuses it, with nothing written, though the node would
+/// already take its FINALIZE.
+#[tokio::test]
+async fn finalize_cancel_refused_while_no_sync_has_counted_its_lockup() {
+    let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
+    let (l, _) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 1, None).await;
+    with_db(&l.r.app, |db| {
+        db.execute(
+            "UPDATE shakedex_listings SET cancel_blocks_remaining = NULL",
+            [],
+        )
+        .unwrap();
+    });
+    let e = err_text(
+        finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err("not counted"),
+    );
+    assert!(
+        e.contains(crate::commands::shakedex::CANCEL_LOCKUP_NOT_COUNTED),
+        "{e}"
+    );
+    assert_no_cancel_finalize(&l);
 }
 
 /// R28: refused, with the reason and nothing written, one block before the
