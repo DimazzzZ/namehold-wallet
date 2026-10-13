@@ -1344,7 +1344,8 @@ fn receive_address_at_reads_the_receive_branch_of_the_account() {
 }
 
 /// R21/R28: a lock restored by name gets its cancel address when it is
-/// cancelled, only while Restored and without one.
+/// cancelled, only while Cancel acts on it (Restored, or Listed once its
+/// own file upgraded it) and without one.
 #[test]
 fn a_restored_lock_gets_its_cancel_address_once() {
     let conn = store_conn();
@@ -1352,10 +1353,19 @@ fn a_restored_lock_gets_its_cancel_address_once() {
     l.cancel_address = None;
     l.cancel_child_index = None;
     queries::insert_shakedex_listing(&conn, &l).unwrap();
-    let mut other = listing("l2", "listed", ListingState::Listed);
+    let mut other = listing("l2", "cancelling", ListingState::Cancelling);
     other.cancel_address = None;
     other.cancel_child_index = None;
     queries::insert_shakedex_listing(&conn, &other).unwrap();
+    let mut imported = listing("l3", "imported", ListingState::Listed);
+    imported.cancel_address = None;
+    imported.cancel_child_index = None;
+    queries::insert_shakedex_listing(&conn, &imported).unwrap();
+    assert_eq!(
+        queries::set_restored_lock_cancel_address(&conn, "l3", "rs1qe", 9).unwrap(),
+        1,
+        "Listed by its own file"
+    );
     assert_eq!(
         queries::set_restored_lock_cancel_address(&conn, "l1", "rs1qc", 7).unwrap(),
         1
@@ -1368,7 +1378,7 @@ fn a_restored_lock_gets_its_cancel_address_once() {
     assert_eq!(
         queries::set_restored_lock_cancel_address(&conn, "l2", "rs1qc", 7).unwrap(),
         0,
-        "not Restored"
+        "not a state Cancel acts on"
     );
     let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
     assert_eq!(
@@ -6231,27 +6241,111 @@ async fn own_listing_file_with_a_key_this_wallet_does_not_derive_is_refused() {
 }
 
 /// R32, Step 1: the file's payment address must be one of this profile's
-/// derived addresses on this network: an address of our seed the wallet has
-/// not derived, or one of another network, is refused.
+/// addresses on this network: its derived ones, or one of its first
+/// `OWN_FILE_RECEIVE_SEARCH_LIMIT` receive addresses. Another seed's
+/// address, our receive address past that limit, an underived change
+/// address, or one of another network is refused, and nothing is derived.
 #[tokio::test]
 async fn own_listing_file_paying_an_address_not_ours_is_refused() {
+    use crate::commands::shakedex::OWN_FILE_RECEIVE_SEARCH_LIMIT;
     let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
     restore(&app).await.expect("restored");
     let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
-    let (_sk, _pk, underived) = hd::derive_address(Network::Regtest, &seed(), 0, 0, 7).unwrap();
-    let e = err_text(
-        import(&app, own_file(1, key.pubkey, &key, &underived))
-            .await
-            .unwrap_err(),
-    );
-    assert!(e.contains("not one of this wallet's addresses"), "{e}");
-    assert_still_restored(&app, "underived");
+    let derived = || {
+        with_db(&app, |c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM derived_addresses WHERE wallet_profile_id = ?1",
+                [PROFILE],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+        })
+    };
+    let before = derived();
+    let address = |seed: &[u8; 64], branch: u32, index: u32| {
+        hd::derive_address(Network::Regtest, seed, 0, branch, index)
+            .unwrap()
+            .2
+    };
+    for (case, pay) in [
+        ("another seed", address(&[7; 64], 0, 0)),
+        (
+            "past the search",
+            address(&seed(), 0, OWN_FILE_RECEIVE_SEARCH_LIMIT),
+        ),
+        ("an underived change address", address(&seed(), 1, 7)),
+    ] {
+        let e = err_text(
+            import(&app, own_file(1, key.pubkey, &key, &pay))
+                .await
+                .unwrap_err(),
+        );
+        assert!(
+            e.contains("this listing file's payment address is not one of this wallet's addresses"),
+            "{case}: {e}"
+        );
+        assert_still_restored(&app, case);
+        assert_eq!(derived(), before, "{case}: nothing derived");
+    }
     // The same file paying our address 0/0 as mainnet spells it.
     let mut v: Value = serde_json::from_str(&good_file()).unwrap();
     v["paymentAddr"] = addr00(Network::Main).0.into();
     let e = err_text(import(&app, v.to_string()).await.unwrap_err());
     assert!(e.contains("this listing is for mainnet"), "{e}");
     assert_still_restored(&app, "mainnet");
+}
+
+/// R32 (QA F7): a profile restored from the same phrase holds only its
+/// restore window (receive and change 0..19 here), while the listing's
+/// payment address was reserved further on by the profile that locked
+/// (receive 28). The import finds it on the receive branch, up to
+/// `OWN_FILE_RECEIVE_SEARCH_LIMIT`, and then proceeds as for a known
+/// address: the listing is Listed, receive 0..=28 are derived so sync
+/// watches the sale, and 28 is used, so it is never handed out again.
+#[tokio::test]
+async fn own_listing_file_paying_our_receive_address_past_the_restore_window_is_imported() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    with_db(&app, |c| {
+        let xpub = crate::tests::shakedex_cmd_tests::account_xpub(Network::Regtest)
+            .to_base58check(Network::Regtest);
+        crate::commands::secure_wallet::provision_addresses(
+            c,
+            PROFILE,
+            Network::Regtest,
+            &xpub,
+            20,
+        )
+        .unwrap();
+    });
+    restore(&app).await.expect("restored");
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let (_sk, _pk, pay) = hd::derive_address(Network::Regtest, &seed(), 0, 0, 28).unwrap();
+    let s = import(&app, own_file(1, key.pubkey, &key, &pay))
+        .await
+        .expect("imported");
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!(s.payment_address.as_deref(), Some(pay.as_str()));
+    with_db(&app, |c| {
+        let receive: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM derived_addresses
+                 WHERE wallet_profile_id = ?1 AND branch = 0 AND child_index <= 28",
+                [PROFILE],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(receive, 29, "receive 0..=28 derived");
+        let used: i64 = c
+            .query_row(
+                "SELECT used FROM derived_addresses WHERE wallet_profile_id = ?1 AND address = ?2",
+                params![PROFILE, pay],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(used, 1, "the payment address is used");
+        let next = derivation::reserve_receive_address(c, PROFILE).unwrap();
+        assert_eq!(next.child_index, 29, "never reserved again");
+    });
 }
 
 /// We never write a market fee (R23): a file of ours with one is not ours,
@@ -7368,17 +7462,78 @@ async fn cancel_refused_on_node_facts_that_do_not_hold() {
     assert_no_cancel(&l, ListingState::Listed);
 }
 
+/// R21, R32 (QA N1): a lock restored by name and then upgraded to Listed by
+/// its own listing file (R32's import) still has no cancel address. My
+/// listings offers Cancel, and Cancel reserves the address as for a
+/// Restored lock: a receive address of this profile, marked used, stored on
+/// the listing, the cancel committing to it.
+#[tokio::test]
+async fn cancel_of_a_restored_lock_upgraded_by_its_file_reserves_its_cancel_address() {
+    let l = listed_fixture().await;
+    with_db(&l.r.app, |c| {
+        // What the import leaves: Listed with the file's payment address,
+        // steps and file, and the restore's empty cancel address.
+        c.execute(
+            "UPDATE shakedex_listings SET cancel_address = NULL, cancel_child_index = NULL,
+                 lock_transfer_txid = NULL, lock_finalize_draft_id = NULL
+             WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap();
+        let row =
+            crate::commands::shakedex::my_listings_from_conn(c, PROFILE, Network::Regtest, None)
+                .unwrap()
+                .remove(0);
+        assert_eq!(row.listing.state, ListingState::Listed);
+        assert!(row.actions.cancel.allowed, "{:?}", row.actions.cancel);
+    });
+    answer(true);
+    let draft = cancel(&l).await.expect("cancel");
+    let s = l.r.listing();
+    assert_eq!(s.state, ListingState::Cancelling);
+    let address = s.cancel_address.clone().expect("reserved");
+    let index = u32::try_from(s.cancel_child_index.unwrap()).unwrap();
+    assert_eq!(
+        with_db(&l.r.app, |c| queries::receive_address_at(
+            c, PROFILE, 0, index
+        )
+        .unwrap()),
+        Some(address.clone())
+    );
+    let used: i64 = with_db(&l.r.app, |c| {
+        c.query_row(
+            "SELECT used FROM derived_addresses WHERE address = ?1",
+            [&address],
+            |r| r.get(0),
+        )
+        .unwrap()
+    });
+    assert_eq!(used, 1, "reserved (R21)");
+    let row = with_db(&l.r.app, |c| {
+        queries::get_tx_draft(c, &draft.id).unwrap().unwrap()
+    });
+    let plan: DraftPlan = serde_json::from_str(&row.signing_inputs_json).unwrap();
+    let (_, h) = address::decode(Network::Regtest, &address).unwrap();
+    assert_eq!(
+        plan.outputs[0].covenant_items_hex[3],
+        hex::encode(h),
+        "the cancel commits to it"
+    );
+    assert_eq!(plan.inputs[0].child_index, index);
+}
+
 /// R21, R32: the cancel address of a restored lock is reserved and
 /// written on its row in one database transaction. When the row write does
-/// not apply (the row is no longer a Restored lock without a cancel
-/// address), the reservation is rolled back: no derived address is added
-/// or marked used.
+/// not apply (the row is no longer one Cancel acts on, here SalePending,
+/// without a cancel address), the reservation is rolled back: no derived
+/// address is added or marked used.
 #[tokio::test]
 async fn a_restored_cancel_address_is_reserved_only_with_its_row() {
     let l = listed_fixture().await;
     with_db(&l.r.app, |c| {
         c.execute(
-            "UPDATE shakedex_listings SET cancel_address = NULL, cancel_child_index = NULL
+            "UPDATE shakedex_listings SET cancel_address = NULL, cancel_child_index = NULL,
+                 state = 'sale_pending'
              WHERE id = ?1",
             [&l.r.listing_id],
         )
@@ -7396,7 +7551,7 @@ async fn a_restored_cancel_address_is_reserved_only_with_its_row() {
     };
     let (rows, used_before) = (count(&l.r.app, "derived_addresses"), used(&l.r.app));
     let e = with_db(&l.r.app, |c| {
-        reserve_restored_cancel_address(c, PROFILE, &l.r.listing_id).expect_err("listed")
+        reserve_restored_cancel_address(c, PROFILE, &l.r.listing_id).expect_err("sale pending")
     });
     assert!(err_text(e).contains("changed meanwhile"));
     assert_eq!(

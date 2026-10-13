@@ -1386,8 +1386,9 @@ fn cancel_could_not_check(what: &str) -> AppError {
 }
 
 /// R21, R32: reserve one receive address of `profile_id` and store
-/// it as the cancel address of the Restored listing `listing_id`, which has
-/// none, in one database transaction: when the row write does not apply
+/// it as the cancel address of the listing `listing_id`, a lock restored by
+/// name (Restored, or Listed by its own file) which has none, in one
+/// database transaction: when the row write does not apply
 /// (the row changed meanwhile), the reservation is rolled back too.
 /// Returns the address and its receive index.
 pub(crate) fn reserve_restored_cancel_address(
@@ -1591,12 +1592,13 @@ pub(crate) async fn prepare_cancel(
     };
 
     // R21, R32: a lock restored by name reserves its cancel address
-    // now, after the node reads. The reservation and the row commit
-    // together.
+    // now, after the node reads, whether still Restored or since upgraded to
+    // Listed by its own file (a lock made here stored one at lock time). The
+    // reservation and the row commit together.
     let (cancel_address, cancel_index) =
         match (listing.cancel_address.clone(), listing.cancel_child_index) {
             (Some(a), Some(i)) => (a, u32::try_from(i).map_err(|_| corrupted("cancel index"))?),
-            (None, None) if listing.state == ListingState::Restored => {
+            (None, None) => {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
                 reserve_restored_cancel_address(&conn, &ctx.profile_id, &listing.id)?
             }
@@ -2419,8 +2421,10 @@ pub(crate) fn restore_lock_inner(
 /// file, already parsed) is for: a Restored lock of the file's name (a
 /// listing of it in any other state, or none, is refused) whose lock key and
 /// lock outpoint the file carries, and a file paying one of this profile's
-/// derived addresses (the parser has checked its network). Reads the
-/// database only.
+/// derived addresses (the parser has checked its network), or one of its
+/// first [`OWN_FILE_RECEIVE_SEARCH_LIMIT`] receive addresses past them, which
+/// is then derived and marked used ([`derivation::adopt_receive_address`]).
+/// Writes nothing else.
 pub(crate) fn restored_lock_for_file(
     conn: &rusqlite::Connection,
     profile_id: &str,
@@ -2447,13 +2451,29 @@ pub(crate) fn restored_lock_for_file(
             "this listing file is for another lock coin".into(),
         ));
     }
-    if !queries::get_profile_addresses(conn, profile_id)?.contains(&file.payment_addr) {
+    // The payment address was reserved by the profile that locked; one
+    // restored from the same phrase holds only its restore window, so a
+    // receive address past it is looked for (and adopted) up to the limit.
+    let ours = queries::get_profile_addresses(conn, profile_id)?.contains(&file.payment_addr)
+        || derivation::adopt_receive_address(
+            conn,
+            profile_id,
+            &file.payment_addr,
+            OWN_FILE_RECEIVE_SEARCH_LIMIT,
+        )?
+        .is_some();
+    if !ours {
         return Err(AppError::InvalidInput(
             "this listing file's payment address is not one of this wallet's addresses".into(),
         ));
     }
     Ok(listing)
 }
+
+/// R32: how many receive addresses of the profile an own listing file's
+/// payment address is looked for among ([`restored_lock_for_file`]); a file
+/// paying none of them is not ours, and nothing past them is derived.
+pub const OWN_FILE_RECEIVE_SEARCH_LIMIT: u32 = 1000;
 
 /// What the upgrade of a Restored lock decides from: the listing and the
 /// file already matched ([`restored_lock_for_file`]), the lock coin as hsd

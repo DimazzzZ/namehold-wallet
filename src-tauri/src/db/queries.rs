@@ -3798,9 +3798,10 @@ pub fn receive_address_at(
 }
 
 /// R21/R28: a lock restored by name gets the cancel address the cancel
-/// commits to when it is cancelled (its restore reserved none). Only a
-/// Restored row without one; its state is unchanged. Returns how many rows
-/// changed (0 or 1).
+/// commits to when it is cancelled (its restore reserved none, and the
+/// import of its own file, R32, adds none). Only a row Cancel acts on
+/// (Restored, or Listed once upgraded by that file) without one; its state
+/// is unchanged. Returns how many rows changed (0 or 1).
 pub fn set_restored_lock_cancel_address(
     conn: &rusqlite::Connection,
     id: &str,
@@ -3810,8 +3811,15 @@ pub fn set_restored_lock_cancel_address(
     Ok(conn.execute(
         "UPDATE shakedex_listings
          SET cancel_address = ?2, cancel_child_index = ?3, updated_at = datetime('now')
-         WHERE id = ?1 AND state = ?4 AND cancel_address IS NULL AND cancel_child_index IS NULL",
-        params![id, address, i64::from(child_index), ListingState::Restored],
+         WHERE id = ?1 AND state IN (?4, ?5)
+           AND cancel_address IS NULL AND cancel_child_index IS NULL",
+        params![
+            id,
+            address,
+            i64::from(child_index),
+            ListingState::Restored,
+            ListingState::Listed
+        ],
     )?)
 }
 
