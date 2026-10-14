@@ -821,7 +821,8 @@ const sellingHandlers: Record<string, Handler> = {
       intervalSecs: number;
     } | null;
     // R19: a Buy Now's lock time, valid at once; a reverse auction's first
-    // step has the same and each next step its interval later.
+    // step has the same and each next step its interval later, rounded up to
+    // R3's 512 s unit (`sell::reverse_schedule`), never valid early.
     const now = buyNowLockTime();
     if (l.mode === "buyNow") {
       if (prices.length !== 1 || schedule) {
@@ -847,7 +848,10 @@ const sellingHandlers: Record<string, Handler> = {
       l.steps = Array.from({ length: n }, (_, i) =>
         mockStep(
           start - Math.floor(((start - floor) * i) / (n - 1)),
-          now + i * schedule.intervalSecs,
+          i === 0
+            ? now
+            : Math.ceil((now + i * schedule.intervalSecs) / LOCK_TIME_UNIT_SECS) *
+                LOCK_TIME_UNIT_SECS,
         ),
       );
     }

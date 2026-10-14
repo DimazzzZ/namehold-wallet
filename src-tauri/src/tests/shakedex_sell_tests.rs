@@ -3425,7 +3425,8 @@ async fn finalize_and_sign_schedule(
 
 /// R24, R19, R20: Finalize & sign of a reverse auction signs every step of
 /// its schedule in one unlock — step 0 at R19's lock time (the MTP at
-/// signing minus 512 s, valid at once), each next one an interval later —
+/// signing minus 512 s, valid at once), each next one an interval later,
+/// rounded up to R3's 512 s unit so it is never valid early —
 /// over the lock coin its FINALIZE creates, paying the listing's payment
 /// address; the prompt lists every step and when it becomes valid; the
 /// stored steps and the listing file carry them all, and R3 makes each
@@ -3441,6 +3442,7 @@ async fn reverse_schedule_signs_every_step() {
         .expect("finalize & sign");
     assert_eq!(s.state, ListingState::Finalizing);
     let l0 = sell::buy_now_lock_time(SIGN_MTP);
+    let up = |t: u64| t.div_ceil(512) * 512;
     assert_eq!(
         s.steps
             .iter()
@@ -3448,8 +3450,8 @@ async fn reverse_schedule_signs_every_step() {
             .collect::<Vec<_>>(),
         vec![
             (5_000_000, l0),
-            (4_000_000, l0 + 900),
-            (3_000_000, l0 + 1_800)
+            (4_000_000, up(l0 + 900)),
+            (3_000_000, up(l0 + 1_800))
         ]
     );
 
@@ -3509,8 +3511,8 @@ async fn reverse_schedule_signs_every_step() {
     assert_eq!(stored, s.steps);
     for (mtp, want) in [
         (SIGN_MTP, 5_000_000),
-        (valid_from_mtp(l0 + 900), 4_000_000),
-        (valid_from_mtp(l0 + 1_800), 3_000_000),
+        (valid_from_mtp(up(l0 + 900)), 4_000_000),
+        (valid_from_mtp(up(l0 + 1_800)), 3_000_000),
     ] {
         assert_eq!(
             sell::current_step_price(&stored, mtp).unwrap(),

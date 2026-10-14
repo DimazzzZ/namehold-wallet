@@ -89,28 +89,28 @@
       "startPrice": "5",
       "floorPrice": "3",
       "steps": 2,
-      "intervalSecs": 1099511627775,
+      "intervalSecs": 1099511627264,
       "error": null
     },
     {
       "startPrice": "5",
       "floorPrice": "3",
       "steps": 2,
-      "intervalSecs": 1099511627776,
+      "intervalSecs": 1099511627265,
       "error": "reverse auction: the last step's time does not fit a lock time"
     },
     {
       "startPrice": "5",
       "floorPrice": "3",
       "steps": 1000,
-      "intervalSecs": 1100612240,
+      "intervalSecs": 1100612239,
       "error": null
     },
     {
       "startPrice": "5",
       "floorPrice": "3",
       "steps": 1000,
-      "intervalSecs": 1100612241,
+      "intervalSecs": 1100612240,
       "error": "reverse auction: the last step's time does not fit a lock time"
     },
     {

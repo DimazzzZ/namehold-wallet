@@ -273,6 +273,8 @@ const REVERSE_MIN_INTERVAL_SECS = 900;
 
 /** `template.rs::encode_lock_time`'s bound (R3): a lock time is below 2^40 seconds. */
 const LOCK_TIME_LIMIT = 2 ** 40;
+/** `sell.rs::LOCK_TIME_UNIT_SECS`: R3 encodes a lock time in 512 s units. */
+const LOCK_TIME_UNIT_SECS = 512;
 
 /** "0.001000 HNS", as the backend's `doos_to_hns_string` writes it. */
 function doosText(doos: bigint): string {
@@ -341,7 +343,8 @@ export function parseStepPrice(text: string): { doos: bigint } | { error: string
  * R24, the twin of `sell.rs::parse_schedule`: the backend's reason, or null.
  * The start price is read first, then the floor, then the schedule's rules
  * in `reverse_schedule`'s order, the steps' lock times counted from 0: the
- * last one, `(steps − 1) · interval`, must fit R3's 40 bits. Finalize & sign
+ * last one, `(steps − 1) · interval` rounded up to R3's 512 s unit as every
+ * step after the first is, must fit R3's 40 bits. Finalize & sign
  * builds the lock times again from the node's median time, which the
  * renderer does not know, so the backend may still refuse a schedule whose
  * last step fits from 0 but not from that time.
@@ -373,10 +376,12 @@ export function scheduleProblem(s: ShakedexScheduleInput): string | null {
       `prices would not be strictly falling: ${s.steps} steps need the start at least ${afterFirst} doos above the floor`,
     );
   }
-  // `template.rs::encode_lock_time`: a lock time is below 2^40 s. Below
-  // 2^53 the product is exact, and rounding a larger one cannot bring it
-  // under 2^40, so this refuses exactly what the backend refuses.
-  if ((s.steps - 1) * s.intervalSecs >= LOCK_TIME_LIMIT) {
+  // `template.rs::encode_lock_time`: a lock time is below 2^40 s, and the
+  // last step's is rounded up to 512 s (`sell.rs::reverse_schedule`); 2^40
+  // is a multiple of 512, so it fits exactly when it is at most 2^40 − 512.
+  // Below 2^53 the product is exact, and rounding a larger one cannot bring
+  // it under that, so this refuses exactly what the backend refuses.
+  if ((s.steps - 1) * s.intervalSecs > LOCK_TIME_LIMIT - LOCK_TIME_UNIT_SECS) {
     return bad("the last step's time does not fit a lock time");
   }
   return null;
