@@ -228,6 +228,8 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] Deselecting all hides the batch action bar
 
 ### J. Buying and selling names on the Market (Shakedex)
+The full agent-runnable scenarios for this section (steps, exact expected text, evidence, block budgets) are in [docs/qa/README.md](qa/README.md); this checklist stays the overview.
+
 Paid name swaps were withdrawn on 2026-09-21 (`docs/specs/2026-09-21-paid-name-swaps.md`); a claim panel for an offer recorded before that still works. Buying and selling through Shakedex replace them. The buying checklist comes first, the selling checklist after it.
 - [ ] Market is the 4th sidebar item, right after Auctions, with a "New" tag, and hotkey 4 opens it; 5, 6 and 7 open Watchlist, Move from Namebase and Settings
 - [ ] Browse: listings load with name, current step price, and Buy Now / Reverse auction kind; next-price times read as approximate
