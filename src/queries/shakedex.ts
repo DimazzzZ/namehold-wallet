@@ -1,5 +1,6 @@
 import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
+import { useActiveProfile } from "./wallet";
 import type {
   ImportSource,
   MarketPage,
@@ -15,13 +16,18 @@ import type {
 
 /**
  * One page (from 1) of the LearnHNS Market listings, each verified against
- * the chain. The previous page stays on screen while the next one loads.
+ * the chain of the active profile's network and node, so the key carries the
+ * profile (R7, per-wallet read isolation). The previous page of the same
+ * profile stays on screen while the next one loads; another profile's never.
  */
 export function useMarketPage(page: number) {
+  const profileId = useActiveProfile().data?.id ?? null;
   return useQuery<MarketPage>({
-    queryKey: ["shakedex", "market", page],
-    queryFn: () => invoke<MarketPage>("shakedex_list_market", { page }),
-    placeholderData: keepPreviousData,
+    queryKey: ["shakedex", "market", profileId, page],
+    enabled: profileId != null,
+    queryFn: () => invoke<MarketPage>("shakedex_list_market", { page, walletProfileId: profileId }),
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[2] === profileId ? keepPreviousData(previous) : undefined,
     retry: false,
   });
 }
@@ -98,12 +104,24 @@ export function useBuildPurchaseFinalize() {
 
 // --- Selling (T7) ---
 
-/** Every listing of the active profile, with what each can do now (`shakedex_list_listings`). */
+/** `shakedex_list_listings` of one profile: its listings, pinned to it. */
+const listingsQuery = (profileId: string | null) => ({
+  queryKey: ["shakedex", "listings", profileId],
+  queryFn: () =>
+    invoke<ShakedexMyListing[]>("shakedex_list_listings", { walletProfileId: profileId }),
+});
+
+/**
+ * Every listing of the active profile, with what each can do now
+ * (`shakedex_list_listings`). The read names the profile and the key carries
+ * it (R7, per-wallet read isolation): after a switch another profile's rows
+ * are never shown, even from a read that lands late.
+ */
 export function useMyListings(enabled = true) {
+  const profileId = useActiveProfile().data?.id ?? null;
   return useQuery<ShakedexMyListing[]>({
-    queryKey: ["shakedex", "listings"],
-    queryFn: () => invoke<ShakedexMyListing[]>("shakedex_list_listings"),
-    enabled,
+    ...listingsQuery(profileId),
+    enabled: enabled && profileId != null,
     retry: false,
     refetchInterval: 30_000,
   });
@@ -117,13 +135,10 @@ export function useMyListings(enabled = true) {
  */
 export function useKeptDraft() {
   const qc = useQueryClient();
+  const profileId = useActiveProfile().data?.id ?? null;
   return async (draftId: string): Promise<ShakedexPendingSend | null> => {
     try {
-      const rows = await qc.fetchQuery({
-        queryKey: ["shakedex", "listings"],
-        queryFn: () => invoke<ShakedexMyListing[]>("shakedex_list_listings"),
-        staleTime: 0,
-      });
+      const rows = await qc.fetchQuery({ ...listingsQuery(profileId), staleTime: 0 });
       return rows?.find((r) => r.pendingSend?.draftId === draftId)?.pendingSend ?? null;
     } catch {
       return null;

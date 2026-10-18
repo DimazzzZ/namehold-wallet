@@ -950,3 +950,48 @@ fn listing_actions_fixture_matches_the_backend() {
          --locked --lib listing_actions_fixture"
     );
 }
+
+/// R7 (per-wallet read isolation, QA Q2): My listings reads the profile the
+/// caller names, not the backend's active one, so a read issued for one
+/// profile never answers with another's rows across a switch; with none
+/// named it reads the active profile.
+#[tokio::test]
+async fn list_listings_reads_the_profile_it_is_given() {
+    use crate::tests::shakedex_cmd_tests::{app_with, seeded, PROFILE};
+    let conn = seeded("regtest", "mnemonic_hot", "http://127.0.0.1:1");
+    queries::insert_wallet_profile(
+        &conn,
+        "other",
+        "Other",
+        "mnemonic_hot",
+        "regtest",
+        "xpubOTHER",
+        0,
+        false,
+    )
+    .unwrap();
+    let mut mine = listing("mine", "alpha", ListingState::Restored);
+    mine.wallet_profile_id = PROFILE.into();
+    insert(&conn, &mine);
+    let mut theirs = listing("theirs", "beta", ListingState::Restored);
+    theirs.wallet_profile_id = "other".into();
+    insert(&conn, &theirs);
+    let app = app_with(conn);
+    let ids = |rows: Vec<MyListing>| rows.into_iter().map(|r| r.listing.id).collect::<Vec<_>>();
+    let other = crate::commands::shakedex::shakedex_list_listings(
+        tauri::Manager::state(&app),
+        Some("other".into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        ids(other),
+        ["theirs"],
+        "the named profile, not the active one"
+    );
+    let active =
+        crate::commands::shakedex::shakedex_list_listings(tauri::Manager::state(&app), None)
+            .await
+            .unwrap();
+    assert_eq!(ids(active), ["mine"], "none named: the active profile");
+}

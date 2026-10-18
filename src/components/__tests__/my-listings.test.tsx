@@ -220,8 +220,9 @@ describe("MyListings", () => {
     });
     renderIt();
     expect(await screen.findByText("Loading your listings…")).toBeInTheDocument();
-    await waitFor(() => expect(calls("shakedex_list_listings")).toHaveLength(1));
     await new Promise((r) => setTimeout(r, 20));
+    // The listings are read for a profile (R7): none is asked for before it is known.
+    expect(calls("shakedex_list_listings")).toHaveLength(0);
     expect(screen.queryByTestId("my-listing-row")).not.toBeInTheDocument();
   });
 

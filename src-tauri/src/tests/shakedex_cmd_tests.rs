@@ -753,7 +753,9 @@ async fn list_market_survives_one_lookup_failure() {
     set(&conn, "learnhns_base_url", &market.url());
     let app = app_with(conn);
 
-    let page = shakedex_list_market(app.state(), None).await.expect("page");
+    let page = shakedex_list_market(app.state(), None, None)
+        .await
+        .expect("page");
     assert!(page.network_has_market);
     assert!(page.verified);
     assert_eq!(page.rows.len(), 1);
@@ -798,7 +800,9 @@ async fn list_market_reads_the_live_feed_shape() {
     set(&conn, "learnhns_base_url", &market.url());
     let app = app_with(conn);
 
-    let page = shakedex_list_market(app.state(), None).await.expect("page");
+    let page = shakedex_list_market(app.state(), None, None)
+        .await
+        .expect("page");
     assert_eq!(page.hidden.failed_verification, 0, "{:?}", page.hidden_rows);
     assert_eq!(page.rows.len(), 1);
     assert_eq!(page.rows[0].name, "dexreviews");
@@ -830,7 +834,7 @@ async fn list_market_says_which_page_of_how_many() {
     set(&conn, "learnhns_base_url", &market.url());
     let app = app_with(conn);
 
-    let page = shakedex_list_market(app.state(), Some(2))
+    let page = shakedex_list_market(app.state(), Some(2), None)
         .await
         .expect("page");
 
@@ -851,7 +855,8 @@ async fn list_market_has_at_least_one_page() {
     set(&conn, "learnhns_base_url", &market.url());
     let app = app_with(conn);
 
-    let v = serde_json::to_value(shakedex_list_market(app.state(), None).await.unwrap()).unwrap();
+    let v =
+        serde_json::to_value(shakedex_list_market(app.state(), None, None).await.unwrap()).unwrap();
     assert_eq!(
         (v["page"].clone(), v["pageCount"].clone()),
         (json!(1), json!(1))
@@ -872,7 +877,9 @@ async fn list_market_reads_chain_info_once_per_page() {
     set(&conn, "learnhns_base_url", &market.url());
     let app = app_with(conn);
 
-    let page = shakedex_list_market(app.state(), None).await.expect("page");
+    let page = shakedex_list_market(app.state(), None, None)
+        .await
+        .expect("page");
     assert_eq!(page.rows.len(), 3);
     info.assert_async().await;
 }
@@ -889,7 +896,9 @@ async fn list_market_without_mtp_hides_every_row_as_could_not_check() {
     set(&conn, "learnhns_base_url", &market.url());
     let app = app_with(conn);
 
-    let page = shakedex_list_market(app.state(), None).await.expect("page");
+    let page = shakedex_list_market(app.state(), None, None)
+        .await
+        .expect("page");
     assert!(page.rows.is_empty());
     assert_eq!(page.hidden.could_not_check, 2);
     let names: Vec<&str> = page
@@ -917,7 +926,9 @@ async fn list_market_counts_unparsable_rows_as_failed() {
     let conn = mainnet(&node.url());
     set(&conn, "learnhns_base_url", &market.url());
     let app = app_with(conn);
-    let page = shakedex_list_market(app.state(), Some(1)).await.unwrap();
+    let page = shakedex_list_market(app.state(), Some(1), None)
+        .await
+        .unwrap();
     assert_eq!(page.rows.len(), 1);
     assert_eq!(page.hidden.failed_verification, 2);
     let names: Vec<Option<&str>> = page.hidden_rows.iter().map(|r| r.name.as_deref()).collect();
@@ -945,7 +956,7 @@ async fn list_market_unverified_in_spv() {
     set(&conn, "learnhns_base_url", &market.url());
     let app = app_with(conn);
 
-    let page = shakedex_list_market(app.state(), None).await.unwrap();
+    let page = shakedex_list_market(app.state(), None, None).await.unwrap();
     assert!(!page.verified);
     assert_eq!(page.rows.len(), 2);
     for row in &page.rows {
@@ -963,7 +974,7 @@ async fn list_market_unverified_in_spv() {
 async fn list_market_off_mainnet_has_no_market() {
     let node = mockito::Server::new_async().await;
     let app = app_with(seeded("regtest", "mnemonic_hot", &node.url()));
-    let page = shakedex_list_market(app.state(), None).await.unwrap();
+    let page = shakedex_list_market(app.state(), None, None).await.unwrap();
     assert!(!page.network_has_market);
     assert!(page.rows.is_empty());
 }
@@ -1882,4 +1893,38 @@ fn refusal_sentences_match_the_uis_word_for_word() {
         crate::noncustodial::shakedex::sell::LISTING_LIFETIME_SECS
     );
     assert!(ui.contains(&decl), "marketText.ts lacks `{decl}`");
+}
+
+/// R7 (per-wallet read isolation, review M1): the market page is read for
+/// the profile the caller names, on its network and node: a regtest profile
+/// named while a mainnet one is active gets "no market", and the market is
+/// not asked (none named reads the active profile: the tests above).
+#[tokio::test]
+async fn list_market_reads_the_profile_it_is_given() {
+    let mut market = mockito::Server::new_async().await;
+    let asked = market
+        .mock("GET", mockito::Matcher::Any)
+        .with_status(500)
+        .expect(0)
+        .create_async()
+        .await;
+    let conn = mainnet("http://127.0.0.1:1");
+    set(&conn, "learnhns_base_url", &market.url());
+    db::queries::insert_wallet_profile(
+        &conn,
+        "regtest-profile",
+        "Regtest",
+        "mnemonic_hot",
+        "regtest",
+        &account_xpub(Network::Regtest).to_base58check(Network::Regtest),
+        0,
+        false,
+    )
+    .unwrap();
+    let app = app_with(conn);
+    let page = shakedex_list_market(app.state(), None, Some("regtest-profile".into()))
+        .await
+        .expect("page");
+    assert!(!page.network_has_market, "the named profile's network");
+    asked.assert_async().await;
 }

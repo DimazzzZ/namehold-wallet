@@ -197,11 +197,34 @@ impl BrowseCtx {
 }
 
 fn browse_ctx(state: &State<'_, AppState>) -> Result<BrowseCtx, AppError> {
+    let id = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        draft_ctx::active_profile(&conn)?.id
+    };
+    browse_ctx_for(state, &id)
+}
+
+/// The profile a read names when it exists, else the active one, as the
+/// read commands resolve it (`commands/read.rs::resolve_profile`; this module
+/// does not reach into its siblings).
+fn named_or_active_profile(
+    conn: &rusqlite::Connection,
+    wallet_profile_id: Option<String>,
+) -> Result<String, AppError> {
+    if let Some(id) = wallet_profile_id.map(|id| id.trim().to_string()) {
+        if !id.is_empty() && queries::get_wallet_profile(conn, &id)?.is_some() {
+            return Ok(id);
+        }
+    }
+    Ok(draft_ctx::active_profile(conn)?.id)
+}
+
+/// [`browse_ctx`] for the profile `profile_id`: its network and its node.
+fn browse_ctx_for(state: &State<'_, AppState>, profile_id: &str) -> Result<BrowseCtx, AppError> {
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    let profile = draft_ctx::active_profile(&conn)?;
     Ok(BrowseCtx {
-        network: derivation::network_from_profile(&profile.network)?,
-        node: NodeRpcClient::for_profile(&conn, &profile.id)?,
+        network: queries::profile_network(&conn, profile_id)?,
+        node: NodeRpcClient::for_profile(&conn, profile_id)?,
         settings: queries::get_settings(&conn)?,
     })
 }
@@ -2556,15 +2579,22 @@ pub(crate) fn upgrade_restored_lock_inner(
 
 // --- commands ---------------------------------------------------------------
 
-/// One page of LearnHNS Market listings, each verified on the profile's node.
-/// Only buyable listings are returned; the rest are counted in `hidden`. In
-/// SPV and Explorer modes every row is returned unverified.
+/// One page of LearnHNS Market listings, each verified on the node of the
+/// profile `wallet_profile_id` (the active one when none is named; R7, so a
+/// read issued before a switch answers for its own profile). Only buyable
+/// listings are returned; the rest are counted in `hidden`. In SPV and
+/// Explorer modes every row is returned unverified.
 #[tauri::command]
 pub async fn shakedex_list_market(
     state: State<'_, AppState>,
     page: Option<u32>,
+    wallet_profile_id: Option<String>,
 ) -> Result<MarketPage, AppError> {
-    let ctx = browse_ctx(&state)?;
+    let profile_id = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        named_or_active_profile(&conn, wallet_profile_id)?
+    };
+    let ctx = browse_ctx_for(&state, &profile_id)?;
     let verified = ctx.can_verify();
     if ctx.network != Network::Main {
         return Ok(MarketPage {
@@ -3501,21 +3531,31 @@ pub async fn shakedex_lower_price(
     lower_price_confirmed(&state, &app, &listing_id, &price).await
 }
 
-/// The active profile's listings ("My listings", T7), each with what it can
-/// do now and its prices ([`my_listings_from_conn`]). The node's median time
+/// The listings of the profile `wallet_profile_id` (the active one when
+/// none is named; R7) ("My listings", T7), each with what it can do now and
+/// its prices ([`my_listings_from_conn`]), on that profile's network and
+/// node. Every row action is still refused by its command for a listing
+/// that is not the active profile's (`l.wallet_profile_id == ctx.profile_id`). The node's median time
 /// is read once for every row, and only when a row has steps.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn shakedex_list_listings(
     state: State<'_, AppState>,
+    wallet_profile_id: Option<String>,
 ) -> Result<Vec<MyListing>, AppError> {
+    // R7, per-wallet read isolation: the profile the caller names (the
+    // active one when none is), so a read issued before a switch answers
+    // for its own profile only.
+    let profile_id = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        named_or_active_profile(&conn, wallet_profile_id)?
+    };
     let needs_chain = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let profile = draft_ctx::active_profile(&conn)?;
-        needs_median_time(&queries::list_shakedex_listings(&conn, &profile.id)?)
+        needs_median_time(&queries::list_shakedex_listings(&conn, &profile_id)?)
     };
     let chain = if needs_chain {
-        let ctx = browse_ctx(&state)?;
+        let ctx = browse_ctx_for(&state, &profile_id)?;
         if ctx.can_verify() {
             Some(
                 verify::chain_point(&ctx.node)
@@ -3534,9 +3574,8 @@ pub async fn shakedex_list_listings(
         None
     };
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    let profile = draft_ctx::active_profile(&conn)?;
-    let network = derivation::network_from_profile(&profile.network)?;
-    my_listings_from_conn(&conn, &profile.id, network, chain)
+    let network = queries::profile_network(&conn, &profile_id)?;
+    my_listings_from_conn(&conn, &profile_id, network, chain)
 }
 
 #[cfg(test)]

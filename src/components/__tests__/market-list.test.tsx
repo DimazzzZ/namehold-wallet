@@ -167,7 +167,10 @@ describe("MarketPage", () => {
 
     fireEvent.click(screen.getByTestId("market-next"));
     expect(await screen.findByText(".name2")).toBeInTheDocument();
-    expect(invokeMock).toHaveBeenCalledWith("shakedex_list_market", { page: 2 });
+    expect(invokeMock).toHaveBeenCalledWith("shakedex_list_market", {
+      page: 2,
+      walletProfileId: expect.any(String),
+    });
     expect(screen.getByTestId("market-page-of")).toHaveTextContent("Page 2 of 3");
 
     fireEvent.click(screen.getByTestId("market-next"));
@@ -379,7 +382,8 @@ describe("MarketPage", () => {
         "Shakedex purchases on mainnet are experimental: enable them in Settings",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("market-buy")).toBeDisabled();
+    // The page is read once the profile it belongs to is known (R7).
+    expect(await screen.findByTestId("market-buy")).toBeDisabled();
     unmount();
 
     useSettingsStore.setState({
@@ -397,7 +401,8 @@ describe("MarketPage", () => {
     expect(
       await screen.findByText("Shakedex needs a local node, or a remote node with sending allowed"),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("market-buy")).toBeDisabled();
+    // The page is read once the profile it belongs to is known (R7).
+    expect(await screen.findByTestId("market-buy")).toBeDisabled();
   });
 
   it("a software profile sees no software-wallet notice", async () => {

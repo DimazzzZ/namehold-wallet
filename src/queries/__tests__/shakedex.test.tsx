@@ -32,8 +32,11 @@ function setup() {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   );
-  return { wrapper, spy };
+  return { wrapper, spy, qc };
 }
+
+/** The active profile `id`, as `list_wallet_profiles` lists it. */
+const profileRow = (id: string) => ({ id, label: id, network: "mainnet", active: true });
 
 const page: MarketPage = {
   rows: [],
@@ -57,11 +60,35 @@ beforeEach(() => {
 
 describe("shakedex queries", () => {
   it("useMarketPage asks shakedex_list_market for its page", async () => {
-    invokeMock.mockResolvedValue(page);
+    invokeMock.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === "list_wallet_profiles" ? [profileRow("p1")] : page),
+    );
     const { wrapper } = setup();
     const { result } = renderHook(() => useMarketPage(3), { wrapper });
     await waitFor(() => expect(result.current.data).toEqual(page));
-    expect(invokeMock).toHaveBeenCalledWith("shakedex_list_market", { page: 3 });
+    expect(invokeMock).toHaveBeenCalledWith("shakedex_list_market", {
+      page: 3,
+      walletProfileId: "p1",
+    });
+  });
+
+  it("useMarketPage never shows the previous profile's page while the next profile's loads (R7)", async () => {
+    let active = "pA";
+    const pageOf = (id: string): MarketPage => ({ ...page, rows: [{ name: id } as never] });
+    let releaseB: (p: MarketPage) => void = () => {};
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "list_wallet_profiles") return Promise.resolve([profileRow(active)]);
+      if (active === "pA") return Promise.resolve(pageOf("pA"));
+      return new Promise<MarketPage>((r) => (releaseB = r));
+    });
+    const { wrapper, qc } = setup();
+    const { result } = renderHook(() => useMarketPage(1), { wrapper });
+    await waitFor(() => expect(result.current.data).toEqual(pageOf("pA")));
+    active = "pB";
+    await act(() => qc.invalidateQueries({ queryKey: ["wallet", "profiles"] }));
+    await waitFor(() => expect(result.current.data).toBeUndefined());
+    act(() => releaseB(pageOf("pB")));
+    await waitFor(() => expect(result.current.data).toEqual(pageOf("pB")));
   });
 
   it("useImportListing sends the source", async () => {
@@ -129,18 +156,43 @@ describe("shakedex queries", () => {
 });
 
 describe("shakedex selling hooks", () => {
-  it("useMyListings asks shakedex_list_listings", async () => {
-    invokeMock.mockResolvedValue([]);
+  it("useMyListings asks shakedex_list_listings for the active profile", async () => {
+    invokeMock.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === "list_wallet_profiles" ? [profileRow("p1")] : []),
+    );
     const { wrapper } = setup();
     const { result } = renderHook(() => useMyListings(), { wrapper });
     await waitFor(() => expect(result.current.data).toEqual([]));
-    expect(invokeMock).toHaveBeenCalledWith("shakedex_list_listings", undefined);
+    expect(invokeMock).toHaveBeenCalledWith("shakedex_list_listings", { walletProfileId: "p1" });
+  });
+
+  it("useMyListings never shows the previous profile's rows, even when its read lands late (R7)", async () => {
+    let active = "pA";
+    const rowsOf = (id: string) => [{ listing: { id } }];
+    const pending: Record<string, (v: unknown) => void> = {};
+    invokeMock.mockImplementation((cmd: string, args?: { walletProfileId?: string }) => {
+      if (cmd === "list_wallet_profiles") return Promise.resolve([profileRow(active)]);
+      const id = args?.walletProfileId ?? active;
+      return new Promise((r) => (pending[id] = r));
+    });
+    const { wrapper, qc } = setup();
+    const { result } = renderHook(() => useMyListings(), { wrapper });
+    await waitFor(() => expect(pending.pA).toBeDefined());
+    // The switch happens while profile A's read is still in flight.
+    active = "pB";
+    await act(() => qc.invalidateQueries({ queryKey: ["wallet", "profiles"] }));
+    await waitFor(() => expect(pending.pB).toBeDefined());
+    act(() => pending.pB!(rowsOf("pB")));
+    await waitFor(() => expect(result.current.data).toEqual(rowsOf("pB")));
+    act(() => pending.pA!(rowsOf("pA")));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(result.current.data).toEqual(rowsOf("pB"));
   });
 
   it("useMyListings is idle when disabled", () => {
     const { wrapper } = setup();
     renderHook(() => useMyListings(false), { wrapper });
-    expect(invokeMock).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalledWith("shakedex_list_listings", expect.anything());
   });
 
   it("useBuildLock asks shakedex_build_lock_draft with the mode and the publish box", async () => {
