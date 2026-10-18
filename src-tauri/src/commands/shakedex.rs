@@ -67,7 +67,9 @@ pub struct PriceStepView {
     pub valid_in_secs: Option<u64>,
 }
 
-/// A listing with one price step is Buy Now; with several, a reverse auction.
+/// A listing whose price steps share one lock time is Buy Now (a lowered
+/// one included); steps at different times are a reverse auction
+/// ([`sell::mode_of_step_times`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ListingKind {
@@ -260,10 +262,9 @@ fn market_row(listing_json: String, l: &ListingFile, verdict: Verdict) -> Market
     MarketRow {
         listing_json,
         name: l.name.clone(),
-        kind: if l.steps.len() == 1 {
-            ListingKind::BuyNow
-        } else {
-            ListingKind::ReverseAuction
+        kind: match sell::mode_of_step_times(l.steps.iter().map(|s| s.lock_time)) {
+            ListingMode::BuyNow => ListingKind::BuyNow,
+            ListingMode::ReverseAuction => ListingKind::ReverseAuction,
         },
         current_price,
         next_price,
@@ -2516,7 +2517,8 @@ pub(crate) struct OwnFileInput<'a> {
 /// ([`sell::verify_file_steps`], at the coin's value as hsd reports
 /// it). A spent lock coin leaves the outpoint and key to check: the chain
 /// then judges the sale (R22) by the file's payment address. The listing
-/// becomes Listed with the file's payment address, steps, expiry and mode;
+/// becomes Listed with the file's payment address, steps, expiry and the
+/// mode its step times give ([`sell::mode_of_step_times`]);
 /// the file is kept as parsed (`ListingFile::to_json`, unknown fields
 /// included). Writes nothing on a refusal.
 pub(crate) fn upgrade_restored_lock_inner(
@@ -2543,11 +2545,7 @@ pub(crate) fn upgrade_restored_lock_inner(
             signature: hex::encode(s.signature),
         })
         .collect();
-    let mode = if file.steps.len() == 1 {
-        ListingMode::BuyNow
-    } else {
-        ListingMode::ReverseAuction
-    };
+    let mode = sell::mode_of_step_times(file.steps.iter().map(|s| s.lock_time));
     let expires_at = file
         .expires_at
         .map(i64::try_from)
@@ -3630,6 +3628,24 @@ mod tests {
 
         let row = market_row(l.to_json().unwrap(), &l, unverified());
         assert!(row.steps.iter().all(|s| s.valid_in_secs.is_none()));
+    }
+
+    /// Review M4: a market row's kind follows the step times, as the own-file
+    /// import's mode does (`sell::mode_of_step_times`): a lowered Buy Now's
+    /// two steps at one lock time are a Buy Now, steps a day apart a reverse
+    /// auction.
+    #[test]
+    fn market_row_kind_follows_the_step_times() {
+        let mut j: serde_json::Value = serde_json::from_str(LISTING_FILE).unwrap();
+        let mut lowered = j["data"][0].clone();
+        lowered["price"] = 200_000_000.into();
+        j["data"].as_array_mut().unwrap().push(lowered);
+        let same_time = ListingFile::parse(&j.to_string(), Network::Main).unwrap();
+        let row = market_row(same_time.to_json().unwrap(), &same_time, unverified());
+        assert_eq!(row.kind, ListingKind::BuyNow);
+        let l = two_steps();
+        let row = market_row(l.to_json().unwrap(), &l, unverified());
+        assert_eq!(row.kind, ListingKind::ReverseAuction);
     }
 
     /// The largest fee a listing file can carry (price plus fee up to the

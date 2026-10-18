@@ -74,6 +74,25 @@ pub fn buy_now_lock_time(mtp: u64) -> u64 {
     mtp.saturating_sub(LOCK_TIME_UNIT_SECS)
 }
 
+/// R32: the mode of a listing read from its file, which does not record it,
+/// by the shape R19, R24 and R26 give its steps: a Buy Now's steps, its
+/// price and any lower one signed before the MTP moved, share one lock time;
+/// a reverse auction's follow one another in time. Every step at one lock
+/// time (one step included) is a Buy Now; any two at different times are a
+/// reverse auction. A Buy Now lowered after the MTP moved has steps at
+/// different times and reads as a reverse auction: the file cannot tell the
+/// two apart, and both price the same at every MTP (R3).
+pub fn mode_of_step_times(
+    mut lock_times: impl Iterator<Item = u64>,
+) -> crate::db::queries::ListingMode {
+    let first = lock_times.next();
+    if lock_times.all(|t| Some(t) == first) {
+        crate::db::queries::ListingMode::BuyNow
+    } else {
+        crate::db::queries::ListingMode::ReverseAuction
+    }
+}
+
 /// R24: a reverse auction has 2 to 1000 steps, at least 15 minutes apart.
 pub const REVERSE_MIN_STEPS: u32 = 2;
 pub const REVERSE_MAX_STEPS: u32 = 1_000;

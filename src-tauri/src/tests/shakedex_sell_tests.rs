@@ -5982,21 +5982,44 @@ fn own_file(
     signer: &crate::noncustodial::shakedex::lock_key::LockKey,
     payment: &str,
 ) -> String {
+    own_file_with_steps(vout, pubkey, signer, payment, &[(5_000_000, 1_700_000_000)])
+}
+
+/// [`own_file`] with the `(price, lock time)` steps given, each signed by
+/// `signer` over `(RESTORED_TXID, vout)`.
+fn own_file_with_steps(
+    vout: u32,
+    pubkey: [u8; 33],
+    signer: &crate::noncustodial::shakedex::lock_key::LockKey,
+    payment: &str,
+    steps: &[(u64, u64)],
+) -> String {
     let mut lock_txid = [0u8; 32];
     hex::decode_to_slice(RESTORED_TXID, &mut lock_txid).unwrap();
-    let signature = sell::sign_step(
-        signer,
-        &StepTemplate {
-            lock_outpoint: (lock_txid, vout),
-            lock_value: NAME_VALUE,
-            lock_pubkey: &signer.pubkey,
-            payment: crate::noncustodial::tx::output_address_from_string(Network::Regtest, payment)
-                .unwrap(),
-            price: 5_000_000,
-            lock_time_secs: 1_700_000_000,
-        },
-    )
-    .unwrap();
+    let steps: Vec<PriceStep> = steps
+        .iter()
+        .map(|&(price, lock_time)| PriceStep {
+            price,
+            lock_time,
+            signature: sell::sign_step(
+                signer,
+                &StepTemplate {
+                    lock_outpoint: (lock_txid, vout),
+                    lock_value: NAME_VALUE,
+                    lock_pubkey: &signer.pubkey,
+                    payment: crate::noncustodial::tx::output_address_from_string(
+                        Network::Regtest,
+                        payment,
+                    )
+                    .unwrap(),
+                    price,
+                    lock_time_secs: lock_time,
+                },
+            )
+            .unwrap(),
+            fee: 0,
+        })
+        .collect();
     write_listing_file(
         &NewListingFile {
             name: NAME,
@@ -6004,12 +6027,7 @@ fn own_file(
             lock_vout: vout,
             public_key: pubkey,
             payment_addr: payment,
-            steps: &[PriceStep {
-                price: 5_000_000,
-                lock_time: 1_700_000_000,
-                signature,
-                fee: 0,
-            }],
+            steps: &steps,
             expires_at: 1_731_536_000,
         },
         Network::Regtest,
@@ -6240,6 +6258,35 @@ async fn own_listing_file_with_a_key_this_wallet_does_not_derive_is_refused() {
     let e = err_text(import(&app, file).await.unwrap_err());
     assert!(e.contains("not the lock key this wallet derives"), "{e}");
     assert_still_restored(&app, "a key not derived");
+}
+
+/// R32 (QA Q4): the file does not say the mode, so the import reads it
+/// from the steps as R19/R26 shape them: a Buy Now lowered before the MTP
+/// moved has every step at one lock time (5 then 4 HNS here) and stays a
+/// Buy Now; steps at different lock times are a reverse auction's.
+#[tokio::test]
+async fn own_listing_file_import_reads_the_mode_from_the_step_times() {
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let pay = addr00(Network::Regtest).0;
+    for (case, steps, want) in [
+        (
+            "a lowered Buy Now",
+            vec![(5_000_000, 1_700_000_000), (4_000_000, 1_700_000_000)],
+            ListingMode::BuyNow,
+        ),
+        (
+            "a reverse auction",
+            vec![(5_000_000, 1_700_000_000), (4_000_000, 1_700_000_512)],
+            ListingMode::ReverseAuction,
+        ),
+    ] {
+        let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+        restore(&app).await.expect("restored");
+        let s = import(&app, own_file_with_steps(1, key.pubkey, &key, &pay, &steps))
+            .await
+            .expect(case);
+        assert_eq!((s.state, s.mode), (ListingState::Listed, want), "{case}");
+    }
 }
 
 /// R32, Step 1: the file's payment address must be one of this profile's
