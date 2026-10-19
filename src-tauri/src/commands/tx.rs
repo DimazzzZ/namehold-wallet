@@ -2318,6 +2318,17 @@ pub async fn get_wallet_balances(
     }))
 }
 
+/// Whether `session` is unlocked AND belongs to `active_id`: one wallet's
+/// unlocked signer never counts for another profile.
+pub(crate) fn signer_unlocked_for(
+    session: Option<&crate::noncustodial::session::SignerSession>,
+    active_id: &str,
+) -> bool {
+    session
+        .map(|s| s.is_unlocked() && s.wallet_profile_id() == active_id)
+        .unwrap_or(false)
+}
+
 /// Report non-custodial write capability: writes require an unlocked signer AND
 /// a broadcaster-capable node source. The frontend gates spend actions on this.
 #[tauri::command]
@@ -2325,12 +2336,16 @@ pub async fn get_wallet_balances(
 pub async fn get_write_capability(
     state: State<'_, AppState>,
 ) -> Result<crate::providers::WriteCapability, AppError> {
+    let active_id = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::get_active_profile_id(&conn)?
+    };
     let signer_unlocked = {
         let slot = state
             .signer
             .lock()
             .map_err(|e| AppError::Lock(e.to_string()))?;
-        slot.as_ref().map(|s| s.is_unlocked()).unwrap_or(false)
+        signer_unlocked_for(slot.as_ref(), &active_id)
     };
     let (source, allow_remote, settings, probe_addr, expected_network, effective_url, client_opt) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;

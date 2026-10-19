@@ -294,6 +294,20 @@ fn test_activate_profile_drops_another_profiles_signer() {
 }
 
 #[test]
+fn test_write_capability_signer_counts_only_for_its_own_profile() {
+    let state = create_full_test_state();
+    seed_unlocked_signer(&state, "a");
+    let slot = state.signer.lock().unwrap();
+    assert!(crate::commands::tx::signer_unlocked_for(slot.as_ref(), "a"));
+    assert!(!crate::commands::tx::signer_unlocked_for(
+        slot.as_ref(),
+        "b"
+    ));
+    assert!(!crate::commands::tx::signer_unlocked_for(slot.as_ref(), ""));
+    assert!(!crate::commands::tx::signer_unlocked_for(None, "a"));
+}
+
+#[test]
 fn test_activate_profile_keeps_its_own_signer() {
     let state = create_full_test_state();
     seed_unlocked_signer(&state, "same");

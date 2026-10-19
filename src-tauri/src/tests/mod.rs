@@ -1,3 +1,4 @@
+mod activation_sites_tests;
 mod active_profile_tests;
 mod assets_cmd_tests;
 mod auction_capabilities_tests;

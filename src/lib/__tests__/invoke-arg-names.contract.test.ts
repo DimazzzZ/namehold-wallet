@@ -157,6 +157,13 @@ export function scanInvokeArgs(
 
   const keysOfExpr = (e: ts.Expression, depth: number): boolean => {
     if (depth > 6) return false;
+    // A cast names the keys too: `x as { bad_key: number }`. Read the cast type
+    // and the value under it; the cast alone may be opaque (`Record<...>`).
+    if (ts.isAsExpression(e) || ts.isSatisfiesExpression(e)) {
+      const castOk = keysOfType(e.type, depth + 1);
+      const innerOk = keysOfExpr(e.expression, depth + 1);
+      return castOk || innerOk;
+    }
     e = strip(e);
     if (ts.isObjectLiteralExpression(e)) {
       let ok = true;
@@ -180,8 +187,11 @@ export function scanInvokeArgs(
     if (ts.isIdentifier(e)) {
       const decl = lookup(e.text, e);
       if (!decl) return false;
-      if (decl.init && keysOfExpr(decl.init, depth + 1)) return true;
-      return decl.type ? keysOfType(decl.type, depth + 1) : false;
+      // The annotation and the initializer are both read: a default `= {}`
+      // says nothing about the keys the declared type allows.
+      const typeOk = decl.type ? keysOfType(decl.type, depth + 1) : false;
+      const initOk = decl.init ? keysOfExpr(decl.init, depth + 1) : false;
+      return typeOk || initOk;
     }
     return false;
   };
@@ -271,6 +281,34 @@ describe("scanInvokeArgs (the scanner itself)", () => {
     const r = scanInvokeArgs(src, "x.ts");
     expect(r.offenders.map((o) => o.key)).toEqual(["bad_one", "bad_two"]);
     expect(r.unchecked).toEqual([]);
+  });
+
+  it("reads the declared type of a parameter with a default, not just the default", () => {
+    const src = [
+      `interface P { fine?: string; bad_key?: boolean }`,
+      `export const f = (p: P = {}) => invoke("c", p);`,
+    ].join("\n");
+    const r = scanInvokeArgs(src, "x.ts");
+    expect(r.offenders).toEqual([{ where: "x.ts:1", key: "bad_key" }]);
+    expect(r.unchecked).toEqual([]);
+  });
+
+  it("reads the declared type of a const that has an initializer", () => {
+    const src = [`type T = { bad_key?: number };`, `const a: T = { };`, `invoke("c", a);`].join(
+      "\n",
+    );
+    expect(scanInvokeArgs(src, "x.ts").offenders.map((o) => o.key)).toEqual(["bad_key"]);
+  });
+
+  it("reads the type of a cast, and the value under an opaque cast", () => {
+    const typed = scanInvokeArgs(`invoke("c", x as { bad_key: number });`, "x.ts");
+    expect(typed.offenders.map((o) => o.key)).toEqual(["bad_key"]);
+    const opaque = scanInvokeArgs(
+      `invoke("c", { bad_two: 1 } as Record<string, unknown>);`,
+      "x.ts",
+    );
+    expect(opaque.offenders.map((o) => o.key)).toEqual(["bad_two"]);
+    expect(opaque.unchecked).toEqual([]);
   });
 
   it("lists an argument it cannot see through as unchecked", () => {

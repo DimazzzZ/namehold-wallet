@@ -21,7 +21,7 @@ use rand::RngCore;
 use tauri::{AppHandle, Manager};
 use zeroize::Zeroize;
 
-use crate::commands::secure_prompt::{prompt_secure, SecurePromptRequest};
+use crate::commands::secure_prompt::{prompt_secure, ImportInput, SecurePromptRequest};
 use crate::db;
 use crate::error::AppError;
 use crate::noncustodial::hd::{self, ExtendedPrivKey, ExtendedPubKey, HARDENED_OFFSET};
@@ -173,7 +173,7 @@ pub(crate) fn phrase_import_request() -> SecurePromptRequest {
         mode: "import".to_string(),
         title: "Import recovery phrase".to_string(),
         message: "Enter your 12 or 24 word recovery phrase.".to_string(),
-        input: Some("recovery_phrase".to_string()),
+        input: Some(ImportInput::RecoveryPhrase),
         ..Default::default()
     }
 }
@@ -185,7 +185,7 @@ pub(crate) fn xpub_import_request() -> SecurePromptRequest {
         mode: "import".to_string(),
         title: "Import account xpub".to_string(),
         message: "Enter the account-level extended public key (xpub).".to_string(),
-        input: Some("xpub".to_string()),
+        input: Some(ImportInput::Xpub),
         ..Default::default()
     }
 }
