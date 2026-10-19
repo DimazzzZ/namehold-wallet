@@ -2,20 +2,24 @@
 //! key (R17), the lock's self-check before a name enters it (R18), the Buy
 //! Now lock time (R19) and the FINALIZE into the lock.
 
+use std::collections::HashSet;
+
 use crate::error::AppError;
 use crate::noncustodial::actions::{DraftPlan, PlanResult};
+use crate::noncustodial::address;
 use crate::noncustodial::covenants;
 use crate::noncustodial::names;
 use crate::noncustodial::network::{NameParams, Network};
+use crate::noncustodial::rpc;
 use crate::noncustodial::send::{SpendableCoin, DUST_THRESHOLD};
 use crate::noncustodial::shakedex::funding::{cov_out, fund, own_input};
 use crate::noncustodial::shakedex::lock_key::LockKey;
 use crate::noncustodial::shakedex::purchase::MAX_MONEY;
 use crate::noncustodial::shakedex::script;
 use crate::noncustodial::shakedex::template::{
-    secs_until_valid, valid_from_mtp, verify_step_signature, StepTemplate,
+    secs_until_valid, valid_from_mtp, verify_step_signature, StepTemplate, STEP_SIGHASH,
 };
-use crate::noncustodial::sync::COV_FINALIZE;
+use crate::noncustodial::sync::{COV_FINALIZE, COV_NONE, COV_TRANSFER};
 use crate::noncustodial::tx::{Covenant, OutputAddress};
 use crate::noncustodial::types::doos_to_hns_string;
 
@@ -194,7 +198,7 @@ pub fn lock_transfer_owns_name(
     revoked: u64,
     lock_transfer_txid: &str,
 ) -> bool {
-    revoked == 0 && owner_index == 0 && owner_hash.eq_ignore_ascii_case(lock_transfer_txid)
+    revoked == 0 && owner_index == 0 && owner_hash == lock_transfer_txid
 }
 
 /// The block of the name's TRANSFER, hsd's `info.transfer` in a
@@ -435,6 +439,565 @@ pub fn expires_before_finalize(name: &str, expiry_end: i64) -> AppError {
         "'{name}' expires at block {expiry_end}, too soon to finalize it into the lock: \
          cancel the transfer (Cancel transfer) and renew the name first"
     ))
+}
+
+/// A transaction as hsd shows it, reduced to what R22 reads. Built from
+/// either of hsd's shapes ([`spend_view_from_rest`], [`spend_view_from_block`]),
+/// so the rule ([`purchase_in`]) is one whichever way it was found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpendView {
+    /// The block it is in; `None` in the mempool.
+    pub height: Option<i64>,
+    /// Each input's prevout `(txid, index)`.
+    pub inputs: Vec<(String, u32)>,
+    /// Each input's witness items, hex as hsd sends them (`Witness.getJSON`:
+    /// REST `inputs[].witness`, `getblock` `vin[].txinwitness`); `None` when
+    /// the reply leaves the field out, which only a verdict that reads it
+    /// refuses.
+    pub witnesses: Vec<Option<Vec<String>>>,
+    pub outputs: Vec<SpendOutput>,
+}
+
+/// One output of a [`SpendView`]; `address` is the bech32 string, as both of
+/// hsd's shapes send it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpendOutput {
+    pub address: String,
+    pub covenant_type: u8,
+    /// The covenant's items, hex as hsd sends them.
+    pub items: Vec<String>,
+}
+
+fn not_hsds(what: &str) -> AppError {
+    AppError::Rpc(format!("node sent a transaction without {what}"))
+}
+
+fn output_of(
+    address: Option<&str>,
+    cov: Option<&serde_json::Value>,
+) -> Result<SpendOutput, AppError> {
+    let address = address.ok_or_else(|| not_hsds("an output's address"))?;
+    let cov = cov.ok_or_else(|| not_hsds("an output's covenant"))?;
+    let covenant_type = cov
+        .get("type")
+        .and_then(|t| t.as_u64())
+        .and_then(|t| u8::try_from(t).ok())
+        .ok_or_else(|| not_hsds("a covenant type"))?;
+    let items = cov
+        .get("items")
+        .and_then(|i| i.as_array())
+        .ok_or_else(|| not_hsds("covenant items"))?
+        .iter()
+        .map(|i| {
+            i.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| not_hsds("a covenant item"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(SpendOutput {
+        address: address.to_string(),
+        covenant_type,
+        items,
+    })
+}
+
+/// An input's witness as hsd sends it: an array of hex items; absent (or
+/// null) is `None`; anything else is not hsd's answer.
+fn witness_of(w: Option<&serde_json::Value>) -> Result<Option<Vec<String>>, AppError> {
+    let Some(w) = w.filter(|w| !w.is_null()) else {
+        return Ok(None);
+    };
+    let items = w
+        .as_array()
+        .ok_or_else(|| not_hsds("a readable input witness"))?;
+    items
+        .iter()
+        .map(|i| {
+            i.as_str()
+                .filter(|h| h.len() % 2 == 0 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+                .map(str::to_string)
+                .ok_or_else(|| not_hsds("a readable input witness item"))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+fn prevout_of(
+    hash: Option<&serde_json::Value>,
+    index: Option<&serde_json::Value>,
+) -> Result<(String, u32), AppError> {
+    let hash = hash.and_then(|h| h.as_str());
+    let index = index
+        .and_then(|x| x.as_u64())
+        .and_then(|x| u32::try_from(x).ok());
+    match (hash, index) {
+        (Some(h), Some(x)) => Ok((h.to_string(), x)),
+        _ => Err(not_hsds("an input's prevout")),
+    }
+}
+
+/// [`SpendView`] from hsd's `GET /tx/:hash` (`TX.getJSON` and
+/// `TXMeta.getJSON`): `height` (-1 in the mempool), `inputs[].prevout.{hash,
+/// index}`, `outputs[].{address, covenant}`. A reply missing any of them is
+/// not hsd's whole answer.
+pub fn spend_view_from_rest(tx: &serde_json::Value) -> Result<SpendView, AppError> {
+    let height = rpc::mined_height(tx.get("height").and_then(|h| h.as_i64()), || {
+        "the transaction's height".into()
+    })?;
+    let raw_inputs = tx
+        .get("inputs")
+        .and_then(|i| i.as_array())
+        .ok_or_else(|| not_hsds("its inputs"))?;
+    let inputs = raw_inputs
+        .iter()
+        .map(|i| {
+            let p = i.get("prevout");
+            prevout_of(
+                p.and_then(|p| p.get("hash")),
+                p.and_then(|p| p.get("index")),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let witnesses = raw_inputs
+        .iter()
+        .map(|i| witness_of(i.get("witness")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let outputs = tx
+        .get("outputs")
+        .and_then(|o| o.as_array())
+        .ok_or_else(|| not_hsds("its outputs"))?
+        .iter()
+        .map(|o| output_of(o.get("address").and_then(|a| a.as_str()), o.get("covenant")))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(SpendView {
+        height,
+        inputs,
+        witnesses,
+        outputs,
+    })
+}
+
+/// [`SpendView`] of transaction `txid` in a block from `getblock <hash> true
+/// true` (`rpc.js` `txToJSON`: `vin[].{txid, vout}`, `vout[].address.string`,
+/// `vout[].covenant`), `None` when the block does not hold it. Needs no
+/// transaction index. A block or transaction missing a field is an error.
+pub fn spend_view_from_block(
+    block: &serde_json::Value,
+    txid: &str,
+) -> Result<Option<SpendView>, AppError> {
+    let height = block
+        .get("height")
+        .and_then(|h| h.as_i64())
+        .filter(|h| *h >= 0)
+        .ok_or_else(|| not_hsds("its block's height"))?;
+    let txs = block
+        .get("tx")
+        .and_then(|t| t.as_array())
+        .ok_or_else(|| not_hsds("a block's transactions"))?;
+    // Every entry must carry its txid: `getblock` without details sends bare
+    // txid strings, and an entry skipped for lacking one would answer "not in
+    // this block" for a purchase that is.
+    let mut found = None;
+    for t in txs {
+        let id = t
+            .get("txid")
+            .and_then(|h| h.as_str())
+            .ok_or_else(|| not_hsds("a block transaction's txid"))?;
+        if found.is_none() && id == txid {
+            found = Some(t);
+        }
+    }
+    let Some(tx) = found else {
+        return Ok(None);
+    };
+    let vin = tx
+        .get("vin")
+        .and_then(|i| i.as_array())
+        .ok_or_else(|| not_hsds("its inputs"))?;
+    let inputs = vin
+        .iter()
+        .map(|i| prevout_of(i.get("txid"), i.get("vout")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let witnesses = vin
+        .iter()
+        .map(|i| witness_of(i.get("txinwitness")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let outputs = tx
+        .get("vout")
+        .and_then(|o| o.as_array())
+        .ok_or_else(|| not_hsds("its outputs"))?
+        .iter()
+        .map(|o| {
+            output_of(
+                o.get("address")
+                    .and_then(|a| a.get("string"))
+                    .and_then(|s| s.as_str()),
+                o.get("covenant"),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(SpendView {
+        height: Some(height),
+        inputs,
+        witnesses,
+        outputs,
+    }))
+}
+
+/// A coin's address and covenant as hsd reports them, from either of its
+/// shapes: `GET /coin` ([`CoinAt::of_coin`]) or a transaction's output
+/// ([`CoinAt::of_output`]).
+#[derive(Debug, Clone, Copy)]
+pub struct CoinAt<'a> {
+    pub address: &'a str,
+    pub covenant_type: u8,
+    /// The covenant's items, hex as hsd sends them.
+    pub items: &'a [String],
+}
+
+impl<'a> CoinAt<'a> {
+    pub fn of_output(o: &'a SpendOutput) -> Self {
+        Self {
+            address: &o.address,
+            covenant_type: o.covenant_type,
+            items: &o.items,
+        }
+    }
+
+    /// `None` for a coin without its address or covenant: not hsd's whole
+    /// answer, which the caller reports as such.
+    pub fn of_coin(c: &'a rpc::NodeCoin) -> Option<Self> {
+        let (address, cov) = (c.address.as_deref()?, c.covenant.as_ref()?);
+        Some(Self {
+            address,
+            covenant_type: cov.kind,
+            items: &cov.items,
+        })
+    }
+}
+
+/// One listing's lock: the lock address its key derives, and its name's
+/// hash. Every lock coin of a key sits at that one address (ADR 0004), so
+/// the address alone does not say whose a coin there is: the covenant's
+/// name hash does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingLock {
+    pub address: String,
+    /// SHA3-256 of the listing's name, hex.
+    pub name_hash: String,
+}
+
+impl ListingLock {
+    pub fn new(address: String, name: &str) -> Result<Self, AppError> {
+        Ok(Self {
+            address,
+            name_hash: hex::encode(names::hash_name(name)?),
+        })
+    }
+
+    /// Whether `coin` sits at this lock address.
+    pub fn is_at(&self, coin: CoinAt) -> bool {
+        coin.address == self.address
+    }
+
+    /// Whether `coin` is a `covenant_type` covenant of this name at this
+    /// lock address, and, with `name_height`, commits to that name height
+    /// (item 1, [`purchase::items_name_height`]). The one rule every
+    /// verdict on "the name is in (or left through) this lock" reads.
+    pub fn holds(&self, coin: CoinAt, covenant_type: u8, name_height: Option<u32>) -> bool {
+        self.is_at(coin)
+            && coin.covenant_type == covenant_type
+            && coin
+                .items
+                .first()
+                .is_some_and(|h| h.eq_ignore_ascii_case(&self.name_hash))
+            && name_height.is_none_or(|h| {
+                crate::noncustodial::shakedex::purchase::items_name_height(coin.items) == Some(h)
+            })
+    }
+}
+
+/// Whether a TRANSFER covenant's commitment (items 2–3: address version and
+/// hash) is an address of ours. Ours are P2WPKH (version 0, 20 bytes); any
+/// other commitment is not ours. Items hsd did not send whole are an error,
+/// not a "no": a "no" can end a listing as Sold.
+pub fn commitment_is_ours(
+    items: &[String],
+    network: Network,
+    own: &HashSet<String>,
+) -> Result<bool, AppError> {
+    let [_, _, version, hash, ..] = items else {
+        return Err(AppError::Rpc(
+            "node did not report the transfer covenant's address".into(),
+        ));
+    };
+    let version = hex::decode(version).ok().filter(|v| v.len() == 1);
+    let hash = hex::decode(hash).ok();
+    let (Some(version), Some(hash)) = (version, hash) else {
+        return Err(AppError::Rpc(
+            "node reported an unreadable transfer commitment".into(),
+        ));
+    };
+    let Ok(hash20) = <[u8; 20]>::try_from(hash.as_slice()) else {
+        return Ok(false);
+    };
+    if version[0] != 0 {
+        return Ok(false);
+    }
+    Ok(own.contains(&address::encode_p2wpkh(network, &hash20)?))
+}
+
+/// What a purchase of one listing's lock coin looks like (R22).
+pub struct PurchaseOf<'a> {
+    pub network: Network,
+    /// The listing's lock coin, when it knows it (a dead FINALIZE's listing
+    /// back at ReadyToFinalize does not).
+    pub lock: Option<(&'a str, u32)>,
+    /// The listing's lock address and name.
+    pub at: &'a ListingLock,
+    pub payment_address: &'a str,
+    /// Every derived address of the profile.
+    pub own: &'a HashSet<String>,
+}
+
+/// R22: whether `tx` bought the lock coin: one of its outputs pays the
+/// listing's payment address (covenant NONE), and the output at some input's
+/// index is a TRANSFER of the listing's name at its lock address (hsd links
+/// a TRANSFER to the input at its index, and keeps the lock address on a
+/// FINALIZE→TRANSFER) committing to an address not ours, that input spending
+/// the listing's lock coin when it is known. Returns the coin that input
+/// spends. A TRANSFER back to an address of ours (our cancel, or a gift back
+/// to us) is not a sale under R22.
+pub fn purchase_in(tx: &SpendView, p: &PurchaseOf) -> Result<Option<(String, u32)>, AppError> {
+    if !tx
+        .outputs
+        .iter()
+        .any(|o| o.address == p.payment_address && o.covenant_type == COV_NONE)
+    {
+        return Ok(None);
+    }
+    for (k, prevout) in tx.inputs.iter().enumerate() {
+        let Some(out) = tx.outputs.get(k) else {
+            continue;
+        };
+        if !p.at.holds(CoinAt::of_output(out), COV_TRANSFER, None) {
+            continue;
+        }
+        if let Some((txid, vout)) = p.lock {
+            if !(prevout.0 == txid && prevout.1 == vout) {
+                continue;
+            }
+        }
+        if commitment_is_ours(&out.items, p.network, p.own)? {
+            return Ok(None);
+        }
+        return Ok(Some(prevout.clone()));
+    }
+    Ok(None)
+}
+
+/// R22 for a lock restored by name (R32), which knows no payment address:
+/// whether `tx`, mined in a block, is a price step's purchase of the lock
+/// coin `lock`: input `k` spends it with the witness `[signature, lock
+/// script]` whose signature's last byte, the sighash type, is `0x84`
+/// (`ANYONECANPAY | SINGLEREVERSE`, [`STEP_SIGHASH`]: only a price step is
+/// signed so; our cancel is `0x83`), output `k` is a TRANSFER of the
+/// listing's name at its lock address committing to an address not ours
+/// (a cheap extra check: the derived addresses after a restore are not
+/// complete, spec §5), and output `len - 1 - k`, the output `0x84` commits
+/// to, is a plain payment (covenant NONE). The sale was paid to that step's
+/// address, which this device does not know. A lock input whose witness the
+/// reply leaves out is an error: no verdict either way.
+pub fn sale_out_of_restored_lock(
+    tx: &SpendView,
+    k: u32,
+    lock: (&str, u32),
+    at: &ListingLock,
+    network: Network,
+    own: &HashSet<String>,
+) -> Result<bool, AppError> {
+    let k = k as usize;
+    let (Some(input), Some(out)) = (tx.inputs.get(k), tx.outputs.get(k)) else {
+        return Ok(false);
+    };
+    if tx.height.is_none()
+        || !(input.0 == lock.0 && input.1 == lock.1)
+        || !at.holds(CoinAt::of_output(out), COV_TRANSFER, None)
+    {
+        return Ok(false);
+    }
+    let witness = tx
+        .witnesses
+        .get(k)
+        .cloned()
+        .flatten()
+        .ok_or_else(|| not_hsds("the lock input's witness"))?;
+    let [signature, _lock_script] = witness.as_slice() else {
+        return Ok(false);
+    };
+    let sighash = hex::decode(signature)
+        .ok()
+        .and_then(|b| b.last().copied())
+        .ok_or_else(|| not_hsds("a readable lock input signature"))?;
+    if u32::from(sighash) != STEP_SIGHASH {
+        return Ok(false);
+    }
+    let paid = tx
+        .outputs
+        .len()
+        .checked_sub(1 + k)
+        .and_then(|p| tx.outputs.get(p))
+        .is_some_and(|p| p.covenant_type == COV_NONE);
+    if !paid {
+        return Ok(false);
+    }
+    Ok(!commitment_is_ours(&out.items, network, own)?)
+}
+
+/// R32's refusals, in the backend's words (T7's UI shows them as sent).
+pub const RESTORE_NOT_AT_OUR_LOCK: &str =
+    "the name is not in this wallet's lock for it: its owner coin is elsewhere";
+pub const RESTORE_STILL_LOCKING: &str = "the name is still on its way into the lock: a \
+     TRANSFER committing to it is mined but the FINALIZE into it is not; the way out is Cancel \
+     transfer, from the wallet that holds the name";
+pub const RESTORE_ALREADY_TRANSFER: &str = "the coin in the lock is already a TRANSFER, not a \
+     FINALIZE: a cancel awaiting its finalize, or a mined purchase; there is no lock to restore";
+pub const RESTORE_LEFTOVER: &str = "the coin in the lock is left over from an earlier \
+     registration of the name: there is no lock to restore";
+pub const RESTORE_REVOKED: &str = "the name was revoked: there is no lock to restore";
+pub const RESTORE_SPENT_IN_MEMPOOL: &str =
+    "the name's owner coin is being spent in the node's mempool: restore it once that is mined";
+
+/// The name's owner outpoint and name height, as hsd's `getnameinfo` reports
+/// them, that a restore by name (R32) judges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreOwner {
+    pub txid: String,
+    pub vout: u32,
+    pub name_height: u32,
+}
+
+/// R32: the owner outpoint and name height of `name` from `getnameinfo`.
+/// `info: null` is an expired name and a non-zero `info.revoked` a revoked
+/// one (both refused); a reply without the owner, the height or `revoked`,
+/// or with an owner hash that is not a txid, is "could not check"; hsd's null
+/// owner (all zeros) is not in our lock.
+pub fn restore_owner(reply: &serde_json::Value, name: &str) -> Result<RestoreOwner, AppError> {
+    let missing = |what: &str| {
+        AppError::Rpc(format!(
+            "node did not report {what}: could not check '{name}'"
+        ))
+    };
+    let info = match reply.get("info") {
+        None => return Err(missing("the name's info")),
+        Some(serde_json::Value::Null) => {
+            return Err(AppError::InvalidInput(format!(
+                "'{name}' has no on-chain state or has expired: there is no lock to restore"
+            )))
+        }
+        Some(i) => i,
+    };
+    let owner = info.get("owner");
+    let txid = owner
+        .and_then(|o| o.get("hash"))
+        .and_then(|h| h.as_str())
+        .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| missing("the name's owner"))?;
+    let vout = owner
+        .and_then(|o| o.get("index"))
+        .and_then(|i| i.as_u64())
+        .and_then(|i| u32::try_from(i).ok())
+        .ok_or_else(|| missing("the name's owner output"))?;
+    let name_height = info
+        .get("height")
+        .and_then(|h| h.as_u64())
+        .and_then(|h| u32::try_from(h).ok())
+        .ok_or_else(|| missing("the name's height"))?;
+    let revoked = info
+        .get("revoked")
+        .and_then(|r| r.as_u64())
+        .ok_or_else(|| missing("whether the name was revoked"))?;
+    if revoked != 0 {
+        return Err(AppError::InvalidInput(RESTORE_REVOKED.into()));
+    }
+    if txid.bytes().all(|b| b == b'0') {
+        return Err(AppError::InvalidInput(RESTORE_NOT_AT_OUR_LOCK.into()));
+    }
+    Ok(RestoreOwner {
+        txid: txid.to_ascii_lowercase(),
+        vout,
+        name_height,
+    })
+}
+
+/// R32: whether `coin` (hsd's `GET /coin` for `owner`) is our lock for
+/// `name`: a mined FINALIZE of the name at `lock_address` whose covenant
+/// commits to the owner's name height. A TRANSFER elsewhere committing to
+/// the lock is still Locking (at whichever address sent it: this one is not
+/// compared with ours), a TRANSFER at the lock is a cancel or a purchase,
+/// another height is a leftover, anything else is not our lock; each is
+/// refused with its reason. A coin missing a field, or one
+/// that is not the outpoint or the name asked about, is "could not check".
+pub fn restore_verdict(
+    network: Network,
+    name: &str,
+    lock_address: &str,
+    owner: &RestoreOwner,
+    coin: &rpc::NodeCoin,
+) -> Result<(), AppError> {
+    if !(coin.txid == owner.txid && coin.vout == owner.vout) {
+        return Err(AppError::Rpc(format!(
+            "node answered coin {}:{} for the owner coin {}:{}",
+            coin.txid, coin.vout, owner.txid, owner.vout
+        )));
+    }
+    let Some(at) = CoinAt::of_coin(coin) else {
+        return Err(AppError::Rpc(
+            "node did not report the owner coin's address or covenant".into(),
+        ));
+    };
+    if coin.mined_height()?.is_none() {
+        return Err(AppError::Rpc(
+            "node reported the name's owner coin in the mempool".into(),
+        ));
+    }
+    let lock = ListingLock::new(lock_address.to_string(), name)?;
+    if !at
+        .items
+        .first()
+        .is_some_and(|h| h.eq_ignore_ascii_case(&lock.name_hash))
+    {
+        return Err(AppError::Rpc(format!(
+            "node reported an owner coin of '{name}' whose covenant is not of that name"
+        )));
+    }
+    if lock.holds(at, COV_FINALIZE, Some(owner.name_height)) {
+        return Ok(());
+    }
+    // Not our lock: say why.
+    if !lock.is_at(at) {
+        if at.covenant_type == COV_TRANSFER
+            && crate::noncustodial::shakedex::purchase::transfer_commits_to(
+                coin,
+                network,
+                lock_address,
+            )?
+        {
+            return Err(AppError::InvalidInput(RESTORE_STILL_LOCKING.into()));
+        }
+        return Err(AppError::InvalidInput(RESTORE_NOT_AT_OUR_LOCK.into()));
+    }
+    match at.covenant_type {
+        COV_FINALIZE => {}
+        COV_TRANSFER => return Err(AppError::InvalidInput(RESTORE_ALREADY_TRANSFER.into())),
+        _ => return Err(AppError::InvalidInput(RESTORE_NOT_AT_OUR_LOCK.into())),
+    }
+    match crate::noncustodial::shakedex::purchase::items_name_height(at.items) {
+        None => Err(AppError::Rpc(
+            "node did not report a readable name height in the lock coin".into(),
+        )),
+        Some(_) => Err(AppError::InvalidInput(RESTORE_LEFTOVER.into())),
+    }
 }
 
 #[cfg(test)]
@@ -740,5 +1303,452 @@ mod tests {
             serde_json::json!({ "price": 5, "lockTime": 7, "signature": "ab" })
         );
         assert_eq!(serde_json::from_value::<StoredStep>(j).unwrap(), s);
+    }
+
+    const LOCK: &str = "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1";
+    const BUY: &str = "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1";
+
+    fn p2wpkh(byte: u8) -> String {
+        crate::noncustodial::address::encode_p2wpkh(Network::Regtest, &[byte; 20]).unwrap()
+    }
+
+    fn lock_addr() -> String {
+        crate::noncustodial::address::encode_p2wsh(Network::Regtest, &[7; 32]).unwrap()
+    }
+
+    fn nh() -> String {
+        hex::encode(names::hash_name("dexstate").unwrap())
+    }
+
+    /// The purchase as hsd's `GET /tx` sends it (`TX.getJSON`): input 0 our
+    /// lock coin, output 0 the TRANSFER at the lock committing to `to`,
+    /// output 1 change, output 2 the price to `pay`.
+    fn rest(height: i64, to_byte: u8, pay: &str) -> serde_json::Value {
+        let none = serde_json::json!({ "type": 0, "action": "NONE", "items": [] });
+        serde_json::json!({
+            "hash": BUY, "height": height,
+            "inputs": [ { "prevout": { "hash": LOCK, "index": 0 },
+                          "witness": [format!("{}84", "aa".repeat(64)), "76".repeat(40)] },
+                        { "prevout": { "hash": "aa".repeat(32), "index": 1 },
+                          "witness": [format!("{}01", "bb".repeat(64)), "02".repeat(33)] } ],
+            "outputs": [
+                { "value": 1_000_000, "address": lock_addr(),
+                  "covenant": { "type": 9, "action": "TRANSFER",
+                                "items": [nh(), "32000000", "00", hex::encode([to_byte; 20])] } },
+                { "value": 1, "address": p2wpkh(9), "covenant": none },
+                { "value": 5_000_000, "address": pay, "covenant": none }
+            ],
+            "hex": "00"
+        })
+    }
+
+    /// The same purchase in a block as `getblock <hash> true true` sends it
+    /// (`rpc.js` `txToJSON`: `vin[].{txid, vout}`, `vout[].address.string`).
+    fn block(height: i64, pay: &str) -> serde_json::Value {
+        let tx = rest(height, 9, pay);
+        let vin: Vec<_> = tx["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                serde_json::json!({ "coinbase": false, "txid": i["prevout"]["hash"],
+                    "vout": i["prevout"]["index"], "txinwitness": i["witness"],
+                    "sequence": 4294967295u64, "link": 4294967295u64 })
+            })
+            .collect();
+        let vout: Vec<_> = tx["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(n, o)| {
+                let (version, program) = crate::noncustodial::address::decode(
+                    Network::Regtest,
+                    o["address"].as_str().unwrap(),
+                )
+                .unwrap();
+                serde_json::json!({ "value": 0.0, "n": n,
+                    "address": { "version": version, "hash": hex::encode(program),
+                                 "string": o["address"] },
+                    "covenant": o["covenant"] })
+            })
+            .collect();
+        serde_json::json!({ "height": height, "tx": [
+            { "txid": "cc".repeat(32), "vin": [], "vout": [] },
+            { "txid": BUY, "vin": vin, "vout": vout }
+        ] })
+    }
+
+    #[test]
+    fn spend_views_read_hsds_rest_and_block_shapes() {
+        let pay = p2wpkh(5);
+        let from_rest = spend_view_from_rest(&rest(120, 9, &pay)).unwrap();
+        let from_block = spend_view_from_block(&block(120, &pay), BUY)
+            .unwrap()
+            .unwrap();
+        assert_eq!(from_rest, from_block);
+        assert_eq!(from_rest.height, Some(120));
+        assert_eq!(from_rest.inputs[0], (LOCK.to_string(), 0));
+        assert_eq!(from_rest.outputs[2].address, pay);
+        assert_eq!(from_rest.outputs[0].covenant_type, 9);
+        assert_eq!(
+            spend_view_from_rest(&rest(-1, 9, &pay)).unwrap().height,
+            None
+        );
+        assert_eq!(
+            spend_view_from_block(&block(120, &pay), &"dd".repeat(32)).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn spend_view_refuses_a_reply_missing_a_field() {
+        let pay = p2wpkh(5);
+        let mut cases: Vec<(&str, serde_json::Value)> = Vec::new();
+        for (what, path) in [
+            ("height", "/height"),
+            ("inputs", "/inputs"),
+            ("prevout hash", "/inputs/0/prevout/hash"),
+            ("prevout index", "/inputs/0/prevout/index"),
+            ("outputs", "/outputs"),
+            ("address", "/outputs/2/address"),
+            ("covenant", "/outputs/2/covenant"),
+            ("covenant type", "/outputs/0/covenant/type"),
+            ("covenant items", "/outputs/0/covenant/items"),
+        ] {
+            let mut v = rest(120, 9, &pay);
+            let (parent, key) = path.rsplit_once('/').unwrap();
+            v.pointer_mut(parent)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+            cases.push((what, v));
+        }
+        for (what, v) in cases {
+            assert!(spend_view_from_rest(&v).is_err(), "{what}");
+        }
+        // Present but malformed.
+        for (what, path, bad) in [
+            ("height as text", "/height", serde_json::json!("120")),
+            ("height below -1", "/height", serde_json::json!(-2)),
+            (
+                "negative index",
+                "/inputs/0/prevout/index",
+                serde_json::json!(-1),
+            ),
+            (
+                "item not text",
+                "/outputs/0/covenant/items/0",
+                serde_json::json!(5),
+            ),
+            (
+                "type too big",
+                "/outputs/0/covenant/type",
+                serde_json::json!(256),
+            ),
+        ] {
+            let mut v = rest(120, 9, &pay);
+            *v.pointer_mut(path).unwrap() = bad;
+            assert!(spend_view_from_rest(&v).is_err(), "{what}");
+        }
+        let mut b = block(120, &pay);
+        b.as_object_mut().unwrap().remove("height");
+        assert!(spend_view_from_block(&b, BUY).is_err(), "block height");
+        // A transaction entry without a txid (or a bare txid string, as
+        // `getblock` sends them without details) cannot be searched: an error,
+        // never "not in this block".
+        let mut b = block(120, &pay);
+        b["tx"][0].as_object_mut().unwrap().remove("txid");
+        assert!(
+            spend_view_from_block(&b, BUY).is_err(),
+            "entry without txid"
+        );
+        let mut b = block(120, &pay);
+        b["tx"] = serde_json::json!(["cc".repeat(32), BUY]);
+        assert!(
+            spend_view_from_block(&b, BUY).is_err(),
+            "tx array of strings"
+        );
+        let mut b = block(120, &pay);
+        b["tx"][0]["txid"] = serde_json::json!(5);
+        assert!(spend_view_from_block(&b, BUY).is_err(), "txid not text");
+        for (what, path) in [
+            ("block transactions", "/tx"),
+            ("vin", "/tx/1/vin"),
+            ("vin txid", "/tx/1/vin/0/txid"),
+            ("vin vout", "/tx/1/vin/0/vout"),
+            ("vout", "/tx/1/vout"),
+            ("output address", "/tx/1/vout/2/address"),
+            ("output address string", "/tx/1/vout/2/address/string"),
+            ("output covenant", "/tx/1/vout/2/covenant"),
+        ] {
+            let mut b = block(120, &pay);
+            let (parent, key) = path.rsplit_once('/').unwrap();
+            let target = if parent.is_empty() {
+                &mut b
+            } else {
+                b.pointer_mut(parent).unwrap()
+            };
+            target.as_object_mut().unwrap().remove(key);
+            assert!(spend_view_from_block(&b, BUY).is_err(), "{what}");
+        }
+    }
+
+    fn purchase_of<'a>(
+        own: &'a HashSet<String>,
+        lock: Option<(&'a str, u32)>,
+        pay: &'a str,
+        at: &'a ListingLock,
+    ) -> PurchaseOf<'a> {
+        PurchaseOf {
+            network: Network::Regtest,
+            lock,
+            at,
+            payment_address: pay,
+            own,
+        }
+    }
+
+    fn lock_of(address: &str, name_hash: &str) -> ListingLock {
+        ListingLock {
+            address: address.into(),
+            name_hash: name_hash.into(),
+        }
+    }
+
+    /// A lock restored by name is sold by a mined TRANSFER out of its lock
+    /// coin committing to an address not ours, linked input k → output k;
+    /// any one of those facts missing is no sale.
+    #[test]
+    fn sale_out_of_restored_lock_needs_every_link() {
+        let own: HashSet<String> = [p2wpkh(5)].into();
+        let at = lock_of(&lock_addr(), &nh());
+        let sold = |tx: &SpendView, k: u32, lock: (&str, u32)| {
+            sale_out_of_restored_lock(tx, k, lock, &at, Network::Regtest, &own).unwrap()
+        };
+        let mined = spend_view_from_rest(&rest(120, 9, &p2wpkh(6))).unwrap();
+        assert!(sold(&mined, 0, (LOCK, 0)));
+        let mempool = spend_view_from_rest(&rest(-1, 9, &p2wpkh(6))).unwrap();
+        assert!(!sold(&mempool, 0, (LOCK, 0)), "in the mempool");
+        let ours = spend_view_from_rest(&rest(120, 5, &p2wpkh(6))).unwrap();
+        assert!(!sold(&ours, 0, (LOCK, 0)), "committing to ours");
+        assert!(!sold(&mined, 0, (LOCK, 1)), "another lock coin");
+        assert!(!sold(&mined, 0, (BUY, 0)), "another lock txid");
+        assert!(!sold(&mined, 1, (LOCK, 0)), "output 1 is not the TRANSFER");
+        assert!(!sold(&mined, 5, (LOCK, 0)), "no such input");
+        let other = lock_of(
+            &lock_addr(),
+            &hex::encode(names::hash_name("other").unwrap()),
+        );
+        assert!(
+            !sale_out_of_restored_lock(&mined, 0, (LOCK, 0), &other, Network::Regtest, &own)
+                .unwrap(),
+            "another name"
+        );
+        // The same from the block hsd's `getblock` sends.
+        let in_block = spend_view_from_block(&block(120, &p2wpkh(6)), BUY)
+            .unwrap()
+            .unwrap();
+        assert!(sold(&in_block, 0, (LOCK, 0)), "from the block");
+        // The positive evidence: input 0's sighash type is a price step's.
+        let with_lock_witness = |w: serde_json::Value| {
+            let mut v = rest(120, 9, &p2wpkh(6));
+            v["inputs"][0]["witness"] = w;
+            spend_view_from_rest(&v).unwrap()
+        };
+        let sig = |h: &str| format!("{}{h}", "aa".repeat(64));
+        let cancel = with_lock_witness(serde_json::json!([sig("83"), "76".repeat(40)]));
+        assert!(!sold(&cancel, 0, (LOCK, 0)), "0x83: a cancel, not a sale");
+        let one_item = with_lock_witness(serde_json::json!([sig("84")]));
+        assert!(!sold(&one_item, 0, (LOCK, 0)), "not [signature, script]");
+        let no_witness = with_lock_witness(serde_json::Value::Null);
+        assert!(
+            sale_out_of_restored_lock(&no_witness, 0, (LOCK, 0), &at, Network::Regtest, &own)
+                .is_err(),
+            "no witness: no verdict"
+        );
+        let empty_sig = with_lock_witness(serde_json::json!(["", "76".repeat(40)]));
+        assert!(
+            sale_out_of_restored_lock(&empty_sig, 0, (LOCK, 0), &at, Network::Regtest, &own)
+                .is_err(),
+            "no sighash byte: no verdict"
+        );
+        // Output len - 1 - k, the one 0x84 commits to, must be a payment.
+        let mut v = rest(120, 9, &p2wpkh(6));
+        v["outputs"][2]["covenant"] =
+            serde_json::json!({ "type": 2, "action": "OPEN", "items": [] });
+        let not_paid = spend_view_from_rest(&v).unwrap();
+        assert!(!sold(&not_paid, 0, (LOCK, 0)), "no payment output");
+        let mut v = rest(120, 9, &p2wpkh(6));
+        v["outputs"].as_array_mut().unwrap().truncate(1);
+        let lone = spend_view_from_rest(&v).unwrap();
+        assert!(
+            !sold(&lone, 0, (LOCK, 0)),
+            "the TRANSFER is the only output"
+        );
+    }
+
+    /// Witnesses are read from both of hsd's shapes; one that is not an
+    /// array of hex items is not hsd's answer.
+    #[test]
+    fn spend_view_reads_input_witnesses_from_both_shapes() {
+        let want = Some(vec![format!("{}84", "aa".repeat(64)), "76".repeat(40)]);
+        let r = spend_view_from_rest(&rest(120, 9, &p2wpkh(6))).unwrap();
+        assert_eq!(r.witnesses[0], want);
+        let b = spend_view_from_block(&block(120, &p2wpkh(6)), BUY)
+            .unwrap()
+            .unwrap();
+        assert_eq!(b.witnesses[0], want);
+        for bad in [
+            serde_json::json!("aa"),
+            serde_json::json!([1]),
+            serde_json::json!(["zz"]),
+        ] {
+            let mut v = rest(120, 9, &p2wpkh(6));
+            v["inputs"][0]["witness"] = bad.clone();
+            assert!(spend_view_from_rest(&v).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn purchase_in_finds_the_transfer_out_of_our_lock_paying_us() {
+        let (pay, la, n) = (p2wpkh(5), lock_addr(), nh());
+        let own: HashSet<String> = [pay.clone()].into();
+        let tx = spend_view_from_rest(&rest(120, 9, &pay)).unwrap();
+        let at = lock_of(&la, &n);
+        let p = purchase_of(&own, Some((LOCK, 0)), &pay, &at);
+        assert_eq!(purchase_in(&tx, &p).unwrap(), Some((LOCK.to_string(), 0)));
+        // A listing that lost its outpoint (a dead FINALIZE mined after all)
+        // learns it from the purchase.
+        let at = lock_of(&la, &n);
+        let p = purchase_of(&own, None, &pay, &at);
+        assert_eq!(purchase_in(&tx, &p).unwrap(), Some((LOCK.to_string(), 0)));
+    }
+
+    #[test]
+    fn purchase_in_finds_the_lock_coin_at_a_later_input() {
+        let (pay, la, n) = (p2wpkh(5), lock_addr(), nh());
+        let own: HashSet<String> = [pay.clone()].into();
+        let mut v = rest(120, 9, &pay);
+        // Input 1 is the lock coin, so the TRANSFER is output 1; output 0 is
+        // another output (here a change output).
+        let (inputs, outputs) = (v["inputs"].clone(), v["outputs"].clone());
+        v["inputs"] = serde_json::json!([inputs[1], inputs[0]]);
+        v["outputs"] = serde_json::json!([outputs[1], outputs[0], outputs[2]]);
+        let tx = spend_view_from_rest(&v).unwrap();
+        let at = lock_of(&la, &n);
+        let p = purchase_of(&own, Some((LOCK, 0)), &pay, &at);
+        assert_eq!(purchase_in(&tx, &p).unwrap(), Some((LOCK.to_string(), 0)));
+    }
+
+    #[test]
+    fn purchase_in_needs_the_payment_and_a_commitment_not_ours() {
+        let (pay, la, n) = (p2wpkh(5), lock_addr(), nh());
+        let ours = p2wpkh(9);
+        let own: HashSet<String> = [pay.clone(), ours].into();
+        // Commits to an address of ours: a cancel, not a purchase.
+        let tx = spend_view_from_rest(&rest(120, 9, &pay)).unwrap();
+        assert_eq!(
+            purchase_in(
+                &tx,
+                &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &n))
+            )
+            .unwrap(),
+            None
+        );
+        let own: HashSet<String> = [pay.clone()].into();
+        // Pays another address.
+        let other_pay = p2wpkh(6);
+        let tx = spend_view_from_rest(&rest(120, 9, &other_pay)).unwrap();
+        assert_eq!(
+            purchase_in(
+                &tx,
+                &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &n))
+            )
+            .unwrap(),
+            None
+        );
+        // Spends another lock coin.
+        let tx = spend_view_from_rest(&rest(120, 9, &pay)).unwrap();
+        assert_eq!(
+            purchase_in(
+                &tx,
+                &purchase_of(&own, Some((LOCK, 1)), &pay, &lock_of(&la, &n))
+            )
+            .unwrap(),
+            None
+        );
+        // A TRANSFER of another name, or at another lock.
+        let other_name = hex::encode(names::hash_name("other").unwrap());
+        assert_eq!(
+            purchase_in(
+                &tx,
+                &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &other_name))
+            )
+            .unwrap(),
+            None
+        );
+        let other_lock = p2wpkh(1);
+        assert_eq!(
+            purchase_in(
+                &tx,
+                &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&other_lock, &n))
+            )
+            .unwrap(),
+            None
+        );
+        // The output paying us carries a covenant: not a plain payment.
+        let mut v = rest(120, 9, &pay);
+        v["outputs"][2]["covenant"]["type"] = serde_json::json!(2);
+        let tx = spend_view_from_rest(&v).unwrap();
+        assert_eq!(
+            purchase_in(
+                &tx,
+                &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &n))
+            )
+            .unwrap(),
+            None
+        );
+        // Output 0 is not a TRANSFER (a FINALIZE of the same name at the lock).
+        let mut v = rest(120, 9, &pay);
+        v["outputs"][0]["covenant"]["type"] = serde_json::json!(10);
+        let tx = spend_view_from_rest(&v).unwrap();
+        assert_eq!(
+            purchase_in(
+                &tx,
+                &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &n))
+            )
+            .unwrap(),
+            None
+        );
+        // A commitment hsd sent unreadable (not hex, or a version of two bytes).
+        for (version, hash) in [
+            ("zz", "00".repeat(20)),
+            ("0000", "00".repeat(20)),
+            ("00", "xy".repeat(20)),
+        ] {
+            let mut v = rest(120, 9, &pay);
+            v["outputs"][0]["covenant"]["items"] =
+                serde_json::json!([nh(), "32000000", version, hash]);
+            let tx = spend_view_from_rest(&v).unwrap();
+            assert!(
+                purchase_in(
+                    &tx,
+                    &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &n))
+                )
+                .is_err(),
+                "{version} {hash}"
+            );
+        }
+        // A TRANSFER whose commitment hsd did not send whole: not hsd's answer.
+        let mut v = rest(120, 9, &pay);
+        v["outputs"][0]["covenant"]["items"] = serde_json::json!([nh(), "32000000"]);
+        let tx = spend_view_from_rest(&v).unwrap();
+        assert!(purchase_in(
+            &tx,
+            &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &n))
+        )
+        .is_err());
     }
 }

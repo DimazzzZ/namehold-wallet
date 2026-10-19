@@ -684,18 +684,23 @@ fn insert_draft_status(conn: &Connection, id: &str, status: &str) {
     .unwrap();
 }
 
-/// The two listing jobs never take the same listing, and neither takes a
-/// Restored one: the named sets are disjoint, and each job's query returns
-/// exactly its set when every state is in the table.
+/// The two listing jobs never take the same listing; the after-lock job takes
+/// Restored and Sold, the before-lock job neither: the named sets are
+/// disjoint, and each job's query returns exactly its set when every state is
+/// in the table.
 #[test]
 fn job_listing_sets_are_disjoint() {
     let before = ListingState::BEFORE_LOCK_JOB;
-    let fin = ListingState::FINALIZE_JOB;
+    let after = ListingState::AFTER_LOCK_JOB;
     for s in before {
-        assert!(!fin.contains(&s), "{s:?} in both jobs");
+        assert!(!after.contains(&s), "{s:?} in both jobs");
     }
     assert!(!before.contains(&ListingState::Restored));
-    assert!(!fin.contains(&ListingState::Restored));
+    assert!(after.contains(&ListingState::Restored));
+    for s in queries::ListingWrite::Sell.from() {
+        let s = *s;
+        assert!(after.contains(&s), "{s:?}: a sale from it is followed");
+    }
     for s in ListingState::CANCEL_ABORTABLE {
         assert!(before.contains(&s), "{s:?}");
     }
@@ -723,32 +728,38 @@ fn job_listing_sets_are_disjoint() {
         sorted(&before)
     );
     assert_eq!(
-        states(queries::list_shakedex_listings_finalizing(&conn, STORE_PROFILE).unwrap()),
-        sorted(&fin)
+        states(queries::list_shakedex_listings_after_lock(&conn, STORE_PROFILE, 7).unwrap()),
+        sorted(&after)
     );
 }
 
-/// The Finalizing/Listed source lists exactly those two states of a profile.
+/// The after-lock source lists exactly its five states of a profile, in
+/// creation order.
 #[test]
-fn finalizing_and_listed_listings_are_listed() {
+fn after_lock_listings_are_listed() {
     let conn = store_conn();
     for (id, name, state) in [
         ("l1", "a", ListingState::Finalizing),
         ("l2", "b", ListingState::Listed),
-        ("l3", "c", ListingState::ReadyToFinalize),
-        ("l4", "d", ListingState::Sold),
+        ("l3", "c", ListingState::SalePending),
+        ("l4", "d", ListingState::Restored),
+        ("l5", "e", ListingState::Sold),
+        ("l6", "f", ListingState::ReadyToFinalize),
+        ("l7", "g", ListingState::Aborted),
     ] {
         queries::insert_shakedex_listing(&conn, &listing(id, name, state)).unwrap();
     }
-    let ids: Vec<String> = queries::list_shakedex_listings_finalizing(&conn, STORE_PROFILE)
+    let ids: Vec<String> = queries::list_shakedex_listings_after_lock(&conn, STORE_PROFILE, 7)
         .unwrap()
         .into_iter()
         .map(|l| l.id)
         .collect();
-    assert_eq!(ids, ["l1", "l2"]);
-    assert!(queries::list_shakedex_listings_finalizing(&conn, "other")
-        .unwrap()
-        .is_empty());
+    assert_eq!(ids, ["l1", "l2", "l3", "l4", "l5"]);
+    assert!(
+        queries::list_shakedex_listings_after_lock(&conn, "other", 7)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// The deadline scan's source: ReadyToFinalize listings, and Finalizing ones
@@ -1402,7 +1413,7 @@ async fn lock_confirmation_shows_what_locking_costs() {
 
 use crate::commands::names::build_cancel_draft;
 use crate::noncustodial::rpc::NodeCoin;
-use crate::shakedex_jobs::refresh_listings_before_lock_with_client;
+use crate::shakedex_jobs::refresh_listings_with_client;
 use crate::tests::mock_node_rpc::{MockNodeRpc, RpcCall};
 
 /// Lock NAME, then make the wallet's records what a sync leaves after the
@@ -1468,17 +1479,17 @@ fn chain(
     })
 }
 
-/// Run the abort job on the app's database, as the sync step does. The
-/// connection is taken out of the app for the call, so no lock is held
-/// across an await.
-async fn run_abort_job(app: &App, rpc: &MockNodeRpc) {
+/// Run the listing step (both listing jobs, as one sync runs them) on the
+/// app's database. The connection is taken out of the app for the call, so
+/// no lock is held across an await.
+async fn run_listing_step(app: &App, rpc: &MockNodeRpc) {
     let conn = std::mem::replace(
         &mut *app.state::<AppState>().db.lock().unwrap(),
         Connection::open_in_memory().unwrap(),
     );
-    let res = refresh_listings_before_lock_with_client(&conn, rpc, PROFILE).await;
+    let res = refresh_listings_with_client(&conn, rpc, PROFILE).await;
     *app.state::<AppState>().db.lock().unwrap() = conn;
-    res.expect("abort job runs");
+    res.expect("listing step runs");
     assert_eq!(
         rpc.count_matching(|c| matches!(c, RpcCall::SendRawTransaction(_))),
         0,
@@ -1523,20 +1534,20 @@ async fn cancel_transfer_aborts_the_listing() {
     });
 
     // Sent, nothing on chain yet: the lock TRANSFER is still unspent.
-    run_abort_job(&app, &chain(&ctxid, None, &lock_txid, true)).await;
+    run_listing_step(&app, &chain(&ctxid, None, &lock_txid, true)).await;
     assert_eq!(
         listing_state(&app, &l.id),
         ListingState::Locking,
         "not taken"
     );
-    run_abort_job(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
+    run_listing_step(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
     assert_eq!(
         listing_state(&app, &l.id),
         ListingState::Locking,
         "in the mempool"
     );
 
-    run_abort_job(
+    run_listing_step(
         &app,
         &chain(&ctxid, Some(Some(QUIET_TIP)), &lock_txid, false),
     )
@@ -1544,14 +1555,14 @@ async fn cancel_transfer_aborts_the_listing() {
     assert_eq!(listing_state(&app, &l.id), ListingState::Aborted);
     assert!(open_listing(&app).is_none(), "the name is free again");
 
-    run_abort_job(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
+    run_listing_step(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
     assert_eq!(
         listing_state(&app, &l.id),
         ListingState::Locking,
         "a reorg took the cancel back to the mempool"
     );
 
-    run_abort_job(
+    run_listing_step(
         &app,
         &chain(&ctxid, Some(Some(QUIET_TIP)), &lock_txid, false),
     )
@@ -1561,7 +1572,7 @@ async fn cancel_transfer_aborts_the_listing() {
         ListingState::Aborted,
         "mined again"
     );
-    run_abort_job(&app, &chain(&ctxid, None, &lock_txid, true)).await;
+    run_listing_step(&app, &chain(&ctxid, None, &lock_txid, true)).await;
     assert_eq!(
         listing_state(&app, &l.id),
         ListingState::Locking,
@@ -1595,7 +1606,7 @@ async fn abort_needs_the_nodes_word() {
             ("both spent", chain(&ctxid, None, &lock_txid, false)),
             ("no answer", MockNodeRpc::new()),
         ] {
-            run_abort_job(&app, &rpc).await;
+            run_listing_step(&app, &rpc).await;
             assert_eq!(listing_state(&app, &id), state, "{what}");
         }
     }
@@ -1680,7 +1691,7 @@ async fn deleted_dropped_cancel_mined_later_still_aborts() {
         assert!(queries::get_tx_draft(c, &cancel.id).unwrap().is_none());
     });
 
-    run_abort_job(
+    run_listing_step(
         &app,
         &chain(&ctxid, Some(Some(QUIET_TIP)), &lock_txid, false),
     )
@@ -1702,7 +1713,7 @@ async fn reorged_abort_leaves_a_newer_listing_open() {
         .unwrap();
     let ctxid = cancel.summary["txid"].as_str().unwrap().to_string();
     let old = open_listing(&app).unwrap().id;
-    run_abort_job(
+    run_listing_step(
         &app,
         &chain(&ctxid, Some(Some(QUIET_TIP)), &lock_txid, false),
     )
@@ -1715,7 +1726,7 @@ async fn reorged_abort_leaves_a_newer_listing_open() {
         queries::insert_shakedex_listing(c, &newer).unwrap()
     });
 
-    run_abort_job(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
+    run_listing_step(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
     assert_eq!(listing_state(&app, &old), ListingState::Aborted);
     assert_eq!(open_listing(&app).unwrap().id, "newer");
     // Refused by the guard, not by the index: no error for the job to log.
@@ -1857,7 +1868,7 @@ async fn external_cancel_aborts_the_listing() {
     let id = open_listing(&app).unwrap().id;
     assert_eq!(open_listing(&app).unwrap().abort_txid, None);
 
-    run_abort_job(
+    run_listing_step(
         &app,
         &facts(
             info_with(&lock_txid, 0, 0),
@@ -1868,7 +1879,7 @@ async fn external_cancel_aborts_the_listing() {
     assert_eq!(listing_state(&app, &id), ListingState::Locking);
 
     let other_cancel = "ee".repeat(32);
-    run_abort_job(
+    run_listing_step(
         &app,
         &facts(
             info_with(&other_cancel, 0, 0),
@@ -1888,9 +1899,9 @@ async fn revoked_name_aborts_the_listing() {
     let lock_txid = locked_on_chain(&app).await;
     let id = open_listing(&app).unwrap().id;
     let revoked = facts(info_with(&lock_txid, 0, QUIET_TIP as u64), &[]);
-    run_abort_job(&app, &revoked).await;
+    run_listing_step(&app, &revoked).await;
     assert_eq!(listing_state(&app, &id), ListingState::Aborted);
-    run_abort_job(&app, &revoked).await;
+    run_listing_step(&app, &revoked).await;
     assert_eq!(listing_state(&app, &id), ListingState::Aborted, "stays");
 }
 
@@ -1911,7 +1922,7 @@ async fn dead_lock_draft_aborts_and_the_name_can_be_locked_again() {
                 queries::delete_tx_draft(c, &lock.id).unwrap();
             }
         });
-        run_abort_job(
+        run_listing_step(
             &app,
             &facts(
                 info_with(OWNER_TXID, 0, 0),
@@ -1945,7 +1956,7 @@ async fn replaced_cancel_aborts_the_listing() {
     assert_eq!(l.abort_draft_id.as_deref(), Some(b.id.as_str()));
     assert_ne!(l.abort_txid.as_deref(), Some(a_txid.as_str()));
 
-    run_abort_job(
+    run_listing_step(
         &app,
         &facts(info_with(&a_txid, 0, 0), &[(&a_txid, 0, COV_UPDATE)]),
     )
@@ -1966,7 +1977,7 @@ async fn lock_draft_in_flight_without_its_coin_changes_nothing() {
                 queries::update_tx_draft_status(c, &lock.id, status, None, None).unwrap();
             });
         }
-        run_abort_job(
+        run_listing_step(
             &app,
             &facts(
                 info_with(OWNER_TXID, 0, 0),
@@ -1990,7 +2001,7 @@ async fn name_without_live_state_expires_the_listing() {
         &[(&lock_txid, 0, COV_TRANSFER)],
     );
     set_state(&app, &id, ListingState::Aborted);
-    run_abort_job(&app, &gone).await;
+    run_listing_step(&app, &gone).await;
     assert_eq!(listing_state(&app, &id), ListingState::Aborted);
     with_db(&app, |c| {
         assert_eq!(
@@ -2000,7 +2011,7 @@ async fn name_without_live_state_expires_the_listing() {
         );
     });
     set_state(&app, &id, ListingState::Locking);
-    run_abort_job(&app, &gone).await;
+    run_listing_step(&app, &gone).await;
     assert_eq!(listing_state(&app, &id), ListingState::Expired);
 }
 
@@ -2027,13 +2038,13 @@ async fn aborted_listing_relocks_when_the_lock_transfer_is_back() {
         ("the owner again", facts(info_with(&lock_txid, 0, 0), &[])),
     ] {
         set_state(&app, &id, ListingState::Aborted);
-        run_abort_job(&app, &rpc).await;
+        run_listing_step(&app, &rpc).await;
         assert_eq!(listing_state(&app, &id), ListingState::Locking, "{what}");
     }
     // The lock TRANSFER is output 0: another output of its transaction is
     // not it.
     set_state(&app, &id, ListingState::Aborted);
-    run_abort_job(&app, &facts(info_with(&lock_txid, 1, 0), &[])).await;
+    run_listing_step(&app, &facts(info_with(&lock_txid, 1, 0), &[])).await;
     assert_eq!(listing_state(&app, &id), ListingState::Aborted, "output 1");
 }
 
@@ -2092,7 +2103,7 @@ async fn missing_chain_facts_change_nothing() {
         ));
         for (what, rpc) in cases {
             set_state(&app, &id, state);
-            run_abort_job(&app, &rpc).await;
+            run_listing_step(&app, &rpc).await;
             assert_eq!(listing_state(&app, &id), state, "{state:?}: {what}");
         }
     }
@@ -3405,30 +3416,6 @@ async fn listing_file_is_exported_only_once_the_finalize_is_mined() {
 
 // --- The listing's states from the chain (T3, R19) --------------------------
 
-use crate::shakedex_jobs::refresh_lock_finalize_with_client;
-
-/// Run the finalize job on the app's database, as the sync step does.
-async fn run_finalize_job(app: &App, rpc: &MockNodeRpc) {
-    let conn = std::mem::replace(
-        &mut *app.state::<AppState>().db.lock().unwrap(),
-        Connection::open_in_memory().unwrap(),
-    );
-    let res = refresh_lock_finalize_with_client(&conn, rpc, PROFILE).await;
-    *app.state::<AppState>().db.lock().unwrap() = conn;
-    res.expect("finalize job runs");
-    assert_eq!(
-        rpc.count_matching(|c| matches!(c, RpcCall::SendRawTransaction(_))),
-        0,
-        "the job sends nothing (it runs in the daemon too)"
-    );
-}
-
-/// Run both listing jobs in the order `run_sync_steps` runs them.
-async fn run_listing_jobs(app: &App, rpc: &MockNodeRpc) {
-    run_abort_job(app, rpc).await;
-    run_finalize_job(app, rpc).await;
-}
-
 fn tip_info(tip: i64) -> crate::noncustodial::rpc::BlockchainInfo {
     serde_json::from_value(json!({ "blocks": tip, "headers": tip, "mediantime": SIGN_MTP }))
         .unwrap()
@@ -3447,10 +3434,45 @@ fn cov_action(cov_type: u8) -> &'static str {
 
 /// A coin as hsd's `GET /coin` sends it (`Coin.getJSON`: version, height,
 /// value, address, covenant with type, action and items, coinbase, hash,
-/// index), with address, covenant type and height (-1 in the mempool).
+/// index), with address, covenant type and height (-1 in the mempool); its
+/// covenant's first items are NAME's hash and name height, as every name
+/// covenant's are.
 fn coin_json(txid: &str, vout: u32, address: &str, cov_type: u8, height: i64) -> Value {
+    coin_json_of(NAME, txid, vout, address, cov_type, height)
+}
+
+/// [`coin_json`] for a covenant of `name`.
+fn coin_json_of(
+    name: &str,
+    txid: &str,
+    vout: u32,
+    address: &str,
+    cov_type: u8,
+    height: i64,
+) -> Value {
+    let nh = hex::encode(crate::noncustodial::names::hash_name(name).unwrap());
+    let h = hex::encode(NAME_HEIGHT.to_le_bytes());
+    // hsd's items per covenant (`rules.js`): REGISTER [hash, height, record,
+    // block hash], UPDATE [hash, height, record], TRANSFER [hash, height,
+    // address version, address hash], FINALIZE [hash, height, raw name,
+    // flags, claimed, renewals, block hash].
+    let items: Vec<String> = match cov_type {
+        COV_REGISTER => vec![nh, h, String::new(), "ab".repeat(32)],
+        COV_UPDATE => vec![nh, h, String::new()],
+        COV_TRANSFER => vec![nh, h, "00".into(), "09".repeat(20)],
+        COV_FINALIZE => vec![
+            nh,
+            h,
+            hex::encode(name.as_bytes()),
+            "00".into(),
+            "00000000".into(),
+            "00000000".into(),
+            "ab".repeat(32),
+        ],
+        other => panic!("no covenant items for type {other} in these tests"),
+    };
     json!({ "version": 0, "height": height, "value": NAME_VALUE, "address": address,
-        "covenant": { "type": cov_type, "action": cov_action(cov_type), "items": [] },
+        "covenant": { "type": cov_type, "action": cov_action(cov_type), "items": items },
         "coinbase": false, "hash": txid, "index": vout })
 }
 
@@ -3541,13 +3563,13 @@ async fn lockup_over_makes_the_listing_ready_to_finalize() {
     let coin = vec![lock_transfer_at(&lock_txid, TRANSFER_HEIGHT)];
     let tip = ready_tip(Network::Regtest);
 
-    run_abort_job(&app, &chain_at(info.clone(), tip - 1, coin.clone())).await;
+    run_listing_step(&app, &chain_at(info.clone(), tip - 1, coin.clone())).await;
     assert_eq!(
         listing_state(&app, &id),
         ListingState::Locking,
         "one block early"
     );
-    run_abort_job(&app, &chain_at(info, tip, coin)).await;
+    run_listing_step(&app, &chain_at(info, tip, coin)).await;
     assert_eq!(listing_state(&app, &id), ListingState::ReadyToFinalize);
 }
 
@@ -3592,14 +3614,14 @@ async fn ready_listing_goes_back_to_locking_on_a_reorg() {
             ListingState::ReadyToFinalize,
             "{case}: before"
         );
-        run_abort_job(&app, &chain).await;
+        run_listing_step(&app, &chain).await;
         assert_eq!(listing_state(&app, &id), want, "{case}");
     }
 }
 
 /// Coordinator (a)+(b): once Finalize & sign ran, the FINALIZE mined into
 /// our lock (owner the lock coin, lock TRANSFER 404, lock draft confirmed —
-/// T2's abort picture) is Listed by the finalize job and never Aborted by
+/// T2's abort picture) is Listed by the after-lock job and never Aborted by
 /// the before-lock job, which runs first in the same sync.
 #[tokio::test]
 async fn finalize_into_our_lock_is_never_an_abort() {
@@ -3620,15 +3642,15 @@ async fn finalize_into_our_lock_is_never_an_abort() {
             tip,
         )],
     );
-    run_abort_job(&r.app, &chain).await;
+    // The before-lock job runs first in the sync and leaves it to the
+    // after-lock job, which lists it.
+    run_listing_step(&r.app, &chain).await;
     assert_eq!(
         listing_state(&r.app, &r.listing_id),
-        ListingState::Finalizing,
+        ListingState::Listed,
         "not Aborted"
     );
-    run_finalize_job(&r.app, &chain).await;
-    assert_eq!(listing_state(&r.app, &r.listing_id), ListingState::Listed);
-    run_listing_jobs(&r.app, &chain).await;
+    run_listing_step(&r.app, &chain).await;
     assert_eq!(
         listing_state(&r.app, &r.listing_id),
         ListingState::Listed,
@@ -3682,7 +3704,7 @@ async fn finalize_into_our_lock_from_another_device_is_a_restored_lock() {
             ListingState::ReadyToFinalize,
             "{case}: before"
         );
-        run_listing_jobs(&r.app, &chain).await;
+        run_listing_step(&r.app, &chain).await;
         let l = r.listing();
         assert_eq!(l.state, want, "{case}");
         if want == ListingState::Restored {
@@ -3693,6 +3715,51 @@ async fn finalize_into_our_lock_from_another_device_is_a_restored_lock() {
             );
         }
     }
+}
+
+/// A coin at our lock address that is a covenant of another name (every
+/// lock coin of a key sits at one address, ADR 0004) is never this
+/// listing's: a FINALIZE of another name as the owner coin does not make a
+/// Restored lock, and as the lock coin it does not make a Finalizing listing
+/// Listed.
+#[tokio::test]
+async fn a_coin_of_another_name_at_our_lock_is_never_adopted_or_listed() {
+    let tip = ready_tip(Network::Regtest) + 1;
+    let at_lock = lock_address(Network::Regtest);
+    let other_name = |txid: &str, vout: u32| -> NodeCoin {
+        serde_json::from_value(coin_json_of(
+            "othername",
+            txid,
+            vout,
+            &at_lock,
+            COV_FINALIZE,
+            tip,
+        ))
+        .unwrap()
+    };
+    // Before the lock: the owner coin.
+    let r = ready_fixture("regtest").await;
+    set_lock_draft_status(&r.app, &r.listing_id, "confirmed");
+    let other = "0e".repeat(32);
+    let chain = chain_at(
+        name_info(RENEWAL, 0, &other),
+        tip,
+        vec![other_name(&other, 0)],
+    );
+    run_listing_step(&r.app, &chain).await;
+    let l = r.listing();
+    assert_eq!(
+        (l.state, l.lock_txid),
+        (ListingState::ReadyToFinalize, None),
+        "not adopted"
+    );
+    // After the lock: the lock coin.
+    let r = ready_fixture("regtest").await;
+    let (fin, vout) = finalized(&r).await;
+    let mut info = name_info(RENEWAL, 0, &fin);
+    info["info"]["owner"]["index"] = vout.into();
+    run_listing_step(&r.app, &chain_at(info, tip, vec![other_name(&fin, vout)])).await;
+    assert_eq!(r.listing().state, ListingState::Finalizing, "not listed");
 }
 
 /// Deviation 3 with the jobs in sync order: a FINALIZE that was dropped
@@ -3714,7 +3781,7 @@ async fn dropped_finalize_mined_after_all_is_a_restored_lock() {
         tip,
         vec![lock_transfer_at(&r.lock_txid, TRANSFER_HEIGHT)],
     );
-    run_listing_jobs(&r.app, &dropped).await;
+    run_listing_step(&r.app, &dropped).await;
     assert_eq!(
         listing_state(&r.app, &r.listing_id),
         ListingState::ReadyToFinalize
@@ -3733,7 +3800,7 @@ async fn dropped_finalize_mined_after_all_is_a_restored_lock() {
             tip + 1,
         )],
     );
-    run_listing_jobs(&r.app, &mined).await;
+    run_listing_step(&r.app, &mined).await;
     let l = r.listing();
     assert_eq!(l.state, ListingState::Restored);
     assert_eq!(
@@ -3817,7 +3884,7 @@ async fn mined_finalize_lists_the_listing_and_a_reorg_takes_it_back() {
             mined + 2,
             vec![coin_at(&fin, vout, addr, cov, height)],
         );
-        run_listing_jobs(&r.app, &chain).await;
+        run_listing_step(&r.app, &chain).await;
         assert_eq!(listing_state(&r.app, &r.listing_id), want, "{case}");
     }
 }
@@ -3881,7 +3948,7 @@ async fn refused_finalize_returns_the_listing_to_ready() {
         } else {
             vec![]
         };
-        run_finalize_job(
+        run_listing_step(
             &r.app,
             &chain_at(r.info(), ready_tip(Network::Regtest) + 1, coins),
         )
@@ -3925,7 +3992,7 @@ async fn finalize_facts_missing_change_nothing() {
         ("lock coin without covenant", strip("covenant")),
         ("lock coin without height", strip("height")),
     ] {
-        run_listing_jobs(&r.app, &chain_at(r.info(), tip, vec![coin])).await;
+        run_listing_step(&r.app, &chain_at(r.info(), tip, vec![coin])).await;
         assert_eq!(
             listing_state(&r.app, &r.listing_id),
             ListingState::Finalizing,
@@ -3936,7 +4003,7 @@ async fn finalize_facts_missing_change_nothing() {
         .with_name_info(r.info())
         .with_blockchain_info(tip_info(tip))
         .with_get_coin(|_, _| Err(AppError::Rpc("down".into())));
-    run_listing_jobs(&r.app, &coin_err).await;
+    run_listing_step(&r.app, &coin_err).await;
     assert_eq!(
         listing_state(&r.app, &r.listing_id),
         ListingState::Finalizing,
@@ -3955,7 +4022,7 @@ async fn finalize_facts_missing_change_nothing() {
             Err(AppError::Rpc("down".into()))
         }
     });
-    run_finalize_job(&r.app, &transfer_err).await;
+    run_listing_step(&r.app, &transfer_err).await;
     assert_eq!(
         listing_state(&r.app, &r.listing_id),
         ListingState::Finalizing,
@@ -3998,7 +4065,7 @@ async fn finalize_facts_missing_change_nothing() {
                 }),
         ),
     ] {
-        run_abort_job(&app, &chain).await;
+        run_listing_step(&app, &chain).await;
         assert_eq!(listing_state(&app, &id), ListingState::Locking, "{case}");
     }
 
@@ -4036,7 +4103,7 @@ async fn finalize_facts_missing_change_nothing() {
                 }),
         ),
     ] {
-        run_listing_jobs(&r.app, &chain).await;
+        run_listing_step(&r.app, &chain).await;
         assert_eq!(
             listing_state(&r.app, &r.listing_id),
             ListingState::ReadyToFinalize,
@@ -4136,7 +4203,7 @@ async fn owner_coin_spent_in_the_mempool_is_no_verdict() {
         set_lock_draft_status(&app, &id, "confirmed");
         let other = "0e".repeat(32);
         let chain = chain_at(name_info(RENEWAL, 0, &other), QUIET_TIP, vec![]);
-        run_listing_jobs(&app, &chain).await;
+        run_listing_step(&app, &chain).await;
         assert_eq!(listing_state(&app, &id), state, "{state:?}");
     }
 }
@@ -4160,7 +4227,7 @@ async fn mined_lock_transfer_that_is_not_the_owner_changes_nothing() {
             ready_tip(Network::Regtest),
             vec![lock_transfer_at(&lock_txid, TRANSFER_HEIGHT)],
         );
-        run_abort_job(&app, &chain).await;
+        run_listing_step(&app, &chain).await;
         assert_eq!(listing_state(&app, &id), state, "{state:?}: mined");
         let no_height = chain_at(
             name_info(RENEWAL, 0, OWNER_TXID),
@@ -4174,9 +4241,346 @@ async fn mined_lock_transfer_that_is_not_the_owner_changes_nothing() {
                 "height",
             )],
         );
-        run_abort_job(&app, &no_height).await;
+        run_listing_step(&app, &no_height).await;
         assert_eq!(listing_state(&app, &id), state, "{state:?}: no height");
     }
+}
+
+/// T3 carry: the name expired and was opened again while the lock TRANSFER
+/// is still a coin. hsd's owner is the new auction's, and the TRANSFER is
+/// mined but not the owner — which alone is no consistent answer; but its
+/// covenant commits to the name height of a registration hsd no longer
+/// has (`info.height` is the new auction's), so the listing is Expired, not
+/// an error on every sync. The same TRANSFER with hsd's own name height
+/// stays no verdict.
+#[tokio::test]
+async fn reopened_name_expires_a_listing_before_the_lock() {
+    for state in [ListingState::Locking, ListingState::ReadyToFinalize] {
+        let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+        let lock_txid = locked_on_chain(&app).await;
+        let id = open_listing(&app).unwrap().id;
+        set_state(&app, &id, state);
+        let program = derive_lock_key(&master(), Network::Regtest, 0, NAME)
+            .unwrap()
+            .program;
+        let transfer: NodeCoin = serde_json::from_value(lock_transfer_coin(
+            Network::Regtest,
+            &lock_txid,
+            &program,
+            TRANSFER_HEIGHT,
+        ))
+        .unwrap();
+        let mut same = name_info(RENEWAL, 0, &"0e".repeat(32));
+        run_listing_step(
+            &app,
+            &chain_at(same.clone(), QUIET_TIP, vec![transfer.clone()]),
+        )
+        .await;
+        assert_eq!(
+            listing_state(&app, &id),
+            state,
+            "{state:?}: same registration"
+        );
+        same["info"]["height"] = 7_000.into();
+        run_listing_step(&app, &chain_at(same, QUIET_TIP, vec![transfer])).await;
+        assert_eq!(
+            listing_state(&app, &id),
+            ListingState::Expired,
+            "{state:?}: reopened"
+        );
+    }
+}
+
+/// hsd's `getblock <hash> true true` holding the one transaction `rest`
+/// (hsd's `GET /tx` shape) at `height`.
+fn block_holding(rest: &Value, height: i64) -> Value {
+    let vin: Vec<_> = rest["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| json!({ "txid": i["prevout"]["hash"], "vout": i["prevout"]["index"] }))
+        .collect();
+    let vout: Vec<_> = rest["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(n, o)| {
+            json!({ "n": n, "value": 0.0,
+                "address": { "version": 0, "hash": "00", "string": o["address"] },
+                "covenant": o["covenant"] })
+        })
+        .collect();
+    json!({ "height": height, "tx": [ { "txid": rest["hash"], "vin": vin, "vout": vout } ] })
+}
+
+/// How hsd shows the FINALIZE whose lock coin a purchase spent, in
+/// [`dropped_finalize_mined_and_bought_before_a_sync_is_sold`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FinalizeSeen {
+    /// Our FINALIZE into the lock, spending this listing's lock TRANSFER.
+    Ours,
+    /// A FINALIZE at the lock address spending another coin (another
+    /// listing's lock TRANSFER of the name).
+    OtherTransfer,
+    /// Our lock TRANSFER spent into an output that is not a FINALIZE.
+    NotFinalize,
+    /// A FINALIZE spending our lock TRANSFER, of another name.
+    OtherName,
+    /// A FINALIZE spending our lock TRANSFER, not at the lock address.
+    OtherAddress,
+    /// Our FINALIZE, but `GET /tx` shows it in the mempool: not hsd's
+    /// picture of a coin a mined purchase spent.
+    InMempool,
+    /// Our FINALIZE, and before it (a later coin of ours at the payment
+    /// address) a purchase out of our lock address of a FINALIZE that spends
+    /// another lock TRANSFER: that lead is not proven, the next one is.
+    WrongLeadFirst,
+    /// [`Self::WrongLeadFirst`], but that lead's FINALIZE cannot be read: it
+    /// is skipped, not the end of the search.
+    UnreadableLeadFirst,
+}
+
+/// T3 carry: our FINALIZE was dropped (the listing back at ReadyToFinalize
+/// without its outpoint), mined after all, and the lock coin it made bought
+/// before a sync saw any of it. The listing is Sold only once hsd shows the
+/// coin the purchase spent as a FINALIZE at this listing's lock address
+/// spending this listing's lock TRANSFER, and with that coin as its lock
+/// outpoint — read with the index (`GET /tx`) or without it (the FINALIZE's
+/// block at `info.renewal`, the purchase's at our coin's height). With the
+/// purchase's TRANSFER still the owner or the buyer's FINALIZE the owner;
+/// never Aborted. Also for a listing still Locking (this device was offline
+/// through the lockup; the lock was finalized elsewhere and bought). Every
+/// mined lead is tried until one is proven. A purchase whose spent coin hsd
+/// cannot show (the buyer finalized, no index), or shows as anything else,
+/// leaves the listing as it is.
+#[tokio::test]
+async fn dropped_finalize_mined_and_bought_before_a_sync_is_sold() {
+    use FinalizeSeen::*;
+    use ListingState::{Locking, ReadyToFinalize};
+    let cases = [
+        // (buyer finalized, index, how the FINALIZE is shown, from, Sold)
+        (false, true, Ours, ReadyToFinalize, true),
+        (true, true, Ours, ReadyToFinalize, true),
+        (false, false, Ours, ReadyToFinalize, true),
+        (true, false, Ours, ReadyToFinalize, false),
+        (false, true, OtherTransfer, ReadyToFinalize, false),
+        (true, true, NotFinalize, ReadyToFinalize, false),
+        (false, true, InMempool, ReadyToFinalize, false),
+        (false, true, OtherName, ReadyToFinalize, false),
+        (false, true, OtherAddress, ReadyToFinalize, false),
+        (false, true, Ours, Locking, true),
+        (true, true, Ours, Locking, true),
+        (true, true, WrongLeadFirst, ReadyToFinalize, true),
+        (true, true, UnreadableLeadFirst, ReadyToFinalize, true),
+    ];
+    for (buyer_finalized, index, seen, from, sold) in cases {
+        let what =
+            format!("buyer finalized {buyer_finalized}, index {index}, {seen:?}, from {from:?}");
+        let r = ready_fixture("regtest").await;
+        let (fin, vout) = finalized(&r).await;
+        set_lock_draft_status(&r.app, &r.listing_id, "confirmed");
+        let fin_draft = r.listing().lock_finalize_draft_id.unwrap();
+        with_db(&r.app, |c| {
+            queries::update_tx_draft_status(c, &fin_draft, "dropped", None, Some(&fin)).unwrap();
+        });
+        let tip = ready_tip(Network::Regtest) + 1;
+        run_listing_step(
+            &r.app,
+            &chain_at(
+                r.info(),
+                tip,
+                vec![lock_transfer_at(&r.lock_txid, TRANSFER_HEIGHT)],
+            ),
+        )
+        .await;
+        assert_eq!(
+            listing_state(&r.app, &r.listing_id),
+            ListingState::ReadyToFinalize
+        );
+        assert_eq!(
+            r.listing().lock_txid,
+            None,
+            "the outpoint went with the FINALIZE"
+        );
+        set_state(&r.app, &r.listing_id, from);
+
+        let payment = r.listing().payment_address.unwrap();
+        let lock = lock_address(Network::Regtest);
+        let buy = "b1".repeat(32);
+        let buyer = address::encode_p2wpkh(Network::Regtest, &[9; 20]).unwrap();
+        let nh = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+        let items = vec![
+            nh.clone(),
+            hex::encode(NAME_HEIGHT.to_le_bytes()),
+            "00".into(),
+            hex::encode([9u8; 20]),
+        ];
+        with_db(&r.app, |c| {
+            c.execute(
+                "INSERT INTO tracked_utxos (txid, vout, wallet_profile_id, address,
+                     script_pubkey_hex, value_doos, height, covenant_type, spend_class,
+                     spent_by_txid)
+                 VALUES (?1, 2, ?2, ?3, '00', 5000000, ?4, 0, 'liquid_hns', NULL)",
+                params![buy, PROFILE, payment, tip + 1],
+            )
+            .unwrap();
+        });
+        let plain = |to: &str, value: u64| {
+            json!({ "value": value, "address": to,
+                "covenant": { "type": 0, "action": "NONE", "items": [] } })
+        };
+        let none = || plain(&buyer, 1);
+        let rest = json!({ "hash": buy, "height": tip + 1, "hex": "00",
+            "inputs": [ { "prevout": { "hash": fin, "index": vout } } ],
+            "outputs": [
+                { "value": NAME_VALUE, "address": lock,
+                  "covenant": { "type": COV_TRANSFER, "action": "TRANSFER", "items": items } },
+                none(),
+                plain(&payment, 5_000_000)
+            ] });
+        // The FINALIZE: input `vout` spends the lock TRANSFER (or another
+        // coin), output `vout` is the lock coin (or not a FINALIZE).
+        let spent = if seen == OtherTransfer {
+            "e9".repeat(32)
+        } else {
+            r.lock_txid.clone()
+        };
+        let mut fin_inputs =
+            vec![json!({ "prevout": { "hash": "aa".repeat(32), "index": 1 } }); vout as usize + 1];
+        fin_inputs[vout as usize] = json!({ "prevout": { "hash": spent, "index": 0 } });
+        let mut fin_outputs = vec![none(); vout as usize + 1];
+        let (cov, action) = if seen == NotFinalize {
+            (COV_UPDATE, "UPDATE")
+        } else {
+            (COV_FINALIZE, "FINALIZE")
+        };
+        let fin_name = if seen == OtherName {
+            "ab".repeat(32)
+        } else {
+            nh.clone()
+        };
+        let fin_to = if seen == OtherAddress {
+            buyer.clone()
+        } else {
+            lock.clone()
+        };
+        fin_outputs[vout as usize] = json!({ "value": NAME_VALUE, "address": fin_to,
+            "covenant": { "type": cov, "action": action,
+                          "items": [fin_name, hex::encode(NAME_HEIGHT.to_le_bytes())] } });
+        let fin_height = if seen == InMempool { -1 } else { tip };
+        let fin_rest = json!({ "hash": fin, "height": fin_height, "hex": "00",
+            "inputs": fin_inputs, "outputs": fin_outputs });
+
+        let (owner, coins) = if buyer_finalized {
+            let y = "a9".repeat(32);
+            (
+                y.clone(),
+                vec![coin_at(&y, 0, &buyer, COV_FINALIZE, tip + 12)],
+            )
+        } else {
+            let mut t: Value = coin_json(&buy, 0, &lock, COV_TRANSFER, tip + 1);
+            t["covenant"]["items"] = rest["outputs"][0]["covenant"]["items"].clone();
+            (buy.clone(), vec![serde_json::from_value(t).unwrap()])
+        };
+        // hsd's FINALIZE sets `renewal` to its block; a TRANSFER leaves it.
+        let mut info = name_info(RENEWAL, 0, &owner);
+        if !buyer_finalized {
+            info["info"]["renewal"] = tip.into();
+        }
+        let mut txs = vec![(buy.clone(), rest.clone()), (fin.clone(), fin_rest.clone())];
+        if matches!(seen, WrongLeadFirst | UnreadableLeadFirst) {
+            // A later coin of ours at the payment address: a purchase out
+            // of our lock address of `f9…:0`, a FINALIZE at the lock that
+            // spends another lock TRANSFER.
+            let (wrong, wrong_fin) = ("c3".repeat(32), "f9".repeat(32));
+            with_db(&r.app, |c| {
+                c.execute(
+                    "INSERT INTO tracked_utxos (txid, vout, wallet_profile_id, address,
+                         script_pubkey_hex, value_doos, height, covenant_type, spend_class,
+                         spent_by_txid)
+                     VALUES (?1, 2, ?2, ?3, '00', 5000000, ?4, 0, 'liquid_hns', NULL)",
+                    params![wrong, PROFILE, payment, tip + 2],
+                )
+                .unwrap();
+            });
+            let mut wrong_rest = rest.clone();
+            wrong_rest["hash"] = wrong.clone().into();
+            wrong_rest["height"] = (tip + 2).into();
+            wrong_rest["inputs"][0]["prevout"] = json!({ "hash": wrong_fin, "index": 0 });
+            let mut wrong_fin_rest = fin_rest.clone();
+            wrong_fin_rest["hash"] = wrong_fin.clone().into();
+            wrong_fin_rest["inputs"][vout as usize]["prevout"]["hash"] = "e9".repeat(32).into();
+            txs.push((wrong, wrong_rest));
+            txs.push((wrong_fin, wrong_fin_rest));
+        }
+        let blocks = [
+            (format!("{:064x}", tip + 1), block_holding(&rest, tip + 1)),
+            (format!("{tip:064x}"), block_holding(&fin_rest, tip)),
+        ];
+        let chain = chain_at(info, tip + 13, coins)
+            .with_tx_by_hash_fn(move |h| {
+                if seen == UnreadableLeadFirst && h == "f9".repeat(32) {
+                    return Err(crate::error::AppError::Rpc("connection reset".into()));
+                }
+                Ok(match txs.iter().find(|(t, _)| *t == h) {
+                    Some((_, v)) if index => v.clone(),
+                    _ => Value::Null,
+                })
+            })
+            .with_block_hash_fn(|height| Ok(format!("{height:064x}")))
+            .with_block_fn(move |h| {
+                Ok(blocks
+                    .iter()
+                    .find(|(b, _)| *b == h)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_else(|| json!({ "height": 1, "tx": [] })))
+            });
+        run_listing_step(&r.app, &chain).await;
+        let l = r.listing();
+        if sold {
+            assert_eq!(l.state, ListingState::Sold, "{what}");
+            assert_eq!(l.sold_txid.as_deref(), Some(buy.as_str()), "{what}");
+            assert_eq!(
+                (l.lock_txid.as_deref(), l.lock_vout),
+                (Some(fin.as_str()), Some(i64::from(vout))),
+                "{what}"
+            );
+        } else {
+            assert_eq!(l.state, from, "{what}");
+            assert_eq!((l.sold_txid, l.lock_txid), (None, None), "{what}");
+        }
+    }
+}
+
+/// The T2 carry: a Locking listing whose lock TRANSFER draft is dead
+/// (dropped, failed, deleted) still holds the name's one open listing until
+/// the next sync ends it from the chain. Lock says so, instead of "already
+/// locked for sale"; after that sync it builds.
+#[tokio::test]
+async fn lock_refused_while_a_dead_lock_waits_for_the_sync() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let lock = build(&app).await.expect("lock builds");
+    let e = build(&app).await.unwrap_err();
+    assert!(err_text(e).contains("already locked for sale"));
+    with_db(&app, |c| {
+        queries::update_tx_draft_status(c, &lock.id, "dropped", None, None).unwrap();
+        queries::release_reserved_utxos_for_draft(c, &lock.id).unwrap();
+    });
+    let e = err_text(build(&app).await.unwrap_err());
+    assert!(
+        e.contains("did not go through") && e.contains("next sync"),
+        "{e}"
+    );
+    run_listing_step(
+        &app,
+        &facts(
+            info_with(OWNER_TXID, 0, 0),
+            &[(OWNER_TXID, 0, COV_REGISTER)],
+        ),
+    )
+    .await;
+    build(&app).await.expect("a new lock after the sync");
 }
 
 /// The chain once something other than our FINALIZE spent the lock
@@ -4229,7 +4633,7 @@ async fn dead_finalize_with_its_lock_transfer_spent_elsewhere_is_resolved_from_t
             info_with(&cancel, 0, 0),
             Some((&cancel, 0, &ours, COV_UPDATE)),
         );
-        run_listing_jobs(&r.app, &chain).await;
+        run_listing_step(&r.app, &chain).await;
         let l = r.listing();
         assert_eq!(l.state, ListingState::Aborted, "cancel mined, {status}");
         assert_eq!(
@@ -4245,7 +4649,7 @@ async fn dead_finalize_with_its_lock_transfer_spent_elsewhere_is_resolved_from_t
         info_with(&other_fin, 0, 0),
         Some((&other_fin, 0, &lock, COV_FINALIZE)),
     );
-    run_listing_jobs(&r.app, &chain).await;
+    run_listing_step(&r.app, &chain).await;
     let l = r.listing();
     assert_eq!(l.state, ListingState::Restored);
     assert_eq!(
@@ -4264,12 +4668,12 @@ async fn dead_finalize_with_its_lock_transfer_spent_elsewhere_is_resolved_from_t
     // A REVOKE: `owner` stays at the lock TRANSFER, `revoked` is set.
     let r = finalizing_with("failed").await;
     let chain = left_the_lock(info_with(&r.lock_txid, 0, QUIET_TIP as u64), None);
-    run_listing_jobs(&r.app, &chain).await;
+    run_listing_step(&r.app, &chain).await;
     assert_eq!(r.listing().state, ListingState::Aborted, "revoked");
 
     // The name expired.
     let r = finalizing_with("failed").await;
-    run_listing_jobs(&r.app, &left_the_lock(json!({ "info": null }), None)).await;
+    run_listing_step(&r.app, &left_the_lock(json!({ "info": null }), None)).await;
     assert_eq!(r.listing().state, ListingState::Expired, "info null");
 
     // No verdict: the owner coin is spent in the mempool (404), our
@@ -4291,13 +4695,13 @@ async fn dead_finalize_with_its_lock_transfer_spent_elsewhere_is_resolved_from_t
         ),
     ] {
         let r = finalizing_with(status).await;
-        run_listing_jobs(&r.app, &left_the_lock(info, owner)).await;
+        run_listing_step(&r.app, &left_the_lock(info, owner)).await;
         let l = r.listing();
         assert_eq!(l.state, ListingState::Finalizing, "{case}");
         assert_ne!(l.steps_json, "[]", "{case}");
     }
     let r = finalizing_with("failed").await;
-    run_listing_jobs(&r.app, &left_the_lock(r.info(), None)).await;
+    run_listing_step(&r.app, &left_the_lock(r.info(), None)).await;
     assert_eq!(
         r.listing().state,
         ListingState::Finalizing,
@@ -4316,15 +4720,847 @@ async fn reorged_abort_of_a_dead_finalize_relocks_without_its_steps() {
         info_with(&cancel, 0, 0),
         Some((&cancel, 0, &addr00(net).0, COV_UPDATE)),
     );
-    run_listing_jobs(&r.app, &chain).await;
+    run_listing_step(&r.app, &chain).await;
     assert_eq!(r.listing().state, ListingState::Aborted);
     let back = chain_at(
         r.info(),
         ready_tip(net) + 5,
         vec![lock_transfer_at(&r.lock_txid, TRANSFER_HEIGHT)],
     );
-    run_listing_jobs(&r.app, &back).await;
+    run_listing_step(&r.app, &back).await;
     let l = r.listing();
     assert_eq!(l.state, ListingState::Locking);
     assert_eq!((l.lock_txid, l.steps_json.as_str()), (None, "[]"));
+}
+
+// --- Restore a lock by name (T4, R32) ----------------------------------------
+
+use crate::commands::shakedex::shakedex_restore_lock;
+
+const RESTORED_TXID: &str = "7777777777777777777777777777777777777777777777777777777777777777";
+
+/// The owner coin hsd reports for NAME at `(RESTORED_TXID, 1)`: `cov` at
+/// `address`, committing (TRANSFER) to `committed`, or carrying the FINALIZE
+/// items with name height `height`.
+fn restored_coin(address: &str, cov: u8, height: u32, committed: Option<&[u8]>) -> Value {
+    let nh = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    let items: Vec<String> = match committed {
+        Some(program) => vec![
+            nh,
+            hex::encode(height.to_le_bytes()),
+            "00".into(),
+            hex::encode(program),
+        ],
+        None => vec![
+            nh,
+            hex::encode(height.to_le_bytes()),
+            hex::encode(NAME),
+            "00".into(),
+            "00000000".into(),
+            "00000000".into(),
+            RENEWAL_BLOCK.into(),
+        ],
+    };
+    json!({ "hash": RESTORED_TXID, "index": 1, "value": NAME_VALUE, "address": address,
+            "height": QUIET_TIP - 5, "coinbase": false, "version": 0,
+            "covenant": { "type": cov, "action": cov_action(cov), "items": items } })
+}
+
+/// The FINALIZE at our lock that a restore adopts.
+fn our_lock_coin() -> Value {
+    restored_coin(
+        &lock_address(Network::Regtest),
+        COV_FINALIZE,
+        NAME_HEIGHT,
+        None,
+    )
+}
+
+/// A fresh profile from the same phrase (no listing, no owned name) of
+/// `kind`, unlocked, and a node answering its tip (`mocks[0]`), `info` for
+/// NAME (`mocks[1]`) and `coin` for `(RESTORED_TXID, 1)` (`mocks[2]`;
+/// `None`: hsd's 404).
+async fn restore_fixture_of(
+    kind: &str,
+    info: Value,
+    coin: Option<Value>,
+) -> (ServerGuard, Vec<Mock>, App) {
+    let mut node = mockito::Server::new_async().await;
+    let mut mocks = vec![
+        mock_blockchain_info(&mut node, QUIET_TIP, Some(1_700_000_000)).await,
+        mock_name_info(&mut node, info).await,
+    ];
+    let path = format!("/coin/{RESTORED_TXID}/1");
+    mocks.push(match coin {
+        Some(c) => {
+            node.mock("GET", path.as_str())
+                .with_header("content-type", "application/json")
+                .with_body(c.to_string())
+                .create_async()
+                .await
+        }
+        None => {
+            node.mock("GET", path.as_str())
+                .with_status(404)
+                .create_async()
+                .await
+        }
+    });
+    let app = app_with(seeded("regtest", kind, &node.url()));
+    unlock(&app, Network::Regtest);
+    (node, mocks, app)
+}
+
+async fn restore_fixture(info: Value, coin: Option<Value>) -> (ServerGuard, Vec<Mock>, App) {
+    restore_fixture_of("mnemonic_hot", info, coin).await
+}
+
+/// `getnameinfo` naming `(RESTORED_TXID, 1)` the owner of NAME.
+fn restored_info() -> Value {
+    let mut v = name_info(RENEWAL, 0, RESTORED_TXID);
+    v["info"]["owner"]["index"] = 1.into();
+    v
+}
+
+async fn restore(
+    app: &App,
+) -> Result<crate::commands::shakedex::ListingSummary, crate::error::AppError> {
+    shakedex_restore_lock(app.state(), NAME.into()).await
+}
+
+/// R32: the owner coin `getnameinfo` names, read with `GET /coin`, is a
+/// FINALIZE at the lock address of the key derived from the seed for this
+/// name, at the name's height: adopted as a Restored lock keyed by name and
+/// that outpoint, with the derived public key and no listing details; a
+/// second restore is refused, and the export says to import its file.
+#[tokio::test]
+async fn restore_lock_by_name_adopts_a_lock_at_the_derived_address() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    let s = restore(&app).await.expect("restored");
+    assert_eq!(s.state, ListingState::Restored);
+    assert_eq!(
+        (s.lock_txid.as_deref(), s.lock_vout),
+        (Some(RESTORED_TXID), Some(1))
+    );
+    assert_eq!(
+        (
+            s.payment_address.as_ref(),
+            s.steps.len(),
+            s.finalize_draft_id.as_ref()
+        ),
+        (None, 0, None)
+    );
+    let l = open_listing(&app).expect("the open listing");
+    assert_eq!(l.id, s.id);
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    assert_eq!(l.lock_pubkey_hex, hex::encode(key.pubkey));
+    assert_eq!(
+        (l.lock_transfer_txid, l.lock_transfer_draft_id),
+        (None, None)
+    );
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("already tracked"), "{e}");
+    let e = with_db(&app, |c| {
+        crate::commands::shakedex::export_listing_file_from_conn(c, PROFILE, &s.id).unwrap_err()
+    });
+    assert!(err_text(e).contains("import its saved file"));
+    assert_eq!(
+        count(&app, "wallet_tx_drafts"),
+        0,
+        "a restore writes no draft"
+    );
+    assert_eq!(count(&app, "shakedex_listings"), 1);
+}
+
+/// Nothing is adopted when the owner coin is not in our lock: at our own
+/// address, at the lock address of another key, a coin at our lock that is
+/// neither FINALIZE nor TRANSFER, or hsd's null owner (a name without one,
+/// no coin read); nothing is written.
+#[tokio::test]
+async fn restore_lock_refuses_a_name_not_at_our_lock() {
+    let other_lock = derive_lock_key(&master(), Network::Regtest, 0, "othername")
+        .unwrap()
+        .address;
+    for (case, address, cov) in [
+        ("our address", addr00(Network::Regtest).0, COV_FINALIZE),
+        ("another lock", other_lock, COV_FINALIZE),
+        (
+            "an UPDATE at our lock",
+            lock_address(Network::Regtest),
+            COV_UPDATE,
+        ),
+    ] {
+        let coin = restored_coin(&address, cov, NAME_HEIGHT, None);
+        let (_node, _m, app) = restore_fixture(restored_info(), Some(coin)).await;
+        let e = err_text(restore(&app).await.unwrap_err());
+        assert!(e.contains("not in this wallet's lock"), "{case}: {e}");
+        assert_eq!(count(&app, "shakedex_listings"), 0, "{case}");
+    }
+    let mut info = restored_info();
+    info["info"]["owner"] = json!({ "hash": "00".repeat(32), "index": u32::MAX });
+    let (_node, mocks, app) = restore_fixture(info, Some(our_lock_coin())).await;
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("not in this wallet's lock"), "null owner: {e}");
+    assert!(!mocks[2].matched_async().await, "null owner: no coin read");
+    assert_eq!(count(&app, "shakedex_listings"), 0, "null owner");
+}
+
+/// A FINALIZE at our lock whose covenant commits to another name height
+/// than hsd's is left over from an earlier registration: refused.
+#[tokio::test]
+async fn restore_lock_refuses_a_leftover_lock_coin() {
+    let coin = restored_coin(
+        &lock_address(Network::Regtest),
+        COV_FINALIZE,
+        NAME_HEIGHT - 1,
+        None,
+    );
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(coin)).await;
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("left over from an earlier registration"), "{e}");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// `getnameinfo` with no `info`: an expired name has no lock to restore; no
+/// coin is read.
+#[tokio::test]
+async fn restore_lock_refuses_an_expired_name() {
+    let (_node, mocks, app) = restore_fixture(
+        json!({ "info": null, "start": null }),
+        Some(our_lock_coin()),
+    )
+    .await;
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("expired"), "{e}");
+    assert!(!mocks[2].matched_async().await, "no coin read");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// A revoked name (`info.revoked` not 0) has no lock to restore, whatever
+/// its owner coin; no coin is read.
+#[tokio::test]
+async fn restore_lock_refuses_a_revoked_name() {
+    let mut info = restored_info();
+    info["info"]["revoked"] = 1_990.into();
+    let (_node, mocks, app) = restore_fixture(info, Some(our_lock_coin())).await;
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("revoked"), "{e}");
+    assert!(!mocks[2].matched_async().await, "no coin read");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// The TRANSFER toward our lock is mined but the FINALIZE into it is not:
+/// the owner coin is that TRANSFER, at our own address, committing to the
+/// lock. Refused, pointing at Cancel transfer.
+#[tokio::test]
+async fn restore_lock_refuses_a_name_still_locking() {
+    let program = derive_lock_key(&master(), Network::Regtest, 0, NAME)
+        .unwrap()
+        .program;
+    let coin = restored_coin(
+        &addr00(Network::Regtest).0,
+        COV_TRANSFER,
+        NAME_HEIGHT,
+        Some(&program),
+    );
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(coin)).await;
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(
+        e.contains("still on its way into the lock") && e.contains("Cancel transfer"),
+        "{e}"
+    );
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// The owner coin at our lock is a TRANSFER, not a FINALIZE: a cancel
+/// awaiting its finalize, or a mined purchase. Refused, so no listing and no
+/// FINALIZE exist for it (spec §5).
+#[tokio::test]
+async fn restore_lock_refuses_a_lock_coin_already_a_transfer() {
+    for (case, committed) in [("a cancel", [3u8; 20]), ("a purchase", [9u8; 20])] {
+        let coin = restored_coin(
+            &lock_address(Network::Regtest),
+            COV_TRANSFER,
+            NAME_HEIGHT,
+            Some(&committed),
+        );
+        let (_node, _m, app) = restore_fixture(restored_info(), Some(coin)).await;
+        let e = err_text(restore(&app).await.unwrap_err());
+        assert!(e.contains("already a TRANSFER"), "{case}: {e}");
+        assert_eq!(count(&app, "shakedex_listings"), 0, "{case}");
+    }
+}
+
+/// hsd's 404 for the owner coin (spent in its mempool) is no verdict: the
+/// restore is refused until that is mined, and nothing is written.
+#[tokio::test]
+async fn restore_lock_refuses_an_owner_coin_spent_in_the_mempool() {
+    let (_node, mocks, app) = restore_fixture(restored_info(), None).await;
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("being spent in the node's mempool"), "{e}");
+    assert!(mocks[2].matched_async().await, "the coin was read");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// A listing of this profile that already holds the lock coin (here a
+/// cancelled one, so no listing of the name is open) is refused: a lock
+/// coin is tracked by one listing.
+#[tokio::test]
+async fn restore_lock_refuses_a_lock_coin_a_listing_already_has() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    with_db(&app, |c| {
+        let mut l = listing("old", NAME, ListingState::Cancelled);
+        l.wallet_profile_id = PROFILE.into();
+        l.lock_txid = Some(RESTORED_TXID.into());
+        l.lock_vout = Some(1);
+        queries::insert_shakedex_listing(c, &l).unwrap();
+    });
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("lock coin is already tracked"), "{e}");
+    assert_eq!(count(&app, "shakedex_listings"), 1);
+}
+
+/// A name with an open listing of this profile (here still Locking, so it
+/// holds no lock coin yet) is refused: one open listing per name.
+#[tokio::test]
+async fn restore_lock_refuses_a_name_with_an_open_listing() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    with_db(&app, |c| {
+        let mut l = listing("open", NAME, ListingState::Locking);
+        l.wallet_profile_id = PROFILE.into();
+        queries::insert_shakedex_listing(c, &l).unwrap();
+    });
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains(&format!("'{NAME}' is already tracked")), "{e}");
+    assert_eq!(count(&app, "shakedex_listings"), 1);
+}
+
+/// Every field of hsd's replies the restore reads fails closed: a reply
+/// without it, or one that disagrees with what was asked, is "could not
+/// check" (`AppError::Rpc`), and nothing is written.
+#[tokio::test]
+async fn restore_lock_with_a_node_reply_missing_a_field_writes_nothing() {
+    let without_info = |field: &str| {
+        let mut v = restored_info();
+        v["info"].as_object_mut().unwrap().remove(field);
+        v
+    };
+    let without_coin = |field: &str| {
+        let mut v = our_lock_coin();
+        v.as_object_mut().unwrap().remove(field);
+        v
+    };
+    let coin_with = |key: &str, value: Value| {
+        let mut v = our_lock_coin();
+        v[key] = value;
+        v
+    };
+    let mut other_name = our_lock_coin();
+    other_name["covenant"]["items"][0] =
+        hex::encode(crate::noncustodial::names::hash_name("othername").unwrap()).into();
+    let mut no_height_item = our_lock_coin();
+    no_height_item["covenant"]["items"][1] = "zz".into();
+    let mut info_null_owner = restored_info();
+    info_null_owner["info"]["owner"] = Value::Null;
+    let cases: Vec<(&str, Value, Value)> = vec![
+        ("no info", json!({ "start": null }), our_lock_coin()),
+        ("no owner", without_info("owner"), our_lock_coin()),
+        ("null owner", info_null_owner, our_lock_coin()),
+        ("no height", without_info("height"), our_lock_coin()),
+        ("no revoked", without_info("revoked"), our_lock_coin()),
+        (
+            "coin without address",
+            restored_info(),
+            without_coin("address"),
+        ),
+        (
+            "coin without covenant",
+            restored_info(),
+            without_coin("covenant"),
+        ),
+        (
+            "coin without height",
+            restored_info(),
+            without_coin("height"),
+        ),
+        (
+            "coin in the mempool",
+            restored_info(),
+            coin_with("height", (-1).into()),
+        ),
+        (
+            "coin of another txid",
+            restored_info(),
+            coin_with("hash", "66".repeat(32).into()),
+        ),
+        (
+            "coin of another index",
+            restored_info(),
+            coin_with("index", 0.into()),
+        ),
+        ("coin of another name", restored_info(), other_name),
+        ("unreadable name height", restored_info(), no_height_item),
+    ];
+    for (case, info, coin) in cases {
+        let (_node, _m, app) = restore_fixture(info, Some(coin)).await;
+        let e = restore(&app).await.unwrap_err();
+        assert!(
+            matches!(e, crate::error::AppError::Rpc(_)),
+            "{case}: {}",
+            err_text(e)
+        );
+        assert_eq!(count(&app, "shakedex_listings"), 0, "{case}");
+    }
+}
+
+/// R32: the recovery phrase is needed (a hardened key cannot come from the
+/// xpub): a locked wallet is refused before the node is read.
+#[tokio::test]
+async fn restore_lock_needs_the_unlocked_signer() {
+    let (_node, mocks, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    *app.state::<AppState>().signer.lock().unwrap() = None;
+    assert!(matches!(
+        restore(&app).await.unwrap_err(),
+        crate::error::AppError::WalletLocked
+    ));
+    assert!(!mocks[1].matched_async().await, "the name was not read");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// R16/R32: Ledger, watch-only and extended-private-key profiles cannot
+/// derive the lock key (no seed for the hardened path): refused with the
+/// sentence the UI shows, before the node is read.
+#[tokio::test]
+async fn restore_lock_refused_for_ledger_and_watch_only() {
+    let sentence = crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY;
+    for kind in ["ledger_hardware", "xpriv_hot", "watch_only_xpub"] {
+        let (_node, mocks, app) =
+            restore_fixture_of(kind, restored_info(), Some(our_lock_coin())).await;
+        let e = err_text(restore(&app).await.unwrap_err());
+        assert!(e.contains(sentence), "{kind}: {e}");
+        assert!(
+            !mocks[1].matched_async().await,
+            "{kind}: the name was not read"
+        );
+        assert_eq!(count(&app, "shakedex_listings"), 0, "{kind}");
+    }
+}
+
+/// R16/R29: a restore needs a node that can send (its only action on a
+/// Restored lock, Cancel, sends), with the sentence the UI shows; the name is
+/// not read.
+#[tokio::test]
+async fn restore_lock_refused_without_write_capability() {
+    let (_node, mocks, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    with_db(&app, |c| set(c, "chain_source", "explorer"));
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(
+        e.contains(crate::commands::shakedex::NEEDS_SENDING_NODE),
+        "{e}"
+    );
+    assert!(!mocks[1].matched_async().await, "the name was not read");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+// --- Upgrade a Restored lock from its own listing file (T4, R32) ------------
+
+use crate::commands::shakedex::shakedex_import_own_listing_file;
+use crate::noncustodial::shakedex::listing_file::{
+    write_listing_file, NewListingFile, PriceStep, MAX_LISTING_FILE_BYTES,
+};
+
+/// A listing file over `(RESTORED_TXID, vout)` with `pubkey`, one step at
+/// 5 HNS signed by `signer` (a lock key) over that coin's template.
+fn own_file(
+    vout: u32,
+    pubkey: [u8; 33],
+    signer: &crate::noncustodial::shakedex::lock_key::LockKey,
+    payment: &str,
+) -> String {
+    let mut lock_txid = [0u8; 32];
+    hex::decode_to_slice(RESTORED_TXID, &mut lock_txid).unwrap();
+    let signature = sell::sign_step(
+        signer,
+        &StepTemplate {
+            lock_outpoint: (lock_txid, vout),
+            lock_value: NAME_VALUE,
+            lock_pubkey: &signer.pubkey,
+            payment: crate::noncustodial::tx::output_address_from_string(Network::Regtest, payment)
+                .unwrap(),
+            price: 5_000_000,
+            lock_time_secs: 1_700_000_000,
+        },
+    )
+    .unwrap();
+    write_listing_file(
+        &NewListingFile {
+            name: NAME,
+            lock_txid,
+            lock_vout: vout,
+            public_key: pubkey,
+            payment_addr: payment,
+            steps: &[PriceStep {
+                price: 5_000_000,
+                lock_time: 1_700_000_000,
+                signature,
+                fee: 0,
+            }],
+            expires_at: 1_731_536_000,
+        },
+        Network::Regtest,
+    )
+    .unwrap()
+}
+
+/// Our own file for the restored lock: the derived key over `(RESTORED_TXID,
+/// 1)`, paying our address 0/0.
+fn good_file() -> String {
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    own_file(1, key.pubkey, &key, &addr00(Network::Regtest).0)
+}
+
+async fn import(
+    app: &App,
+    file: String,
+) -> Result<crate::commands::shakedex::ListingSummary, crate::error::AppError> {
+    shakedex_import_own_listing_file(app.state(), file).await
+}
+
+/// The listing is still the Restored lock as the restore wrote it: no
+/// payment address, steps or file.
+fn assert_still_restored(app: &App, case: &str) {
+    let l = open_listing(app).expect("the open listing");
+    assert_eq!(l.state, ListingState::Restored, "{case}");
+    assert_eq!(
+        (
+            l.payment_address.as_deref(),
+            l.steps_json.as_str(),
+            l.listing_file_json.as_deref(),
+            l.expires_at
+        ),
+        (None, "[]", None, None),
+        "{case}"
+    );
+}
+
+/// hsd answers `coin` (`None`: its 404) for `(RESTORED_TXID, 1)` from now on.
+async fn answer_coin(node: &mut ServerGuard, mocks: &mut Vec<Mock>, coin: Option<Value>) {
+    mocks.remove(2).remove_async().await;
+    let path = format!("/coin/{RESTORED_TXID}/1");
+    let m = node.mock("GET", path.as_str());
+    let m = match coin {
+        Some(c) => m
+            .with_header("content-type", "application/json")
+            .with_body(c.to_string()),
+        None => m.with_status(404),
+    };
+    mocks.insert(2, m.create_async().await);
+}
+
+/// R32: a Restored lock and its own file — same lock outpoint, same public
+/// key, every step signed by the lock over the lock coin — make a full
+/// listing: Listed, with the file's payment address, steps, expiry and mode,
+/// and the file exportable again.
+#[tokio::test]
+async fn own_listing_file_upgrades_a_restored_lock() {
+    let coin = restored_coin(
+        &lock_address(Network::Regtest),
+        COV_FINALIZE,
+        NAME_HEIGHT,
+        None,
+    );
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(coin.clone())).await;
+    let r = restore(&app).await.expect("restored");
+    answer_coin(&mut node, &mut mocks, Some(coin)).await;
+    let pay = addr00(Network::Regtest).0;
+    let file = good_file();
+    let s = import(&app, file.clone()).await.expect("imported");
+    assert!(mocks[2].matched_async().await, "the lock coin was read");
+    assert_eq!(s.id, r.id);
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!(s.mode, ListingMode::BuyNow);
+    assert_eq!(s.payment_address.as_deref(), Some(pay.as_str()));
+    assert_eq!((s.steps.len(), s.steps[0].price), (1, 5_000_000));
+    assert_eq!(s.expires_at, Some(1_731_536_000));
+    let exported = with_db(&app, |c| {
+        export_listing_file_from_conn(c, PROFILE, &s.id).unwrap()
+    });
+    let (a, b) = (
+        ListingFile::parse(&exported, Network::Regtest).unwrap(),
+        ListingFile::parse(&file, Network::Regtest).unwrap(),
+    );
+    assert_eq!(
+        (a.lock_txid, a.lock_vout, a.public_key, a.payment_addr),
+        (b.lock_txid, b.lock_vout, b.public_key, b.payment_addr)
+    );
+    assert_eq!(a.steps, b.steps);
+    // Once Listed it is no longer a Restored lock: a second import is refused.
+    let e = err_text(import(&app, file).await.unwrap_err());
+    assert!(e.contains("no Restored lock"), "{e}");
+    assert_eq!(count(&app, "shakedex_listings"), 1);
+}
+
+/// R32: a file for another key, or for another lock coin, is refused, and
+/// the Restored lock stays as it was.
+#[tokio::test]
+async fn own_listing_file_for_another_key_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    let pay = addr00(Network::Regtest).0;
+    for (case, file, needle) in [
+        (
+            "another key",
+            own_file(1, other.pubkey, &other, &pay),
+            "another lock key",
+        ),
+        (
+            "another lock coin",
+            own_file(2, key.pubkey, &key, &pay),
+            "another lock coin",
+        ),
+    ] {
+        let e = err_text(import(&app, file).await.unwrap_err());
+        assert!(e.contains(needle), "{case}: {e}");
+        assert_still_restored(&app, case);
+    }
+}
+
+/// Deviation 6: while the lock coin is a coin, every step of the file must
+/// be signed by the lock over it (at the coin's value as hsd reports it); a
+/// step signed by another key, or over another value, is refused.
+#[tokio::test]
+async fn own_listing_file_with_a_step_not_signed_by_the_lock_is_refused() {
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    let file = own_file(1, key.pubkey, &other, &addr00(Network::Regtest).0);
+    let e = err_text(import(&app, file).await.unwrap_err());
+    assert!(e.contains("not signed by this lock"), "another signer: {e}");
+    assert_still_restored(&app, "another signer");
+    // The lock signed over NAME_VALUE; hsd says the coin holds one doo more.
+    let mut coin = our_lock_coin();
+    coin["value"] = (NAME_VALUE + 1).into();
+    answer_coin(&mut node, &mut mocks, Some(coin)).await;
+    let e = err_text(import(&app, good_file()).await.unwrap_err());
+    assert!(e.contains("not signed by this lock"), "another value: {e}");
+    assert_still_restored(&app, "another value");
+}
+
+/// Deviation 6: once the lock coin is spent (hsd's 404), the file's lock
+/// outpoint and key are all that is checked: its steps are not verified, and
+/// the chain judges the sale (R22) by the payment address it supplies.
+#[tokio::test]
+async fn own_listing_file_for_a_spent_lock_coin_checks_only_the_outpoint_and_key() {
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    answer_coin(&mut node, &mut mocks, None).await;
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    let pay = addr00(Network::Regtest).0;
+    let s = import(&app, own_file(1, key.pubkey, &other, &pay))
+        .await
+        .expect("imported");
+    assert!(mocks[2].matched_async().await, "the lock coin was read");
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!(s.payment_address.as_deref(), Some(pay.as_str()));
+}
+
+/// R32: the file's public key must be the lock key this wallet derives from
+/// its seed for the name, account and network, not only the key the
+/// Restored row holds; a row with a key the seed does not give is refused.
+#[tokio::test]
+async fn own_listing_file_with_a_key_this_wallet_does_not_derive_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    with_db(&app, |c| {
+        let mut l = listing("restored", NAME, ListingState::Restored);
+        l.wallet_profile_id = PROFILE.into();
+        l.lock_pubkey_hex = hex::encode(other.pubkey);
+        l.lock_txid = Some(RESTORED_TXID.into());
+        l.lock_vout = Some(1);
+        l.payment_address = None;
+        queries::insert_shakedex_listing(c, &l).unwrap();
+    });
+    let file = own_file(1, other.pubkey, &other, &addr00(Network::Regtest).0);
+    let e = err_text(import(&app, file).await.unwrap_err());
+    assert!(e.contains("not the lock key this wallet derives"), "{e}");
+    assert_still_restored(&app, "a key not derived");
+}
+
+/// R32, Step 1: the file's payment address must be one of this profile's
+/// derived addresses on this network: an address of our seed the wallet has
+/// not derived, or one of another network, is refused.
+#[tokio::test]
+async fn own_listing_file_paying_an_address_not_ours_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let (_sk, _pk, underived) = hd::derive_address(Network::Regtest, &seed(), 0, 0, 7).unwrap();
+    let e = err_text(
+        import(&app, own_file(1, key.pubkey, &key, &underived))
+            .await
+            .unwrap_err(),
+    );
+    assert!(e.contains("not one of this wallet's addresses"), "{e}");
+    assert_still_restored(&app, "underived");
+    // The same file paying our address 0/0 as mainnet spells it.
+    let mut v: Value = serde_json::from_str(&good_file()).unwrap();
+    v["paymentAddr"] = addr00(Network::Main).0.into();
+    let e = err_text(import(&app, v.to_string()).await.unwrap_err());
+    assert!(e.contains("this listing is for mainnet"), "{e}");
+    assert_still_restored(&app, "mainnet");
+}
+
+/// We never write a market fee (R23): a file of ours with one is not ours,
+/// even though the seller's signature does not cover the fee.
+#[tokio::test]
+async fn own_listing_file_with_a_market_fee_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let mut v: Value = serde_json::from_str(&good_file()).unwrap();
+    v["feeAddr"] = addr00(Network::Regtest).0.into();
+    // A fee address beside zero fees is no fee to the parser, but this
+    // wallet writes `feeAddr: null`: not its own file.
+    let e = err_text(import(&app, v.to_string()).await.unwrap_err());
+    assert!(e.contains("market fee"), "fee address alone: {e}");
+    assert_still_restored(&app, "fee address");
+    v["data"][0]["fee"] = 100_000.into();
+    let e = err_text(import(&app, v.to_string()).await.unwrap_err());
+    assert!(e.contains("market fee"), "{e}");
+    assert_still_restored(&app, "fee");
+}
+
+/// The file is foreign input read by the strict parser, size limit first:
+/// an oversized file (here our own file padded with whitespace) is refused.
+#[tokio::test]
+async fn own_listing_file_over_the_size_limit_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let file = format!("{}{}", good_file(), " ".repeat(MAX_LISTING_FILE_BYTES));
+    let e = err_text(import(&app, file).await.unwrap_err());
+    assert!(e.contains("larger than"), "{e}");
+    assert_still_restored(&app, "size");
+}
+
+/// Only a Restored lock is upgraded: no listing of the name, or a listing in
+/// another state (here Locking), is refused.
+#[tokio::test]
+async fn own_listing_file_without_a_restored_lock_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    let e = err_text(import(&app, good_file()).await.unwrap_err());
+    assert!(e.contains("no Restored lock"), "no listing: {e}");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    with_db(&app, |c| {
+        let mut l = listing("locking", NAME, ListingState::Locking);
+        l.wallet_profile_id = PROFILE.into();
+        l.lock_pubkey_hex = hex::encode(key.pubkey);
+        l.lock_txid = Some(RESTORED_TXID.into());
+        l.lock_vout = Some(1);
+        l.payment_address = None;
+        queries::insert_shakedex_listing(c, &l).unwrap();
+    });
+    let e = err_text(import(&app, good_file()).await.unwrap_err());
+    assert!(e.contains("no Restored lock"), "Locking: {e}");
+    let l = open_listing(&app).unwrap();
+    assert_eq!(
+        (l.state, l.payment_address, l.listing_file_json),
+        (ListingState::Locking, None, None)
+    );
+}
+
+/// Every field of hsd's lock coin reply the import reads fails closed: a
+/// coin of another outpoint, without its address or at another address, or
+/// with a value no coin has, is "could not check" (`AppError::Rpc`), and
+/// nothing is written.
+#[tokio::test]
+async fn own_listing_file_with_a_node_reply_missing_a_field_writes_nothing() {
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let coin_with = |key: &str, value: Option<Value>| {
+        let mut v = our_lock_coin();
+        match value {
+            Some(x) => v[key] = x,
+            None => {
+                v.as_object_mut().unwrap().remove(key);
+            }
+        }
+        v
+    };
+    let cases = [
+        (
+            "another txid",
+            coin_with("hash", Some("66".repeat(32).into())),
+        ),
+        ("another index", coin_with("index", Some(0.into()))),
+        ("no address", coin_with("address", None)),
+        (
+            "another address",
+            coin_with("address", Some(addr00(Network::Regtest).0.into())),
+        ),
+        ("a negative value", coin_with("value", Some((-1).into()))),
+        ("no value", coin_with("value", None)),
+    ];
+    for (case, coin) in cases {
+        answer_coin(&mut node, &mut mocks, Some(coin)).await;
+        let e = import(&app, good_file()).await.unwrap_err();
+        assert!(
+            matches!(e, crate::error::AppError::Rpc(_)),
+            "{case}: {}",
+            err_text(e)
+        );
+        assert_still_restored(&app, case);
+    }
+}
+
+/// R32: the lock key is re-derived from the seed, so the unlocked signer is
+/// needed: a locked wallet is refused before the lock coin is read, and
+/// nothing is written.
+#[tokio::test]
+async fn own_listing_file_needs_the_unlocked_signer() {
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    answer_coin(&mut node, &mut mocks, Some(our_lock_coin())).await;
+    *app.state::<AppState>().signer.lock().unwrap() = None;
+    assert!(matches!(
+        import(&app, good_file()).await.unwrap_err(),
+        crate::error::AppError::WalletLocked
+    ));
+    assert!(
+        !mocks[2].matched_async().await,
+        "the lock coin was not read"
+    );
+    assert_still_restored(&app, "locked");
+}
+
+/// R16/R32: Ledger, watch-only and extended-private-key profiles cannot
+/// derive the lock key: refused with the sentence the UI shows, before the
+/// lock coin is read, and nothing is written.
+#[tokio::test]
+async fn own_listing_file_refused_for_ledger_and_watch_only() {
+    let sentence = crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY;
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    for kind in ["ledger_hardware", "xpriv_hot", "watch_only_xpub"] {
+        let (_node, mocks, app) =
+            restore_fixture_of(kind, restored_info(), Some(our_lock_coin())).await;
+        with_db(&app, |c| {
+            let mut l = listing("restored", NAME, ListingState::Restored);
+            l.wallet_profile_id = PROFILE.into();
+            l.lock_pubkey_hex = hex::encode(key.pubkey);
+            l.lock_txid = Some(RESTORED_TXID.into());
+            l.lock_vout = Some(1);
+            l.payment_address = None;
+            queries::insert_shakedex_listing(c, &l).unwrap();
+        });
+        let e = err_text(import(&app, good_file()).await.unwrap_err());
+        assert!(e.contains(sentence), "{kind}: {e}");
+        assert!(
+            !mocks[2].matched_async().await,
+            "{kind}: the lock coin was not read"
+        );
+        assert_still_restored(&app, kind);
+    }
 }

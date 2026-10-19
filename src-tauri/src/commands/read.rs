@@ -456,6 +456,8 @@ pub async fn read_balance(
 ///
 /// Names bought through Shakedex are listed too while the purchase is
 /// unconfirmed or awaiting finalize, each with a `shakedex` object (R14).
+/// Names with a Shakedex listing carry a `listing` object (R19); a name in our
+/// lock is listed by its listing.
 #[tauri::command]
 pub async fn read_names(
     state: State<'_, AppState>,
@@ -504,6 +506,45 @@ fn collect_read_names_data(
             if seen.insert(n.to_string()) {
                 out.push(v);
             }
+        }
+    }
+
+    // R19: each name's listing state; a name in our lock is no longer a coin
+    // at our addresses, so it gets a row of its own at the lock address.
+    let tip = crate::noncustodial::sync::get_sync_height(conn, id)?;
+    // Returned, not hidden: `read_names` is user-triggered, and the
+    // listings' lock addresses belong to the profile's network.
+    let network = queries::profile_network(conn, id)?;
+    let rows = queries::read_shakedex_listing_names(
+        conn,
+        id,
+        network.name_params(),
+        tip,
+        crate::shakedex_jobs::SOLD_RECHECK_DAYS,
+    )?;
+    for r in rows {
+        let listing = serde_json::to_value(&r.listing)?;
+        if let Some(v) = out
+            .iter_mut()
+            .find(|v| v.get("name").and_then(|n| n.as_str()) == Some(r.name.as_str()))
+        {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("listing".into(), listing);
+            }
+        } else {
+            // The lock address from the stored key; a key that does not
+            // decode leaves the address out rather than failing the list.
+            let lock_address = hex::decode(&r.lock_pubkey_hex)
+                .ok()
+                .and_then(|b| <[u8; 33]>::try_from(b).ok())
+                .and_then(|pk| {
+                    crate::noncustodial::shakedex::script::lock_address(network, &pk).ok()
+                });
+            out.push(serde_json::json!({
+                "name": r.name, "state": null, "height": null, "renewal": null, "owner": null,
+                "owner_address": lock_address, "registered": true, "expired": null,
+                "stats": null, "listing": listing,
+            }));
         }
     }
 
@@ -1803,8 +1844,9 @@ pub(crate) fn compute_renewals(
     // Owned names — same union as `read_names` (node-synced cache + explorer
     // discoveries), so the Renewals screen covers exactly what the wallet owns.
     for v in collect_read_names_data(conn, profile_id, live_node_height.is_some())? {
-        // A Shakedex purchase still on its way is not ours to renew yet.
-        if v.get("shakedex").is_some() {
+        // A Shakedex purchase still on its way is not ours to renew yet; a
+        // locked or locking name is not renewed (R27), and a sold one is not ours.
+        if v.get("shakedex").is_some() || v.get("listing").is_some() {
             continue;
         }
         let Some(name) = v.get("name").and_then(|x| x.as_str()) else {

@@ -236,6 +236,13 @@ impl ListingFile {
         })
     }
 
+    /// Whether the file as written names a fee address (`feeAddr` present
+    /// and not null), whatever its fees: [`Self::fee_addr`] is `None` beside
+    /// zero fees, but the file still says it.
+    pub fn names_a_fee_address(&self) -> bool {
+        self.as_written.get("feeAddr").is_some_and(|v| !v.is_null())
+    }
+
     pub fn to_json(&self) -> Result<String, AppError> {
         serde_json::to_string(&self.as_written).map_err(AppError::from)
     }
