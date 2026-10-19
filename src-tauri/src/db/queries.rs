@@ -5609,6 +5609,34 @@ pub fn find_unspent_covenant_utxo(
     name: &str,
     name_hash_hex: &str,
 ) -> Result<Option<NameCoin>, AppError> {
+    find_unspent_covenant_utxo_of_auction(
+        conn,
+        profile_id,
+        address,
+        covenant_type,
+        name,
+        name_hash_hex,
+        None,
+    )
+}
+
+/// [`find_unspent_covenant_utxo`] among the coins of the auction that opened
+/// at `auction_start` ([`NameCoin::belongs_to_auction`]; `None` takes every
+/// auction). An address can be reused across auctions of one name, so this
+/// auction's BID coin may sit beside an earlier auction's, which can never be
+/// revealed: that one is not a second candidate, and refusing on it took
+/// Reveal and every capability of the name down. Two coins of the SAME
+/// auction at one address are still refused: each pairs with its own stored
+/// nonce, and picking one could reveal it with the other's.
+pub fn find_unspent_covenant_utxo_of_auction(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    address: &str,
+    covenant_type: i64,
+    name: &str,
+    name_hash_hex: &str,
+    auction_start: Option<i64>,
+) -> Result<Option<NameCoin>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT u.txid, u.vout, u.value_doos, u.address, d.branch, d.child_index,
                 u.covenant_type, u.covenant_json, NULL
@@ -5632,7 +5660,12 @@ pub fn find_unspent_covenant_utxo(
     let mut unknown: Vec<NameCoin> = Vec::new();
     for c in candidates {
         match covenant_name_hash_hex(c.covenant_json.as_deref()) {
-            Some(h) if h == want => matches.push(c),
+            Some(h) if h == want => {
+                // Another auction's coin of the name is not a candidate.
+                if c.belongs_to_auction(auction_start) {
+                    matches.push(c);
+                }
+            }
             Some(_) => {} // another name's coin — never touch it
             None => unknown.push(c),
         }

@@ -3612,6 +3612,157 @@ async fn build_batch_reveal_draft_wrapper_happy_path() {
     assert_eq!(summary.action, "batch-reveal");
 }
 
+/// A BID covenant of `name` committing to the auction that opened at
+/// `auction_start` (`items[1]`, u32 LE).
+fn bid_covenant_of_auction(name: &str, auction_start: u32) -> String {
+    let nh = hex::encode(crate::noncustodial::names::hash_name(name).unwrap());
+    let raw = hex::encode(crate::noncustodial::names::raw_name(name).unwrap());
+    serde_json::json!({
+        "type": crate::noncustodial::sync::COV_BID,
+        "action": "BID",
+        "items": [nh, hex::encode(auction_start.to_le_bytes()), raw, "aa".repeat(32)],
+    })
+    .to_string()
+}
+
+/// An address reused across auctions of `name`: our unrevealed BID coin of
+/// an earlier auction (opened at 50) and this auction's (100, the mocked
+/// `getnameinfo` height) sit at one address, with this auction's commitment
+/// there. Returns the two txids (earlier, this auction's).
+fn reused_address_bids(conn: &rusqlite::Connection, id: &str, name: &str) -> (String, String) {
+    let old = "e1".repeat(32);
+    let new = "e2".repeat(32);
+    let addr = first_derived_address(conn, id);
+    for (txid, start) in [(&old, 50), (&new, 100)] {
+        seed_covenant_coin(
+            conn,
+            id,
+            txid,
+            &addr,
+            crate::noncustodial::sync::COV_BID,
+            2000,
+            Some(&bid_covenant_of_auction(name, start)),
+        );
+    }
+    seed_bid_commitment(conn, id, name, &addr);
+    db::queries::set_auction_heights(conn, id, &format!("blind-{name}"), 100, 121).unwrap();
+    (old, new)
+}
+
+/// The Reveal builders pick this auction's BID coin at the commitment's
+/// address, not refuse because an earlier auction's BID coin of the name
+/// sits there too (which can never be revealed: `bad-reveal-nonlocal`).
+#[tokio::test]
+async fn reveal_uses_this_auctions_bid_coin_beside_an_earlier_auctions_at_one_address() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    let (old, new) = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"34".repeat(32));
+        reused_address_bids(&conn, &id, "namea")
+    };
+    let app = mock_app_with(state);
+    let draft = names::build_reveal_draft(app.state(), "namea".into(), None)
+        .await
+        .expect("the reveal builds from this auction's coin");
+    let inputs = draft_signing_inputs(&app, &draft.id);
+    assert!(inputs.contains(&new), "this auction's coin: {inputs}");
+    assert!(
+        !inputs.contains(&old),
+        "never the earlier auction's: {inputs}"
+    );
+}
+
+/// The batch Reveal builder, the same way.
+#[tokio::test]
+async fn batch_reveal_uses_this_auctions_bid_coin_beside_an_earlier_auctions_at_one_address() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    let (old, new) = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"34".repeat(32));
+        reused_address_bids(&conn, &id, "namea")
+    };
+    let app = mock_app_with(state);
+    let batch = names::build_batch_reveal_draft(app.state(), vec!["namea".into()], None)
+        .await
+        .expect("the batch reveal builds from this auction's coin");
+    let inputs = draft_signing_inputs(&app, &batch.id);
+    assert!(
+        inputs.contains(&new),
+        "batch, this auction's coin: {inputs}"
+    );
+    assert!(
+        !inputs.contains(&old),
+        "batch, never the earlier one: {inputs}"
+    );
+}
+
+/// Two BID coins of THIS auction at one address are still refused: each
+/// pairs with its own stored nonce, and picking one could reveal it with the
+/// other's.
+#[tokio::test]
+async fn reveal_refuses_two_bid_coins_of_this_auction_at_one_address() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        let addr = first_derived_address(&conn, &id);
+        for txid in ["e3".repeat(32), "e4".repeat(32)] {
+            seed_covenant_coin(
+                &conn,
+                &id,
+                &txid,
+                &addr,
+                crate::noncustodial::sync::COV_BID,
+                2000,
+                Some(&bid_covenant_of_auction("namea", 100)),
+            );
+        }
+        seed_bid_commitment(&conn, &id, "namea", &addr);
+    }
+    let app = mock_app_with(state);
+    let err = names::build_reveal_draft(app.state(), "namea".into(), None)
+        .await
+        .expect_err("an ambiguity of this auction is refused");
+    assert!(
+        matches!(&err, AppError::InvalidInput(m) if m.contains("cannot pick one safely")),
+        "{err:?}"
+    );
+}
+
+/// The capabilities read the same way: in REVEAL, this auction's BID coin
+/// beside an earlier auction's at one address offers Reveal instead of
+/// failing the whole read, and the earlier coin is the stranded candidate.
+#[tokio::test]
+async fn capabilities_reveal_this_auctions_bid_beside_an_earlier_auctions_at_one_address() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_blockchain_and_name(&mut server, 1.0, Some("REVEAL")).await;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        reused_address_bids(&conn, &id, "namea");
+        id
+    };
+    let app = mock_app_with(state);
+    let caps = names::get_name_action_capabilities(app.state(), "namea".into(), Some(profile_id))
+        .await
+        .expect("an earlier auction's coin at the address is no error");
+    assert!(caps.has_bid_coin, "{caps:?}");
+    assert!(caps.can_reveal.allowed, "{:?}", caps.can_reveal.reason);
+}
+
 #[tokio::test]
 async fn build_batch_reveal_draft_wrapper_rejects_missing_commitment() {
     let mut server = mockito::Server::new_async().await;

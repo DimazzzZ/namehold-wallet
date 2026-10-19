@@ -100,10 +100,10 @@ contradicts its own `raw_json`.
 **R5 — Revealing a name reveals every bid of ours in the current auction.**
 One transaction, one REVEAL output per bid with an unspent BID coin. Bid coins
 are found by name hash across the wallet, not at one commitment's address —
-each bid lands on its own rotated address.
-*Enforced:* `commands/names.rs::build_reveal_draft` / `build_reveal_draft_inner`.
+each bid lands on its own rotated address. At a commitment's address only the BID coin of the current auction is taken (the coin's own covenant, `NameCoin::belongs_to_auction`): with an address reused across auctions an earlier auction's BID coin sits there too, can never be revealed (`bad-reveal-nonlocal`), and is a stranded candidate (R10), not a second coin to refuse on. The capabilities' Reveal gate and lost verdict read the same coin (the commitment's recorded auction, else the live one). Two BID coins of the current auction at one address are still refused, saying so: each pairs with its own nonce.
+*Enforced:* `commands/names.rs::build_reveal_draft` / `build_reveal_draft_inner`, `build_batch_reveal_draft`, `find_name_action_context` (`queries::find_unspent_covenant_utxo_of_auction`).
 *Pinned:* `live_node_it::live_reveal_covers_every_bid_this_wallet_placed_on_the_name`,
-`live_node_it::live_multi_bid_lifecycle_leaves_no_coin_stranded`.
+`live_node_it::live_multi_bid_lifecycle_leaves_no_coin_stranded`, `names_cmd_tests::{reveal_uses_this_auctions_bid_coin_beside_an_earlier_auctions_at_one_address, batch_reveal_uses_this_auctions_bid_coin_beside_an_earlier_auctions_at_one_address, reveal_refuses_two_bid_coins_of_this_auction_at_one_address, capabilities_reveal_this_auctions_bid_beside_an_earlier_auctions_at_one_address}`, `names_action_context_tests::this_auctions_bid_coin_is_found_beside_an_earlier_auctions_at_one_address`.
 
 **R6 — The reveal txid is stamped on the bid that was revealed, and only it.**
 `set_bid_reveal_txid` is keyed by `blind_hex`. Stamping by name marked every

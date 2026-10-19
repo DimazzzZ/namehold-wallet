@@ -2160,3 +2160,47 @@ fn of_two_bid_coins_at_one_address_only_the_earlier_auctions_is_a_candidate() {
         .collect();
     assert_eq!(got, ["bidold"]);
 }
+
+/// An address reused across auctions with both BID coins unspent: our bid of
+/// the earlier auction (111, never revealed) and our bid of the live one
+/// (779) at one address. This auction's lookups take this auction's coin
+/// (Reveal works, the unrevealed candidate is the live bid's coin) instead
+/// of refusing the whole read, and the earlier coin is the stranded
+/// candidate.
+#[test]
+fn this_auctions_bid_coin_is_found_beside_an_earlier_auctions_at_one_address() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, OLD_ADDR, 0, 0);
+    let nh = name_hash();
+    for (blind, txid, start) in [("b-old", "bidold", 111), ("b-new", "bidnew", 779)] {
+        db::queries::insert_bid_commitment(
+            &conn, PROFILE, NAME, &nh, OLD_ADDR, 0, 0, 1_000_000, 2_000_000, "nonce", blind,
+        )
+        .unwrap();
+        db::queries::set_auction_heights(&conn, PROFILE, blind, start, start + 21).unwrap();
+        seed_tracked_utxo(
+            &conn,
+            txid,
+            0,
+            OLD_ADDR,
+            sync::COV_BID as i64,
+            Some(&bid_cov_of_auction(&nh, start as u32)),
+        );
+    }
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779))
+        .expect("an earlier auction's coin at the address is no error");
+    assert!(ctx.has_bid_coin);
+    let unrevealed: Vec<_> = ctx
+        .unrevealed_bid_coins
+        .iter()
+        .map(|c| c.txid.as_str())
+        .collect();
+    assert_eq!(unrevealed, ["bidnew"]);
+    let stranded: Vec<_> = ctx
+        .stranded_candidates
+        .iter()
+        .map(|c| c.txid.as_str())
+        .collect();
+    assert_eq!(stranded, ["bidold"]);
+}

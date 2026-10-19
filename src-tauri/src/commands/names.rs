@@ -558,21 +558,27 @@ pub(crate) fn find_name_action_context(
     // builds its transaction from, so the button and the builder cannot
     // disagree.
     //
-    // Why `?` here and in the loop below, where the stranded candidates above
-    // skip a failed lookup: these are this auction's coins, which decide
-    // Reveal and the lost verdict. An ambiguous address is refused loudly
-    // (the error names it), as the reveal builder refuses it, instead of
-    // reading as "no bid coin", which withdraws Reveal from money still
-    // locked up.
+    // Only the BID coin of the commitment's own auction (recorded on it, else
+    // the live one) at its address is looked at
+    // (`find_unspent_covenant_utxo_of_auction`): with an address reused
+    // across auctions, an earlier auction's BID coin sits there too, is a
+    // stranded candidate above, and must neither answer for this bid nor
+    // make the lookup refuse. Why `?` here and in the loop below: these are
+    // this auction's coins, which decide Reveal and the lost verdict. Two
+    // coins of THIS auction at one address are a genuine ambiguity (each
+    // pairs with its own nonce) and are refused loudly (the error names the
+    // address), as the reveal builder refuses them, instead of reading as
+    // "no bid coin", which withdraws Reveal from money still locked up.
     let mut bid_coin = None;
     for b in &commitments {
-        if let Some(coin) = queries::find_unspent_covenant_utxo(
+        if let Some(coin) = queries::find_unspent_covenant_utxo_of_auction(
             conn,
             profile_id,
             &b.address,
             sync::COV_BID as i64,
             name,
             &b.name_hash_hex,
+            b.name_start_height.or(auction_start),
         )? {
             bid_coin = Some(coin);
             break;
@@ -592,13 +598,14 @@ pub(crate) fn find_name_action_context(
         if reveal_sent_or_mined(status, b.reveal_txid.as_deref()) {
             continue;
         }
-        if let Some(coin) = queries::find_unspent_covenant_utxo(
+        if let Some(coin) = queries::find_unspent_covenant_utxo_of_auction(
             conn,
             profile_id,
             &b.address,
             sync::COV_BID as i64,
             name,
             &b.name_hash_hex,
+            b.name_start_height.or(auction_start),
         )? {
             unrevealed_bid_coins.push(coin);
         }
@@ -2595,13 +2602,16 @@ pub async fn build_reveal_draft(
         }
         let mut out: Vec<(queries::BidCommitmentRow, queries::NameCoin)> = Vec::new();
         for bid in commitments {
-            if let Some(coin) = queries::find_unspent_covenant_utxo(
+            // This auction's BID coin at the commitment's address: an
+            // earlier auction's coin there can never be revealed.
+            if let Some(coin) = queries::find_unspent_covenant_utxo_of_auction(
                 &conn,
                 &ctx.profile_id,
                 &bid.address,
                 sync::COV_BID as i64,
                 &name,
                 &nh_hex,
+                Some(auction_start),
             )? {
                 out.push((bid, coin));
             }
@@ -3528,13 +3538,15 @@ pub async fn build_batch_reveal_draft(
             }
             let mut out: Vec<(queries::BidCommitmentRow, queries::NameCoin)> = Vec::new();
             for bid in commitments {
-                if let Some(coin) = queries::find_unspent_covenant_utxo(
+                // This auction's BID coin, as in the single-name command.
+                if let Some(coin) = queries::find_unspent_covenant_utxo_of_auction(
                     &conn,
                     &ctx.profile_id,
                     &bid.address,
                     sync::COV_BID as i64,
                     name,
                     &nh_hex,
+                    Some(auction_start),
                 )? {
                     out.push((bid, coin));
                 }
