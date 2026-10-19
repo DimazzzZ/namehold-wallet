@@ -304,9 +304,12 @@ dependencies of this crate.
 | [RUSTSEC-2024-0370](https://rustsec.org/advisories/RUSTSEC-2024-0370) | `proc-macro-error 1.0.4` | unmaintained | Compile-time-only proc-macro helper via `glib-macros` / `gtk3-macros`. No runtime code. |
 | [RUSTSEC-2024-0411](https://rustsec.org/advisories/RUSTSEC-2024-0411) through [-0420](https://rustsec.org/advisories/RUSTSEC-2024-0420) | gtk-rs GTK3 bindings (`atk`, `atk-sys`, `gdk`, `gdk-sys`, `gdkwayland-sys`, `gdkx11`, `gdkx11-sys`, `gtk`, `gtk-sys`, `gtk3-macros`, all `0.18.2`) | unmaintained | Tauri v2 Linux windowing depends on the GTK3 stack. A fix requires Tauri migrating to GTK4/webkitgtk-6 upstream. |
 | [RUSTSEC-2025-0075](https://rustsec.org/advisories/RUSTSEC-2025-0075), [-0080](https://rustsec.org/advisories/RUSTSEC-2025-0080), [-0081](https://rustsec.org/advisories/RUSTSEC-2025-0081), [-0098](https://rustsec.org/advisories/RUSTSEC-2025-0098), [-0100](https://rustsec.org/advisories/RUSTSEC-2025-0100) | `unic-*` (`unic-char-range`, `unic-common`, `unic-char-property`, `unic-ucd-version`, `unic-ucd-ident`, all `0.9.0`) | unmaintained | Pulled in transitively via `urlpattern` <- `tauri-utils`. No direct use. |
+| [RUSTSEC-2026-0367](https://rustsec.org/advisories/RUSTSEC-2026-0367), [-0368](https://rustsec.org/advisories/RUSTSEC-2026-0368), [-0369](https://rustsec.org/advisories/RUSTSEC-2026-0369) | `zip 4.6.1` | vuln (extraction: symlinks, permission bits) | Fixed only in `>=9.0.0` (semver-major). Pinned by `tauri-plugin-updater` (even `2.14.0` depends on `zip 4.6.1`). Extraction runs only in the Windows updater, on a bundle whose Ed25519 signature `download_and_install` has already verified against `plugins.updater.pubkey`: a malicious archive needs our signing key. Revisit when the updater moves to zip `>=9`. |
+| [RUSTSEC-2026-0370](https://rustsec.org/advisories/RUSTSEC-2026-0370), [-0371](https://rustsec.org/advisories/RUSTSEC-2026-0371), [-0372](https://rustsec.org/advisories/RUSTSEC-2026-0372) | `zvariant`, `zbus_names`, `zvariant_derive` (4.x and 5.x) | unmaintained | Pulled in by `zbus` (Linux D-Bus) via `notify-rust`, `tauri-plugin-notification` and `tauri-plugin-opener`. No fixed release; revisit when zbus moves off them. |
 
 > `anyhow` (RUSTSEC-2026-0190) was fixed by bumping to `1.0.104` rather than
-> suppressed, since it had a semver-compatible patch.
+> suppressed, since it had a semver-compatible patch. `rustls` (RUSTSEC-2026-0346 to -0349) and `quinn-proto`
+> (RUSTSEC-2026-0338 to -0342) were fixed the same way, by `0.23.46` and `0.11.19`.
 
 ---
 
