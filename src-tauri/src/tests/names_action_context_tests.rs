@@ -1515,3 +1515,199 @@ fn a_locking_listing_blocks_only_while_its_lock_draft_is_alive() {
     let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert_eq!(ctx.listing_state, None, "locking, no lock draft linked");
 }
+
+// ============================================================================
+// R10a: an unrevealed bid reads as lost only on the node's answer
+// ============================================================================
+
+const OLD_ADDR: &str = "hs1qold00000000000000000000000000000000";
+const NEW_ADDR: &str = "hs1qnew00000000000000000000000000000000";
+
+fn name_hash() -> String {
+    hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap())
+}
+
+fn bid_cov(nh: &str) -> String {
+    serde_json::json!({ "type": sync::COV_BID, "action": "BID", "items": [nh, "00"] }).to_string()
+}
+
+/// Two bids of this auction, each with its BID coin unspent here: `bidold`
+/// at OLD_ADDR (blind "b-old") and `bidnew` at NEW_ADDR (blind "b-new").
+fn two_bids(conn: &rusqlite::Connection) {
+    seed_profile(conn);
+    let nh = name_hash();
+    for (addr, blind, txid, child) in [
+        (OLD_ADDR, "b-old", "bidold", 0),
+        (NEW_ADDR, "b-new", "bidnew", 1),
+    ] {
+        seed_derived_address(conn, addr, 0, child);
+        db::queries::insert_bid_commitment(
+            conn, PROFILE, NAME, &nh, addr, 0, child, 1_000_000, 2_000_000, "nonce", blind,
+        )
+        .unwrap();
+        seed_tracked_utxo(
+            conn,
+            txid,
+            0,
+            addr,
+            sync::COV_BID as i64,
+            Some(&bid_cov(&nh)),
+        );
+    }
+}
+
+/// hsd's `GET /coin` answer for our BID coin `txid`:0 at `addr`.
+fn node_bid_coin(txid: &str, addr: &str, kind: u8) -> String {
+    serde_json::json!({
+        "version": 0, "height": 120, "value": 2_000_000, "address": addr,
+        "coinbase": false, "hash": txid, "index": 0,
+        "covenant": { "type": kind, "action": "BID", "items": [name_hash(), "00"] }
+    })
+    .to_string()
+}
+
+fn client(url: &str) -> crate::noncustodial::rpc::NodeRpcClient {
+    crate::noncustodial::rpc::NodeRpcClient::new(
+        url,
+        "",
+        crate::noncustodial::rpc::ChainSource::LocalNode,
+    )
+}
+
+#[test]
+fn unrevealed_candidates_are_every_bid_of_the_auction_whose_reveal_is_not_sent() {
+    let conn = test_db();
+    two_bids(&conn);
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let mut got: Vec<_> = ctx
+        .unrevealed_bid_coins
+        .iter()
+        .map(|c| c.txid.clone())
+        .collect();
+    got.sort();
+    assert_eq!(got, ["bidnew", "bidold"]);
+    assert!(!ctx.unrevealed_bid_on_node, "no node asked yet");
+
+    // The newest one's reveal stamped (no local draft: made elsewhere): only
+    // the older bid is left a candidate, whichever is newest.
+    db::queries::set_bid_reveal_txid(&conn, PROFILE, NAME, "b-new", "rev-new").unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let got: Vec<_> = ctx
+        .unrevealed_bid_coins
+        .iter()
+        .map(|c| c.txid.as_str())
+        .collect();
+    assert_eq!(got, ["bidold"]);
+}
+
+/// Two commitments, the newest revealed and the older not: the node says the
+/// older BID coin is still unspent, so the bid reads as lost; the revealed
+/// one is not even asked about.
+#[tokio::test]
+async fn an_older_bid_left_unrevealed_beside_a_revealed_one_is_lost_on_the_nodes_word() {
+    let conn = test_db();
+    two_bids(&conn);
+    db::queries::set_bid_reveal_txid(&conn, PROFILE, NAME, "b-new", "rev-new").unwrap();
+    let mut node = mockito::Server::new_async().await;
+    let old = node
+        .mock("GET", "/coin/bidold/0")
+        .with_body(node_bid_coin("bidold", OLD_ADDR, sync::COV_BID))
+        .expect(1)
+        .create_async()
+        .await;
+    let new = node
+        .mock("GET", "/coin/bidnew/0")
+        .expect(0)
+        .create_async()
+        .await;
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None)
+        .unwrap()
+        .with_node_unrevealed_bids(&client(&node.url()))
+        .await;
+    old.assert_async().await;
+    new.assert_async().await;
+    assert!(ctx.unrevealed_bid_on_node);
+    assert_eq!(
+        crate::commands::names::derive_auction_task_state(
+            &ctx,
+            "CLOSED",
+            false,
+            None,
+            crate::noncustodial::network::Network::Main
+        ),
+        crate::commands::names::AuctionTaskState::LostUnrevealed
+    );
+}
+
+/// The local coin set says unspent, the node says spent (404: a reveal from
+/// another device, or one in its mempool): not lost. A node error, and a
+/// reply that is not our BID coin, decide nothing either.
+#[tokio::test]
+async fn an_unrevealed_bid_is_not_lost_without_the_nodes_word() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, OLD_ADDR, 0, 0);
+    let nh = name_hash();
+    db::queries::insert_bid_commitment(
+        &conn, PROFILE, NAME, &nh, OLD_ADDR, 0, 0, 1_000_000, 2_000_000, "nonce", "b-old",
+    )
+    .unwrap();
+    seed_tracked_utxo(
+        &conn,
+        "bidold",
+        0,
+        OLD_ADDR,
+        sync::COV_BID as i64,
+        Some(&bid_cov(&nh)),
+    );
+    for (label, status, body) in [
+        ("spent", 404, String::new()),
+        ("node error", 500, "boom".to_string()),
+        (
+            "not a BID",
+            200,
+            node_bid_coin("bidold", OLD_ADDR, sync::COV_REVEAL),
+        ),
+        (
+            "another address",
+            200,
+            node_bid_coin("bidold", NEW_ADDR, sync::COV_BID),
+        ),
+    ] {
+        let mut node = mockito::Server::new_async().await;
+        let _m = node
+            .mock("GET", "/coin/bidold/0")
+            .with_status(status)
+            .with_body(body)
+            .create_async()
+            .await;
+        let ctx = find_name_action_context(&conn, PROFILE, NAME, None)
+            .unwrap()
+            .with_node_unrevealed_bids(&client(&node.url()))
+            .await;
+        assert!(!ctx.unrevealed_bid_on_node, "{label}");
+        assert_ne!(
+            crate::commands::names::derive_auction_task_state(
+                &ctx,
+                "CLOSED",
+                false,
+                None,
+                crate::noncustodial::network::Network::Main
+            ),
+            crate::commands::names::AuctionTaskState::LostUnrevealed,
+            "{label}"
+        );
+    }
+    // And the node's yes is a yes.
+    let mut node = mockito::Server::new_async().await;
+    let _m = node
+        .mock("GET", "/coin/bidold/0")
+        .with_body(node_bid_coin("bidold", OLD_ADDR, sync::COV_BID))
+        .create_async()
+        .await;
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None)
+        .unwrap()
+        .with_node_unrevealed_bids(&client(&node.url()))
+        .await;
+    assert!(ctx.unrevealed_bid_on_node);
+}

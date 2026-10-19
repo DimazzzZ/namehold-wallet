@@ -58,6 +58,8 @@ fn ctx(
         bid_value_doos,
         lockup_value_doos: None,
         listing_state: None,
+        unrevealed_bid_coins: Vec::new(),
+        unrevealed_bid_on_node: false,
     }
 }
 

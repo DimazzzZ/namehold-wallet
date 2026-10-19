@@ -357,46 +357,31 @@ fn closed_without_owner_or_reveal_yields_owned_no_urgent_action() {
 }
 
 #[test]
-fn closed_unrevealed_bid_with_its_reveal_sent_or_mined_is_not_lost() {
-    // The BID coin still reads unspent locally, but our reveal of it is in
-    // flight or mined (by draft, or stamped by the chain scan with no draft):
-    // the local coin set is behind, the lockup is not lost.
+fn reveal_sent_or_mined_reads_the_draft_then_the_stamped_txid() {
+    // A reveal in flight or mined (by draft, or stamped by the chain scan
+    // with no draft) is sent; one that failed or was dropped never happened.
+    use crate::commands::names::reveal_sent_or_mined;
     use crate::db::queries::DraftStatus;
-    let with = |status: Option<DraftStatus>, txid: Option<&str>| {
-        derive_auction_task_state(
-            &NameActionContext {
-                has_bid_commitment: true,
-                has_bid_coin: true,
-                reveal_txid: txid.map(str::to_string),
-                reveal_draft_status: status,
-                ..Default::default()
-            },
-            "CLOSED",
-            false,
-            None,
-            Network::Main,
-        )
-    };
     for status in [
         DraftStatus::Broadcasted,
         DraftStatus::BroadcastPending,
         DraftStatus::Confirmed,
     ] {
-        assert_ne!(
-            with(Some(status), Some("aa")),
-            AuctionTaskState::LostUnrevealed,
+        assert!(reveal_sent_or_mined(Some(status), Some("aa")), "{status:?}");
+    }
+    assert!(reveal_sent_or_mined(None, Some("aa")));
+    for status in [
+        DraftStatus::Draft,
+        DraftStatus::Signed,
+        DraftStatus::Failed,
+        DraftStatus::Dropped,
+    ] {
+        assert!(
+            !reveal_sent_or_mined(Some(status), Some("aa")),
             "{status:?}"
         );
     }
-    assert_ne!(with(None, Some("aa")), AuctionTaskState::LostUnrevealed);
-    // A reveal that failed or was dropped never happened.
-    for status in [DraftStatus::Failed, DraftStatus::Dropped] {
-        assert_eq!(
-            with(Some(status), Some("aa")),
-            AuctionTaskState::LostUnrevealed,
-            "{status:?}"
-        );
-    }
+    assert!(!reveal_sent_or_mined(None, None));
 }
 
 #[test]
@@ -422,10 +407,26 @@ fn offline_owned_name_with_reveals_is_not_called_lost() {
 
 #[test]
 fn closed_with_unrevealed_bid_yields_lost_unrevealed() {
-    // This auction's commitment with its BID coin still unspent after the
-    // reveal window: never revealed, the lockup is lost, not "Owned".
-    let state = state_no_owner("CLOSED", false, true, true, false);
+    // R10a: the node says a BID coin of this auction is still unspent after
+    // the reveal window: never revealed, the lockup is lost, not "Owned".
+    let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            unrevealed_bid_on_node: true,
+            ..Default::default()
+        },
+        "CLOSED",
+        false,
+        None,
+        Network::Main,
+    );
     assert_eq!(state, AuctionTaskState::LostUnrevealed);
+    // The local coin set alone (no node answer) is no verdict: it can be
+    // behind a reveal made on another device. The CLOSED fallback answers.
+    let state = state_no_owner("CLOSED", false, true, true, false);
+    assert_ne!(state, AuctionTaskState::LostUnrevealed);
+    assert_eq!(state, AuctionTaskState::OwnedNoUrgentAction);
     // A losing reveal beside it is still the thing to act on.
     let state = derive_auction_task_state(
         &NameActionContext {
@@ -433,6 +434,7 @@ fn closed_with_unrevealed_bid_yields_lost_unrevealed() {
             has_bid_coin: true,
             has_reveal_coin: true,
             redeemable_reveal_count: 1,
+            unrevealed_bid_on_node: true,
             ..Default::default()
         },
         "CLOSED",

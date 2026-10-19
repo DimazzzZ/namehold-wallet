@@ -5477,7 +5477,7 @@ pub fn covenant_item_hex(covenant_json: Option<&str>, index: usize) -> Option<St
 
 /// Extract the name-hash hex from a stored covenant JSON blob — every
 /// Handshake name covenant carries the name hash as items[0].
-fn covenant_name_hash_hex(covenant_json: Option<&str>) -> Option<String> {
+pub(crate) fn covenant_name_hash_hex(covenant_json: Option<&str>) -> Option<String> {
     covenant_item_hex(covenant_json, 0)
 }
 

@@ -334,6 +334,33 @@ pub(crate) struct NameActionContext {
     /// actions away (R27, [`queries::listing_blocking_owner_actions`]);
     /// `None` when there is none.
     pub listing_state: Option<queries::ListingState>,
+    /// R10a: the unspent BID coins, as the local coin set has them, of every
+    /// commitment of this auction whose own reveal is neither sent nor mined
+    /// ([`reveal_sent_or_mined`]). Only the candidates: the node is asked
+    /// about each ([`NameActionContext::with_node_unrevealed_bids`]) before
+    /// anything reads as lost.
+    pub unrevealed_bid_coins: Vec<queries::NameCoin>,
+    /// R10a: the node answered (`GET /coin`) that one of
+    /// `unrevealed_bid_coins` is still an unspent BID of this name at its
+    /// address: a bid of this auction never revealed, its lockup lost. Set
+    /// only from that answer; with no node, or a node that did not answer,
+    /// it stays false.
+    pub unrevealed_bid_on_node: bool,
+}
+
+/// Whether a reveal of a commitment is broadcast, waiting, or mined: its
+/// draft says so, or the chain scan stamped a reveal txid with no local
+/// draft (a reveal made elsewhere). A failed or dropped reveal is not.
+pub(crate) fn reveal_sent_or_mined(status: Option<DraftStatus>, reveal_txid: Option<&str>) -> bool {
+    match status {
+        Some(DraftStatus::Broadcasted | DraftStatus::BroadcastPending | DraftStatus::Confirmed) => {
+            true
+        }
+        Some(
+            DraftStatus::Draft | DraftStatus::Signed | DraftStatus::Failed | DraftStatus::Dropped,
+        ) => false,
+        None => reveal_txid.is_some(),
+    }
 }
 
 /// Gather wallet evidence from the DB for a name.
@@ -430,6 +457,31 @@ pub(crate) fn find_name_action_context(
         )? {
             bid_coin = Some(coin);
             break;
+        }
+    }
+    // R10a: every commitment of this auction, not only the newest, whose
+    // reveal is neither sent nor mined, with its BID coin unspent here. Each
+    // reveal is stamped on its own commitment (`set_bid_reveal_txid`, by
+    // blind), so an older bid left unrevealed beside a revealed newer one is
+    // found too.
+    let mut unrevealed_bid_coins = Vec::new();
+    for b in &commitments {
+        let status = match b.reveal_txid.as_deref() {
+            Some(txid) => queries::get_draft_status_by_txid(conn, profile_id, txid)?,
+            None => None,
+        };
+        if reveal_sent_or_mined(status, b.reveal_txid.as_deref()) {
+            continue;
+        }
+        if let Some(coin) = queries::find_unspent_covenant_utxo(
+            conn,
+            profile_id,
+            &b.address,
+            sync::COV_BID as i64,
+            name,
+            &b.name_hash_hex,
+        )? {
+            unrevealed_bid_coins.push(coin);
         }
     }
     let reveal_coins = queries::find_unspent_covenant_utxos_by_name_hash(
@@ -578,6 +630,8 @@ pub(crate) fn find_name_action_context(
         bid_value_doos,
         lockup_value_doos,
         listing_state,
+        unrevealed_bid_coins,
+        unrevealed_bid_on_node: false,
     })
 }
 
@@ -744,6 +798,12 @@ async fn evaluate_name_action_capabilities(
             let action_ctx = action_ctx
                 .with_live_tip(live_tip)
                 .with_node_owner(name_info.get("info"));
+            // R10a: only in CLOSED is an unspent BID coin a lost lockup.
+            let action_ctx = if raw_phase == "CLOSED" {
+                action_ctx.with_node_unrevealed_bids(&client).await
+            } else {
+                action_ctx
+            };
             let NameOwnership {
                 owns_name,
                 spend_locked,
@@ -1331,21 +1391,41 @@ impl NameActionContext {
         }
     }
 
-    /// A reveal of ours for the newest bid is broadcast, waiting, or mined:
-    /// its draft says so, or the chain scan stamped a reveal with no local
-    /// draft (a reveal made elsewhere). A failed or dropped reveal is not.
-    pub(crate) fn reveal_sent_or_mined(&self) -> bool {
-        match self.reveal_draft_status {
-            Some(
-                DraftStatus::Broadcasted | DraftStatus::BroadcastPending | DraftStatus::Confirmed,
-            ) => true,
-            Some(
-                DraftStatus::Draft
-                | DraftStatus::Signed
-                | DraftStatus::Failed
-                | DraftStatus::Dropped,
-            ) => false,
-            None => self.reveal_txid.is_some(),
+    /// R10a: ask the node about each of `unrevealed_bid_coins` (`GET
+    /// /coin`). A bid reads as lost unrevealed only on the node's answer that
+    /// the coin is still an unspent BID of this name at its address, every
+    /// field matched ([`node_bid_coin_matches`]). A coin the node does not
+    /// have was spent, by a reveal made elsewhere or one in its mempool (hsd
+    /// answers 404 for a coin a mempool transaction spends), so it is not
+    /// lost; a node error or a reply that does not match decides nothing
+    /// either. Logged, since either leaves the name on the CLOSED fallback.
+    pub(crate) async fn with_node_unrevealed_bids(self, client: &NodeRpcClient) -> Self {
+        let mut on_node = false;
+        for c in &self.unrevealed_bid_coins {
+            match client.get_coin(&c.txid, c.vout).await {
+                Ok(Some(coin)) if node_bid_coin_matches(c, &coin) => {
+                    on_node = true;
+                    break;
+                }
+                Ok(Some(coin)) => eprintln!(
+                    "names: the node's coin {}:{} is not our BID coin of it \
+                     ({:?} at {:?}): not read as an unrevealed bid",
+                    c.txid,
+                    c.vout,
+                    coin.covenant.as_ref().map(|k| k.kind),
+                    coin.address
+                ),
+                Ok(None) => {}
+                Err(e) => eprintln!(
+                    "names: could not ask the node about BID coin {}:{}: {e}; \
+                     not read as an unrevealed bid",
+                    c.txid, c.vout
+                ),
+            }
+        }
+        Self {
+            unrevealed_bid_on_node: on_node,
+            ..self
         }
     }
 
@@ -1369,6 +1449,32 @@ impl NameActionContext {
             ..self
         }
     }
+}
+
+/// Whether the node's `coin` is our BID coin `ours`: the same outpoint, a BID
+/// covenant whose first item is the coin's name hash as we hold it, and the
+/// same address. Every field is matched; a missing one is no match.
+fn node_bid_coin_matches(
+    ours: &queries::NameCoin,
+    coin: &crate::noncustodial::rpc::NodeCoin,
+) -> bool {
+    let Some(cov) = coin.covenant.as_ref() else {
+        return false;
+    };
+    let Some(name_hash) = queries::covenant_name_hash_hex(ours.covenant_json.as_deref()) else {
+        return false;
+    };
+    let Some(address) = coin.address.as_deref() else {
+        return false;
+    };
+    coin.txid == ours.txid
+        && coin.vout == ours.vout
+        && cov.kind == sync::COV_BID
+        && cov
+            .items
+            .first()
+            .is_some_and(|h| h.eq_ignore_ascii_case(&name_hash))
+        && address == ours.address
 }
 
 /// How many of `reveal_coins` a REDEEM may spend, and what they hold: every
@@ -1573,11 +1679,15 @@ pub(crate) fn derive_auction_task_state(
                 // Only a reveal that is not the owner coin lost: a reveal the
                 // node names as the owner won, and is not offered for redeem.
                 AuctionTaskState::LostNeedsRedeem
-            } else if ctx.has_bid_commitment && ctx.has_bid_coin && !ctx.reveal_sent_or_mined() {
-                // A bid of this auction never revealed: its BID coin is still
-                // unspent after the reveal window, and can never be revealed
-                // or redeemed. A reveal of ours in flight or mined says the
-                // local coin set is behind, not that the lockup is lost.
+            } else if ctx.unrevealed_bid_on_node {
+                // R10a: a bid of this auction never revealed. The node says
+                // its BID coin is still unspent after the reveal window, and
+                // a BID can only go to a REVEAL, which the REVEAL phase alone
+                // accepts: the lockup can never be revealed or redeemed. Only
+                // the node's answer decides it (a final verdict needs a
+                // found fact): the local coin set can be behind a reveal made
+                // on another device. Without that answer (no synced node, or
+                // it failed) the name takes the fallback below.
                 AuctionTaskState::LostUnrevealed
             } else {
                 AuctionTaskState::OwnedNoUrgentAction
@@ -3625,6 +3735,8 @@ mod tests {
             bid_value_doos: None,
             lockup_value_doos: None,
             listing_state: None,
+            unrevealed_bid_coins: Vec::new(),
+            unrevealed_bid_on_node: false,
         }
     }
 
