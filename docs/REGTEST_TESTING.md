@@ -379,6 +379,8 @@ HNS_IT_NOINDEX_NODE_URL=http://127.0.0.1:24037 HNS_IT_NOINDEX_NODE_API_KEY=test 
 | `live_sync_grows_the_address_window_past_a_spent_address` | A coin at receive `gap+3` is swept away (hsd: no coin, two transactions of history), then coins are mined to receive `gap-1` and `2*gap+3`; the second profile reaches `2*gap+3` only through `gap+3`'s history (needs `--index-tx`), and tracks exactly hsd's two coins |
 | `live_sync_grows_the_address_window_to_a_name_for_a_second_profile` | A name the first profile won, registered and moved (TRANSFER, FINALIZE) to its receive `gap+5`, with a coin at receive `gap-1`; the second profile, with the restore window `[0, gap)`, after one node sync and the node's name discovery lists the name through `read_names` and tracks the owner coin hsd names |
 
+The window's growth from the explorer (SPV, or a node that is not authoritative) has no live test here: there is no regtest explorer to run it against. It is covered by mocked-explorer tests in `commands::sync::address_window_tests`.
+
 ## Shakedex purchases against the CLI
 
 These are manual checks that Namehold buys from the real shakedex CLI and meets it as the other party (spec R30, Namehold-buys half, and the R7/R10/R13 chain paths). They are not part of CI: each test is skipped while `HNS_IT_SHAKEDEX` is unset or empty.
