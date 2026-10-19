@@ -1028,6 +1028,94 @@ fn age_reservation(conn: &rusqlite::Connection, draft_id: &str, secs: i64) {
     .expect("age reservation");
 }
 
+/// A second profile of the same seed sees the coins the first one received
+/// past the restore window. The first profile (its addresses derived from
+/// the seed here) has coins at receive `gap-1`, `gap+5` and `2*gap+3` and at
+/// change `gap-1` and `gap+2`, each mined to it; a profile imported from
+/// the same seed holds the restore window `[0, gap)`, and one node sync
+/// tracks every one of those coins, as hsd reports them: the window grows by
+/// the gap limit past each used address and the new addresses are scanned in
+/// the same sync, twice over on the receive branch.
+#[tokio::test]
+async fn live_sync_grows_the_address_window_for_a_second_profile() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skipping live_sync_grows_the_address_window_for_a_second_profile");
+        return;
+    };
+    let cl = client(&url, &key);
+    let tip = cl.get_blockchain_info().await.expect("info").blocks as i64;
+    let acct = fresh_acct(tip);
+    let gap = crate::commands::secure_wallet::gap_limit(&std::collections::HashMap::new());
+    let used = [
+        (0u32, gap - 1),
+        (0, gap + 5),
+        (0, 2 * gap + 3),
+        (1, gap - 1),
+        (1, gap + 2),
+    ];
+    let mut on_chain = std::collections::HashSet::new();
+    let mut value = 0i64;
+    for (branch, index) in used {
+        let (_sk, _pk, a) = hd::derive_address(NET, &seed(), acct, branch, index).unwrap();
+        fund(&cl, &a, 1).await;
+        let coins = cl.get_coins_by_address(&a).await.expect("coins");
+        assert_eq!(coins.len(), 1, "one coinbase at {branch}/{index}");
+        for c in coins {
+            value += c.value;
+            on_chain.insert((c.txid, c.vout));
+        }
+    }
+
+    let db_path = std::env::temp_dir().join(format!(
+        "namehold_live_window_{}_{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    seed_profile_into(&conn, &url, &key, acct);
+    crate::commands::secure_wallet::provision_addresses(
+        &conn,
+        PROFILE,
+        NET,
+        &account_xpub_at(acct),
+        gap,
+    )
+    .expect("the restore's address window");
+    drop(conn);
+
+    assert!(crate::commands::sync::sync_node_step(db_path.to_str().unwrap(), PROFILE).await);
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT txid, vout, value_doos FROM tracked_utxos
+             WHERE wallet_profile_id = ?1 AND spent_by_txid IS NULL",
+        )
+        .unwrap();
+    let rows: Vec<(String, u32, i64)> = stmt
+        .query_map(params![PROFILE], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    let tracked: std::collections::HashSet<(String, u32)> =
+        rows.iter().map(|(t, v, _)| (t.clone(), *v)).collect();
+    assert_eq!(
+        tracked, on_chain,
+        "the second profile tracks every coin hsd has"
+    );
+    assert_eq!(rows.iter().map(|r| r.2).sum::<i64>(), value);
+    drop(stmt);
+    drop(conn);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+}
+
 /// Assert a `Result` is `Err` and its message matches `needle` (case-insensitive
 /// substring). Used across the many negative-path tests to keep the assertion
 /// intent obvious in one line without a bespoke matcher per error variant.

@@ -193,7 +193,7 @@ Expected:
 
 - Step 2: the seller's row stays `Buy now`, `Price 4.000000 HNS`, with `All 2 price steps`.
 - Step 4: the second device's row reads `Buy now`, `Price 4.000000 HNS`, and no `Now … · next … · floor …` line; the same price, expiry and lock coin as the seller's. `All 2 price steps` shows here too, both at the same time; that is correct. `Reverse auction` here is ❌ (Q4).
-- Step 6: Activity shows `Cancel listing` and `Finalize cancel` with Amount 0 and the `⤷` line. The second device's row should end `Cancelled` after a sync; if it stays `Listed for sale` because the cancel's home address lies past its address window, that is the known address-window gap (◐, not a finding).
+- Step 6: Activity shows `Cancel listing` and `Finalize cancel` with Amount 0 and the `⤷` line. The second device's row should end `Cancelled` after a sync; if it stays `Listed for sale` because the cancel's home address lies more than `address_gap_limit` addresses past the last one used on chain (the seller's unfunded reservations count as used only on the seller's device), that is the known gap of spec §5 (◐, not a finding).
 - Passes if the imported lowered Buy Now reads `Buy now` with its one current price.
 
 - **Blocks mined:** 22

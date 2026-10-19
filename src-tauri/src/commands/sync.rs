@@ -673,6 +673,9 @@ pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
         Ok(a) => a,
         Err(_) => return false,
     };
+    let gap = crate::commands::secure_wallet::gap_limit(
+        &queries::get_settings(&conn).unwrap_or_default(),
+    );
     // Resolve the profile's effective node config (per-profile override ->
     // global -> default) rather than reading global settings directly.
     let client = match NodeRpcClient::for_profile(&conn, profile_id) {
@@ -686,7 +689,7 @@ pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
         Err(_) => return false,
     };
 
-    let all_coins = match fetch_coins_with_guard_with_client(&client, &addresses).await {
+    let mut all_coins = match fetch_coins_with_guard_with_client(&client, &addresses).await {
         Some(coins) => coins,
         // Guard tripped: had addresses but every per-address query errored —
         // bail so the next sync retries from the same cursor (see the helper).
@@ -697,7 +700,102 @@ pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
         Ok(c) => c,
         Err(_) => return false,
     };
+    if apply_node_sync_batch(&mut conn, profile_id, &all_coins, height).is_err() {
+        return false;
+    }
+    drop(conn);
+
+    // Grow the address window by the gap limit and scan what it adds. Its own
+    // step after the scan above has landed: a failure here leaves that batch
+    // applied and the window as far as it got, and the next sync goes on.
+    let found = match grow_address_window(&client, db_path, profile_id, gap).await {
+        Ok(found) => found,
+        Err(e) => {
+            eprintln!("sync_node_step: growing the address window of {profile_id} failed: {e}");
+            return true;
+        }
+    };
+    if found.is_empty() {
+        return true;
+    }
+    all_coins.extend(found);
+    let mut conn = match open_conn(db_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
     apply_node_sync_batch(&mut conn, profile_id, &all_coins, height).is_ok()
+}
+
+/// The most rounds of [`grow_address_window`] one sync runs. Each round can
+/// move a branch's window by up to `gap` addresses, so this bounds the
+/// derivation and node queries one sync spends on a long run of used
+/// addresses; the next sync goes on from where this one stopped.
+const MAX_WINDOW_ROUNDS: u32 = 50;
+
+/// Gap-limit discovery against the node: mark the lookahead addresses
+/// ([`crate::noncustodial::derivation::lookahead_addresses`]) that have a
+/// transaction history as used (an address whose coins were all spent has
+/// none left for the coin scan to see), grow the window
+/// ([`crate::noncustodial::derivation::extend_address_window`]), scan the new
+/// addresses for coins and mark those used, and repeat until the window
+/// stops growing or [`MAX_WINDOW_ROUNDS`] is reached. Returns the coins found
+/// at the new addresses, for the caller's sync batch. A query that fails for
+/// one address leaves it unused for this sync; the window it reached is
+/// persisted, so the next sync scans it.
+///
+/// Sees only what the node indexes by address: on a node without
+/// `--index-address` both queries fail and the window does not grow.
+pub(crate) async fn grow_address_window(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    db_path: &str,
+    profile_id: &str,
+    gap: u32,
+) -> Result<Vec<crate::noncustodial::rpc::NodeCoin>, AppError> {
+    use crate::noncustodial::{derivation, sync as nsync};
+    let mut found = Vec::new();
+    let mut checked: HashSet<String> = HashSet::new();
+    for _ in 0..MAX_WINDOW_ROUNDS {
+        let ahead = derivation::lookahead_addresses(&open_conn(db_path)?, profile_id)?;
+        let mut with_history = Vec::new();
+        for address in ahead {
+            if !checked.insert(address.clone()) {
+                continue;
+            }
+            if let Ok(txs) = client.get_txs_by_address(&address).await {
+                if let Some(tx) = txs.first() {
+                    let height = tx
+                        .get("height")
+                        .and_then(|h| h.as_i64())
+                        .filter(|h| *h >= 0);
+                    with_history.push((address, height));
+                }
+            }
+        }
+        let added = {
+            let conn = open_conn(db_path)?;
+            for (address, height) in &with_history {
+                nsync::mark_address_used(&conn, profile_id, address, *height)?;
+            }
+            derivation::extend_address_window(&conn, profile_id, gap)?
+        };
+        if added.is_empty() {
+            break;
+        }
+        let mut round = Vec::new();
+        for d in &added {
+            if let Ok(mut coins) = client.get_coins_by_address(&d.address).await {
+                round.append(&mut coins);
+            }
+        }
+        let conn = open_conn(db_path)?;
+        for coin in &round {
+            if let Some(address) = &coin.address {
+                nsync::mark_address_used(&conn, profile_id, address, coin.height)?;
+            }
+        }
+        found.extend(round);
+    }
+    Ok(found)
 }
 
 /// Client-injected coin-fetch phase for [`sync_node_step`], with the
@@ -1888,5 +1986,167 @@ mod db_hardening_tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The address window grows by the gap limit during the node sync.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod address_window_tests {
+    use super::*;
+    use crate::noncustodial::derivation::{self, BRANCH_CHANGE, BRANCH_RECEIVE};
+    use crate::noncustodial::hd::{seed_from_mnemonic, ExtendedPrivKey, ExtendedPubKey};
+    use crate::noncustodial::network::Network;
+
+    const GAP: u32 = 3;
+
+    fn xpub() -> ExtendedPubKey {
+        let seed = seed_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+        )
+        .unwrap();
+        ExtendedPubKey::from_priv(&ExtendedPrivKey::from_seed(&seed).unwrap())
+    }
+
+    fn addr(branch: u32, index: u32) -> String {
+        derivation::derive_one(Network::Main, &xpub(), branch, index)
+            .unwrap()
+            .address
+    }
+
+    fn txid(n: u8) -> String {
+        format!("{n:02x}").repeat(32)
+    }
+
+    fn coin_body(n: u8, address: &str) -> String {
+        format!(
+            r#"[{{"hash":"{}","index":0,"value":1000000,"address":"{address}","height":90,"covenant":{{"type":0,"action":"NONE","items":[]}}}}]"#,
+            txid(n)
+        )
+    }
+
+    /// A watch-only profile restored with the window `[0, GAP)` per branch.
+    /// The chain has coins at receive 2 (inside it), receive 4 (past it, found
+    /// once receive 2 is used) and receive 7 (found only after receive 4 is),
+    /// a spent-only history at change 1 (no coin left, so only the history
+    /// marks it used) and a coin at change 3 behind it. One sync tracks every
+    /// coin: the window grows, the new addresses are scanned in the same sync,
+    /// and again until it stops growing.
+    #[tokio::test]
+    async fn one_sync_grows_the_window_and_scans_the_new_addresses() {
+        let mut server = mockito::Server::new_async().await;
+        let _info = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+            .with_body(r#"{"result":{"chain":"main","blocks":100},"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let coins = [
+            (1u8, addr(BRANCH_RECEIVE, 2)),
+            (2, addr(BRANCH_RECEIVE, 4)),
+            (3, addr(BRANCH_RECEIVE, 7)),
+            (4, addr(BRANCH_CHANGE, 3)),
+        ];
+        let mut mocks = Vec::new();
+        for (n, a) in &coins {
+            mocks.push(
+                server
+                    .mock("GET", format!("/coin/address/{a}").as_str())
+                    .with_body(coin_body(*n, a))
+                    .create_async()
+                    .await,
+            );
+        }
+        let spent_only = addr(BRANCH_CHANGE, 1);
+        mocks.push(
+            server
+                .mock("GET", format!("/tx/address/{spent_only}").as_str())
+                .with_body(format!(r#"[{{"hash":"{}","height":80}}]"#, txid(9)))
+                .create_async()
+                .await,
+        );
+        mocks.push(
+            server
+                .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+                .with_body("[]")
+                .create_async()
+                .await,
+        );
+        mocks.push(
+            server
+                .mock("GET", mockito::Matcher::Regex("^/tx/address/".into()))
+                .with_body("[]")
+                .create_async()
+                .await,
+        );
+
+        let db_path = std::env::temp_dir().join(format!(
+            "namehold_address_window_{}_{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        let xpub_str = xpub().to_base58check(Network::Main);
+        queries::insert_wallet_profile(
+            &conn,
+            "p1",
+            "Watch",
+            "watch_only_xpub",
+            "mainnet",
+            &xpub_str,
+            0,
+            true,
+        )
+        .unwrap();
+        crate::commands::secure_wallet::provision_addresses(
+            &conn,
+            "p1",
+            Network::Main,
+            &xpub_str,
+            GAP,
+        )
+        .unwrap();
+        queries::set_setting(&conn, "address_gap_limit", &GAP.to_string()).unwrap();
+        queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+        queries::set_setting(&conn, "node_rpc_api_key", "x").unwrap();
+        drop(conn);
+
+        assert!(sync_node_step(db_path.to_str().unwrap(), "p1").await);
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let tracked: HashSet<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT txid FROM tracked_utxos
+                     WHERE wallet_profile_id = 'p1' AND spent_by_txid IS NULL",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        let want: HashSet<String> = coins.iter().map(|(n, _)| txid(*n)).collect();
+        assert_eq!(tracked, want, "every coin of the account is tracked");
+        // The window ends GAP past the highest used index of each branch.
+        assert_eq!(
+            derivation::max_derived_index(&conn, "p1", 0, BRANCH_RECEIVE).unwrap(),
+            Some(7 + GAP)
+        );
+        assert_eq!(
+            derivation::max_derived_index(&conn, "p1", 0, BRANCH_CHANGE).unwrap(),
+            Some(3 + GAP)
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     }
 }

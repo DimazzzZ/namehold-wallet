@@ -385,6 +385,9 @@ pub async fn read_balance(
     if addrs.is_empty() {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         if let Ok(Some(profile)) = queries::get_wallet_profile(&conn, &id) {
+            let gap = crate::commands::secure_wallet::gap_limit(
+                &queries::get_settings(&conn).unwrap_or_default(),
+            );
             if let Ok(network) =
                 crate::noncustodial::derivation::network_from_profile(&profile.network)
             {
@@ -399,7 +402,7 @@ pub async fn read_balance(
                         network,
                         &xpub,
                         crate::noncustodial::derivation::BRANCH_RECEIVE,
-                        20,
+                        gap,
                     ) {
                         let _ = crate::noncustodial::derivation::ensure_addresses(
                             &conn,
@@ -408,7 +411,7 @@ pub async fn read_balance(
                             network,
                             &xpub,
                             crate::noncustodial::derivation::BRANCH_CHANGE,
-                            20,
+                            gap,
                         );
                         addrs = recv.into_iter().map(|d| d.address).collect();
                     }

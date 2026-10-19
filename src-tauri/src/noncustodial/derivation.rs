@@ -189,6 +189,104 @@ pub fn ensure_addresses(
     Ok(derived)
 }
 
+/// The highest used `child_index` on a branch ([`ADDRESS_USED_PREDICATE`]),
+/// or `None` when no address on it is used.
+fn max_used_index(
+    conn: &Connection,
+    profile_id: &str,
+    account_index: u32,
+    branch: u32,
+) -> Result<Option<u32>, AppError> {
+    let max_used: Option<i64> = conn
+        .query_row(
+            &format!(
+                "SELECT MAX(d.child_index) FROM derived_addresses d
+                 WHERE d.wallet_profile_id = ?1 AND d.account_index = ?2 AND d.branch = ?3
+                   AND {ADDRESS_USED_PREDICATE}"
+            ),
+            params![profile_id, account_index as i64, branch as i64],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(max_used.map(|m| m as u32))
+}
+
+/// The derived addresses of a profile above the highest used index of their
+/// branch: its gap-limit lookahead, the only addresses whose use can move the
+/// window ([`extend_address_window`]). Both branches, receive first.
+pub fn lookahead_addresses(conn: &Connection, profile_id: &str) -> Result<Vec<String>, AppError> {
+    let account_index = profile_account_index(conn, profile_id)?;
+    let mut out = Vec::new();
+    for branch in [BRANCH_RECEIVE, BRANCH_CHANGE] {
+        let floor = max_used_index(conn, profile_id, account_index, branch)?.map_or(-1, i64::from);
+        let mut stmt = conn.prepare(
+            "SELECT address FROM derived_addresses
+             WHERE wallet_profile_id = ?1 AND account_index = ?2 AND branch = ?3
+               AND child_index > ?4
+             ORDER BY child_index",
+        )?;
+        let rows = stmt.query_map(
+            params![profile_id, account_index as i64, branch as i64, floor],
+            |row| row.get::<_, String>(0),
+        )?;
+        for r in rows {
+            out.push(r?);
+        }
+    }
+    Ok(out)
+}
+
+fn profile_account_index(conn: &Connection, profile_id: &str) -> Result<u32, AppError> {
+    let profile = crate::db::queries::get_wallet_profile(conn, profile_id)?
+        .ok_or_else(|| AppError::InvalidInput("wallet profile not found".into()))?;
+    Ok(profile.account_index as u32)
+}
+
+/// Grow a profile's address window by the gap limit (BIP44 discovery): on
+/// each branch derive and persist addresses until `gap` unused ones follow
+/// the highest used one ([`ADDRESS_USED_PREDICATE`]: marked used by sync or
+/// reserved, R21, or referenced by a coin, bid or purchase); `[0, gap)` when
+/// none is used. Derivation is public, from the profile's account xpub, so
+/// it is the same for hot, imported, watch-only and Ledger profiles. Never
+/// shrinks the window. Returns the newly derived addresses (none when the
+/// window already reaches far enough); sync scans them and calls this again
+/// until it returns none.
+pub fn extend_address_window(
+    conn: &Connection,
+    profile_id: &str,
+    gap: u32,
+) -> Result<Vec<DerivedAddress>, AppError> {
+    let profile = crate::db::queries::get_wallet_profile(conn, profile_id)?
+        .ok_or_else(|| AppError::InvalidInput("wallet profile not found".into()))?;
+    let network = network_from_profile(&profile.network)?;
+    let xpub = ExtendedPubKey::from_xpub(network, &profile.account_xpub)?;
+    let account_index = profile.account_index as u32;
+    let mut added = Vec::new();
+    for branch in [BRANCH_RECEIVE, BRANCH_CHANGE] {
+        let wanted = match max_used_index(conn, profile_id, account_index, branch)? {
+            Some(m) => m
+                .checked_add(1)
+                .and_then(|n| n.checked_add(gap))
+                .ok_or_else(|| AppError::InvalidInput("child index overflow".into()))?,
+            None => gap,
+        };
+        // The window is contiguous from 0 (every writer derives `[0, n)` or
+        // the index after the used range), so it ends at the highest index.
+        let have = max_derived_index(conn, profile_id, account_index, branch)?
+            .map_or(0, |m| m.saturating_add(1));
+        if wanted <= have {
+            continue;
+        }
+        for d in derive_range(network, &xpub, branch, have, wanted - have)? {
+            if persist_address(conn, profile_id, account_index, &d)? {
+                added.push(d);
+            }
+        }
+    }
+    Ok(added)
+}
+
 /// Allocate the NEXT UNUSED receive address for covenant outputs (OPEN/BID).
 ///
 /// "Used" means the derived receive address is marked used (sync saw coins
@@ -209,20 +307,8 @@ pub fn next_unused_receive_address(
     network: Network,
     account_xpub: &ExtendedPubKey,
 ) -> Result<DerivedAddress, AppError> {
-    let max_used: Option<i64> = conn
-        .query_row(
-            &format!(
-                "SELECT MAX(d.child_index) FROM derived_addresses d
-                 WHERE d.wallet_profile_id = ?1 AND d.account_index = ?2 AND d.branch = ?3
-                   AND {ADDRESS_USED_PREDICATE}"
-            ),
-            params![profile_id, account_index as i64, BRANCH_RECEIVE as i64],
-            |row| row.get(0),
-        )
-        .optional()?
-        .flatten();
-    let next = match max_used {
-        Some(m) => (m as u32)
+    let next = match max_used_index(conn, profile_id, account_index, BRANCH_RECEIVE)? {
+        Some(m) => m
             .checked_add(1)
             .ok_or_else(|| AppError::InvalidInput("receive child index overflow".into()))?,
         None => 0,
@@ -315,12 +401,14 @@ pub fn derive_next_for_profile(
 /// and cancel destinations are reserved this way: nothing reaches them until a
 /// buyer pays or a cancel is mined, possibly days later. The address is the
 /// one right after the used range. It is persisted and marked used, so it is not
-/// reissued and sync of this profile queries it. After a restore it is found only
-/// while its index is inside the restore window of `address_gap_limit`
-/// addresses (the window is not extended by sync), or when the profile's own
-/// listing file names it ([`adopt_receive_address`], R32's import). Returns the reserved address with
-/// its branch and index (R21: a cancel address's index rides on the cancel's
-/// lock input, T5).
+/// reissued and sync of this profile queries it. After a restore it is found
+/// once it lies within `address_gap_limit` addresses of the highest used one:
+/// sync grows the window by the gap limit ([`extend_address_window`]), so
+/// more than that many reservations in a row with nothing on chain yet hide
+/// the addresses past them from another device. Importing the profile's own
+/// listing file also finds it ([`adopt_receive_address`], R32's import).
+/// Returns the reserved address with its branch and index (R21: a cancel
+/// address's index rides on the cancel's lock input, T5).
 ///
 /// Runs under a SAVEPOINT: atomic on its own, and usable inside a caller's
 /// transaction (a nested BEGIN would fail).
@@ -756,5 +844,119 @@ mod tests {
             max_derived_index(&conn, "unknown-profile", 0, BRANCH_RECEIVE).unwrap(),
             None
         );
+    }
+
+    // --- extend_address_window: the gap-limit scan sync runs. ---
+
+    const GAP: u32 = 5;
+
+    /// A profile with a real xpub and the restore window `[0, GAP)` on both
+    /// branches, as `provision_addresses` leaves it.
+    fn provisioned(profile_id: &str) -> (Connection, ExtendedPubKey) {
+        let (conn, xpub) = mem_db_with_real_xpub(Network::Main, profile_id);
+        for branch in [BRANCH_RECEIVE, BRANCH_CHANGE] {
+            ensure_addresses(&conn, profile_id, 0, Network::Main, &xpub, branch, GAP).unwrap();
+        }
+        (conn, xpub)
+    }
+
+    fn window(conn: &Connection, profile_id: &str) -> (Option<u32>, Option<u32>) {
+        (
+            max_derived_index(conn, profile_id, 0, BRANCH_RECEIVE).unwrap(),
+            max_derived_index(conn, profile_id, 0, BRANCH_CHANGE).unwrap(),
+        )
+    }
+
+    fn address_at(xpub: &ExtendedPubKey, branch: u32, index: u32) -> String {
+        derive_one(Network::Main, xpub, branch, index)
+            .unwrap()
+            .address
+    }
+
+    /// Coins seen at the last address of the receive window: the receive
+    /// window grows to `[0, 2*GAP)`, change stays, and the new addresses are
+    /// the ones derived from the xpub at those indices.
+    #[test]
+    fn extend_window_grows_receive_past_a_used_address() {
+        let (conn, xpub) = provisioned("pw");
+        let last = address_at(&xpub, BRANCH_RECEIVE, GAP - 1);
+        crate::noncustodial::sync::mark_address_used(&conn, "pw", &last, Some(10)).unwrap();
+
+        let added = extend_address_window(&conn, "pw", GAP).unwrap();
+
+        assert_eq!(window(&conn, "pw"), (Some(2 * GAP - 1), Some(GAP - 1)));
+        let want: Vec<DerivedAddress> =
+            derive_range(Network::Main, &xpub, BRANCH_RECEIVE, GAP, GAP).unwrap();
+        assert_eq!(added, want);
+        // Once the window is far enough, another pass derives nothing.
+        assert!(extend_address_window(&conn, "pw", GAP).unwrap().is_empty());
+    }
+
+    /// Used only on the change branch: only change grows.
+    #[test]
+    fn extend_window_grows_only_the_used_branch() {
+        let (conn, xpub) = provisioned("pw");
+        let change = address_at(&xpub, BRANCH_CHANGE, 2);
+        crate::noncustodial::sync::mark_address_used(&conn, "pw", &change, Some(10)).unwrap();
+
+        let added = extend_address_window(&conn, "pw", GAP).unwrap();
+
+        assert_eq!(window(&conn, "pw"), (Some(GAP - 1), Some(2 + GAP)));
+        assert_eq!(added.len(), 3);
+        assert!(added.iter().all(|d| d.branch == BRANCH_CHANGE));
+    }
+
+    /// Nothing used: the restore window is already `GAP` long, nothing grows.
+    #[test]
+    fn extend_window_leaves_an_unused_window_alone() {
+        let (conn, _xpub) = provisioned("pw");
+        assert!(extend_address_window(&conn, "pw", GAP).unwrap().is_empty());
+        assert_eq!(window(&conn, "pw"), (Some(GAP - 1), Some(GAP - 1)));
+    }
+
+    /// A profile with no addresses at all gets the window `[0, GAP)` per
+    /// branch.
+    #[test]
+    fn extend_window_derives_the_first_window_of_an_empty_profile() {
+        let (conn, _xpub) = mem_db_with_real_xpub(Network::Main, "pw");
+        let added = extend_address_window(&conn, "pw", GAP).unwrap();
+        assert_eq!(added.len(), 2 * GAP as usize);
+        assert_eq!(window(&conn, "pw"), (Some(GAP - 1), Some(GAP - 1)));
+    }
+
+    /// A reserved address (R21: marked used, nothing on chain) counts as used,
+    /// so the window keeps `GAP` unused addresses past a run of reservations.
+    #[test]
+    fn extend_window_counts_a_reserved_address_as_used() {
+        let (conn, _xpub) = provisioned("pw");
+        for _ in 0..GAP {
+            reserve_receive_address(&conn, "pw").unwrap();
+        }
+        let added = extend_address_window(&conn, "pw", GAP).unwrap();
+        assert_eq!(added.len(), GAP as usize);
+        assert_eq!(window(&conn, "pw"), (Some(2 * GAP - 1), Some(GAP - 1)));
+    }
+
+    /// The lookahead is the addresses above the highest used one per branch.
+    #[test]
+    fn lookahead_is_the_addresses_past_the_highest_used_one() {
+        let (conn, xpub) = provisioned("pw");
+        let used = address_at(&xpub, BRANCH_RECEIVE, 2);
+        crate::noncustodial::sync::mark_address_used(&conn, "pw", &used, None).unwrap();
+
+        let ahead = lookahead_addresses(&conn, "pw").unwrap();
+
+        let mut want: Vec<String> = (3..GAP)
+            .map(|i| address_at(&xpub, BRANCH_RECEIVE, i))
+            .collect();
+        want.extend((0..GAP).map(|i| address_at(&xpub, BRANCH_CHANGE, i)));
+        assert_eq!(ahead, want);
+    }
+
+    #[test]
+    fn extend_window_unknown_profile_errors() {
+        let conn = mem_db();
+        assert!(extend_address_window(&conn, "nope", GAP).is_err());
+        assert!(lookahead_addresses(&conn, "nope").is_err());
     }
 }

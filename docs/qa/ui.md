@@ -80,7 +80,6 @@ These are recorded and parked. Note what you see if a case runs into one, but fi
 
 - Test connection ignores an API key typed but not yet saved (HTTP 401) until `Save settings`.
 - A new or switched-to profile shows another profile's signer as unlocked (workaround above).
-- Watch-only and imported profiles never derive past their first address window, so a watch-only profile shows 0 owned names, and a restored profile does not see a cancel's home address past its window (its listing then stays Listed after the other profile brought the name home).
 - The xpub import field shows the recovery-phrase placeholder.
 - After a purchase's failed send, or its draft discarded in Activity, Owned Names stays stale until the next poll.
 - Buying your own listing (from any profile of the same phrase) is not refused.
@@ -88,4 +87,4 @@ These are recorded and parked. Note what you see if a case runs into one, but fi
 - A name in the Cancelling state shows "Shakedex_cancel is broadcast and waiting to be mined. Nothing changes on-chain until it lands in a block." in its name actions instead of disabled owner buttons.
 - A Buy Now lowered after a block has moved the median time (its two steps then carry different lock times) imports in another profile as `Reverse auction`.
 - The seller's sale row in Activity shows an unsigned amount.
-- Spec §5 "Known gaps" ([the spec](../specs/2026-10-05-shakedex-name-sales.md)) lists behaviour that is by design (one device per listing, a restore does not extend its address window, and so on): a case that hits one is ◐ with the gap named, not a bug.
+- Spec §5 "Known gaps" ([the spec](../specs/2026-10-05-shakedex-name-sales.md)) lists behaviour that is by design (one device per listing, a restore sees addresses only up to the gap limit past the last used one, and so on): a case that hits one is ◐ with the gap named, not a bug.

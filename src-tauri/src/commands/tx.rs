@@ -317,6 +317,9 @@ pub async fn sync_wallet_state(
         // Auto-provision derived addresses if none exist yet (e.g., wallet
         // created before the address-derivation step ran, or DB was migrated).
         if addresses.is_empty() {
+            let gap = crate::commands::secure_wallet::gap_limit(
+                &db::queries::get_settings(&conn).unwrap_or_default(),
+            );
             if let Ok(network) = derivation::network_from_profile(&profile.network) {
                 if let Ok(xpub) = crate::noncustodial::hd::ExtendedPubKey::from_xpub(
                     network,
@@ -329,7 +332,7 @@ pub async fn sync_wallet_state(
                         network,
                         &xpub,
                         derivation::BRANCH_RECEIVE,
-                        20,
+                        gap,
                     ) {
                         let _ = derivation::ensure_addresses(
                             &conn,
@@ -338,7 +341,7 @@ pub async fn sync_wallet_state(
                             network,
                             &xpub,
                             derivation::BRANCH_CHANGE,
-                            20,
+                            gap,
                         );
                         addresses = recv.into_iter().map(|d| d.address).collect();
                     }
