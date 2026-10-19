@@ -232,6 +232,55 @@ pub fn next_unused_receive_address(
     Ok(derived)
 }
 
+/// Find `address` among the first `limit` receive addresses of a profile,
+/// deriving them from its account public key (every profile kind, watch-only
+/// too: derivation is pure-public), past the window it holds. On a match the
+/// receive addresses `0..=index` are persisted, so sync of this profile
+/// queries it, and the address is marked used, so it is never handed out
+/// again (R21); returns its index. `None` when it is not one of them, and
+/// then nothing is written. Never derives past `limit`: an address that is
+/// not ours costs that many derivations and nothing else.
+pub fn adopt_receive_address(
+    conn: &Connection,
+    profile_id: &str,
+    address: &str,
+    limit: u32,
+) -> Result<Option<u32>, AppError> {
+    let profile = crate::db::queries::get_wallet_profile(conn, profile_id)?
+        .ok_or_else(|| AppError::InvalidInput("wallet profile not found".into()))?;
+    let network = network_from_profile(&profile.network)?;
+    let xpub = ExtendedPubKey::from_xpub(network, &profile.account_xpub)?;
+    let account_index = profile.account_index as u32;
+    let mut found = Vec::new();
+    for index in 0..limit {
+        let d = derive_one(network, &xpub, BRANCH_RECEIVE, index)?;
+        let hit = d.address == address;
+        found.push(d);
+        if !hit {
+            continue;
+        }
+        conn.execute_batch("SAVEPOINT adopt_receive_address")?;
+        let adopted = found
+            .iter()
+            .try_for_each(|d| persist_address(conn, profile_id, account_index, d).map(|_| ()))
+            .and_then(|()| {
+                crate::noncustodial::sync::mark_address_used(conn, profile_id, address, None)
+            });
+        if let Err(e) = adopted {
+            if let Err(rb) = conn.execute_batch("ROLLBACK TO adopt_receive_address") {
+                eprintln!("adopt_receive_address: rollback failed: {rb}");
+            }
+            if let Err(rl) = conn.execute_batch("RELEASE adopt_receive_address") {
+                eprintln!("adopt_receive_address: release failed: {rl}");
+            }
+            return Err(e);
+        }
+        conn.execute_batch("RELEASE adopt_receive_address")?;
+        return Ok(Some(index));
+    }
+    Ok(None)
+}
+
 /// Resolve a profile's derivation context and allocate its next unused
 /// receive-branch address.
 ///
@@ -268,7 +317,8 @@ pub fn derive_next_for_profile(
 /// one right after the used range. It is persisted and marked used, so it is not
 /// reissued and sync of this profile queries it. After a restore it is found only
 /// while its index is inside the restore window of `address_gap_limit`
-/// addresses (the window is not extended). Returns the reserved address with
+/// addresses (the window is not extended by sync), or when the profile's own
+/// listing file names it ([`adopt_receive_address`], R32's import). Returns the reserved address with
 /// its branch and index (R21: a cancel address's index rides on the cancel's
 /// lock input, T5).
 ///

@@ -92,13 +92,13 @@ function mockMarket(p: unknown, kind = "mnemonic_hot", canSend = true, network =
   });
 }
 
-function renderPage() {
+function renderPage(entry = "/market") {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/market"]}>
+      <MemoryRouter initialEntries={[entry]}>
         <MarketPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -108,6 +108,28 @@ function renderPage() {
 describe("MarketPage", () => {
   beforeEach(() => {
     invokeMock.mockReset();
+  });
+
+  it("opens on Browse, and on My listings with ?tab=mine", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "list_wallet_profiles") return Promise.resolve([profile()]);
+      if (cmd === "get_write_capability") return Promise.resolve(writeCapability());
+      if (cmd === "shakedex_list_market") return Promise.resolve(page());
+      if (cmd === "shakedex_list_listings") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+    renderPage("/market?tab=mine");
+    expect(
+      await screen.findByText("No listings yet. Sell a name from its actions in Owned Names."),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("market-row")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "My listings" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Browse" }));
+    expect(await screen.findByText(".dexreviews")).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some((c) => c[0] === "shakedex_list_listings")).toBe(true);
   });
 
   it("shows buyable rows in a canonical table and a hidden counter", async () => {
@@ -145,7 +167,10 @@ describe("MarketPage", () => {
 
     fireEvent.click(screen.getByTestId("market-next"));
     expect(await screen.findByText(".name2")).toBeInTheDocument();
-    expect(invokeMock).toHaveBeenCalledWith("shakedex_list_market", { page: 2 });
+    expect(invokeMock).toHaveBeenCalledWith("shakedex_list_market", {
+      page: 2,
+      walletProfileId: expect.any(String),
+    });
     expect(screen.getByTestId("market-page-of")).toHaveTextContent("Page 2 of 3");
 
     fireEvent.click(screen.getByTestId("market-next"));
@@ -357,7 +382,8 @@ describe("MarketPage", () => {
         "Shakedex purchases on mainnet are experimental: enable them in Settings",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("market-buy")).toBeDisabled();
+    // The page is read once the profile it belongs to is known (R7).
+    expect(await screen.findByTestId("market-buy")).toBeDisabled();
     unmount();
 
     useSettingsStore.setState({
@@ -375,7 +401,8 @@ describe("MarketPage", () => {
     expect(
       await screen.findByText("Shakedex needs a local node, or a remote node with sending allowed"),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("market-buy")).toBeDisabled();
+    // The page is read once the profile it belongs to is known (R7).
+    expect(await screen.findByTestId("market-buy")).toBeDisabled();
   });
 
   it("a software profile sees no software-wallet notice", async () => {

@@ -503,6 +503,24 @@ async fn next_step_is_the_earliest_cheaper_step_not_valid_yet() {
     }
 }
 
+/// Two cheaper steps valid from the same median time: the next price is the
+/// cheaper one, the step that then becomes current, whatever the file's order.
+#[tokio::test]
+async fn next_step_of_steps_valid_together_is_the_cheaper_one() {
+    let r = regtest_listing_with(
+        0,
+        &[
+            (9_000_000, REGTEST_MTP - 100_000),
+            (5_000_000, REGTEST_MTP + 2_048),
+            (3_000_000, REGTEST_MTP + 2_048),
+        ],
+    );
+    match regtest_verdict(&r, r.coin.clone()).await {
+        Verdict::Buyable(b) => assert_eq!((b.current_step, b.next_step), (0, Some(2))),
+        other => panic!("{other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn negative_value_lock_coin_fails_verification() {
     let r = regtest_listing_with(0, &[(5_000_000, REGTEST_MTP - 100_000)]);

@@ -11,7 +11,20 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
 import { DEFAULT_SETTINGS } from "./settingsDefaults";
-import type { NodeConnectionCheck, Settings } from "../types";
+import listingActionsFixture from "../test/fixtures/listing-actions.json";
+import type {
+  NodeConnectionCheck,
+  Settings,
+  ShakedexListingActions,
+  ShakedexListingMode,
+  ShakedexListingPrices,
+  ShakedexListingState,
+  ShakedexListingSummary,
+  ShakedexMyListing,
+  ShakedexNameListing,
+  ShakedexPendingSend,
+  ShakedexStoredStep,
+} from "../types";
 
 type Handler = (args?: Record<string, unknown>) => unknown;
 
@@ -72,11 +85,17 @@ interface MockAuction {
 interface MockChain {
   height: number;
   auctions: Map<string, MockAuction>;
+  /** Our Shakedex listings, by listing id (see "Shakedex selling" below). */
+  listings: Map<string, MockListing>;
+  /** Each listing draft's listing and send state, by draft id. */
+  listingDrafts: Map<string, MockListingDraft>;
 }
 
 const chain: MockChain = {
   height: 100_000,
   auctions: new Map(),
+  listings: new Map(),
+  listingDrafts: new Map(),
 };
 
 function ensureAuction(name: string): MockAuction {
@@ -152,7 +171,9 @@ function draftId(a: MockAuction): string {
 /** Advance the mock chain by `n` blocks and settle any pending reveals. */
 function mineBlocks(n: number): number {
   const count = Math.max(1, Math.floor(n || 1));
+  const firstMined = chain.height + 1;
   chain.height += count;
+  settleListings(firstMined);
   // A broadcast reveal confirms on the next mined block.
   for (const a of chain.auctions.values()) {
     if (a.revealStatus === "broadcasted") {
@@ -273,13 +294,29 @@ function buildCapabilities(name: string): Record<string, unknown> {
   const hasRevealCoin = revealIsConfirmed(a);
   const closed = phase === "CLOSED";
   const won = closed && revealIsConfirmed(a) && a.bidValueDoos > a.rivalBidDoos;
+  // R27: a name locking or locked for sale has no owner actions here
+  // (`commands/names.rs`, `NAME_LOCKED_FOR_SALE`); Sell follows Transfer.
+  const listing = openListingOf(name);
+  const ownerAction = (allowed: boolean) =>
+    listing ? cap(false, ACTIONS.nameLockedForSale) : cap(allowed);
+  // R19: until the FINALIZE into the lock, Cancel transfer of the mined lock
+  // TRANSFER is the listing's abort (`ListingState::aborts_by_cancel_transfer`);
+  // one already staged or sent is not built twice.
+  const abortable =
+    listing !== undefined &&
+    (listing.state === "locking" || listing.state === "readyToFinalize") &&
+    listing.lockMinedAt != null &&
+    !abortMayStillLand(listing);
   return {
     name,
     phase,
     taskState,
-    ownsName: won,
+    // A name with an open listing stays ours, its owner actions refused
+    // (`derive_name_ownership`), even when the mock never won it (a restore).
+    ownsName: won || listing !== undefined,
+    lockedForSale: listing !== undefined,
     // The mock's won names are registered: it allows update/transfer on them.
-    nameIsRegistered: won,
+    nameIsRegistered: won || listing !== undefined,
     transferPending: false,
     // A lost auction leaves exactly one reveal to reclaim in this mock — the
     // same condition `canRedeem` below is built from.
@@ -304,13 +341,13 @@ function buildCapabilities(name: string): Record<string, unknown> {
       phase === "REVEAL" && a.hasBid && hasBidCoin && a.revealStatus !== "broadcasted",
     ),
     canRedeem: cap(closed && !won && a.hasBid),
-    canRegister: cap(won),
-    canUpdate: cap(won),
-    canTransfer: cap(won),
+    canRegister: ownerAction(won),
+    canUpdate: ownerAction(won),
+    canTransfer: ownerAction(won),
     canFinalize: cap(false),
-    canCancelTransfer: cap(false),
-    canRenew: cap(won),
-    canRevoke: cap(won),
+    canCancelTransfer: cap(abortable),
+    canRenew: ownerAction(won),
+    canRevoke: ownerAction(won),
     nextActionKey,
     nextActionLabel,
     nextActionReason: null,
@@ -345,6 +382,581 @@ function auctionPositionNames(): string[] {
   a.revealStatus = "none";
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Shakedex selling
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Our listings walk the backend's states on the mock chain: a lock draft is
+// sent and mined, the transfer lockup runs out (Locking → ReadyToFinalize),
+// Finalize & sign stages the FINALIZE into the lock (Finalizing → Listed),
+// a cancel is sent and mined (Cancelling → CancelAwaitingFinalize) and its
+// FINALIZE brings the name home (CancelFinalizing → Cancelled). Before the
+// FINALIZE into the lock, a Cancel transfer of the name (`build_cancel_draft`)
+// is the listing's abort: Aborted once it is mined (R19). A draft moves its
+// listing on the first block mined after its broadcast. What each row can do,
+// and every refusal sentence, comes from the backend's own output
+// (`src/test/fixtures/listing-actions.json`, written and checked by
+// `shakedex_my_listings_tests::listing_actions_fixture_matches_the_backend`),
+// so a row never offers what the backend would not and its words cannot
+// drift. No buyer is simulated: Sold, SalePending and Expired are never
+// reached here.
+
+/** Regtest's transfer lockup (blocks), compressed like the auction windows above. */
+const TRANSFER_LOCKUP = 10;
+const DOOS_PER_HNS = 1_000_000;
+/** `LISTING_LIFETIME_SECS`: a listing file expires a year after it is written. */
+const LISTING_LIFETIME_SECS = 365 * 24 * 3600;
+/** `sell::LOCK_TIME_UNIT_SECS`: a Buy Now's lock time is the MTP minus this. */
+const LOCK_TIME_UNIT_SECS = 512;
+
+type ListingDraftKind = "lock" | "lockFinalize" | "cancel" | "cancelFinalize" | "abort";
+
+/** Each listing draft's action (`sell.rs` / `cancel.rs` `*_ACTION`). */
+const LISTING_DRAFT_ACTION: Record<ListingDraftKind, string> = {
+  lock: "shakedex_lock",
+  lockFinalize: "shakedex_lock_finalize",
+  cancel: "shakedex_cancel",
+  cancelFinalize: "shakedex_cancel_finalize",
+  // The listing's abort is the name's own Cancel transfer (`build_cancel_draft`).
+  abort: "cancel",
+};
+
+interface ActionsFixture {
+  nameLockedForSale: string;
+  cancelTransferPending: string;
+  cancelFinalizeWait: string;
+  cancelFinalizeWaitOne: string;
+  cancelLockupNotCounted: string;
+  cases: {
+    state: string;
+    withFile: boolean;
+    published: boolean;
+    actions: ShakedexListingActions;
+  }[];
+}
+const ACTIONS = listingActionsFixture as ActionsFixture;
+
+interface MockListingDraft {
+  listingId: string;
+  kind: ListingDraftKind;
+  signed: boolean;
+  sent: boolean;
+}
+
+interface MockListing {
+  id: string;
+  name: string;
+  mode: ShakedexListingMode;
+  state: ShakedexListingState;
+  publish: boolean;
+  steps: ShakedexStoredStep[];
+  /** Our own listing file: written at Finalize & sign or imported. */
+  hasFile: boolean;
+  expiresAt: number | null;
+  /** The block the lock TRANSFER was mined in. */
+  lockMinedAt: number | null;
+  /** The block the cancel was mined in. */
+  cancelMinedAt: number | null;
+  lockDraftId: string | null;
+  finalizeDraftId: string | null;
+  cancelDraftId: string | null;
+  cancelFinalizeDraftId: string | null;
+  /** The name's Cancel transfer, this listing's abort before the lock (R19). */
+  abortDraftId: string | null;
+}
+
+/** A median time that moves with the mock chain, ten minutes a block. */
+function mockMtp(): number {
+  return 1_700_000_000 + (chain.height - 100_000) * MINUTES_PER_BLOCK * 60;
+}
+
+/** `sell::buy_now_lock_time`: valid at once at the mock median time. */
+function buyNowLockTime(): number {
+  return mockMtp() - LOCK_TIME_UNIT_SECS;
+}
+
+/** hsd judges a FINALIZE at tip + 1 (`NameParams::blocks_until_finalize`). */
+function blocksUntilFinalize(transferHeight: number): number {
+  return Math.max(0, transferHeight + TRANSFER_LOCKUP - (chain.height + 1));
+}
+
+/** HNS as typed → doos, refused as the backend's price parser would. */
+function parsePrice(text: unknown): number {
+  const t = String(text ?? "").trim();
+  if (!/^\d+(\.\d{1,6})?$/.test(t)) throw new Error(`Invalid input: '${t}' is not an HNS amount`);
+  const doos = Math.round(Number(t) * DOOS_PER_HNS);
+  if (doos <= 0) throw new Error("Invalid input: a price must be above 0");
+  return doos;
+}
+
+/** `doos_to_hns_string`. */
+function hnsText(doos: number): string {
+  return `${Math.floor(doos / DOOS_PER_HNS)}.${String(doos % DOOS_PER_HNS).padStart(6, "0")} HNS`;
+}
+
+function mockStep(price: number, lockTime: number): ShakedexStoredStep {
+  return { price, lockTime, signature: "00".repeat(65) };
+}
+
+function stageListingDraft(l: MockListing, kind: ListingDraftKind, signed: boolean): string {
+  const id = `draft-${kind}-${l.id}`;
+  chain.listingDrafts.set(id, { listingId: l.id, kind, signed, sent: false });
+  return id;
+}
+
+function listingDraftSummary(id: string, l: MockListing, kind: ListingDraftKind, status: string) {
+  const action = LISTING_DRAFT_ACTION[kind];
+  return {
+    id,
+    walletProfileId: "webqa-profile",
+    action,
+    status,
+    summary: {
+      action,
+      name: l.name,
+      sendTotalDoos: 0,
+      feeDoos: 100_000,
+      changeDoos: 0,
+      inputTotalDoos: 100_000,
+      numInputs: 1,
+      recipientAddress: null,
+      txid: null,
+      warnings: [],
+    },
+    errorMessage: null,
+    txid: null,
+    confirmationHeight: null,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function listingById(args?: Record<string, unknown>): MockListing {
+  const l = chain.listings.get(String(args?.listingId ?? ""));
+  if (!l) throw new Error("Not found: no such listing");
+  return l;
+}
+
+/** The profile's open listing of `name` (not Cancelled, Sold, Aborted or Expired). */
+function openListingOf(name: string): MockListing | undefined {
+  const ended: ShakedexListingState[] = ["cancelled", "sold", "aborted", "expired"];
+  return [...chain.listings.values()].find((l) => l.name === name && !ended.includes(l.state));
+}
+
+function newListing(name: string, mode: ShakedexListingMode, state: ShakedexListingState) {
+  let id = `mock-listing-${name}`;
+  for (let n = 2; chain.listings.has(id); n++) id = `mock-listing-${name}-${n}`;
+  const l: MockListing = {
+    id,
+    name,
+    mode,
+    state,
+    publish: false,
+    steps: [],
+    hasFile: false,
+    expiresAt: null,
+    lockMinedAt: null,
+    cancelMinedAt: null,
+    lockDraftId: null,
+    finalizeDraftId: null,
+    cancelDraftId: null,
+    cancelFinalizeDraftId: null,
+    abortDraftId: null,
+  };
+  chain.listings.set(id, l);
+  return l;
+}
+
+/** Each sent listing draft mined in `firstMined` (the first new block). */
+function settleListings(firstMined: number): void {
+  const sent = (id: string | null) => id != null && chain.listingDrafts.get(id)?.sent === true;
+  for (const l of chain.listings.values()) {
+    if ((l.state === "locking" || l.state === "readyToFinalize") && sent(l.abortDraftId)) {
+      l.state = "aborted";
+      continue;
+    }
+    if (l.state === "locking" && l.lockMinedAt == null && sent(l.lockDraftId)) {
+      l.lockMinedAt = firstMined;
+    }
+    if (
+      l.state === "locking" &&
+      l.lockMinedAt != null &&
+      blocksUntilFinalize(l.lockMinedAt) === 0
+    ) {
+      l.state = "readyToFinalize";
+    } else if (l.state === "finalizing" && sent(l.finalizeDraftId)) {
+      l.state = "listed";
+    } else if (l.state === "cancelling" && sent(l.cancelDraftId)) {
+      l.state = "cancelAwaitingFinalize";
+      l.cancelMinedAt = firstMined;
+    } else if (l.state === "cancelFinalizing" && sent(l.cancelFinalizeDraftId)) {
+      l.state = "cancelled";
+    }
+  }
+}
+
+// ── What a listing can do now, from the backend's fixture ──────────────
+
+/**
+ * The listing's actions as `my_listing_from_conn` gives them on mainnet for
+ * its state, its stored steps and file (the mock keeps both or neither) and
+ * its publish flag; the counts the fixture cannot hold are filled in: the
+ * lockup left after a mined cancel (`cancel_finalize_wait`; counted when the
+ * mock mines the cancel, as the sync that sees it mined does, so
+ * `CANCEL_LOCKUP_NOT_COUNTED` only guards a count it never took), and Finalize &
+ * sign while a Cancel transfer may still land (`abort_may_still_land`), before
+ * the lockup's own reason.
+ */
+function actionsOf(l: MockListing): ShakedexListingActions {
+  const c = ACTIONS.cases.find(
+    (x) => x.state === l.state && x.withFile === l.hasFile && x.published === l.publish,
+  );
+  if (!c) throw new Error(`listing-actions.json has no case for ${l.state}`);
+  const actions = structuredClone(c.actions);
+  const wait = cancelBlocksRemaining(l);
+  if (actions.finalizeCancel.allowed && wait === null) {
+    actions.finalizeCancel = { allowed: false, reason: ACTIONS.cancelLockupNotCounted };
+  } else if (actions.finalizeCancel.allowed && wait !== null && wait > 0) {
+    actions.finalizeCancel = {
+      allowed: false,
+      reason:
+        wait === 1
+          ? ACTIONS.cancelFinalizeWaitOne
+          : ACTIONS.cancelFinalizeWait.replace("{n}", String(wait)),
+    };
+  }
+  // `finalize_and_sign_refusal`: the pending abort is named first, in
+  // Locking as in ReadyToFinalize.
+  if ((l.state === "locking" || l.state === "readyToFinalize") && abortMayStillLand(l)) {
+    actions.finalizeAndSign = { allowed: false, reason: ACTIONS.cancelTransferPending };
+  }
+  return actions;
+}
+
+/**
+ * The listing is linked to a Cancel transfer, staged or sent: once mined the
+ * listing is Aborted, and a discarded one is unlinked (`discardListingDraft`).
+ */
+function abortMayStillLand(l: MockListing): boolean {
+  return l.abortDraftId != null;
+}
+
+function refuse(reason: string | null): void {
+  if (reason !== null) throw new Error(`Invalid input: ${reason}`);
+}
+
+function cancelBlocksRemaining(l: MockListing): number | null {
+  return l.state === "cancelAwaitingFinalize" && l.cancelMinedAt != null
+    ? blocksUntilFinalize(l.cancelMinedAt)
+    : null;
+}
+
+function listingSummary(l: MockListing): ShakedexListingSummary {
+  const finalized = l.state !== "locking" && l.state !== "readyToFinalize";
+  return {
+    id: l.id,
+    name: l.name,
+    mode: l.mode,
+    state: l.state,
+    lockTxid: l.lockMinedAt != null || l.state === "restored" ? "ab".repeat(32) : null,
+    lockVout: l.lockMinedAt != null || l.state === "restored" ? 0 : null,
+    paymentAddress: finalized && l.state !== "restored" ? "hs1qpayment...(mock)" : null,
+    steps: l.steps,
+    expiresAt: l.expiresAt,
+    finalizeDraftId: l.finalizeDraftId,
+    cancelDraftId: l.cancelDraftId,
+    cancelFinalizeDraftId: l.cancelFinalizeDraftId,
+    cancelBlocksRemaining: cancelBlocksRemaining(l),
+    blocksUntilFinalize: lockupLeft(l),
+    marketStatus: null,
+    marketError: null,
+    marketRetryAt: null,
+    publish: l.publish,
+  };
+}
+
+/**
+ * `ListingPrices` at the mock median time (`sell::step_view`): the current
+ * price is the cheapest step valid now (`template::current_step_index`); the
+ * next is, of the steps not valid yet and cheaper than that, the one valid
+ * soonest, the cheapest of those at one time (`template::next_step_index`).
+ */
+function listingPrices(l: MockListing): ShakedexListingPrices {
+  if (l.steps.length === 0) return { kind: "noSteps" };
+  const mtp = mockMtp();
+  const cheapest = (steps: ShakedexStoredStep[]) =>
+    steps.reduce<ShakedexStoredStep | null>((m, s) => (m && m.price <= s.price ? m : s), null);
+  const current = cheapest(l.steps.filter((s) => s.lockTime < mtp));
+  const ahead = l.steps.filter(
+    (s) => s.lockTime >= mtp && (current === null || s.price < current.price),
+  );
+  const soonest = Math.min(...ahead.map((s) => s.lockTime));
+  const next = cheapest(ahead.filter((s) => s.lockTime === soonest));
+  return {
+    kind: "at",
+    currentPrice: current?.price ?? null,
+    nextPrice: next?.price ?? null,
+    nextValidInSecs: next ? next.lockTime - mtp : null,
+    floorPrice: Math.min(...l.steps.map((s) => s.price)),
+  };
+}
+
+/** `pending_send`: the state's own draft while it is not sent. */
+function pendingSend(l: MockListing): ShakedexPendingSend | null {
+  const id =
+    l.state === "locking"
+      ? l.lockDraftId
+      : l.state === "finalizing"
+        ? l.finalizeDraftId
+        : l.state === "cancelling"
+          ? l.cancelDraftId
+          : l.state === "cancelFinalizing"
+            ? l.cancelFinalizeDraftId
+            : null;
+  const d = id ? chain.listingDrafts.get(id) : undefined;
+  if (!id || !d || d.sent) return null;
+  return { draftId: id, action: LISTING_DRAFT_ACTION[d.kind], signed: d.signed, discardable: true };
+}
+
+function myListing(l: MockListing): ShakedexMyListing {
+  return {
+    listing: listingSummary(l),
+    actions: actionsOf(l),
+    prices: listingPrices(l),
+    pendingSend: pendingSend(l),
+  };
+}
+
+/**
+ * The `listing` of `name`'s Owned Names row (`read_shakedex_listing_names`):
+ * its open listing, with the lockup left once the lock is mined.
+ */
+function nameListing(name: string): ShakedexNameListing | undefined {
+  const l = openListingOf(name);
+  if (!l) return undefined;
+  return {
+    listingId: l.id,
+    state: l.state,
+    blocksUntilFinalize: lockupLeft(l),
+  };
+}
+
+/**
+ * The lockup left on a Locking listing whose lock is mined, for its Owned
+ * Names row and its My listings row alike (`locking_blocks_until_finalize`).
+ */
+function lockupLeft(l: MockListing): number | null {
+  return l.state === "locking" && l.lockMinedAt != null ? blocksUntilFinalize(l.lockMinedAt) : null;
+}
+
+/** The listing file this wallet writes (`listing_file::write_listing_file`), in short. */
+function listingFileJson(l: MockListing): string {
+  return JSON.stringify({
+    name: l.name,
+    feeAddr: null,
+    data: l.steps.map((s) => ({ price: s.price, lockTime: s.lockTime, fee: 0 })),
+  });
+}
+
+/** A listing draft is sent: the next mined block moves its listing. */
+function sendListingDraft(id: string): boolean {
+  const d = chain.listingDrafts.get(id);
+  if (!d) return false;
+  d.sent = true;
+  return true;
+}
+
+/**
+ * `delete_tx_draft` of a listing draft never sent puts its listing back
+ * (`db::queries::delete_tx_draft`): a Locking listing goes with its lock; an
+ * unsent FINALIZE into the lock takes its steps (ReadyToFinalize); an unsent
+ * cancel leaves the listing Listed (Restored without a file); an unsent
+ * cancel FINALIZE leaves it awaiting its finalize; an unsent Cancel transfer
+ * loses its link to the listing it would have aborted.
+ */
+function discardListingDraft(id: string): void {
+  const d = chain.listingDrafts.get(id);
+  if (!d || d.sent) return;
+  chain.listingDrafts.delete(id);
+  const l = chain.listings.get(d.listingId);
+  if (!l) return;
+  if (d.kind === "lock" && l.state === "locking") {
+    chain.listings.delete(l.id);
+  } else if (d.kind === "lockFinalize" && l.state === "finalizing") {
+    l.state = "readyToFinalize";
+    l.steps = [];
+    l.hasFile = false;
+    l.expiresAt = null;
+    l.finalizeDraftId = null;
+  } else if (d.kind === "cancel" && l.state === "cancelling") {
+    l.state = l.hasFile ? "listed" : "restored";
+    l.cancelDraftId = null;
+  } else if (d.kind === "cancelFinalize" && l.state === "cancelFinalizing") {
+    l.state = "cancelAwaitingFinalize";
+    l.cancelFinalizeDraftId = null;
+  } else if (d.kind === "abort") {
+    l.abortDraftId = null;
+  }
+}
+
+const sellingHandlers: Record<string, Handler> = {
+  shakedex_list_listings: () => [...chain.listings.values()].reverse().map(myListing),
+
+  shakedex_build_lock_draft: (args) => {
+    const name = String(args?.name ?? "");
+    if (openListingOf(name)) throw new Error(`Invalid input: '${name}' is already locked for sale`);
+    const l = newListing(name, (args?.mode as ShakedexListingMode) ?? "buyNow", "locking");
+    l.publish = args?.publish === true;
+    l.lockDraftId = stageListingDraft(l, "lock", false);
+    return listingDraftSummary(l.lockDraftId, l, "lock", "draft");
+  },
+
+  shakedex_finalize_and_sign: (args) => {
+    const l = listingById(args);
+    refuse(actionsOf(l).finalizeAndSign.reason);
+    const prices = (args?.prices as { price: string }[] | undefined) ?? [];
+    const schedule = (args?.schedule ?? null) as {
+      startPrice: string;
+      floorPrice: string;
+      steps: number;
+      intervalSecs: number;
+    } | null;
+    // R19: a Buy Now's lock time, valid at once; a reverse auction's first
+    // step has the same and each next step its interval later, rounded up to
+    // R3's 512 s unit (`sell::reverse_schedule`), never valid early.
+    const now = buyNowLockTime();
+    if (l.mode === "buyNow") {
+      if (prices.length !== 1 || schedule) {
+        throw new Error("Invalid input: a Buy Now listing has one price and no schedule");
+      }
+      l.steps = [mockStep(parsePrice(prices[0]!.price), now)];
+    } else {
+      if (!schedule) {
+        throw new Error(
+          "Invalid input: a reverse auction needs its schedule: a start price, a floor, the number of steps and the time between them",
+        );
+      }
+      if (prices.length > 0) {
+        throw new Error("Invalid input: a reverse auction's prices come from its schedule");
+      }
+      const start = parsePrice(schedule.startPrice);
+      const floor = parsePrice(schedule.floorPrice);
+      const n = Math.floor(schedule.steps);
+      if (!(n >= 2 && n <= 1000) || floor >= start || schedule.intervalSecs < 900) {
+        throw new Error("Invalid input: reverse auction: this schedule cannot be signed");
+      }
+      // Evenly from the start down to the floor, one interval apart.
+      l.steps = Array.from({ length: n }, (_, i) =>
+        mockStep(
+          start - Math.floor(((start - floor) * i) / (n - 1)),
+          i === 0
+            ? now
+            : Math.ceil((now + i * schedule.intervalSecs) / LOCK_TIME_UNIT_SECS) *
+                LOCK_TIME_UNIT_SECS,
+        ),
+      );
+    }
+    l.hasFile = true;
+    l.expiresAt = now + LISTING_LIFETIME_SECS;
+    l.state = "finalizing";
+    l.finalizeDraftId = stageListingDraft(l, "lockFinalize", true);
+    return listingSummary(l);
+  },
+
+  shakedex_cancel_listing: (args) => {
+    const l = listingById(args);
+    refuse(actionsOf(l).cancel.reason);
+    l.state = "cancelling";
+    l.cancelDraftId = stageListingDraft(l, "cancel", true);
+    return listingDraftSummary(l.cancelDraftId, l, "cancel", "signed");
+  },
+
+  shakedex_finalize_cancel: (args) => {
+    const l = listingById(args);
+    refuse(actionsOf(l).finalizeCancel.reason);
+    l.state = "cancelFinalizing";
+    l.cancelFinalizeDraftId = stageListingDraft(l, "cancelFinalize", false);
+    return listingDraftSummary(l.cancelFinalizeDraftId, l, "cancelFinalize", "draft");
+  },
+
+  shakedex_lower_price: (args) => {
+    const l = listingById(args);
+    refuse(actionsOf(l).lowerPrice.reason);
+    const price = parsePrice(args?.price);
+    const p = listingPrices(l);
+    const current = p.kind === "at" ? (p.currentPrice ?? p.floorPrice) : 0;
+    // `sell::check_lower_price`.
+    if (price >= current) {
+      throw new Error(
+        `Invalid input: ${hnsText(price)} is not below the current price ${hnsText(current)}: a price can only be lowered; raising it needs a cancel`,
+      );
+    }
+    // R26: the lowered step joins the schedule, valid at once.
+    l.steps = [...l.steps, mockStep(price, buyNowLockTime())];
+    return listingSummary(l);
+  },
+
+  shakedex_restore_lock: (args) => {
+    const name = String(args?.name ?? "");
+    if (openListingOf(name)) {
+      throw new Error(
+        `Invalid input: '${name}' is already tracked by one of this wallet's listings`,
+      );
+    }
+    // R32: the mode is recorded as Buy Now until its file is imported.
+    return listingSummary(newListing(name, "buyNow", "restored"));
+  },
+
+  shakedex_publish_listing: (args) => {
+    const l = listingById(args);
+    refuse(actionsOf(l).publish.reason);
+    l.publish = true;
+    return listingSummary(l);
+  },
+
+  shakedex_export_listing_file: (args) => {
+    const l = listingById(args);
+    refuse(actionsOf(l).export.reason);
+    return listingFileJson(l);
+  },
+
+  shakedex_save_listing_file: (args) => {
+    refuse(actionsOf(listingById(args)).export.reason);
+    return null;
+  },
+
+  shakedex_import_own_listing_file: (args) => importOwnFile(args?.text),
+  shakedex_import_own_listing_from_file: () => importOwnFile(null),
+};
+
+/**
+ * R32: our own saved listing file makes a Restored lock Listed. Pasted text
+ * names its listing; a file chosen on disk goes to the only Restored lock
+ * (the browser has no file to read).
+ */
+function importOwnFile(text: unknown): ShakedexListingSummary {
+  let name: string | null = null;
+  if (typeof text === "string") {
+    try {
+      name = (JSON.parse(text) as { name?: string }).name ?? null;
+    } catch {
+      throw new Error("Invalid input: this is not a listing file");
+    }
+  }
+  const l = [...chain.listings.values()].find(
+    (x) => actionsOf(x).importFile.allowed && (name === null || x.name === name),
+  );
+  if (!l) {
+    // No Restored lock to take it: the import's own refusal for any other state.
+    const listed = ACTIONS.cases.find((c) => c.state === "listed")!;
+    throw new Error(`Invalid input: ${listed.actions.importFile.reason}`);
+  }
+  l.state = "listed";
+  l.hasFile = true;
+  l.steps = [mockStep(DOOS_PER_HNS, buyNowLockTime())];
+  l.expiresAt = mockMtp() + LISTING_LIFETIME_SECS;
+  return listingSummary(l);
+}
+
 function demoListing(
   name: string,
   kind: "buyNow" | "reverseAuction",
@@ -377,6 +989,24 @@ function demoListing(
   };
 }
 
+/** A Cancel transfer of a name that is no listing's abort. */
+function cancelDraft() {
+  return {
+    id: "draft-cancel-001",
+    walletProfileId: "webqa-profile",
+    action: "cancel",
+    status: "draft",
+    summary: null,
+    errorMessage: null,
+    txid: null,
+    confirmationHeight: null,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+/** Settings changed with `update_setting`, over the defaults. */
+const savedSettings: Record<string, string> = {};
+
 const handlers: Record<string, Handler> = {
   // ── Settings ──────────────────────────────────────────────────────────
   // Built from the typed defaults rather than hand-listed: this map used to
@@ -387,9 +1017,15 @@ const handlers: Record<string, Handler> = {
   get_settings: (): Settings => ({
     ...DEFAULT_SETTINGS,
     onboarding_complete: "true",
+    ...savedSettings,
   }),
 
-  update_setting: () => null,
+  // Kept for the page's life, so a setting (the mainnet selling flag among
+  // them) can be turned on in browser QA.
+  update_setting: (args) => {
+    savedSettings[String(args?.key)] = String(args?.value);
+    return null;
+  },
 
   // Browser QA has no node to probe. Answer as a reachable, synced, matching
   // node so "Test connection" completes instead of falling through to the
@@ -517,7 +1153,30 @@ const handlers: Record<string, Handler> = {
         expired: false,
       };
     });
-    return [...staticNames, ...engineNames];
+    // R19: each name's listing; a name in our lock that is not one of ours
+    // otherwise gets a row of its own at the lock address.
+    const names: Record<string, unknown>[] = [...staticNames, ...engineNames];
+    for (const n of names) {
+      const listing = nameListing(n.name as string);
+      if (listing) n.listing = listing;
+    }
+    for (const l of chain.listings.values()) {
+      const listing = nameListing(l.name);
+      if (!listing || names.some((n) => n.name === l.name)) continue;
+      names.push({
+        name: l.name,
+        state: null,
+        height: null,
+        renewal: null,
+        owner: null,
+        owner_address: "hs1qlock...(mock)",
+        registered: true,
+        expired: null,
+        stats: null,
+        listing,
+      });
+    }
+    return names;
   },
 
   read_renewals: () => ({
@@ -774,20 +1433,28 @@ const handlers: Record<string, Handler> = {
     createdAt: new Date().toISOString(),
   }),
 
-  sign_tx_draft: (args) => ({
-    id: (args?.draftId as string) ?? "draft-mock-001",
-    walletProfileId: "webqa-profile",
-    action: "send_hns",
-    status: "signed",
-    summary: null,
-    errorMessage: null,
-    txid: null,
-    confirmationHeight: null,
-    createdAt: new Date().toISOString(),
-  }),
+  sign_tx_draft: (args) => {
+    const listingDraft = chain.listingDrafts.get(args?.draftId as string);
+    if (listingDraft) listingDraft.signed = true;
+    return {
+      id: (args?.draftId as string) ?? "draft-mock-001",
+      walletProfileId: "webqa-profile",
+      action: listingDraft ? LISTING_DRAFT_ACTION[listingDraft.kind] : "send_hns",
+      status: "signed",
+      summary: null,
+      errorMessage: null,
+      txid: null,
+      confirmationHeight: null,
+      createdAt: new Date().toISOString(),
+    };
+  },
 
   broadcast_tx_draft: (args) => {
     const id = (args?.draftId as string) ?? "draft-mock-001";
+    // A listing draft moves its listing on the next mined block.
+    if (sendListingDraft(id)) {
+      return { draftId: id, txid: "cd".repeat(32), status: "broadcasted" };
+    }
     // Any reveal draft flips its auction to "broadcasted"; the next mined
     // block will settle it via `mineBlocks()`.
     if (id.startsWith("draft-reveal-")) {
@@ -811,7 +1478,10 @@ const handlers: Record<string, Handler> = {
 
   refresh_tx_confirmations: () => null,
 
-  delete_tx_draft: () => null,
+  delete_tx_draft: (args) => {
+    discardListingDraft(args?.draftId as string);
+    return null;
+  },
 
   // The signer session helpers behave as already-unlocked, so `useExecuteDraft`
   // skips its unlock leg and jumps straight to sign → broadcast in the mock.
@@ -982,17 +1652,16 @@ const handlers: Record<string, Handler> = {
     createdAt: new Date().toISOString(),
   }),
 
-  build_cancel_draft: () => ({
-    id: "draft-cancel-001",
-    walletProfileId: "webqa-profile",
-    action: "cancel",
-    status: "draft",
-    summary: null,
-    errorMessage: null,
-    txid: null,
-    confirmationHeight: null,
-    createdAt: new Date().toISOString(),
-  }),
+  build_cancel_draft: (args) => {
+    const l = openListingOf(String(args?.name ?? ""));
+    if (l && (l.state === "locking" || l.state === "readyToFinalize") && l.lockMinedAt != null) {
+      // R19: the link commits with the draft; the listing becomes Aborted
+      // once this cancel is mined.
+      l.abortDraftId = stageListingDraft(l, "abort", false);
+      return listingDraftSummary(l.abortDraftId, l, "abort", "draft");
+    }
+    return cancelDraft();
+  },
 
   build_revoke_draft: () => ({
     id: "draft-revoke-001",
@@ -1093,6 +1762,7 @@ const handlers: Record<string, Handler> = {
   shakedex_preview_purchase: () => null,
   shakedex_build_purchase_draft: () => null,
   shakedex_build_purchase_finalize_draft: () => null,
+  ...sellingHandlers,
 
   // ── Watchlist ─────────────────────────────────────────────────────────
   add_to_watchlist: () => null,
@@ -1188,6 +1858,9 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
 export function __resetChainForTests(seedHeight = 100_000): void {
   chain.height = seedHeight;
   chain.auctions.clear();
+  chain.listings.clear();
+  chain.listingDrafts.clear();
+  for (const key of Object.keys(savedSettings)) delete savedSettings[key];
 }
 
 /** Test-only: mine `n` blocks (same as the dev control / webqa_mine_blocks). */

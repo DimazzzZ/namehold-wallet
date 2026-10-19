@@ -131,6 +131,22 @@ pub fn current_step_index(steps: &[(u64, u32)], mtp: u64) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// R12/R24: the step that next changes the price at `mtp`: of the steps not
+/// valid yet, those cheaper than `current` (any, when no step is valid yet),
+/// the one valid soonest, the cheapest of those valid from the same time (it
+/// is the one [`current_step_index`] then names). The buyer's verdict and the
+/// seller's My listings read it from here.
+pub fn next_step_index(steps: &[(u64, u32)], mtp: u64, current: Option<usize>) -> Option<usize> {
+    steps
+        .iter()
+        .enumerate()
+        .filter(|(_, (price, enc))| {
+            !is_valid_at(*enc, mtp) && current.is_none_or(|c| *price < steps[c].0)
+        })
+        .min_by_key(|(_, (price, enc))| (*enc, *price))
+        .map(|(i, _)| i)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +196,39 @@ mod tests {
         assert_eq!(current_step_index(&steps, 500), None);
         assert_eq!(current_step_index(&steps, 6_000), Some(1));
         assert_eq!(current_step_index(&steps, 99_999), Some(2));
+    }
+
+    /// The next step is the soonest step not valid yet that is cheaper than
+    /// the current one; with no current step, the soonest of all.
+    #[test]
+    fn next_step_is_the_soonest_cheaper_step() {
+        let at = |secs: u64| encode_lock_time(secs).unwrap();
+        // 10 HNS now, 12 first (dearer: never next while 10 is current),
+        // then 9, then 8.
+        let steps = [
+            (10, at(0)),
+            (9, at(1_000_960)),
+            (8, at(1_001_472)),
+            (12, at(1_000_448)),
+        ];
+        let mtp = 1_000_000;
+        assert_eq!(current_step_index(&steps, mtp), Some(0));
+        assert_eq!(next_step_index(&steps, mtp, Some(0)), Some(1));
+        assert_eq!(next_step_index(&steps, mtp, None), Some(3));
+        assert_eq!(next_step_index(&steps, 2_000_000, Some(2)), None);
+    }
+
+    /// Of cheaper steps valid from the same median time, the cheapest is the
+    /// one that becomes current (`current_step_index`), whatever their order.
+    #[test]
+    fn next_step_of_steps_valid_together_is_the_cheapest() {
+        let at = |secs: u64| encode_lock_time(secs).unwrap();
+        let mtp = 1_000_000;
+        let dearer_first = [(10, at(0)), (9, at(1_000_448)), (8, at(1_000_448))];
+        assert_eq!(next_step_index(&dearer_first, mtp, Some(0)), Some(2));
+        assert_eq!(current_step_index(&dearer_first, 1_000_449), Some(2));
+        let cheaper_first = [(10, at(0)), (8, at(1_000_448)), (9, at(1_000_448))];
+        assert_eq!(next_step_index(&cheaper_first, mtp, Some(0)), Some(1));
     }
 
     #[test]

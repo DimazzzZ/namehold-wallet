@@ -9,7 +9,7 @@ use crate::db::{self, queries};
 
 const STORE_PROFILE: &str = "sell1";
 
-fn store_conn() -> Connection {
+pub(super) fn store_conn() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
@@ -27,7 +27,7 @@ fn store_conn() -> Connection {
     conn
 }
 
-fn listing(id: &str, name: &str, state: ListingState) -> ShakedexListing {
+pub(super) fn listing(id: &str, name: &str, state: ListingState) -> ShakedexListing {
     ShakedexListing {
         id: id.into(),
         wallet_profile_id: STORE_PROFILE.into(),
@@ -178,9 +178,11 @@ fn ts_listing_summary_lists_every_field() {
         cancel_draft_id: None,
         cancel_finalize_draft_id: None,
         cancel_blocks_remaining: None,
+        blocks_until_finalize: None,
         market_status: None,
         market_error: None,
         market_retry_at: None,
+        publish: false,
     };
     let json = serde_json::to_value(&summary).unwrap();
     let mut in_rust: Vec<&str> = json
@@ -482,7 +484,7 @@ fn deleting_another_draft_keeps_a_locking_listing() {
         .is_some());
 }
 
-fn insert_draft(conn: &Connection, id: &str, action: &str, status: &str) {
+pub(super) fn insert_draft(conn: &Connection, id: &str, action: &str, status: &str) {
     queries::insert_tx_draft(conn, id, STORE_PROFILE, action, "00", "{}", "{}").unwrap();
     conn.execute(
         "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = ?2",
@@ -1342,7 +1344,8 @@ fn receive_address_at_reads_the_receive_branch_of_the_account() {
 }
 
 /// R21/R28: a lock restored by name gets its cancel address when it is
-/// cancelled, only while Restored and without one.
+/// cancelled, only while Cancel acts on it (Restored, or Listed once its
+/// own file upgraded it) and without one.
 #[test]
 fn a_restored_lock_gets_its_cancel_address_once() {
     let conn = store_conn();
@@ -1350,10 +1353,19 @@ fn a_restored_lock_gets_its_cancel_address_once() {
     l.cancel_address = None;
     l.cancel_child_index = None;
     queries::insert_shakedex_listing(&conn, &l).unwrap();
-    let mut other = listing("l2", "listed", ListingState::Listed);
+    let mut other = listing("l2", "cancelling", ListingState::Cancelling);
     other.cancel_address = None;
     other.cancel_child_index = None;
     queries::insert_shakedex_listing(&conn, &other).unwrap();
+    let mut imported = listing("l3", "imported", ListingState::Listed);
+    imported.cancel_address = None;
+    imported.cancel_child_index = None;
+    queries::insert_shakedex_listing(&conn, &imported).unwrap();
+    assert_eq!(
+        queries::set_restored_lock_cancel_address(&conn, "l3", "rs1qe", 9).unwrap(),
+        1,
+        "Listed by its own file"
+    );
     assert_eq!(
         queries::set_restored_lock_cancel_address(&conn, "l1", "rs1qc", 7).unwrap(),
         1
@@ -1366,7 +1378,7 @@ fn a_restored_lock_gets_its_cancel_address_once() {
     assert_eq!(
         queries::set_restored_lock_cancel_address(&conn, "l2", "rs1qc", 7).unwrap(),
         0,
-        "not Restored"
+        "not a state Cancel acts on"
     );
     let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
     assert_eq!(
@@ -3413,7 +3425,8 @@ async fn finalize_and_sign_schedule(
 
 /// R24, R19, R20: Finalize & sign of a reverse auction signs every step of
 /// its schedule in one unlock — step 0 at R19's lock time (the MTP at
-/// signing minus 512 s, valid at once), each next one an interval later —
+/// signing minus 512 s, valid at once), each next one an interval later,
+/// rounded up to R3's 512 s unit so it is never valid early —
 /// over the lock coin its FINALIZE creates, paying the listing's payment
 /// address; the prompt lists every step and when it becomes valid; the
 /// stored steps and the listing file carry them all, and R3 makes each
@@ -3429,6 +3442,7 @@ async fn reverse_schedule_signs_every_step() {
         .expect("finalize & sign");
     assert_eq!(s.state, ListingState::Finalizing);
     let l0 = sell::buy_now_lock_time(SIGN_MTP);
+    let up = |t: u64| t.div_ceil(512) * 512;
     assert_eq!(
         s.steps
             .iter()
@@ -3436,8 +3450,8 @@ async fn reverse_schedule_signs_every_step() {
             .collect::<Vec<_>>(),
         vec![
             (5_000_000, l0),
-            (4_000_000, l0 + 900),
-            (3_000_000, l0 + 1_800)
+            (4_000_000, up(l0 + 900)),
+            (3_000_000, up(l0 + 1_800))
         ]
     );
 
@@ -3497,8 +3511,8 @@ async fn reverse_schedule_signs_every_step() {
     assert_eq!(stored, s.steps);
     for (mtp, want) in [
         (SIGN_MTP, 5_000_000),
-        (valid_from_mtp(l0 + 900), 4_000_000),
-        (valid_from_mtp(l0 + 1_800), 3_000_000),
+        (valid_from_mtp(up(l0 + 900)), 4_000_000),
+        (valid_from_mtp(up(l0 + 1_800)), 3_000_000),
     ] {
         assert_eq!(
             sell::current_step_price(&stored, mtp).unwrap(),
@@ -3620,6 +3634,19 @@ async fn finalize_and_sign_refused_while_the_cancel_transfer_is_alive() {
     with_db(&r.app, |c| queries::delete_tx_draft(c, &id).unwrap());
     assert_eq!(r.listing().abort_draft_id, None, "deleted: unlinked");
     prepare(&r, &price("5")).await.expect("deleted cancel");
+
+    // Still Locking: the pending abort is named before the lockup, as My
+    // listings names it.
+    link("cancel-locking", "broadcasted");
+    with_db(&r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET state = 'locking' WHERE id = ?1",
+            params![r.listing_id],
+        )
+        .unwrap();
+    });
+    let e = err_text(prepare(&r, &price("5")).await.err().expect("locking"));
+    assert!(e.contains(sell::CANCEL_TRANSFER_PENDING), "locking: {e}");
 }
 
 /// R16/R6: the Shakedex gates, and the unlocked signer.
@@ -5955,21 +5982,44 @@ fn own_file(
     signer: &crate::noncustodial::shakedex::lock_key::LockKey,
     payment: &str,
 ) -> String {
+    own_file_with_steps(vout, pubkey, signer, payment, &[(5_000_000, 1_700_000_000)])
+}
+
+/// [`own_file`] with the `(price, lock time)` steps given, each signed by
+/// `signer` over `(RESTORED_TXID, vout)`.
+fn own_file_with_steps(
+    vout: u32,
+    pubkey: [u8; 33],
+    signer: &crate::noncustodial::shakedex::lock_key::LockKey,
+    payment: &str,
+    steps: &[(u64, u64)],
+) -> String {
     let mut lock_txid = [0u8; 32];
     hex::decode_to_slice(RESTORED_TXID, &mut lock_txid).unwrap();
-    let signature = sell::sign_step(
-        signer,
-        &StepTemplate {
-            lock_outpoint: (lock_txid, vout),
-            lock_value: NAME_VALUE,
-            lock_pubkey: &signer.pubkey,
-            payment: crate::noncustodial::tx::output_address_from_string(Network::Regtest, payment)
-                .unwrap(),
-            price: 5_000_000,
-            lock_time_secs: 1_700_000_000,
-        },
-    )
-    .unwrap();
+    let steps: Vec<PriceStep> = steps
+        .iter()
+        .map(|&(price, lock_time)| PriceStep {
+            price,
+            lock_time,
+            signature: sell::sign_step(
+                signer,
+                &StepTemplate {
+                    lock_outpoint: (lock_txid, vout),
+                    lock_value: NAME_VALUE,
+                    lock_pubkey: &signer.pubkey,
+                    payment: crate::noncustodial::tx::output_address_from_string(
+                        Network::Regtest,
+                        payment,
+                    )
+                    .unwrap(),
+                    price,
+                    lock_time_secs: lock_time,
+                },
+            )
+            .unwrap(),
+            fee: 0,
+        })
+        .collect();
     write_listing_file(
         &NewListingFile {
             name: NAME,
@@ -5977,12 +6027,7 @@ fn own_file(
             lock_vout: vout,
             public_key: pubkey,
             payment_addr: payment,
-            steps: &[PriceStep {
-                price: 5_000_000,
-                lock_time: 1_700_000_000,
-                signature,
-                fee: 0,
-            }],
+            steps: &steps,
             expires_at: 1_731_536_000,
         },
         Network::Regtest,
@@ -6091,6 +6136,40 @@ async fn own_listing_file_upgrades_a_restored_lock() {
     assert_eq!(count(&app, "shakedex_listings"), 1);
 }
 
+/// R32: the import reads no stored step (the file replaces them), so a
+/// Restored lock whose stored steps cannot be read takes its file as any
+/// other does; My listings offers the import on that row in the import's
+/// own words (`import_refusal`), while every other action is refused.
+#[tokio::test]
+async fn own_listing_file_upgrades_a_restored_lock_whose_stored_steps_are_unreadable() {
+    let coin = restored_coin(
+        &lock_address(Network::Regtest),
+        COV_FINALIZE,
+        NAME_HEIGHT,
+        None,
+    );
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(coin.clone())).await;
+    let r = restore(&app).await.expect("restored");
+    with_db(&app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET steps_json = 'not json' WHERE id = ?1",
+            [&r.id],
+        )
+        .unwrap();
+    });
+    let row = with_db(&app, |c| {
+        crate::commands::shakedex::my_listings_from_conn(c, PROFILE, Network::Regtest, None)
+            .unwrap()
+            .remove(0)
+    });
+    assert!(row.actions.import_file.allowed, "{:?}", row.actions);
+    assert!(!row.actions.cancel.allowed, "{:?}", row.actions);
+    answer_coin(&mut node, &mut mocks, Some(coin)).await;
+    let s = import(&app, good_file()).await.expect("imported");
+    assert_eq!((s.id, s.state), (r.id, ListingState::Listed));
+    assert_eq!(s.steps.len(), 1);
+}
+
 /// R32: a file for another key, or for another lock coin, is refused, and
 /// the Restored lock stays as it was.
 #[tokio::test]
@@ -6181,28 +6260,141 @@ async fn own_listing_file_with_a_key_this_wallet_does_not_derive_is_refused() {
     assert_still_restored(&app, "a key not derived");
 }
 
+/// R32 (QA Q4): the file does not say the mode, so the import reads it
+/// from the steps as R19/R26 shape them: a Buy Now lowered before the MTP
+/// moved has every step at one lock time (5 then 4 HNS here) and stays a
+/// Buy Now; steps at different lock times are a reverse auction's.
+#[tokio::test]
+async fn own_listing_file_import_reads_the_mode_from_the_step_times() {
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let pay = addr00(Network::Regtest).0;
+    for (case, steps, want) in [
+        (
+            "a lowered Buy Now",
+            vec![(5_000_000, 1_700_000_000), (4_000_000, 1_700_000_000)],
+            ListingMode::BuyNow,
+        ),
+        (
+            "a reverse auction",
+            vec![(5_000_000, 1_700_000_000), (4_000_000, 1_700_000_512)],
+            ListingMode::ReverseAuction,
+        ),
+    ] {
+        let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+        restore(&app).await.expect("restored");
+        let s = import(&app, own_file_with_steps(1, key.pubkey, &key, &pay, &steps))
+            .await
+            .expect(case);
+        assert_eq!((s.state, s.mode), (ListingState::Listed, want), "{case}");
+    }
+}
+
 /// R32, Step 1: the file's payment address must be one of this profile's
-/// derived addresses on this network: an address of our seed the wallet has
-/// not derived, or one of another network, is refused.
+/// addresses on this network: its derived ones, or one of its first
+/// `OWN_FILE_RECEIVE_SEARCH_LIMIT` receive addresses. Another seed's
+/// address, our receive address past that limit, an underived change
+/// address, or one of another network is refused, and nothing is derived.
 #[tokio::test]
 async fn own_listing_file_paying_an_address_not_ours_is_refused() {
+    use crate::commands::shakedex::OWN_FILE_RECEIVE_SEARCH_LIMIT;
     let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
     restore(&app).await.expect("restored");
     let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
-    let (_sk, _pk, underived) = hd::derive_address(Network::Regtest, &seed(), 0, 0, 7).unwrap();
-    let e = err_text(
-        import(&app, own_file(1, key.pubkey, &key, &underived))
-            .await
-            .unwrap_err(),
-    );
-    assert!(e.contains("not one of this wallet's addresses"), "{e}");
-    assert_still_restored(&app, "underived");
+    let derived = || {
+        with_db(&app, |c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM derived_addresses WHERE wallet_profile_id = ?1",
+                [PROFILE],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+        })
+    };
+    let before = derived();
+    let address = |seed: &[u8; 64], branch: u32, index: u32| {
+        hd::derive_address(Network::Regtest, seed, 0, branch, index)
+            .unwrap()
+            .2
+    };
+    for (case, pay) in [
+        ("another seed", address(&[7; 64], 0, 0)),
+        (
+            "past the search",
+            address(&seed(), 0, OWN_FILE_RECEIVE_SEARCH_LIMIT),
+        ),
+        ("an underived change address", address(&seed(), 1, 7)),
+    ] {
+        let e = err_text(
+            import(&app, own_file(1, key.pubkey, &key, &pay))
+                .await
+                .unwrap_err(),
+        );
+        assert!(
+            e.contains("this listing file's payment address is not one of this wallet's addresses"),
+            "{case}: {e}"
+        );
+        assert_still_restored(&app, case);
+        assert_eq!(derived(), before, "{case}: nothing derived");
+    }
     // The same file paying our address 0/0 as mainnet spells it.
     let mut v: Value = serde_json::from_str(&good_file()).unwrap();
     v["paymentAddr"] = addr00(Network::Main).0.into();
     let e = err_text(import(&app, v.to_string()).await.unwrap_err());
     assert!(e.contains("this listing is for mainnet"), "{e}");
     assert_still_restored(&app, "mainnet");
+}
+
+/// R32 (QA F7): a profile restored from the same phrase holds only its
+/// restore window (receive and change 0..19 here), while the listing's
+/// payment address was reserved further on by the profile that locked
+/// (receive 28). The import finds it on the receive branch, up to
+/// `OWN_FILE_RECEIVE_SEARCH_LIMIT`, and then proceeds as for a known
+/// address: the listing is Listed, receive 0..=28 are derived so sync
+/// watches the sale, and 28 is used, so it is never handed out again.
+#[tokio::test]
+async fn own_listing_file_paying_our_receive_address_past_the_restore_window_is_imported() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    with_db(&app, |c| {
+        let xpub = crate::tests::shakedex_cmd_tests::account_xpub(Network::Regtest)
+            .to_base58check(Network::Regtest);
+        crate::commands::secure_wallet::provision_addresses(
+            c,
+            PROFILE,
+            Network::Regtest,
+            &xpub,
+            20,
+        )
+        .unwrap();
+    });
+    restore(&app).await.expect("restored");
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let (_sk, _pk, pay) = hd::derive_address(Network::Regtest, &seed(), 0, 0, 28).unwrap();
+    let s = import(&app, own_file(1, key.pubkey, &key, &pay))
+        .await
+        .expect("imported");
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!(s.payment_address.as_deref(), Some(pay.as_str()));
+    with_db(&app, |c| {
+        let receive: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM derived_addresses
+                 WHERE wallet_profile_id = ?1 AND branch = 0 AND child_index <= 28",
+                [PROFILE],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(receive, 29, "receive 0..=28 derived");
+        let used: i64 = c
+            .query_row(
+                "SELECT used FROM derived_addresses WHERE wallet_profile_id = ?1 AND address = ?2",
+                params![PROFILE, pay],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(used, 1, "the payment address is used");
+        let next = derivation::reserve_receive_address(c, PROFILE).unwrap();
+        assert_eq!(next.child_index, 29, "never reserved again");
+    });
 }
 
 /// We never write a market fee (R23): a file of ours with one is not ours,
@@ -6354,6 +6546,167 @@ async fn own_listing_file_refused_for_ledger_and_watch_only() {
         );
         assert_still_restored(&app, kind);
     }
+}
+
+// --- Own listing file from a path, publish later (T7) ------------------------
+
+use crate::commands::shakedex::{shakedex_import_own_listing_from_file, shakedex_publish_listing};
+
+fn scratch_file(text: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let p = std::env::temp_dir().join(format!(
+        "namehold_own_file_{}_{}.json",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::write(&p, text).unwrap();
+    p
+}
+
+/// R32: the saved file, chosen from disk, upgrades the Restored lock as a
+/// pasted one does.
+#[tokio::test]
+async fn own_listing_file_from_a_path_upgrades_a_restored_lock() {
+    let coin = our_lock_coin();
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(coin.clone())).await;
+    restore(&app).await.expect("restored");
+    answer_coin(&mut node, &mut mocks, Some(coin)).await;
+    let p = scratch_file(&good_file());
+    let s = shakedex_import_own_listing_from_file(app.state(), p.display().to_string())
+        .await
+        .expect("imported");
+    std::fs::remove_file(p).unwrap();
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!((s.steps.len(), s.steps[0].price), (1, 5_000_000));
+}
+
+/// The file on disk is read with the listing-file size limit before
+/// anything is parsed, and a path that is not a regular file is refused.
+#[tokio::test]
+async fn own_listing_file_from_a_path_over_the_size_limit_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let p = scratch_file(&format!(
+        "{}{}",
+        good_file(),
+        " ".repeat(MAX_LISTING_FILE_BYTES)
+    ));
+    let e = err_text(
+        shakedex_import_own_listing_from_file(app.state(), p.display().to_string())
+            .await
+            .unwrap_err(),
+    );
+    std::fs::remove_file(p).unwrap();
+    assert!(e.contains("larger than"), "{e}");
+    let dir = std::env::temp_dir().display().to_string();
+    let e = err_text(
+        shakedex_import_own_listing_from_file(app.state(), dir)
+            .await
+            .unwrap_err(),
+    );
+    assert!(e.contains("not a regular file"), "{e}");
+    assert_still_restored(&app, "path");
+}
+
+/// The gates come before the file is read: a locked wallet is refused
+/// without opening the path (a missing file would be an I/O error).
+#[tokio::test]
+async fn own_listing_file_from_a_path_needs_the_unlocked_signer_first() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    *app.state::<AppState>().signer.lock().unwrap() = None;
+    let missing = std::env::temp_dir().join("namehold_no_such_listing_file.json");
+    assert!(matches!(
+        shakedex_import_own_listing_from_file(app.state(), missing.display().to_string())
+            .await
+            .unwrap_err(),
+        crate::error::AppError::WalletLocked
+    ));
+}
+
+const MAINNET_LISTING_FILE: &str =
+    include_str!("../../tests/vectors/shakedex/proof_dexreviews.json");
+
+/// A Listed, unpublished listing of the active profile with the vector's
+/// mainnet file.
+fn insert_listed_with_file(app: &App) {
+    with_db(app, |c| {
+        let mut l = listing("pub", "dexreviews", ListingState::Listed);
+        l.wallet_profile_id = PROFILE.into();
+        l.listing_file_json = Some(MAINNET_LISTING_FILE.into());
+        queries::insert_shakedex_listing(c, &l).unwrap();
+    });
+}
+
+fn is_published(app: &App) -> bool {
+    with_db(app, |c| {
+        queries::get_shakedex_listing(c, "pub")
+            .unwrap()
+            .unwrap()
+            .publish
+    })
+}
+
+/// Carry 1: on a mainnet recovery-phrase profile with the signer unlocked,
+/// publishing is turned on and nothing else changes.
+#[tokio::test]
+async fn publish_listing_on_mainnet_turns_publish_on() {
+    let node = mockito::Server::new_async().await;
+    let app = app_with(seeded("mainnet", "mnemonic_hot", &node.url()));
+    unlock(&app, Network::Main);
+    insert_listed_with_file(&app);
+    let s = shakedex_publish_listing(app.state(), "pub".into())
+        .await
+        .expect("published");
+    assert!(s.publish);
+    assert!(is_published(&app));
+}
+
+/// Publishing authorizes as every selling write does: recovery-phrase
+/// profiles only (R16) and the unlocked signer, both before the listing is
+/// judged; then the profile's network (here regtest) is refused. Nothing is
+/// written on a refusal.
+#[tokio::test]
+async fn publish_listing_follows_the_writer_gates_and_the_profiles_network() {
+    let node = mockito::Server::new_async().await;
+    for kind in ["ledger_hardware", "xpriv_hot", "watch_only_xpub"] {
+        let app = app_with(seeded("mainnet", kind, &node.url()));
+        unlock(&app, Network::Main);
+        insert_listed_with_file(&app);
+        let e = err_text(
+            shakedex_publish_listing(app.state(), "pub".into())
+                .await
+                .unwrap_err(),
+        );
+        assert!(
+            e.contains(crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY),
+            "{kind}: {e}"
+        );
+        assert!(!is_published(&app), "{kind}");
+    }
+    let app = app_with(seeded("mainnet", "mnemonic_hot", &node.url()));
+    insert_listed_with_file(&app);
+    assert!(matches!(
+        shakedex_publish_listing(app.state(), "pub".into())
+            .await
+            .unwrap_err(),
+        crate::error::AppError::WalletLocked
+    ));
+    assert!(!is_published(&app), "locked");
+    let app = app_with(seeded("regtest", "mnemonic_hot", &node.url()));
+    unlock(&app, Network::Regtest);
+    insert_listed_with_file(&app);
+    let e = err_text(
+        shakedex_publish_listing(app.state(), "pub".into())
+            .await
+            .unwrap_err(),
+    );
+    assert!(
+        e.contains(crate::commands::shakedex::MARKET_MAINNET_ONLY),
+        "{e}"
+    );
+    assert!(!is_published(&app), "regtest");
 }
 
 // --- Cancel (T5, R28) --------------------------------------------------------
@@ -7158,17 +7511,78 @@ async fn cancel_refused_on_node_facts_that_do_not_hold() {
     assert_no_cancel(&l, ListingState::Listed);
 }
 
+/// R21, R32 (QA N1): a lock restored by name and then upgraded to Listed by
+/// its own listing file (R32's import) still has no cancel address. My
+/// listings offers Cancel, and Cancel reserves the address as for a
+/// Restored lock: a receive address of this profile, marked used, stored on
+/// the listing, the cancel committing to it.
+#[tokio::test]
+async fn cancel_of_a_restored_lock_upgraded_by_its_file_reserves_its_cancel_address() {
+    let l = listed_fixture().await;
+    with_db(&l.r.app, |c| {
+        // What the import leaves: Listed with the file's payment address,
+        // steps and file, and the restore's empty cancel address.
+        c.execute(
+            "UPDATE shakedex_listings SET cancel_address = NULL, cancel_child_index = NULL,
+                 lock_transfer_txid = NULL, lock_finalize_draft_id = NULL
+             WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap();
+        let row =
+            crate::commands::shakedex::my_listings_from_conn(c, PROFILE, Network::Regtest, None)
+                .unwrap()
+                .remove(0);
+        assert_eq!(row.listing.state, ListingState::Listed);
+        assert!(row.actions.cancel.allowed, "{:?}", row.actions.cancel);
+    });
+    answer(true);
+    let draft = cancel(&l).await.expect("cancel");
+    let s = l.r.listing();
+    assert_eq!(s.state, ListingState::Cancelling);
+    let address = s.cancel_address.clone().expect("reserved");
+    let index = u32::try_from(s.cancel_child_index.unwrap()).unwrap();
+    assert_eq!(
+        with_db(&l.r.app, |c| queries::receive_address_at(
+            c, PROFILE, 0, index
+        )
+        .unwrap()),
+        Some(address.clone())
+    );
+    let used: i64 = with_db(&l.r.app, |c| {
+        c.query_row(
+            "SELECT used FROM derived_addresses WHERE address = ?1",
+            [&address],
+            |r| r.get(0),
+        )
+        .unwrap()
+    });
+    assert_eq!(used, 1, "reserved (R21)");
+    let row = with_db(&l.r.app, |c| {
+        queries::get_tx_draft(c, &draft.id).unwrap().unwrap()
+    });
+    let plan: DraftPlan = serde_json::from_str(&row.signing_inputs_json).unwrap();
+    let (_, h) = address::decode(Network::Regtest, &address).unwrap();
+    assert_eq!(
+        plan.outputs[0].covenant_items_hex[3],
+        hex::encode(h),
+        "the cancel commits to it"
+    );
+    assert_eq!(plan.inputs[0].child_index, index);
+}
+
 /// R21, R32: the cancel address of a restored lock is reserved and
 /// written on its row in one database transaction. When the row write does
-/// not apply (the row is no longer a Restored lock without a cancel
-/// address), the reservation is rolled back: no derived address is added
-/// or marked used.
+/// not apply (the row is no longer one Cancel acts on, here SalePending,
+/// without a cancel address), the reservation is rolled back: no derived
+/// address is added or marked used.
 #[tokio::test]
 async fn a_restored_cancel_address_is_reserved_only_with_its_row() {
     let l = listed_fixture().await;
     with_db(&l.r.app, |c| {
         c.execute(
-            "UPDATE shakedex_listings SET cancel_address = NULL, cancel_child_index = NULL
+            "UPDATE shakedex_listings SET cancel_address = NULL, cancel_child_index = NULL,
+                 state = 'sale_pending'
              WHERE id = ?1",
             [&l.r.listing_id],
         )
@@ -7186,7 +7600,7 @@ async fn a_restored_cancel_address_is_reserved_only_with_its_row() {
     };
     let (rows, used_before) = (count(&l.r.app, "derived_addresses"), used(&l.r.app));
     let e = with_db(&l.r.app, |c| {
-        reserve_restored_cancel_address(c, PROFILE, &l.r.listing_id).expect_err("listed")
+        reserve_restored_cancel_address(c, PROFILE, &l.r.listing_id).expect_err("sale pending")
     });
     assert!(err_text(e).contains("changed meanwhile"));
     assert_eq!(
@@ -7490,6 +7904,11 @@ async fn cancel_mined_fixture(height: i64, tip: i64, to: Option<String>) -> (Lis
                 .unwrap(),
             1
         );
+        // The sync that saw it mined counted its lockup.
+        let left = Network::Regtest
+            .name_params()
+            .blocks_until_finalize(height, tip);
+        queries::set_cancel_blocks_remaining(db, &l.r.listing_id, left).unwrap();
     });
     let to = to.unwrap_or_else(|| l.r.listing().cancel_address.unwrap());
     let mut info = name_info(RENEWAL, 0, &c);
@@ -7587,6 +8006,32 @@ fn assert_no_cancel_finalize(l: &Listed) {
         3,
         "lock, FINALIZE and cancel only"
     );
+}
+
+/// R28: a mined cancel whose lockup no sync has counted yet is refused as
+/// My listings refuses it, with nothing written, though the node would
+/// already take its FINALIZE.
+#[tokio::test]
+async fn finalize_cancel_refused_while_no_sync_has_counted_its_lockup() {
+    let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
+    let (l, _) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 1, None).await;
+    with_db(&l.r.app, |db| {
+        db.execute(
+            "UPDATE shakedex_listings SET cancel_blocks_remaining = NULL",
+            [],
+        )
+        .unwrap();
+    });
+    let e = err_text(
+        finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err("not counted"),
+    );
+    assert!(
+        e.contains(crate::commands::shakedex::CANCEL_LOCKUP_NOT_COUNTED),
+        "{e}"
+    );
+    assert_no_cancel_finalize(&l);
 }
 
 /// R28: refused, with the reason and nothing written, one block before the
@@ -8456,4 +8901,32 @@ async fn lower_price_saves_nothing_when_the_listing_changed_meanwhile() {
     assert_eq!(after.listing_file_json, before.listing_file_json);
     assert_eq!(after.expires_at, before.expires_at);
     assert_eq!(after.state, ListingState::Listed);
+}
+
+/// The UI refuses a typed price or schedule in the backend's own words
+/// (`marketText.ts::{parseStepPrice, scheduleProblem}`): both languages
+/// read this one table.
+#[test]
+fn typed_prices_and_schedules_are_refused_in_the_uis_words() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../src/test/fixtures/sell-price-cases.json"
+    ))
+    .unwrap();
+    let want = |c: &Value| c["error"].as_str().map(|w| format!("Invalid input: {w}"));
+    for c in cases["prices"].as_array().unwrap() {
+        let text = c["text"].as_str().unwrap();
+        let got = sell::parse_step_price(text).err().map(|e| e.to_string());
+        assert_eq!(got, want(c), "{text:?}");
+    }
+    for c in cases["schedules"].as_array().unwrap() {
+        let got = sell::parse_schedule(
+            c["startPrice"].as_str().unwrap(),
+            c["floorPrice"].as_str().unwrap(),
+            u32::try_from(c["steps"].as_u64().unwrap()).unwrap(),
+            c["intervalSecs"].as_u64().unwrap(),
+        )
+        .err()
+        .map(|e| e.to_string());
+        assert_eq!(got, want(c), "{c}");
+    }
 }

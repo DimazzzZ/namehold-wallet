@@ -1297,6 +1297,10 @@ pub fn never_sent(status: &str) -> bool {
 /// The status of a draft the chain has mined.
 pub const CONFIRMED_STATUS: &str = "confirmed";
 
+/// The status of a send the node may or may not hold (not taken, or no
+/// answer): kept for the confirmation poll, and sendable again.
+pub const BROADCAST_PENDING_STATUS: &str = "broadcast_pending";
+
 /// The status of a draft whose broadcast hsd refused: dead ([`draft_alive`]).
 const FAILED_STATUS: &str = "failed";
 
@@ -2318,6 +2322,20 @@ pub fn get_shakedex_listing(
     Ok(row)
 }
 
+/// Every listing of the profile, newest first ("My listings", T7).
+pub fn list_shakedex_listings(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<ShakedexListing>, AppError> {
+    let sql = format!(
+        "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
+         WHERE wallet_profile_id = ?1 ORDER BY created_at DESC, id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![profile_id], row_to_shakedex_listing)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 /// The listing of `name` that is still open (not in a terminal state), newest
 /// first: while there is one, the name is locking or locked (R27).
 pub fn open_shakedex_listing_for_name(
@@ -2460,16 +2478,8 @@ pub fn read_shakedex_listing_names(
         if !listing_holds_the_name(state, status.as_deref()) {
             continue;
         }
-        // A display estimate: the lock TRANSFER draft's confirmation height
-        // as the wallet's sync recorded it and the wallet's sync height. The
-        // listing's state itself moves on hsd's `info.transfer` (the
-        // before-lock job), which a reorg can change before the sync does.
-        let blocks_until_finalize = match (state, status.as_deref(), confirmed) {
-            (ListingState::Locking, Some(CONFIRMED_STATUS), Some(h)) => {
-                Some(params_net.blocks_until_finalize(h, tip))
-            }
-            _ => None,
-        };
+        let blocks_until_finalize =
+            locking_blocks_until_finalize(state, status.as_deref(), confirmed, params_net, tip);
         out.push(ListingNameRow {
             name,
             lock_pubkey_hex: pubkey,
@@ -2481,6 +2491,28 @@ pub fn read_shakedex_listing_names(
         });
     }
     Ok(out)
+}
+
+/// R19: the blocks left in a Locking listing's transfer lockup, for the
+/// Owned Names row and My listings alike: from its lock TRANSFER draft's
+/// confirmation height (`confirmed` with that status) and the wallet's sync
+/// height `tip`; `None` before that draft is seen mined, and in every other
+/// state. A display estimate: the listing's state itself moves on hsd's
+/// `info.transfer` (the before-lock job), which a reorg can change before
+/// the sync does.
+pub fn locking_blocks_until_finalize(
+    state: ListingState,
+    lock_draft_status: Option<&str>,
+    confirmed: Option<i64>,
+    params_net: crate::noncustodial::network::NameParams,
+    tip: i64,
+) -> Option<i64> {
+    match (state, lock_draft_status, confirmed) {
+        (ListingState::Locking, Some(CONFIRMED_STATUS), Some(h)) => {
+            Some(params_net.blocks_until_finalize(h, tip))
+        }
+        _ => None,
+    }
 }
 
 /// The status of the listing's lock TRANSFER draft, `None` when the listing
@@ -3616,6 +3648,22 @@ fn release_cancel(
     Ok(true)
 }
 
+/// R23 later (T7): publish a Listed listing that was not published. Only
+/// this field changes; the market jobs take it from the next sync
+/// ([`list_listings_kept_on_market`]). Never unpublishes: R28's report of a
+/// mined cancel or sale reads `publish`. Returns the rows written (0 or 1).
+pub fn publish_shakedex_listing(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    id: &str,
+) -> Result<usize, AppError> {
+    Ok(conn.execute(
+        "UPDATE shakedex_listings SET publish = 1, updated_at = datetime('now')
+         WHERE id = ?1 AND wallet_profile_id = ?2 AND state = ?3 AND publish = 0",
+        params![id, profile_id, ListingState::Listed],
+    )?)
+}
+
 /// The listings the market jobs keep on LearnHNS (R24, R25: the jobs that
 /// re-upload and step listings read this): the
 /// published (`publish`) ones that are Listed, or Cancelling while their
@@ -3750,9 +3798,10 @@ pub fn receive_address_at(
 }
 
 /// R21/R28: a lock restored by name gets the cancel address the cancel
-/// commits to when it is cancelled (its restore reserved none). Only a
-/// Restored row without one; its state is unchanged. Returns how many rows
-/// changed (0 or 1).
+/// commits to when it is cancelled (its restore reserved none, and the
+/// import of its own file, R32, adds none). Only a row Cancel acts on
+/// (Restored, or Listed once upgraded by that file) without one; its state
+/// is unchanged. Returns how many rows changed (0 or 1).
 pub fn set_restored_lock_cancel_address(
     conn: &rusqlite::Connection,
     id: &str,
@@ -3762,8 +3811,15 @@ pub fn set_restored_lock_cancel_address(
     Ok(conn.execute(
         "UPDATE shakedex_listings
          SET cancel_address = ?2, cancel_child_index = ?3, updated_at = datetime('now')
-         WHERE id = ?1 AND state = ?4 AND cancel_address IS NULL AND cancel_child_index IS NULL",
-        params![id, address, i64::from(child_index), ListingState::Restored],
+         WHERE id = ?1 AND state IN (?4, ?5)
+           AND cancel_address IS NULL AND cancel_child_index IS NULL",
+        params![
+            id,
+            address,
+            i64::from(child_index),
+            ListingState::Restored,
+            ListingState::Listed
+        ],
     )?)
 }
 

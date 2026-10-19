@@ -24,6 +24,14 @@ export interface MergedRow {
   /** Draft ID when this row has a local draft record; null for node-only rows. */
   draftId: string | null;
   action: string;
+  /**
+   * The covenant label the chain gives this transaction (`classify_tx`'s
+   * action): the chain row's own for a row seen on chain, else the one the
+   * draft builds (a Shakedex draft's TRANSFER or FINALIZE, another draft's
+   * action as it is); null when unknown. `action` may be a Shakedex draft's
+   * own label; what the Amount cell shows follows this one.
+   */
+  covenantAction: string | null;
   name: string | null;
   /**
    * For batch actions (batch-bid, batch-renew, etc.), the real list of
@@ -121,7 +129,10 @@ export function mergeActivity(rows: ActionRow[], drafts: TxDraftSummary[]): Merg
       key: row.txid,
       txid: row.txid,
       draftId: draft?.id ?? null,
-      action: row.action,
+      // A Shakedex draft's covenant is a plain TRANSFER, FINALIZE or UPDATE
+      // on chain; the draft knows it was a lock, a purchase or a cancel.
+      action: draft?.action.startsWith("shakedex_") ? draft.action : row.action,
+      covenantAction: row.action,
       // The chain row's name comes from the covenant, which only carries a raw
       // name for OPEN, BID and FINALIZE. For every other name action the draft
       // this wallet built is the only place the name exists — without this
@@ -166,6 +177,26 @@ export function mergeActivity(rows: ActionRow[], drafts: TxDraftSummary[]): Merg
   return merged;
 }
 
+/**
+ * The covenant each Shakedex draft action builds on chain: the lock, cancel
+ * and purchase are TRANSFERs, their finalizes FINALIZEs (`shakedex/sell.rs`,
+ * `cancel.rs`, `purchase.rs`).
+ */
+const SHAKEDEX_DRAFT_COVENANT: Record<string, string> = {
+  shakedex_lock: "transfer",
+  shakedex_lock_finalize: "finalize",
+  shakedex_cancel: "transfer",
+  shakedex_cancel_finalize: "finalize",
+  shakedex_purchase: "transfer",
+  shakedex_purchase_finalize: "finalize",
+};
+
+/** The covenant label of a draft not seen on chain yet; null when unknown. */
+function draftCovenant(action: string): string | null {
+  if (!action.startsWith("shakedex_")) return action;
+  return SHAKEDEX_DRAFT_COVENANT[action] ?? null;
+}
+
 /** Convert a draft-only entry into a MergedRow. */
 function draftToMergedRow(d: TxDraftSummary): MergedRow {
   const summary = d.summary;
@@ -176,6 +207,7 @@ function draftToMergedRow(d: TxDraftSummary): MergedRow {
     txid: d.txid ?? null,
     draftId: d.id,
     action: d.action,
+    covenantAction: draftCovenant(d.action),
     name: summary?.name ?? null,
     nameList: summary?.nameList ?? null,
     // Negate: netSpendDoos is a positive magnitude; ActionRow convention is

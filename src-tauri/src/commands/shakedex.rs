@@ -67,7 +67,9 @@ pub struct PriceStepView {
     pub valid_in_secs: Option<u64>,
 }
 
-/// A listing with one price step is Buy Now; with several, a reverse auction.
+/// A listing whose price steps share one lock time is Buy Now (a lowered
+/// one included); steps at different times are a reverse auction
+/// ([`sell::mode_of_step_times`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ListingKind {
@@ -197,11 +199,34 @@ impl BrowseCtx {
 }
 
 fn browse_ctx(state: &State<'_, AppState>) -> Result<BrowseCtx, AppError> {
+    let id = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        draft_ctx::active_profile(&conn)?.id
+    };
+    browse_ctx_for(state, &id)
+}
+
+/// The profile a read names when it exists, else the active one, as the
+/// read commands resolve it (`commands/read.rs::resolve_profile`; this module
+/// does not reach into its siblings).
+fn named_or_active_profile(
+    conn: &rusqlite::Connection,
+    wallet_profile_id: Option<String>,
+) -> Result<String, AppError> {
+    if let Some(id) = wallet_profile_id.map(|id| id.trim().to_string()) {
+        if !id.is_empty() && queries::get_wallet_profile(conn, &id)?.is_some() {
+            return Ok(id);
+        }
+    }
+    Ok(draft_ctx::active_profile(conn)?.id)
+}
+
+/// [`browse_ctx`] for the profile `profile_id`: its network and its node.
+fn browse_ctx_for(state: &State<'_, AppState>, profile_id: &str) -> Result<BrowseCtx, AppError> {
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    let profile = draft_ctx::active_profile(&conn)?;
     Ok(BrowseCtx {
-        network: derivation::network_from_profile(&profile.network)?,
-        node: NodeRpcClient::for_profile(&conn, &profile.id)?,
+        network: queries::profile_network(&conn, profile_id)?,
+        node: NodeRpcClient::for_profile(&conn, profile_id)?,
         settings: queries::get_settings(&conn)?,
     })
 }
@@ -237,10 +262,9 @@ fn market_row(listing_json: String, l: &ListingFile, verdict: Verdict) -> Market
     MarketRow {
         listing_json,
         name: l.name.clone(),
-        kind: if l.steps.len() == 1 {
-            ListingKind::BuyNow
-        } else {
-            ListingKind::ReverseAuction
+        kind: match sell::mode_of_step_times(l.steps.iter().map(|s| s.lock_time)) {
+            ListingMode::BuyNow => ListingKind::BuyNow,
+            ListingMode::ReverseAuction => ListingKind::ReverseAuction,
         },
         current_price,
         next_price,
@@ -757,28 +781,8 @@ pub(crate) async fn prepare_lock_finalize(
         let listing = queries::get_shakedex_listing(&conn, listing_id)?
             .filter(|l| l.wallet_profile_id == ctx.profile_id)
             .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
-        match listing.state {
-            ListingState::ReadyToFinalize => {}
-            ListingState::Locking => {
-                return Err(AppError::InvalidInput(
-                    "Finalize & sign opens after the transfer lockup".into(),
-                ))
-            }
-            other => {
-                return Err(AppError::InvalidInput(
-                    listing_over(other)
-                        .unwrap_or("this listing is already finalized into its lock")
-                        .into(),
-                ))
-            }
-        }
-        // The Cancel transfer and the FINALIZE spend the same TRANSFER coin.
-        if let Some(cancel_id) = &listing.abort_draft_id {
-            if let Some(cancel) = queries::get_tx_draft(&conn, cancel_id)? {
-                if queries::draft_may_still_land(&cancel.status) {
-                    return Err(AppError::InvalidInput(sell::CANCEL_TRANSFER_PENDING.into()));
-                }
-            }
+        if let Some(why) = finalize_and_sign_refusal(&conn, &listing)? {
+            return Err(AppError::InvalidInput(why));
         }
         let owner = queries::get_name_coin(&conn, &ctx.profile_id, &listing.name)?;
         (listing, owner)
@@ -808,10 +812,10 @@ pub(crate) async fn prepare_lock_finalize(
             ))
         }
         (ListingMode::ReverseAuction, Some(s)) => {
-            let start = sell::parse_step_price(&s.start_price)?;
-            let floor = sell::parse_step_price(&s.floor_price)?;
-            // Every rule but the lock times' fit, before the node is read.
-            sell::reverse_schedule(start, floor, s.steps, s.interval_secs, 0)?;
+            // Every rule before the node is read; the lock times again
+            // from its median time.
+            let (start, floor) =
+                sell::parse_schedule(&s.start_price, &s.floor_price, s.steps, s.interval_secs)?;
             Pricing::Schedule {
                 start,
                 floor,
@@ -1018,6 +1022,10 @@ pub struct ListingSummary {
     pub cancel_draft_id: Option<String>,
     pub cancel_finalize_draft_id: Option<String>,
     pub cancel_blocks_remaining: Option<i64>,
+    /// Blocks left in the transfer lockup while Locking, counted as the
+    /// Owned Names row counts them ([`queries::locking_blocks_until_finalize`]);
+    /// `None` before the lock TRANSFER is seen mined and in every other state.
+    pub blocks_until_finalize: Option<i64>,
     /// Where the listing stands on LearnHNS Market (R23, R25, R28); `None`
     /// while our current listing is not yet told (unpublished, not yet
     /// announced, or reset by a move back to Listed).
@@ -1026,12 +1034,26 @@ pub struct ListingSummary {
     pub market_error: Option<String>,
     /// RFC 3339 UTC: when the next market action on the listing is due.
     pub market_retry_at: Option<String>,
+    /// R23: whether the seller ticked "Publish on LearnHNS Market" (or
+    /// published it later from My listings).
+    pub publish: bool,
 }
 
 impl ListingSummary {
-    fn of(l: &ShakedexListing) -> Result<Self, AppError> {
-        let steps = shakedex_jobs::stored_steps(l)?;
-        Ok(Self {
+    fn of(conn: &rusqlite::Connection, l: &ShakedexListing) -> Result<Self, AppError> {
+        Ok(Self::with_steps(
+            l,
+            shakedex_jobs::stored_steps(l)?,
+            lockup_left(conn, l)?,
+        ))
+    }
+
+    fn with_steps(
+        l: &ShakedexListing,
+        steps: Vec<sell::StoredStep>,
+        blocks_until_finalize: Option<i64>,
+    ) -> Self {
+        Self {
             id: l.id.clone(),
             name: l.name.clone(),
             mode: l.mode,
@@ -1045,11 +1067,40 @@ impl ListingSummary {
             cancel_draft_id: l.cancel_draft_id.clone(),
             cancel_finalize_draft_id: l.cancel_finalize_draft_id.clone(),
             cancel_blocks_remaining: l.cancel_blocks_remaining,
+            blocks_until_finalize,
             market_status: l.market_status,
             market_error: l.market_error.clone(),
             market_retry_at: l.market_retry_at.clone(),
-        })
+            publish: l.publish,
+        }
     }
+}
+
+/// The lockup left on a Locking listing `l`, by the rule the Owned Names
+/// row uses: its lock TRANSFER draft's confirmation height and the wallet's
+/// sync height on the profile's network.
+fn lockup_left(conn: &rusqlite::Connection, l: &ShakedexListing) -> Result<Option<i64>, AppError> {
+    if l.state != ListingState::Locking {
+        return Ok(None);
+    }
+    let Some(draft) = l
+        .lock_transfer_draft_id
+        .as_deref()
+        .map(|id| queries::get_tx_draft(conn, id))
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    let params = queries::profile_network(conn, &l.wallet_profile_id)?.name_params();
+    let tip = crate::noncustodial::sync::get_sync_height(conn, &l.wallet_profile_id)?;
+    Ok(queries::locking_blocks_until_finalize(
+        l.state,
+        Some(draft.status.as_str()),
+        draft.confirmation_height,
+        params,
+        tip,
+    ))
 }
 
 /// R19 day 2, generic over the runtime so tests drive it: check
@@ -1187,7 +1238,7 @@ pub(crate) async fn finalize_and_sign_confirmed<R: tauri::Runtime>(
     tx.commit()?;
     let l = queries::get_shakedex_listing(&conn, &p.listing.id)?
         .ok_or_else(|| AppError::Other("listing vanished after Finalize & sign".into()))?;
-    ListingSummary::of(&l)
+    ListingSummary::of(&conn, &l)
 }
 
 /// Why Finalize & sign and the export refuse a listing that is over or was
@@ -1212,6 +1263,82 @@ fn listing_over(state: ListingState) -> Option<&'static str> {
     }
 }
 
+/// Why Finalize & sign refuses a listing in `state` (R19); `None` for
+/// ReadyToFinalize. [`finalize_and_sign_refusal`] asks it after the
+/// pending abort.
+pub(crate) fn finalize_refusal(state: ListingState) -> Option<&'static str> {
+    match state {
+        ListingState::ReadyToFinalize => None,
+        ListingState::Locking => Some("Finalize & sign opens after the transfer lockup"),
+        other => {
+            Some(listing_over(other).unwrap_or("this listing is already finalized into its lock"))
+        }
+    }
+}
+
+/// Why Finalize & sign refuses listing `l` now (R19); `None` when it may
+/// run. The command and My listings ask this one function. A Cancel
+/// transfer that may still land is named first, while the lockup runs as
+/// after it: it spends the coin the FINALIZE would, and once mined the
+/// listing is Aborted, so the lockup is not what Finalize & sign waits for.
+pub(crate) fn finalize_and_sign_refusal(
+    conn: &rusqlite::Connection,
+    l: &ShakedexListing,
+) -> Result<Option<String>, AppError> {
+    if l.state.aborts_by_cancel_transfer() && abort_may_still_land(conn, l)? {
+        return Ok(Some(sell::CANCEL_TRANSFER_PENDING.to_string()));
+    }
+    Ok(finalize_refusal(l.state).map(str::to_string))
+}
+
+/// R19: the listing's Cancel transfer may still be mined (its draft alive
+/// and not confirmed); it spends the coin the FINALIZE into the lock would.
+pub(crate) fn abort_may_still_land(
+    conn: &rusqlite::Connection,
+    l: &ShakedexListing,
+) -> Result<bool, AppError> {
+    let Some(id) = l.abort_draft_id.as_deref() else {
+        return Ok(false);
+    };
+    Ok(queries::get_tx_draft(conn, id)?.is_some_and(|d| queries::draft_may_still_land(&d.status)))
+}
+
+/// Why the cancel's FINALIZE cannot be built for a listing in `state`
+/// (R28); `None` for CancelAwaitingFinalize. The command and My listings ask
+/// this one function.
+pub(crate) fn finalize_cancel_refusal(state: ListingState) -> Option<&'static str> {
+    match state {
+        ListingState::CancelAwaitingFinalize => None,
+        ListingState::Cancelling => Some(
+            "the cancel is not mined yet: its finalize opens after the transfer lockup that \
+             follows",
+        ),
+        ListingState::CancelFinalizing => Some(
+            "the finalize of this cancel is already built: send it, or delete it to build \
+             another",
+        ),
+        // A state `listing_over` does not name (before the lock, Finalizing,
+        // Listed, SalePending) has no cancel.
+        other => {
+            Some(listing_over(other).unwrap_or("this listing has no mined cancel to finalize"))
+        }
+    }
+}
+
+/// R28: a mined cancel whose transfer lockup no sync has counted yet
+/// (`cancel_blocks_remaining` NULL): its FINALIZE is not offered on a guess.
+/// The UI's twin is `marketText.ts::CANCEL_LOCKUP_NOT_COUNTED`.
+pub const CANCEL_LOCKUP_NOT_COUNTED: &str =
+    "the cancel is mined, but its transfer lockup is not counted yet: sync, then finalize it";
+
+/// R28: the lockup left before the cancel's FINALIZE is valid.
+pub(crate) fn cancel_finalize_wait(remaining: i64) -> String {
+    format!(
+        "the cancel can be finalized in {remaining} block{}",
+        if remaining == 1 { "" } else { "s" }
+    )
+}
+
 /// R28: the cancel's own prompt title, never the transaction prompt's.
 pub const CANCEL_TITLE: &str = "Confirm cancel";
 const CANCEL_MESSAGE: &str = "Review these details. This signs, with the lock key, a \
@@ -1232,8 +1359,9 @@ const CANCEL_LOCK_NOT_MINED: &str = "the finalize into the lock is not mined yet
      can be cancelled once it is";
 
 /// Why Cancel refuses a listing in `state` (R28); `None` for the two whose
-/// lock coin is mined and not being bought, Listed and Restored.
-fn cancel_refusal(state: ListingState) -> Option<&'static str> {
+/// lock coin is mined and not being bought, Listed and Restored. The command
+/// and My listings ask this one function.
+pub(crate) fn cancel_refusal(state: ListingState) -> Option<&'static str> {
     match state {
         ListingState::Listed | ListingState::Restored => None,
         ListingState::Locking | ListingState::ReadyToFinalize => {
@@ -1282,8 +1410,9 @@ fn cancel_could_not_check(what: &str) -> AppError {
 }
 
 /// R21, R32: reserve one receive address of `profile_id` and store
-/// it as the cancel address of the Restored listing `listing_id`, which has
-/// none, in one database transaction: when the row write does not apply
+/// it as the cancel address of the listing `listing_id`, a lock restored by
+/// name (Restored, or Listed by its own file) which has none, in one
+/// database transaction: when the row write does not apply
 /// (the row changed meanwhile), the reservation is rolled back too.
 /// Returns the address and its receive index.
 pub(crate) fn reserve_restored_cancel_address(
@@ -1487,12 +1616,13 @@ pub(crate) async fn prepare_cancel(
     };
 
     // R21, R32: a lock restored by name reserves its cancel address
-    // now, after the node reads. The reservation and the row commit
-    // together.
+    // now, after the node reads, whether still Restored or since upgraded to
+    // Listed by its own file (a lock made here stored one at lock time). The
+    // reservation and the row commit together.
     let (cancel_address, cancel_index) =
         match (listing.cancel_address.clone(), listing.cancel_child_index) {
             (Some(a), Some(i)) => (a, u32::try_from(i).map_err(|_| corrupted("cancel index"))?),
-            (None, None) if listing.state == ListingState::Restored => {
+            (None, None) => {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
                 reserve_restored_cancel_address(&conn, &ctx.profile_id, &listing.id)?
             }
@@ -1653,9 +1783,12 @@ const LOWER_LOCK_WORDS: LockCoinWords = LockCoinWords {
     nothing: "the price cannot be lowered",
 };
 
-/// Why Lower price refuses a listing in `state` (R26); `None` for Listed.
-fn lower_refusal(state: ListingState) -> Option<&'static str> {
+/// Why Lower price refuses a listing in `state` (R26) whose stored steps
+/// are `no_steps` empty; `None` for Listed with signed steps here. The
+/// command and My listings ask this one function.
+pub(crate) fn lower_refusal(state: ListingState, no_steps: bool) -> Option<&'static str> {
     match state {
+        ListingState::Listed if no_steps => Some(LOWER_NO_PRICE_HERE),
         ListingState::Listed => None,
         ListingState::Cancelling => Some(LOWER_DURING_CANCEL),
         ListingState::CancelAwaitingFinalize | ListingState::CancelFinalizing => {
@@ -1705,20 +1838,17 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
 ) -> Result<ListingSummary, AppError> {
     let ctx = software_writer_ctx(state)?;
     authorize_signer(state, &ctx)?;
-    let listing = {
+    let (listing, stored) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let l = queries::get_shakedex_listing(&conn, listing_id)?
             .filter(|l| l.wallet_profile_id == ctx.profile_id)
             .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
-        if let Some(why) = lower_refusal(l.state) {
+        let stored = shakedex_jobs::stored_steps(&l)?;
+        if let Some(why) = lower_refusal(l.state, stored.is_empty()) {
             return Err(AppError::InvalidInput(why.into()));
         }
-        l
+        (l, stored)
     };
-    let stored = shakedex_jobs::stored_steps(&listing)?;
-    if stored.is_empty() {
-        return Err(AppError::InvalidInput(LOWER_NO_PRICE_HERE.into()));
-    }
     let new_price = sell::parse_step_price(price)?;
     let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
     let (lock_txid, lock_vout) = shakedex_jobs::stored_lock(&listing)?
@@ -1857,7 +1987,7 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
     }
     let l = queries::get_shakedex_listing(&conn, &listing.id)?
         .ok_or_else(|| AppError::Other("listing vanished after Lower price".into()))?;
-    ListingSummary::of(&l)
+    ListingSummary::of(&conn, &l)
 }
 
 /// R23: the saved listing file of one of the profile's listings, once its
@@ -1871,18 +2001,367 @@ pub(crate) fn export_listing_file_from_conn(
     let l = queries::get_shakedex_listing(conn, listing_id)?
         .filter(|l| l.wallet_profile_id == profile_id)
         .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
+    if let Some(why) = export_refusal(&l) {
+        return Err(AppError::InvalidInput(why.into()));
+    }
+    // `export_refusal` refused a listing without its file; this keeps the
+    // command's sentence the same if that check ever moves.
+    l.listing_file_json
+        .ok_or_else(|| AppError::InvalidInput(EXPORT_NO_FILE.into()))
+}
+
+/// R23: a lock with no listing file here (restored by name, or finalized by
+/// another wallet) has nothing to export.
+const EXPORT_NO_FILE: &str = "this lock has no listing file here: import its saved file";
+
+/// Whether one action of My listings can run now, and the command's own
+/// sentence when it cannot (the button is shown disabled with it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListingAction {
+    pub allowed: bool,
+    pub reason: Option<String>,
+}
+
+impl ListingAction {
+    fn refused_by(why: Option<String>) -> Self {
+        Self {
+            allowed: why.is_none(),
+            reason: why,
+        }
+    }
+}
+
+/// What a listing can do now, each from the refusal function its command
+/// runs first (the state and stored facts; the node's checks come when it
+/// runs).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListingActions {
+    pub finalize_and_sign: ListingAction,
+    pub lower_price: ListingAction,
+    pub cancel: ListingAction,
+    pub finalize_cancel: ListingAction,
+    pub export: ListingAction,
+    pub publish: ListingAction,
+    /// Import the saved listing file of a Restored lock (R32).
+    pub import_file: ListingAction,
+}
+
+/// The listing's own draft that was never sent (`queries::never_sent`), or
+/// whose send the node may not hold (`broadcast_pending`, which
+/// `broadcast_tx_draft` sends again): the lock TRANSFER (Locking), the
+/// FINALIZE into the lock (Finalizing), the cancel (Cancelling) or the
+/// cancel's FINALIZE (CancelFinalizing). `signed`: only the broadcast is
+/// left. `discardable`: never sent, so `delete_tx_draft` takes it; it
+/// refuses a `broadcast_pending` one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingSend {
+    pub draft_id: String,
+    pub action: String,
+    pub signed: bool,
+    pub discardable: bool,
+}
+
+/// A row's prices (R12), or why it has none: each case its own variant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ListingPrices {
+    /// No signed steps here: before Finalize & sign, or a Restored lock
+    /// without its listing file.
+    NoSteps,
+    /// SPV or Explorer: no node can say the median time.
+    Unverified,
+    /// The node did not say its median time.
+    CouldNotCheck { reason: String },
+    /// The stored steps cannot be read (a corrupted row); every action of
+    /// the row is refused in the same words.
+    Unreadable { reason: String },
+    /// The prices at the node's median time (`sell::step_view`).
+    #[serde(rename_all = "camelCase")]
+    At {
+        current_price: Option<u64>,
+        next_price: Option<u64>,
+        next_valid_in_secs: Option<u64>,
+        floor_price: u64,
+    },
+}
+
+/// The prices of readable stored `steps` at the median time `chain` gives
+/// (see [`my_listings_from_conn`]).
+fn listing_prices(
+    steps: &[sell::StoredStep],
+    chain: Option<&Result<u64, String>>,
+) -> ListingPrices {
+    if steps.is_empty() {
+        return ListingPrices::NoSteps;
+    }
+    match chain {
+        None => ListingPrices::Unverified,
+        Some(Err(reason)) => ListingPrices::CouldNotCheck {
+            reason: reason.clone(),
+        },
+        Some(Ok(mtp)) => match sell::step_view(steps, *mtp) {
+            Ok(None) => ListingPrices::NoSteps,
+            Ok(Some(v)) => ListingPrices::At {
+                current_price: v.current_price,
+                next_price: v.next_price,
+                next_valid_in_secs: v.next_valid_in_secs,
+                floor_price: v.floor_price,
+            },
+            Err(e) => ListingPrices::Unreadable {
+                reason: e.to_string(),
+            },
+        },
+    }
+}
+
+/// One row of My listings.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MyListing {
+    pub listing: ListingSummary,
+    pub actions: ListingActions,
+    pub prices: ListingPrices,
+    pub pending_send: Option<PendingSend>,
+}
+
+fn pending_send(
+    conn: &rusqlite::Connection,
+    l: &ShakedexListing,
+) -> Result<Option<PendingSend>, AppError> {
+    let id = match l.state {
+        ListingState::Locking => l.lock_transfer_draft_id.as_deref(),
+        ListingState::Finalizing => l.lock_finalize_draft_id.as_deref(),
+        ListingState::Cancelling => l.cancel_draft_id.as_deref(),
+        ListingState::CancelFinalizing => l.cancel_finalize_draft_id.as_deref(),
+        _ => None,
+    };
+    let Some(id) = id else { return Ok(None) };
+    Ok(queries::get_tx_draft(conn, id)?
+        .filter(|d| queries::never_sent(&d.status) || d.status == queries::BROADCAST_PENDING_STATUS)
+        .map(|d| PendingSend {
+            signed: d.signed_tx_hex.is_some(),
+            discardable: queries::never_sent(&d.status),
+            draft_id: d.id,
+            action: d.action,
+        }))
+}
+
+/// One row of My listings (T7): the listing, its actions and its unsent
+/// draft. Each action is refused by the function its command runs first; a
+/// listing whose stored steps cannot be read is listed with every action
+/// refused, so it does not hide the others.
+pub(crate) fn my_listing_from_conn(
+    conn: &rusqlite::Connection,
+    network: Network,
+    l: &ShakedexListing,
+    chain: Option<&Result<u64, String>>,
+) -> Result<MyListing, AppError> {
+    let steps = match readable_steps(l) {
+        Ok(steps) => steps,
+        // One unreadable row must not hide the others: it is listed with
+        // every action that reads its steps refused in the read's words, and
+        // nothing to send. The import reads none (the file replaces them).
+        Err(e) => {
+            let refused = || ListingAction::refused_by(Some(e.to_string()));
+            return Ok(MyListing {
+                // The degraded row must not fail on the lockup count either.
+                listing: ListingSummary::with_steps(
+                    l,
+                    Vec::new(),
+                    lockup_left(conn, l).ok().flatten(),
+                ),
+                actions: ListingActions {
+                    finalize_and_sign: refused(),
+                    lower_price: refused(),
+                    cancel: refused(),
+                    finalize_cancel: refused(),
+                    export: refused(),
+                    publish: refused(),
+                    import_file: ListingAction::refused_by(
+                        import_refusal(l.state).map(str::to_string),
+                    ),
+                },
+                prices: ListingPrices::Unreadable {
+                    reason: e.to_string(),
+                },
+                pending_send: None,
+            });
+        }
+    };
+    let prices = listing_prices(&steps, chain);
+    let listing = ListingSummary::with_steps(l, steps, lockup_left(conn, l)?);
+    let finalize = finalize_and_sign_refusal(conn, l)?;
+    let lower = lower_refusal(l.state, listing.steps.is_empty()).map(str::to_string);
+    // The stored lockup is the last sync's count; the command counts again
+    // on the node's tip when it runs.
+    let finalize_cancel = finalize_cancel_refusal(l.state)
+        .map(str::to_string)
+        .or_else(|| match l.cancel_blocks_remaining {
+            None => Some(CANCEL_LOCKUP_NOT_COUNTED.to_string()),
+            Some(n) => (n > 0).then(|| cancel_finalize_wait(n)),
+        });
+    Ok(MyListing {
+        actions: ListingActions {
+            finalize_and_sign: ListingAction::refused_by(finalize),
+            lower_price: ListingAction::refused_by(lower),
+            cancel: ListingAction::refused_by(cancel_refusal(l.state).map(str::to_string)),
+            finalize_cancel: ListingAction::refused_by(finalize_cancel),
+            export: ListingAction::refused_by(export_refusal(l).map(str::to_string)),
+            publish: ListingAction::refused_by(publish_refusal(l, network)),
+            import_file: ListingAction::refused_by(import_refusal(l.state).map(str::to_string)),
+        },
+        prices,
+        pending_send: pending_send(conn, l)?,
+        listing,
+    })
+}
+
+/// The stored steps of `l` as My listings and publishing read them: steps
+/// that cannot be parsed, or a lock time past R3's 40 bits, make a corrupted
+/// row, refused in this error's words.
+fn readable_steps(l: &ShakedexListing) -> Result<Vec<sell::StoredStep>, AppError> {
+    shakedex_jobs::stored_steps(l)
+        .and_then(|steps| sell::check_stored_steps(&steps).map(|()| steps))
+}
+
+/// Whether My listings needs the node's median time: only when a readable
+/// row has steps (an unreadable row is listed as such).
+pub(crate) fn needs_median_time(listings: &[ShakedexListing]) -> bool {
+    listings
+        .iter()
+        .any(|l| readable_steps(l).is_ok_and(|s| !s.is_empty()))
+}
+
+/// Every listing of the profile, newest first, as My listings shows it, on
+/// the profile's `network` (publishing is mainnet only). `chain` is the one
+/// median time every row's prices are read at: `None`
+/// when no node can say it (SPV, Explorer), `Some(Err(reason))` when the
+/// node did not say it, `Some(Ok(mtp))`.
+pub(crate) fn my_listings_from_conn(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    network: Network,
+    chain: Option<Result<u64, String>>,
+) -> Result<Vec<MyListing>, AppError> {
+    queries::list_shakedex_listings(conn, profile_id)?
+        .iter()
+        .map(|l| my_listing_from_conn(conn, network, l, chain.as_ref()))
+        .collect()
+}
+
+/// Why the listing file of `l` cannot leave the wallet (R23); `None` when
+/// it can. The command and My listings ask this one function.
+pub(crate) fn export_refusal(l: &ShakedexListing) -> Option<&'static str> {
     if !ListingState::EXPORT_ALLOWED.contains(&l.state) {
-        return Err(AppError::InvalidInput(
-            listing_over(l.state)
-                .unwrap_or(
-                    "the listing file can be exported once the finalize into the lock is mined",
-                )
-                .into(),
+        return Some(listing_over(l.state).unwrap_or(
+            "the listing file can be exported once the finalize into the lock is mined",
         ));
     }
-    l.listing_file_json.ok_or_else(|| {
-        AppError::InvalidInput("this lock has no listing file here: import its saved file".into())
-    })
+    l.listing_file_json.is_none().then_some(EXPORT_NO_FILE)
+}
+
+/// R32: why the saved listing file of a listing in `state` cannot be
+/// imported; `None` for a Restored lock, the only listing without its own
+/// file details. The import reads no stored step: the file replaces them.
+/// The command ([`restored_lock_for_file`]) and My listings ask this one
+/// function.
+pub(crate) fn import_refusal(state: ListingState) -> Option<&'static str> {
+    (state != ListingState::Restored)
+        .then_some("only a lock restored by name takes its saved listing file")
+}
+
+/// Whether a listing file names a market fee: this wallet writes
+/// `feeAddr: null` and every `fee` 0 (`listing_file::write_listing_file`).
+fn names_a_market_fee(f: &ListingFile) -> bool {
+    f.names_a_fee_address() || f.steps.iter().any(|s| s.fee != 0)
+}
+
+/// Why `l` cannot be published on LearnHNS Market now (R23, carries 1 and
+/// 2 of T6); `None` when it can: on mainnet only, a Listed listing not
+/// published yet, with its own file here naming no market fee (R25
+/// compares the market's copy with one that has none, so a fee would be
+/// uploaded again every hour). Publishing is never switched off: R28's
+/// report of a mined cancel or sale reads it. The command and My listings
+/// ask this one function.
+pub(crate) fn publish_refusal(l: &ShakedexListing, network: Network) -> Option<String> {
+    if network != Network::Main {
+        return Some(MARKET_MAINNET_ONLY.into());
+    }
+    if l.publish {
+        return Some("this listing is already published on LearnHNS Market".into());
+    }
+    if l.state != ListingState::Listed {
+        return Some(
+            match l.state {
+                ListingState::Locking
+                | ListingState::ReadyToFinalize
+                | ListingState::Finalizing => {
+                    "a listing is published once its finalize into the lock is mined"
+                }
+                other => listing_over(other)
+                    .unwrap_or("only a Listed listing can be published on LearnHNS Market"),
+            }
+            .into(),
+        );
+    }
+    let Some(text) = l.listing_file_json.as_deref() else {
+        return Some(EXPORT_NO_FILE.into());
+    };
+    match ListingFile::parse(text, network) {
+        Ok(f) if names_a_market_fee(&f) => Some(
+            "this listing file names a market fee, which this wallet never writes: it is not \
+             published"
+                .into(),
+        ),
+        Ok(_) => None,
+        Err(e) => Some(format!("this listing's file cannot be read: {e}")),
+    }
+}
+
+/// R23 later (T7): publish one of the profile's listings on LearnHNS
+/// Market, refused as its My listings row is (a corrupted row,
+/// [`readable_steps`], then [`publish_refusal`]) and written by
+/// `queries::publish_shakedex_listing`, which guards the same state again.
+/// Writes the one field; the market jobs upload it from the next sync.
+pub(crate) fn publish_listing_from_conn(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    network: Network,
+    listing_id: &str,
+) -> Result<ListingSummary, AppError> {
+    let l = queries::get_shakedex_listing(conn, listing_id)?
+        .filter(|l| l.wallet_profile_id == profile_id)
+        .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
+    // A corrupted row is refused as its My listings row is, in its words.
+    readable_steps(&l)?;
+    if let Some(why) = publish_refusal(&l, network) {
+        return Err(AppError::InvalidInput(why));
+    }
+    if queries::publish_shakedex_listing(conn, profile_id, listing_id)? != 1 {
+        return Err(AppError::InvalidInput(
+            "this listing changed meanwhile: nothing was saved; try again".into(),
+        ));
+    }
+    let l = queries::get_shakedex_listing(conn, listing_id)?
+        .ok_or_else(|| AppError::Other("listing vanished after publish".into()))?;
+    ListingSummary::of(conn, &l)
+}
+
+/// R23: write the saved listing file of one of the profile's listings to
+/// `path` (chosen in the native save dialog), as written; refused as the
+/// export is ([`export_listing_file_from_conn`]), writing nothing.
+pub(crate) fn save_listing_file_from_conn(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    listing_id: &str,
+    path: &std::path::Path,
+) -> Result<(), AppError> {
+    let text = export_listing_file_from_conn(conn, profile_id, listing_id)?;
+    std::fs::write(path, text)?;
+    Ok(())
 }
 
 /// What a restore by name (R32) decides from: every node read, and the lock
@@ -1959,22 +2438,24 @@ pub(crate) fn restore_lock_inner(
     queries::insert_shakedex_listing(conn, &l)?;
     let l = queries::get_shakedex_listing(conn, &l.id)?
         .ok_or_else(|| AppError::Other("listing vanished after the restore".into()))?;
-    ListingSummary::of(&l)
+    ListingSummary::of(conn, &l)
 }
 
 /// R32: the active profile's Restored lock that `file` (our own listing
 /// file, already parsed) is for: a Restored lock of the file's name (a
 /// listing of it in any other state, or none, is refused) whose lock key and
 /// lock outpoint the file carries, and a file paying one of this profile's
-/// derived addresses (the parser has checked its network). Reads the
-/// database only.
+/// derived addresses (the parser has checked its network), or one of its
+/// first [`OWN_FILE_RECEIVE_SEARCH_LIMIT`] receive addresses past them, which
+/// is then derived and marked used ([`derivation::adopt_receive_address`]).
+/// Writes nothing else.
 pub(crate) fn restored_lock_for_file(
     conn: &rusqlite::Connection,
     profile_id: &str,
     file: &ListingFile,
 ) -> Result<ShakedexListing, AppError> {
     let listing = queries::open_shakedex_listing_for_name(conn, profile_id, &file.name)?
-        .filter(|l| l.state == ListingState::Restored)
+        .filter(|l| import_refusal(l.state).is_none())
         .ok_or_else(|| {
             AppError::InvalidInput(format!(
                 "there is no Restored lock of '{}' here: restore it by name first",
@@ -1994,13 +2475,29 @@ pub(crate) fn restored_lock_for_file(
             "this listing file is for another lock coin".into(),
         ));
     }
-    if !queries::get_profile_addresses(conn, profile_id)?.contains(&file.payment_addr) {
+    // The payment address was reserved by the profile that locked; one
+    // restored from the same phrase holds only its restore window, so a
+    // receive address past it is looked for (and adopted) up to the limit.
+    let ours = queries::get_profile_addresses(conn, profile_id)?.contains(&file.payment_addr)
+        || derivation::adopt_receive_address(
+            conn,
+            profile_id,
+            &file.payment_addr,
+            OWN_FILE_RECEIVE_SEARCH_LIMIT,
+        )?
+        .is_some();
+    if !ours {
         return Err(AppError::InvalidInput(
             "this listing file's payment address is not one of this wallet's addresses".into(),
         ));
     }
     Ok(listing)
 }
+
+/// R32: how many receive addresses of the profile an own listing file's
+/// payment address is looked for among ([`restored_lock_for_file`]); a file
+/// paying none of them is not ours, and nothing past them is derived.
+pub const OWN_FILE_RECEIVE_SEARCH_LIMIT: u32 = 1000;
 
 /// What the upgrade of a Restored lock decides from: the listing and the
 /// file already matched ([`restored_lock_for_file`]), the lock coin as hsd
@@ -2020,7 +2517,8 @@ pub(crate) struct OwnFileInput<'a> {
 /// ([`sell::verify_file_steps`], at the coin's value as hsd reports
 /// it). A spent lock coin leaves the outpoint and key to check: the chain
 /// then judges the sale (R22) by the file's payment address. The listing
-/// becomes Listed with the file's payment address, steps, expiry and mode;
+/// becomes Listed with the file's payment address, steps, expiry and the
+/// mode its step times give ([`sell::mode_of_step_times`]);
 /// the file is kept as parsed (`ListingFile::to_json`, unknown fields
 /// included). Writes nothing on a refusal.
 pub(crate) fn upgrade_restored_lock_inner(
@@ -2047,11 +2545,7 @@ pub(crate) fn upgrade_restored_lock_inner(
             signature: hex::encode(s.signature),
         })
         .collect();
-    let mode = if file.steps.len() == 1 {
-        ListingMode::BuyNow
-    } else {
-        ListingMode::ReverseAuction
-    };
+    let mode = sell::mode_of_step_times(file.steps.iter().map(|s| s.lock_time));
     let expires_at = file
         .expires_at
         .map(i64::try_from)
@@ -2078,20 +2572,27 @@ pub(crate) fn upgrade_restored_lock_inner(
     }
     let l = queries::get_shakedex_listing(conn, &i.listing.id)?
         .ok_or_else(|| AppError::Other("listing vanished after the import".into()))?;
-    ListingSummary::of(&l)
+    ListingSummary::of(conn, &l)
 }
 
 // --- commands ---------------------------------------------------------------
 
-/// One page of LearnHNS Market listings, each verified on the profile's node.
-/// Only buyable listings are returned; the rest are counted in `hidden`. In
-/// SPV and Explorer modes every row is returned unverified.
+/// One page of LearnHNS Market listings, each verified on the node of the
+/// profile `wallet_profile_id` (the active one when none is named; R7, so a
+/// read issued before a switch answers for its own profile). Only buyable
+/// listings are returned; the rest are counted in `hidden`. In SPV and
+/// Explorer modes every row is returned unverified.
 #[tauri::command]
 pub async fn shakedex_list_market(
     state: State<'_, AppState>,
     page: Option<u32>,
+    wallet_profile_id: Option<String>,
 ) -> Result<MarketPage, AppError> {
-    let ctx = browse_ctx(&state)?;
+    let profile_id = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        named_or_active_profile(&conn, wallet_profile_id)?
+    };
+    let ctx = browse_ctx_for(&state, &profile_id)?;
     let verified = ctx.can_verify();
     if ctx.network != Network::Main {
         return Ok(MarketPage {
@@ -2667,6 +3168,38 @@ pub async fn shakedex_export_listing_file(
     export_listing_file_from_conn(&conn, &profile.id, &listing_id)
 }
 
+/// R23: save the listing file of one of the active profile's listings to
+/// `path`, a path the renderer took from the native save dialog; see
+/// [`save_listing_file_from_conn`].
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_save_listing_file(
+    state: State<'_, AppState>,
+    listing_id: String,
+    path: String,
+) -> Result<(), AppError> {
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let profile = draft_ctx::active_profile(&conn)?;
+    save_listing_file_from_conn(&conn, &profile.id, &listing_id, std::path::Path::new(&path))
+}
+
+/// R23 (carry 1 of T6): publish a Listed listing on LearnHNS Market after
+/// the lock. Authorized as every selling write is (recovery-phrase profile,
+/// a node that can send, the unlocked signer), then refused by
+/// [`publish_refusal`] on the profile's network; see
+/// [`publish_listing_from_conn`].
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_publish_listing(
+    state: State<'_, AppState>,
+    listing_id: String,
+) -> Result<ListingSummary, AppError> {
+    let ctx = software_writer_ctx(&state)?;
+    authorize_signer(&state, &ctx)?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    publish_listing_from_conn(&conn, &ctx.profile_id, ctx.network, &listing_id)
+}
+
 /// Restore a lock by name (R32): the name's owner coin is read on the node
 /// (`getnameinfo`, then `GET /coin`), the lock key of `name` is derived from
 /// the seed of the unlocked session after those reads (for its public key
@@ -2722,9 +3255,7 @@ pub async fn shakedex_import_own_listing_file(
     let ctx = software_writer_ctx(&state)?;
     authorize_signer(&state, &ctx)?;
     let file = ListingFile::parse(&text, ctx.network)?;
-    // This wallet writes `feeAddr: null` and every `fee` 0
-    // (`listing_file::write_listing_file`).
-    if file.names_a_fee_address() || file.steps.iter().any(|s| s.fee != 0) {
+    if names_a_market_fee(&file) {
         return Err(AppError::InvalidInput(
             "this listing file names a market fee, which this wallet never writes: it is not \
              this wallet's own listing file"
@@ -2751,6 +3282,22 @@ pub async fn shakedex_import_own_listing_file(
             coin: coin.as_ref(),
         },
     )
+}
+
+/// R32: [`shakedex_import_own_listing_file`] for a file the renderer took
+/// from the native open dialog. The writer gates come before the path is
+/// opened; the file is read with the listing-file size limit
+/// ([`read_listing_file`]) before anything is parsed.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_import_own_listing_from_file(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<ListingSummary, AppError> {
+    let ctx = software_writer_ctx(&state)?;
+    authorize_signer(&state, &ctx)?;
+    let text = read_listing_file(&path)?;
+    shakedex_import_own_listing_file(state, text).await
 }
 
 /// Cancel a listing (R28): see [`cancel_listing_confirmed`]. Returns the
@@ -2798,24 +3345,13 @@ pub(crate) async fn finalize_cancel(
         let l = queries::get_shakedex_listing(&conn, listing_id)?
             .filter(|l| l.wallet_profile_id == ctx.profile_id)
             .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
-        if l.state != ListingState::CancelAwaitingFinalize {
-            return Err(AppError::InvalidInput(
-                match l.state {
-                    ListingState::Cancelling => {
-                        "the cancel is not mined yet: its finalize opens after the transfer \
-                         lockup that follows"
-                    }
-                    ListingState::CancelFinalizing => {
-                        "the finalize of this cancel is already built: send it, or delete it to \
-                         build another"
-                    }
-                    // A state `listing_over` does not name (before the
-                    // lock, Finalizing, Listed, SalePending) has no cancel.
-                    other => listing_over(other)
-                        .unwrap_or("this listing has no mined cancel to finalize"),
-                }
-                .into(),
-            ));
+        if let Some(why) = finalize_cancel_refusal(l.state) {
+            return Err(AppError::InvalidInput(why.into()));
+        }
+        // As My listings refuses it; the count itself is taken again on the
+        // node's tip below.
+        if l.cancel_blocks_remaining.is_none() {
+            return Err(AppError::InvalidInput(CANCEL_LOCKUP_NOT_COUNTED.into()));
         }
         let own: std::collections::HashSet<String> =
             queries::get_profile_addresses(&conn, &ctx.profile_id)?
@@ -2907,10 +3443,7 @@ pub(crate) async fn finalize_cancel(
         .name_params()
         .blocks_until_finalize(transfer_height, tip);
     if remaining > 0 {
-        return Err(AppError::InvalidInput(format!(
-            "the cancel can be finalized in {remaining} block{}",
-            if remaining == 1 { "" } else { "s" }
-        )));
+        return Err(AppError::InvalidInput(cancel_finalize_wait(remaining)));
     }
     let ns = draft_ctx::name_state_strict(&reply, &name)?;
     if cov_height != ns.height {
@@ -2996,6 +3529,53 @@ pub async fn shakedex_lower_price(
     lower_price_confirmed(&state, &app, &listing_id, &price).await
 }
 
+/// The listings of the profile `wallet_profile_id` (the active one when
+/// none is named; R7) ("My listings", T7), each with what it can do now and
+/// its prices ([`my_listings_from_conn`]), on that profile's network and
+/// node. Every row action is still refused by its command for a listing
+/// that is not the active profile's (`l.wallet_profile_id == ctx.profile_id`). The node's median time
+/// is read once for every row, and only when a row has steps.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_list_listings(
+    state: State<'_, AppState>,
+    wallet_profile_id: Option<String>,
+) -> Result<Vec<MyListing>, AppError> {
+    // R7, per-wallet read isolation: the profile the caller names (the
+    // active one when none is), so a read issued before a switch answers
+    // for its own profile only.
+    let profile_id = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        named_or_active_profile(&conn, wallet_profile_id)?
+    };
+    let needs_chain = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        needs_median_time(&queries::list_shakedex_listings(&conn, &profile_id)?)
+    };
+    let chain = if needs_chain {
+        let ctx = browse_ctx_for(&state, &profile_id)?;
+        if ctx.can_verify() {
+            Some(
+                verify::chain_point(&ctx.node)
+                    .await
+                    .map(|p| p.mtp)
+                    .map_err(|h| match h {
+                        Hidden::CouldNotCheck { reason } => reason,
+                        // `chain_point` answers CouldNotCheck only.
+                        other => format!("{other:?}"),
+                    }),
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let network = queries::profile_network(&conn, &profile_id)?;
+    my_listings_from_conn(&conn, &profile_id, network, chain)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3048,6 +3628,24 @@ mod tests {
 
         let row = market_row(l.to_json().unwrap(), &l, unverified());
         assert!(row.steps.iter().all(|s| s.valid_in_secs.is_none()));
+    }
+
+    /// Review M4: a market row's kind follows the step times, as the own-file
+    /// import's mode does (`sell::mode_of_step_times`): a lowered Buy Now's
+    /// two steps at one lock time are a Buy Now, steps a day apart a reverse
+    /// auction.
+    #[test]
+    fn market_row_kind_follows_the_step_times() {
+        let mut j: serde_json::Value = serde_json::from_str(LISTING_FILE).unwrap();
+        let mut lowered = j["data"][0].clone();
+        lowered["price"] = 200_000_000.into();
+        j["data"].as_array_mut().unwrap().push(lowered);
+        let same_time = ListingFile::parse(&j.to_string(), Network::Main).unwrap();
+        let row = market_row(same_time.to_json().unwrap(), &same_time, unverified());
+        assert_eq!(row.kind, ListingKind::BuyNow);
+        let l = two_steps();
+        let row = market_row(l.to_json().unwrap(), &l, unverified());
+        assert_eq!(row.kind, ListingKind::ReverseAuction);
     }
 
     /// The largest fee a listing file can carry (price plus fee up to the

@@ -239,14 +239,7 @@ pub async fn verify_listing_at(
             first_valid_in_secs,
         });
     };
-    let next = encoded
-        .iter()
-        .enumerate()
-        .filter(|(_, (price, enc))| {
-            !template::is_valid_at(*enc, mtp) && *price < encoded[current].0
-        })
-        .min_by_key(|(_, (_, enc))| *enc)
-        .map(|(i, _)| i);
+    let next = template::next_step_index(&encoded, mtp, Some(current));
     let params = network.name_params();
     let Some(renewal) = ni["renewal"].as_u64().and_then(|r| u32::try_from(r).ok()) else {
         return hide(Hidden::CouldNotCheck {

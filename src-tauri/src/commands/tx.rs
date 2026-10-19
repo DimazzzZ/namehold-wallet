@@ -2651,6 +2651,22 @@ mod pure_helper_tests {
     use crate::noncustodial::actions::{DraftPlan, PlanInput, PlanOutput};
     use crate::noncustodial::hd::ExtendedPubKey;
 
+    /// My listings offers Send for a draft never sent and for one whose send
+    /// the node may not hold (`commands/shakedex.rs::pending_send`): each of
+    /// those statuses is one `broadcast_tx_draft` sends again.
+    #[test]
+    fn every_status_my_listings_offers_to_send_is_sendable() {
+        for status in db::queries::UNSENT_STATUSES
+            .iter()
+            .chain([&db::queries::BROADCAST_PENDING_STATUS])
+        {
+            assert!(refuse_unless_sendable(status).is_ok(), "{status}");
+        }
+        for status in ["broadcasted", "confirmed", "failed", "dropped"] {
+            assert!(refuse_unless_sendable(status).is_err(), "{status}");
+        }
+    }
+
     /// Deterministic test-only account xpub (mirrors the helper in
     /// `ledger_signing_guards_tests` — kept local because that one is
     /// private to its module).

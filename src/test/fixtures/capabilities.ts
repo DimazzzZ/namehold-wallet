@@ -66,6 +66,7 @@ export function makeCapabilities(
     strandedLockupDoos: 0,
     redeemableRevealCount: 0,
     redeemableValueDoos: 0,
+    lockedForSale: false,
     ...over,
   };
 }

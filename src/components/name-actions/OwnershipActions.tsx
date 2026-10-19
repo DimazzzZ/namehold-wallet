@@ -5,7 +5,7 @@ import type { NameActionCapabilities, NameActionCapability } from "../../types";
 
 /**
  * The "Ownership" section of the advanced actions block: recipient input +
- * Transfer / Finalize / Cancel transfer / Renew / Revoke buttons (Task 13 /
+ * Transfer / Finalize / Cancel transfer / Sell / Renew / Revoke buttons (Task 13 /
  * F6 extraction from `NameActionsModal`). All state (recipient, busy) and
  * the mutation runner stay in the orchestrator and flow down as props.
  *
@@ -27,6 +27,10 @@ export interface OwnershipActionsProps {
   onCancelTransfer: () => void;
   onRenew: () => void;
   onRevoke: () => void;
+  /** Open the Lock dialog (Shakedex selling, R19). */
+  onSell: () => void;
+  /** Why this profile cannot sell (`marketText.ts::sellRefusal`), or null. */
+  sellRefusal: string | null;
 }
 
 export function OwnershipActions({
@@ -41,6 +45,8 @@ export function OwnershipActions({
   onCancelTransfer,
   onRenew,
   onRevoke,
+  onSell,
+  sellRefusal,
 }: OwnershipActionsProps) {
   return (
     <section className="space-y-2">
@@ -78,6 +84,18 @@ export function OwnershipActions({
             onClick={onCancelTransfer}
           >
             {busy === "CANCEL" ? "…" : "Cancel transfer"}
+          </Button>
+        </ActionHint>
+        <ActionHint reason={sellRefusal ?? actionReason(caps?.canTransfer)}>
+          <Button
+            size="sm"
+            data-testid="name-sell"
+            // A lock is a TRANSFER to the lock address: the same covenant
+            // gate, R27's "locked for sale" included.
+            disabled={sellRefusal !== null || actionDisabled("TRANSFER", caps?.canTransfer)}
+            onClick={onSell}
+          >
+            Sell…
           </Button>
         </ActionHint>
         <ActionHint reason={actionReason(caps?.canRenew)}>

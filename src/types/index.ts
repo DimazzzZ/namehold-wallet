@@ -721,6 +721,12 @@ export interface NameActionCapabilities {
    */
   redeemableRevealCount: number;
   redeemableValueDoos: number;
+  /**
+   * The name is locked for sale through Shakedex (R27): an open listing of
+   * this wallet holds it, its owner coin may sit at the lock address, and
+   * every owner action is refused for the sale.
+   */
+  lockedForSale: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -948,12 +954,84 @@ export interface ShakedexListingSummary {
   cancelFinalizeDraftId: string | null;
   /** Blocks left until the cancel's FINALIZE is valid, at the last sync. */
   cancelBlocksRemaining: number | null;
+  /** Blocks left in the transfer lockup while Locking, counted as the Owned Names row counts them; null before the lock is seen mined and in every other state. */
+  blocksUntilFinalize: number | null;
   /** Where the listing stands on LearnHNS Market; null while our current listing is not yet told. */
   marketStatus: ShakedexMarketStatus | null;
   /** The market's own refusal, or why it gave no answer. */
   marketError: string | null;
   /** RFC 3339 UTC: when the next market action on the listing is due. */
   marketRetryAt: string | null;
+  /** R23: "Publish on LearnHNS Market" was ticked (or the listing was published later from My listings). */
+  publish: boolean;
+}
+
+/** One action of My listings (`commands/shakedex.rs::ListingAction`): the command's own sentence when it is refused now. */
+export interface ShakedexListingAction {
+  allowed: boolean;
+  reason: string | null;
+}
+
+/** What a listing can do now (`ListingActions`), from the refusal function each command runs. */
+export interface ShakedexListingActions {
+  finalizeAndSign: ShakedexListingAction;
+  lowerPrice: ShakedexListingAction;
+  cancel: ShakedexListingAction;
+  finalizeCancel: ShakedexListingAction;
+  export: ShakedexListingAction;
+  /** Turn publishing on later (`publish_refusal`): mainnet, Listed, not published, own file without a market fee. */
+  publish: ShakedexListingAction;
+  /** Import a Restored lock's saved listing file (`import_refusal`): Restored only; it reads no stored step. */
+  importFile: ShakedexListingAction;
+}
+
+/**
+ * The listing's own draft never sent, or whose send the node may not hold
+ * (`PendingSend`); `signed`: only the broadcast is left; `discardable`: never
+ * sent, so `delete_tx_draft` takes it.
+ */
+export interface ShakedexPendingSend {
+  draftId: string;
+  action: string;
+  signed: boolean;
+  discardable: boolean;
+}
+
+/**
+ * A row's prices (`ListingPrices`, tagged by `kind`), or why it has none:
+ * no steps here, no node that can say the median time, a node that did not
+ * say it, or a corrupted row (every action refused in the same words).
+ */
+export type ShakedexListingPrices =
+  | { kind: "noSteps" }
+  | { kind: "unverified" }
+  | { kind: "couldNotCheck"; reason: string }
+  | { kind: "unreadable"; reason: string }
+  | {
+      kind: "at";
+      currentPrice: number | null;
+      nextPrice: number | null;
+      nextValidInSecs: number | null;
+      floorPrice: number;
+    };
+
+/**
+ * A reverse auction's schedule as the seller typed it (`commands/shakedex.rs::ScheduleInput`):
+ * prices in HNS as text, so the backend refuses what it cannot represent.
+ */
+export interface ShakedexScheduleInput {
+  startPrice: string;
+  floorPrice: string;
+  steps: number;
+  intervalSecs: number;
+}
+
+/** One row of My listings (`shakedex_list_listings`). */
+export interface ShakedexMyListing {
+  listing: ShakedexListingSummary;
+  actions: ShakedexListingActions;
+  prices: ShakedexListingPrices;
+  pendingSend: ShakedexPendingSend | null;
 }
 
 export type ImportSource =

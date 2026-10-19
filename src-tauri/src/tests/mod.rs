@@ -80,6 +80,7 @@ mod shakedex_layering_tests;
 mod shakedex_listing_file_tests;
 mod shakedex_listing_state_tests;
 mod shakedex_lock_key_tests;
+mod shakedex_my_listings_tests;
 mod shakedex_purchase_state_tests;
 mod shakedex_purchase_store_tests;
 mod shakedex_sell_tests;

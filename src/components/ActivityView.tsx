@@ -43,10 +43,18 @@ export const ACTION_META: Record<
   finalize: { label: "Finalize", variant: "success" },
   revoke: { label: "Revoke", variant: "error" },
   claim: { label: "Claim", variant: "success" },
-  // Shakedex: draft actions only, until the chain row of the same tx replaces
-  // them (PURCHASE_ACTION / PURCHASE_FINALIZE_ACTION in shakedex/purchase.rs).
+  // Shakedex: draft actions, kept as the row's label once the chain row of the
+  // same tx is seen (`mergeActivity`; the chain's covenant label stays in
+  // `covenantAction`) (PURCHASE_ACTION / PURCHASE_FINALIZE_ACTION in
+  // shakedex/purchase.rs).
   shakedex_purchase: { label: "Buy", variant: "warning" },
   shakedex_purchase_finalize: { label: "Finalize purchase", variant: "success" },
+  // Selling: LOCK_ACTION / LOCK_FINALIZE_ACTION in shakedex/sell.rs and
+  // CANCEL_ACTION / CANCEL_FINALIZE_ACTION in shakedex/cancel.rs.
+  shakedex_lock: { label: "Lock for sale", variant: "warning" },
+  shakedex_lock_finalize: { label: "Finalize into lock", variant: "default" },
+  shakedex_cancel: { label: "Cancel listing", variant: "warning" },
+  shakedex_cancel_finalize: { label: "Finalize cancel", variant: "success" },
   other: { label: "Other", variant: "default" },
 };
 
@@ -493,7 +501,10 @@ export function ActivityRow({
   // A covenant row whose net flow is 0 (locked value re-homed to our own coin,
   // only the fee spent) but which still has a name value worth surfacing.
   const showNameValue =
-    NAME_COVENANT_ACTIONS.has(row.action) && row.valueDoos === 0 && row.nameValueDoos != null;
+    row.covenantAction != null &&
+    NAME_COVENANT_ACTIONS.has(row.covenantAction) &&
+    row.valueDoos === 0 &&
+    row.nameValueDoos != null;
 
   // A lost purchase says so whatever its draft's status: one lost after it
   // paid still reads "confirmed".

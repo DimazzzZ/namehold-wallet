@@ -580,11 +580,11 @@ export function Settings() {
             onChange={(e) => updateField("shakedex_experimental", boolToSetting(e.target.checked))}
             data-testid="shakedex-experimental-checkbox"
           />
-          Allow buying names on mainnet through Shakedex (experimental)
+          Allow buying and selling names on mainnet through Shakedex (experimental)
         </label>
         <p className="text-xs text-gray-500">
-          Testnet and regtest purchases are always allowed. Finalizing a name you already bought
-          works whatever this says.
+          Testnet and regtest are always allowed. Finalizing a purchase, and Finalize &amp; sign,
+          Cancel and Lower price on a listing you already have, work whatever this says.
         </p>
       </div>
 

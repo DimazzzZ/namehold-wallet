@@ -18,8 +18,8 @@ use crate::noncustodial::shakedex::lock_key::LockKey;
 use crate::noncustodial::shakedex::purchase::MAX_MONEY;
 use crate::noncustodial::shakedex::script;
 use crate::noncustodial::shakedex::template::{
-    current_step_index, encode_lock_time, is_valid_at, secs_until_valid, valid_from_mtp,
-    verify_step_signature, StepTemplate, STEP_SIGHASH,
+    current_step_index, encode_lock_time, is_valid_at, next_step_index, secs_until_valid,
+    valid_from_mtp, verify_step_signature, StepTemplate, STEP_SIGHASH,
 };
 use crate::noncustodial::sync::{COV_FINALIZE, COV_NONE, COV_TRANSFER};
 use crate::noncustodial::tx::{output_address_from_string, Covenant, OutputAddress};
@@ -74,6 +74,25 @@ pub fn buy_now_lock_time(mtp: u64) -> u64 {
     mtp.saturating_sub(LOCK_TIME_UNIT_SECS)
 }
 
+/// R32: the mode of a listing read from its file, which does not record it,
+/// by the shape R19, R24 and R26 give its steps: a Buy Now's steps, its
+/// price and any lower one signed before the MTP moved, share one lock time;
+/// a reverse auction's follow one another in time. Every step at one lock
+/// time (one step included) is a Buy Now; any two at different times are a
+/// reverse auction. A Buy Now lowered after the MTP moved has steps at
+/// different times and reads as a reverse auction: the file cannot tell the
+/// two apart, and both price the same at every MTP (R3).
+pub fn mode_of_step_times(
+    mut lock_times: impl Iterator<Item = u64>,
+) -> crate::db::queries::ListingMode {
+    let first = lock_times.next();
+    if lock_times.all(|t| Some(t) == first) {
+        crate::db::queries::ListingMode::BuyNow
+    } else {
+        crate::db::queries::ListingMode::ReverseAuction
+    }
+}
+
 /// R24: a reverse auction has 2 to 1000 steps, at least 15 minutes apart.
 pub const REVERSE_MIN_STEPS: u32 = 2;
 pub const REVERSE_MAX_STEPS: u32 = 1_000;
@@ -88,9 +107,13 @@ pub const REVERSE_MIN_INTERVAL_SECS: u64 = 900;
 /// money supply, a floor below the dust limit, prices that would not fall
 /// strictly (fewer doos between start and floor than steps after the
 /// first), a lock time past R3's 40 bits. Prices typed by a person go
-/// through [`parse_step_price`] first. The 15 minutes are nominal, between
-/// the signed lock times: R3 rounds each down to 512 s, so consecutive
-/// steps may become buyable 512 to 1024 s apart.
+/// through [`parse_step_price`] first. R3 encodes a lock time in 512 s
+/// units (rounding down): step 0 is `start_lock_time` as given (R19's
+/// [`buy_now_lock_time`], valid at once), and every later step's time,
+/// `start_lock_time + interval_secs · i`, is rounded up to a unit, so it is
+/// never valid before that time and always after the signing MTP. The
+/// 15 minutes are nominal: at that minimum consecutive steps become buyable
+/// 512 to 1024 s apart (step 1 at most 1024 + 511 s after step 0).
 pub fn reverse_schedule(
     start_price: u64,
     floor: u64,
@@ -145,14 +168,23 @@ pub fn reverse_schedule(
                 .and_then(|x| x.checked_div(u128::from(after_first)))
                 .and_then(|d| u64::try_from(d).ok())
                 .ok_or_else(|| bad("price arithmetic out of range".into()))?;
+            // Step 0 is valid at once (R19); every later step is rounded up
+            // to R3's unit, so it never becomes valid before its time.
             let lock_time = interval_secs
                 .checked_mul(i)
                 .and_then(|d| start_lock_time.checked_add(d))
+                .and_then(|t| if i == 0 { Some(t) } else { round_up_to_unit(t) })
                 .filter(|t| encode_lock_time(*t).is_ok())
                 .ok_or_else(|| bad("the last step's time does not fit a lock time".into()))?;
             Ok((start_price - drop, lock_time))
         })
         .collect()
+}
+
+/// `secs` rounded up to R3's lock-time unit; `None` on overflow.
+fn round_up_to_unit(secs: u64) -> Option<u64> {
+    secs.div_ceil(LOCK_TIME_UNIT_SECS)
+        .checked_mul(LOCK_TIME_UNIT_SECS)
 }
 
 /// `wallet_tx_drafts.action` of the day-0 TRANSFER committing our name to its
@@ -462,6 +494,25 @@ pub fn parse_step_price(text: &str) -> Result<u64, AppError> {
     Ok(doos)
 }
 
+/// R19/R24: a reverse auction's schedule as typed: both prices by R19's rule
+/// ([`parse_step_price`], the start first), then [`reverse_schedule`]'s rules
+/// with the steps counted from lock time 0, so the last step's
+/// `(steps − 1) · interval_secs`, rounded up to 512 s, must fit R3's 40
+/// bits; the lock times are
+/// built and checked again from the node's median time. Finalize & sign and
+/// the UI's twin (`marketText.ts::scheduleProblem`) refuse in this order.
+pub fn parse_schedule(
+    start: &str,
+    floor: &str,
+    steps: u32,
+    interval_secs: u64,
+) -> Result<(u64, u64), AppError> {
+    let start = parse_step_price(start)?;
+    let floor = parse_step_price(floor)?;
+    reverse_schedule(start, floor, steps, interval_secs, 0)?;
+    Ok((start, floor))
+}
+
 /// One signed price step as `shakedex_listings.steps_json` stores it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -657,6 +708,40 @@ pub fn steps_ahead(steps: &[StoredStep], mtp: u64, price: u64) -> Result<(usize,
         }
     }
     Ok((below, ahead.len() - below))
+}
+
+/// R12 for our own listing: its current price at `mtp` (R3), the next one
+/// and the seconds of median time until it is valid, and the floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepView {
+    pub current_price: Option<u64>,
+    pub next_price: Option<u64>,
+    pub next_valid_in_secs: Option<u64>,
+    pub floor_price: u64,
+}
+
+/// [`StepView`] of the stored steps at `mtp`, from
+/// `template::{current_step_index, next_step_index}`; `None` when there are
+/// none. A stored lock time past R3's 40 bits is a corrupted row.
+pub fn step_view(steps: &[StoredStep], mtp: u64) -> Result<Option<StepView>, AppError> {
+    let encoded = encoded_stored(steps)?;
+    let Some(floor_price) = steps.iter().map(|s| s.price).min() else {
+        return Ok(None);
+    };
+    let current = current_step_index(&encoded, mtp);
+    let next = next_step_index(&encoded, mtp, current);
+    Ok(Some(StepView {
+        current_price: current.map(|i| steps[i].price),
+        next_price: next.map(|i| steps[i].price),
+        next_valid_in_secs: next.map(|i| secs_until_valid(steps[i].lock_time, mtp)),
+        floor_price,
+    }))
+}
+
+/// Refuses stored steps a lock time of which is past R3's 40 bits (a
+/// corrupted row), as every function reading them at a median time does.
+pub fn check_stored_steps(steps: &[StoredStep]) -> Result<(), AppError> {
+    encoded_stored(steps).map(|_| ())
 }
 
 /// `(price, encoded lock time)` of stored steps; a lock time past 40 bits
@@ -2454,12 +2539,14 @@ mod tests {
     fn reverse_schedule_falls_from_start_to_floor_one_interval_apart() {
         let start = buy_now_lock_time(1_700_100_000);
         let s = reverse_schedule(5_000_000, 3_000_000, 3, 900, start).unwrap();
+        // Later steps rounded up to R3's 512 s unit.
+        let up = |t: u64| t.div_ceil(512) * 512;
         assert_eq!(
             s,
             vec![
                 (5_000_000, start),
-                (4_000_000, start + 900),
-                (3_000_000, start + 1_800)
+                (4_000_000, up(start + 900)),
+                (3_000_000, up(start + 1_800))
             ]
         );
         // Uneven division (9 000 000 doos over 7 drops): the floor is still
@@ -2468,15 +2555,68 @@ mod tests {
         assert_eq!(s.len(), 8);
         assert_eq!(s.first().unwrap().0, 10_000_000);
         assert_eq!(s.last().unwrap().0, 1_000_000);
+        assert!(s.windows(2).all(|w| w[1].0 < w[0].0));
         assert!(s
-            .windows(2)
-            .all(|w| w[1].0 < w[0].0 && w[1].1 == w[0].1 + 3_600));
+            .iter()
+            .enumerate()
+            .skip(1)
+            .all(|(i, x)| x.1 == up(start + 3_600 * i as u64)));
         // The tightest span that still falls: one doo per step.
         let s = reverse_schedule(1_000_000 + 999, 1_000_000, 1_000, 900, start).unwrap();
         assert_eq!(s.len(), 1_000);
         assert!(s.windows(2).all(|w| w[0].0 - w[1].0 == 1));
         // The bounds themselves are accepted.
         assert!(reverse_schedule(MAX_MONEY, DUST_THRESHOLD, 2, 900, start).is_ok());
+    }
+
+    /// R3, R19, R24 (live flake, step 10): step 0 is valid at once, and no
+    /// later step is valid before its nominal time `start + interval · i`:
+    /// R3 encodes a lock time in 512 s units, so a later step's time is
+    /// rounded up to a unit, never down. Rounded down, step 1 at the 15-minute
+    /// minimum was valid at the signing MTP itself whenever MTP mod 512 was
+    /// below 124, and the seller lost step 0's price. Every MTP residue.
+    #[test]
+    fn later_steps_are_never_valid_before_their_time() {
+        use crate::noncustodial::shakedex::template::{encode_lock_time, is_valid_at};
+        let unit = 512;
+        let base = 1_700_000_000 - 1_700_000_000 % unit;
+        let decoded = |t: u64| u64::from(encode_lock_time(t).unwrap() & 0x7fff_ffff) * unit;
+        // The live failure's shape: MTP mod 512 = 4.
+        let mtp = base + 4;
+        let start = buy_now_lock_time(mtp);
+        let s = reverse_schedule(5_000_000, 3_000_000, 3, 900, start).unwrap();
+        assert!(
+            decoded(s[1].1) > mtp,
+            "step 1 {} at MTP {mtp}",
+            decoded(s[1].1)
+        );
+        for r in 0..unit {
+            let mtp = base + unit + r;
+            let start = buy_now_lock_time(mtp);
+            for interval in [900, 1_000, 3_600] {
+                let s = reverse_schedule(5_000_000, 3_000_000, 4, interval, start).unwrap();
+                assert!(
+                    is_valid_at(encode_lock_time(s[0].1).unwrap(), mtp),
+                    "{r}: step 0"
+                );
+                assert!(
+                    !is_valid_at(encode_lock_time(s[1].1).unwrap(), mtp),
+                    "{r}: step 1"
+                );
+                assert!(
+                    decoded(s[1].1) > mtp,
+                    "{r}/{interval}: step 1 after the MTP"
+                );
+                for (i, step) in s.iter().enumerate().skip(1) {
+                    let nominal = start + interval * i as u64;
+                    let at = decoded(step.1);
+                    assert!(
+                        at >= nominal && at - nominal < unit,
+                        "{r}/{interval}: step {i} at {at}, nominal {nominal}"
+                    );
+                }
+            }
+        }
     }
 
     /// R24: every out-of-range schedule is refused with its reason, before
@@ -2637,5 +2777,47 @@ mod tests {
         );
         assert!(commitment_address(&items("zz", "ab"), Network::Regtest).is_err());
         assert!(commitment_address(&[nh()], Network::Regtest).is_err());
+    }
+
+    fn stored(price: u64, lock_time: u64) -> StoredStep {
+        StoredStep {
+            price,
+            lock_time,
+            signature: "00".into(),
+        }
+    }
+
+    #[test]
+    fn step_view_reads_now_next_and_floor_at_the_mtp() {
+        let steps = [
+            stored(5_000_000, 0),
+            stored(4_000_000, 1_000_448),
+            stored(3_000_000, 1_001_472),
+        ];
+        let v = step_view(&steps, 1_000_000).unwrap().unwrap();
+        assert_eq!(v.current_price, Some(5_000_000));
+        assert_eq!(v.next_price, Some(4_000_000));
+        assert_eq!(
+            v.next_valid_in_secs,
+            Some(secs_until_valid(1_000_448, 1_000_000))
+        );
+        assert_eq!(v.floor_price, 3_000_000);
+    }
+
+    #[test]
+    fn step_view_with_no_step_valid_yet_names_the_first_to_come() {
+        let steps = [stored(5_000_000, 2_000_000), stored(4_000_000, 2_001_024)];
+        let v = step_view(&steps, 1_000_000).unwrap().unwrap();
+        assert_eq!((v.current_price, v.next_price), (None, Some(5_000_000)));
+    }
+
+    #[test]
+    fn step_view_of_no_steps_is_none() {
+        assert_eq!(step_view(&[], 1_000_000).unwrap(), None);
+    }
+
+    #[test]
+    fn step_view_of_a_lock_time_past_40_bits_is_a_corrupted_row() {
+        assert!(step_view(&[stored(1, 1 << 41)], 1_000_000).is_err());
     }
 }

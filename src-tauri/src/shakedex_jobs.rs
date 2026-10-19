@@ -1477,7 +1477,9 @@ pub async fn refresh_listings_with_client(
 ///
 /// A listing whose cancel TRANSFER is mined
 /// ([`queries::ListingState::CANCEL_MINED`]) is followed from that TRANSFER
-/// instead ([`cancel_on_its_way_home`]).
+/// instead ([`cancel_on_its_way_home`]); one this sync has just made
+/// CancelAwaitingFinalize gets its lockup count at once while that TRANSFER
+/// is a coin ([`cancel_transfer_held`]).
 ///
 /// Sends nothing. An error leaves the listing for the next sync (the caller
 /// logs it).
@@ -1494,8 +1496,25 @@ async fn refresh_after_lock(
         return Ok(());
     };
     match client.get_coin(lock_txid, lock_vout).await? {
-        Some(coin) => lock_coin_held(conn, client, network, l, &coin, (lock_txid, lock_vout)).await,
-        None => lock_coin_spent(conn, client, network, l, (lock_txid, lock_vout)).await,
+        Some(coin) => {
+            lock_coin_held(conn, client, network, l, &coin, (lock_txid, lock_vout)).await?
+        }
+        None => lock_coin_spent(conn, client, network, l, (lock_txid, lock_vout)).await?,
+    }
+    // A cancel seen mined just now has its lockup counted in the same sync
+    // (its TRANSFER still a coin), so My listings never judges Finalize home
+    // on a count not taken yet. One found from its FINALIZE home ends on the
+    // next sync, as before.
+    let Some(now) = queries::get_shakedex_listing(conn, &l.id)? else {
+        return Ok(());
+    };
+    if now.state != queries::ListingState::CancelAwaitingFinalize {
+        return Ok(());
+    }
+    let cancel = stored_cancel(&now)?;
+    match client.get_coin(cancel.0, cancel.1).await? {
+        Some(coin) => cancel_transfer_held(conn, client, network, &now, cancel, &coin).await,
+        None => Ok(()),
     }
 }
 
@@ -2256,60 +2275,8 @@ async fn cancel_on_its_way_home(
     l: &queries::ShakedexListing,
 ) -> Result<(), AppError> {
     let cancel = stored_cancel(l)?;
-    let at = listing_lock(network, l)?;
     if let Some(coin) = client.get_coin(cancel.0, cancel.1).await? {
-        match at.stored_coin(&coin, cancel, COV_TRANSFER) {
-            Ok(_) => {}
-            Err(sell::StoredCoinRefusal::Unreadable) => {
-                return Err(AppError::Rpc(format!(
-                    "node did not report the address or covenant of cancel {}:{}",
-                    cancel.0, cancel.1
-                )));
-            }
-            Err(sell::StoredCoinRefusal::SomethingElse) => {
-                return Err(AppError::Other(format!(
-                    "cancel {}:{} is not a TRANSFER of the name at the listing's lock address",
-                    cancel.0, cancel.1
-                )));
-            }
-        }
-        if coin.mined_height()?.is_none() {
-            queries::mark_listing_cancel_unmined(conn, &l.id, cancel.0)?;
-            return Ok(());
-        }
-        let reply = client.get_name_info(&l.name).await?;
-        let cov_height = coin
-            .covenant
-            .as_ref()
-            .and_then(purchase::covenant_name_height);
-        if registration_ended(&reply, cov_height)? {
-            queries::expire_locked_listing(conn, &l.id)?;
-            return Ok(());
-        }
-        // `registration_ended` took hsd's `info: null`.
-        let Some(info) = name_info(&reply)? else {
-            return Ok(());
-        };
-        let owner = owner_of(info)?;
-        if !(owner.0.eq_ignore_ascii_case(cancel.0) && owner.1 == cancel.1) {
-            // hsd names a coin the owner once its block is connected: a
-            // mined cancel that is not the owner is no consistent answer.
-            return Ok(());
-        }
-        let transfer = sell::transfer_height(info).ok_or_else(|| {
-            AppError::Rpc("node did not report the block of the cancel's TRANSFER".into())
-        })?;
-        let tip = client.get_blockchain_info().await?.blocks;
-        let left = network.name_params().blocks_until_finalize(transfer, tip);
-        queries::set_cancel_blocks_remaining(conn, &l.id, left)?;
-        if l.state == queries::ListingState::CancelFinalizing {
-            if let Some(draft) = l.cancel_finalize_draft_id.as_deref() {
-                if draft_dead(conn, Some(draft))? {
-                    queries::revert_listing_cancel_finalize(conn, &l.id, draft)?;
-                }
-            }
-        }
-        return Ok(());
+        return cancel_transfer_held(conn, client, network, l, cancel, &coin).await;
     }
     if let Some((lock_txid, lock_vout)) = stored_lock(l)? {
         if client.get_coin(lock_txid, lock_vout).await?.is_some() {
@@ -2323,6 +2290,7 @@ async fn cancel_on_its_way_home(
         return Ok(());
     };
     let owner = owner_of(info)?;
+    let at = listing_lock(network, l)?;
     if let Some(coin) = client.get_coin(&owner.0, owner.1).await? {
         if let Some(height) = coin.mined_height()? {
             if let Some(tx) = spend_view(client, &owner.0, Some(height)).await? {
@@ -2338,6 +2306,76 @@ async fn cancel_on_its_way_home(
         return Ok(());
     };
     cancel_replaced(conn, client, network, l, &owner, lock, cancel).await
+}
+
+/// R28, the first rule of [`cancel_on_its_way_home`]: the mined cancel
+/// `cancel`'s TRANSFER is the coin `coin` hsd reports. In the mempool → back
+/// to Cancelling; mined with the registration gone → Expired; mined and the
+/// name's owner → the lockup left stored, and a CancelFinalizing listing
+/// whose FINALIZE draft is dead awaits its finalize again; mined and not the
+/// owner → unchanged. A coin that is not a TRANSFER of the name at the
+/// listing's lock address is an error.
+async fn cancel_transfer_held(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    network: Network,
+    l: &queries::ShakedexListing,
+    cancel: (&str, u32),
+    coin: &crate::noncustodial::rpc::NodeCoin,
+) -> Result<(), AppError> {
+    let at = listing_lock(network, l)?;
+    match at.stored_coin(coin, cancel, COV_TRANSFER) {
+        Ok(_) => {}
+        Err(sell::StoredCoinRefusal::Unreadable) => {
+            return Err(AppError::Rpc(format!(
+                "node did not report the address or covenant of cancel {}:{}",
+                cancel.0, cancel.1
+            )));
+        }
+        Err(sell::StoredCoinRefusal::SomethingElse) => {
+            return Err(AppError::Other(format!(
+                "cancel {}:{} is not a TRANSFER of the name at the listing's lock address",
+                cancel.0, cancel.1
+            )));
+        }
+    }
+    if coin.mined_height()?.is_none() {
+        queries::mark_listing_cancel_unmined(conn, &l.id, cancel.0)?;
+        return Ok(());
+    }
+    let reply = client.get_name_info(&l.name).await?;
+    let cov_height = coin
+        .covenant
+        .as_ref()
+        .and_then(purchase::covenant_name_height);
+    if registration_ended(&reply, cov_height)? {
+        queries::expire_locked_listing(conn, &l.id)?;
+        return Ok(());
+    }
+    // `registration_ended` took hsd's `info: null`.
+    let Some(info) = name_info(&reply)? else {
+        return Ok(());
+    };
+    let owner = owner_of(info)?;
+    if !(owner.0.eq_ignore_ascii_case(cancel.0) && owner.1 == cancel.1) {
+        // hsd names a coin the owner once its block is connected: a
+        // mined cancel that is not the owner is no consistent answer.
+        return Ok(());
+    }
+    let transfer = sell::transfer_height(info).ok_or_else(|| {
+        AppError::Rpc("node did not report the block of the cancel's TRANSFER".into())
+    })?;
+    let tip = client.get_blockchain_info().await?.blocks;
+    let left = network.name_params().blocks_until_finalize(transfer, tip);
+    queries::set_cancel_blocks_remaining(conn, &l.id, left)?;
+    if l.state == queries::ListingState::CancelFinalizing {
+        if let Some(draft) = l.cancel_finalize_draft_id.as_deref() {
+            if draft_dead(conn, Some(draft))? {
+                queries::revert_listing_cancel_finalize(conn, &l.id, draft)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// R22, R28: hsd's 404 for both the mined cancel `cancel`'s TRANSFER and

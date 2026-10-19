@@ -51,6 +51,7 @@ describe("mergeActivity", () => {
       txid: "aabbccdd",
       draftId: "draft1",
       action: "send",
+      covenantAction: "send",
       name: null,
       nameList: null,
       valueDoos: -100_000_000,
@@ -65,6 +66,84 @@ describe("mergeActivity", () => {
       sortTs: 1000,
       counterparty: "hs1qrecipient",
     });
+  });
+
+  it("a Shakedex draft keeps its own action once its tx is seen, not the covenant's", () => {
+    const row = (txid: string): ActionRow => ({
+      txid,
+      action: "transfer",
+      name: null,
+      nameHash: null,
+      valueDoos: 0,
+      nameValueDoos: null,
+      direction: "internal",
+      height: null,
+      time: null,
+      confirmed: false,
+      counterparty: null,
+    });
+    const draft = (id: string, txid: string, action: string): TxDraftSummary => ({
+      id,
+      walletProfileId: "profile1",
+      action,
+      status: "broadcasted",
+      summary: null,
+      errorMessage: null,
+      txid,
+      confirmationHeight: null,
+      purchaseLostReason: null,
+      createdAt: "2026-10-14 12:00:00",
+    });
+    const merged = mergeActivity(
+      [row("aa"), row("bb")],
+      [draft("d1", "aa", "shakedex_purchase"), draft("d2", "bb", "transfer")],
+    );
+    const actionOf = (txid: string) => merged.find((m) => m.txid === txid)?.action;
+    expect(actionOf("aa")).toBe("shakedex_purchase");
+    expect(actionOf("bb")).toBe("transfer");
+    // The chain's label stays on the row for what the Amount cell decides.
+    const covenantOf = (txid: string) => merged.find((m) => m.txid === txid)?.covenantAction;
+    expect(covenantOf("aa")).toBe("transfer");
+    expect(covenantOf("bb")).toBe("transfer");
+  });
+
+  it("a Shakedex draft not seen on chain yet carries the covenant it builds", () => {
+    const draft = (id: string, action: string): TxDraftSummary => ({
+      id,
+      walletProfileId: "profile1",
+      action,
+      status: "signed",
+      summary: null,
+      errorMessage: null,
+      txid: null,
+      confirmationHeight: null,
+      purchaseLostReason: null,
+      createdAt: "2026-10-14 12:00:00",
+    });
+    const merged = mergeActivity(
+      [],
+      [
+        draft("d1", "shakedex_lock"),
+        draft("d2", "shakedex_lock_finalize"),
+        draft("d3", "shakedex_cancel"),
+        draft("d4", "shakedex_cancel_finalize"),
+        draft("d5", "shakedex_purchase"),
+        draft("d6", "shakedex_purchase_finalize"),
+        draft("d7", "update"),
+        draft("d8", "shakedex_unknown"),
+      ],
+    );
+    const covenantOf = (id: string) => merged.find((m) => m.draftId === id)?.covenantAction;
+    expect(["d1", "d2", "d3", "d4", "d5", "d6"].map(covenantOf)).toEqual([
+      "transfer",
+      "finalize",
+      "transfer",
+      "finalize",
+      "transfer",
+      "finalize",
+    ]);
+    expect(covenantOf("d7")).toBe("update");
+    expect(covenantOf("d8")).toBeNull();
   });
 
   it("receive-only: ActionRow with no draft → feeDoos null, status onchain", () => {

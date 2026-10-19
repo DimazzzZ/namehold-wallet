@@ -2427,13 +2427,17 @@ async fn our_mined_cancel_awaits_its_finalize() {
         "the owner coin in the mempool"
     );
 
+    // Mined in the tip block: the same sync stores the lockup left
+    // (regtest 10, judged at tip + 1), so Finalize home is never offered
+    // on a count nobody has taken yet.
     run(
         &f,
         &node(
-            info((&c1, 0)),
+            info_transfer((&c1, 0), TIP),
             vec![transfer_out_of_lock(&f, &c1, &f.cancel, TIP)],
             cancel_rest(&f, &c1, TIP, &f.cancel),
-        ),
+        )
+        .with_blockchain_info(tip_at(TIP)),
     )
     .await;
     let l = listing(&f);
@@ -2441,6 +2445,11 @@ async fn our_mined_cancel_awaits_its_finalize() {
     assert_eq!(
         (l.cancel_txid.as_deref(), l.cancel_vout),
         (Some(c1.as_str()), Some(0))
+    );
+    assert_eq!(
+        l.cancel_blocks_remaining,
+        Some(i64::from(NET.name_params().transfer_lockup) - 1),
+        "the lockup is counted in the sync that sees the cancel mined"
     );
     let d = queries::get_tx_draft(&f.conn, "cx").unwrap().unwrap();
     assert_eq!(d.status, "broadcasted", "our own cancel: nothing released");

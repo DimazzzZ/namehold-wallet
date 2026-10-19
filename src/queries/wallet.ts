@@ -258,11 +258,23 @@ export function useBuildSendDraft() {
   });
 }
 
+/**
+ * What follows a draft's sign, send or discard, whichever way it ended: the
+ * wallet's drafts, and My listings, whose rows read their listing's draft
+ * (`pendingSend`) and whose listing a discard, or a send refused by R31,
+ * moves or deletes. Only the listings: the market page re-checks every
+ * listing against the node, and a draft does not change it.
+ */
+function invalidateDraftViews(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["wallet"] });
+  qc.invalidateQueries({ queryKey: ["shakedex", "listings"] });
+}
+
 export function useSignTxDraft() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (draftId: string) => invoke<TxDraftSummary>("sign_tx_draft", { draftId }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["wallet"] }),
+    onSettled: () => invalidateDraftViews(qc),
   });
 }
 
@@ -270,7 +282,7 @@ export function useBroadcastTxDraft() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (draftId: string) => invoke<BroadcastResult>("broadcast_tx_draft", { draftId }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["wallet"] }),
+    onSettled: () => invalidateDraftViews(qc),
   });
 }
 
@@ -285,7 +297,7 @@ export function useDeleteTxDraft() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (draftId: string) => invoke<void>("delete_tx_draft", { draftId }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["wallet"] }),
+    onSettled: () => invalidateDraftViews(qc),
   });
 }
 
@@ -293,8 +305,27 @@ export function useDeleteTxDraft() {
  *  `error.rs::AppError::WalletLocked` and its `sign_tx_draft`-style profile
  *  -mismatch message, which is deliberately NOT matched here — only the
  *  literal locked-signer error should trigger an automatic unlock+retry). */
-function isWalletLockedError(e: unknown): boolean {
+export function isWalletLockedError(e: unknown): boolean {
   return /wallet (is )?locked/i.test(String(e));
+}
+
+/**
+ * Run a command that needs the unlocked signer (the selling commands check
+ * it before anything else): on "Wallet locked", unlock this profile's signer
+ * once and run it again — `useSignNameMessage`'s pattern.
+ */
+export function useWithSigner() {
+  const unlock = useUnlockSigner();
+  const run = async <T>(profileId: string, fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await fn();
+    } catch (e) {
+      if (!isWalletLockedError(e)) throw e;
+      await unlock.mutateAsync(profileId);
+      return fn();
+    }
+  };
+  return { run, unlocking: unlock.isPending };
 }
 
 /**

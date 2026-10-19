@@ -196,3 +196,34 @@ fn the_activity_view_name_actions_are_labels_the_backend_emits() {
         );
     }
 }
+
+// --- The Activity labels of the Shakedex drafts ---
+
+/// Every Shakedex draft action reaches Activity under a label of its own:
+/// `src/components/ActivityView.tsx::ACTION_META` has a key spelled as each
+/// `*_ACTION` constant of the Shakedex module, found by scanning its files
+/// (`noncustodial::shakedex::action_constants`), so a new action needs a
+/// label. A key spelled otherwise never matches, and the draft shows as
+/// "Other" with nothing failing.
+#[test]
+fn the_activity_view_labels_every_shakedex_draft_action() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/components/ActivityView.tsx"),
+    )
+    .expect("ActivityView.tsx should be readable from the crate");
+    let meta = src
+        .split_once("export const ACTION_META")
+        .expect("ACTION_META should exist")
+        .1
+        .split_once("\n};")
+        .expect("its literal should be closed")
+        .0;
+    let actions = crate::noncustodial::shakedex::action_constants();
+    assert!(!actions.is_empty(), "the scan finds the action constants");
+    for (file, name, action) in actions {
+        assert!(
+            meta.contains(&format!("\n  {action}: {{")),
+            "ACTION_META has no label for the draft action '{action}' ({file}: {name})"
+        );
+    }
+}

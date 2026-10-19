@@ -1,21 +1,25 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../ui/PageHeader";
 import { Alert } from "../ui/Alert";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Disclosure } from "../ui/Disclosure";
+import { Tabs } from "../ui/Tabs";
 import { Tooltip } from "../ui/Tooltip";
 import { ImportListing } from "./ImportListing";
+import { MyListings } from "./MyListings";
 import { PurchaseConfirm } from "./PurchaseConfirm";
 import {
   MARKET_MAINNET_ONLY,
-  type StatusTone,
+  TONE_DOT,
   approxWait,
   canBuyShakedex,
   hiddenReasonText,
   hiddenSummary,
   listedUntilText,
   listingStatus,
+  MY_LISTINGS_TAB,
   purchaseRefusal,
 } from "./marketText";
 import { useMarketPage } from "../../queries/shakedex";
@@ -38,13 +42,6 @@ interface ImportedRow {
 const ORIGIN_LABEL: Record<Exclude<Origin, "market">, string> = {
   file: "From file",
   link: "From LearnHNS link",
-};
-
-const DOT: Record<StatusTone, string> = {
-  ok: "bg-green-500",
-  warn: "bg-amber-500",
-  muted: "bg-gray-300",
-  bad: "bg-red-500",
 };
 
 /** A reverse auction's next step and floor, with every step behind a toggle. */
@@ -129,7 +126,7 @@ function ListingsTable({ rows, canBuy, refusal, onBuy }: ListingsTableProps) {
               <div className="mt-1 flex items-start gap-2 text-sm text-gray-700">
                 <span
                   aria-hidden
-                  className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${DOT[status.tone]}`}
+                  className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${TONE_DOT[status.tone]}`}
                 />
                 <span data-testid="market-status">{status.text}</span>
               </div>
@@ -220,7 +217,36 @@ export interface PendingPurchase {
   fromMarket: boolean;
 }
 
+type MarketTab = "browse" | "mine";
+
+const TABS: { key: MarketTab; label: string }[] = [
+  { key: "browse", label: "Browse" },
+  { key: "mine", label: MY_LISTINGS_TAB },
+];
+
+/** The Market: Browse (buying) or My listings (selling), `?tab=mine`. */
 export default function MarketPage() {
+  const [params, setParams] = useSearchParams();
+  const tab: MarketTab = params.get("tab") === "mine" ? "mine" : "browse";
+  return (
+    <div>
+      <PageHeader
+        title="Market"
+        subtitle="Names listed through Shakedex. Every listing is checked against your node before you can buy it."
+      />
+      <Tabs
+        className="mb-4"
+        tabs={TABS}
+        active={tab}
+        onChange={(k) => setParams(k === "mine" ? { tab: "mine" } : {})}
+      />
+      {tab === "mine" ? <MyListings /> : <Browse />}
+    </div>
+  );
+}
+
+/** Buying: the LearnHNS Market's listings and imported ones. */
+function Browse() {
   const [pageNumber, setPageNumber] = useState(1);
   const market = useMarketPage(pageNumber);
   const { data: profile } = useActiveProfile();
@@ -244,10 +270,6 @@ export default function MarketPage() {
 
   return (
     <div>
-      <PageHeader
-        title="Market"
-        subtitle="Names listed through Shakedex. Every listing is checked against your node before you can buy it."
-      />
       <div className="space-y-6">
         {profile != null && refusal && <Alert tone="info">{refusal}</Alert>}
         {page && !page.networkHasMarket && (

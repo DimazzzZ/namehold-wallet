@@ -40,6 +40,19 @@ describe("Settings — Shakedex experimental toggle", () => {
     expect(await screen.findByTestId("shakedex-experimental-checkbox")).not.toBeChecked();
   });
 
+  it("names buying and selling, and what it does not gate", async () => {
+    renderSettings();
+    await screen.findByTestId("shakedex-experimental-checkbox");
+    expect(
+      screen.getByText("Allow buying and selling names on mainnet through Shakedex (experimental)"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Testnet and regtest are always allowed. Finalizing a purchase, and Finalize & sign, Cancel and Lower price on a listing you already have, work whatever this says.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("reflects a stored 'true'", async () => {
     loadSettings({ shakedex_experimental: "true" });
     renderSettings();

@@ -70,7 +70,9 @@ pub struct ActionRow {
     /// back onto our own new coin — a DNS UPDATE is NOT a spend of the name's
     /// locked value, and treating it as one contradicts the drafts card).
     /// Only genuine outward flows (plain send, TRANSFER to a buyer,
-    /// FINALIZE to the transfer target) produce a non-zero magnitude.
+    /// FINALIZE to the transfer target) produce a non-zero magnitude. Value
+    /// another party's input brings in (the seller's lock coin in a Shakedex
+    /// purchase) is not ours and is not counted as leaving the wallet.
     pub value_doos: i64,
     /// One of: `receive`, `send`, `internal` (name actions carry `internal`
     /// when only the wallet's own coins move).
@@ -196,15 +198,24 @@ pub fn classify_tx(tx: &serde_json::Value, our_addrs: &HashSet<String>) -> Optio
     }
 
     let mut spends_ours = false;
+    // What other parties' coins bring in (a Shakedex purchase spends the
+    // seller's lock coin beside ours; a cancel or the buyer's FINALIZE spends
+    // a coin at the lock): value that passes through without leaving us.
+    let mut foreign_in: i64 = 0;
     for i in inputs {
         // Non-coinbase inputs on `/tx/address` include a resolved `coin`.
-        let coin_addr = i
-            .get("coin")
+        let coin = i.get("coin");
+        let coin_addr = coin
             .and_then(|c| c.get("address"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if !coin_addr.is_empty() && our_addrs.contains(coin_addr) {
             spends_ours = true;
+        } else if !coin_addr.is_empty() {
+            foreign_in += coin
+                .and_then(|c| c.get("value"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
         }
     }
 
@@ -221,8 +232,14 @@ pub fn classify_tx(tx: &serde_json::Value, our_addrs: &HashSet<String>) -> Optio
     // src/lib/utils.ts: whatever actually left the wallet (excluding fee), or
     // whatever entered it. A name-covenant tx that re-homes the name's locked
     // value back onto our own new coin is net 0 — the locked HNS is still ours.
+    // Value another party's input carried to an output not ours is theirs,
+    // not a spend of ours: only the rest left the wallet (never below 0; a
+    // foreign coin that comes home to us is the name's value, shown as such).
+    // The floor also means a multi-party transaction in which another
+    // party's input pays our outputs reads 0 rather than what we received;
+    // this wallet builds none (its foreign inputs are Shakedex lock coins).
     let value_doos = if spends_ours {
-        -sent_to_external
+        -(sent_to_external - foreign_in).max(0)
     } else {
         received_by_us
     };
@@ -696,6 +713,70 @@ mod tests {
         assert_eq!(row.direction, "send");
         assert_eq!(row.value_doos, 0);
         assert_eq!(row.name_hash.as_deref(), Some("deadbeef"));
+    }
+
+    /// QA Q3: a Shakedex purchase spends the seller's lock coin beside our
+    /// own coins, and its TRANSFER at the seller's lock carries that coin's
+    /// value on. What left this wallet is the price paid (the fee aside),
+    /// not the price plus the name's value, which was never ours. The same
+    /// shape for the seller's cancel (the lock coin back out to the lock)
+    /// moves nothing of ours, and the buyer's FINALIZE takes the name's value
+    /// home without a spend: 0, its value shown as the name's.
+    #[test]
+    fn classify_a_tx_with_a_foreign_input_counts_only_what_left_our_coins() {
+        let ours = addrs(&["hs1qmine"]);
+        let transfer = json!({"type": 9, "action": "TRANSFER",
+                              "items": ["deadbeef", "00", "00", "aabbccddeeff"]});
+        let input = |value: i64, addr: &str, cov: u8| {
+            json!({"prevout": {"hash": "pp", "index": 0},
+                   "coin": {"value": value, "address": addr,
+                            "covenant": {"type": cov, "items": []}}})
+        };
+        let none = json!({"type": 0, "action": "NONE", "items": []});
+        // The purchase: lock coin (0.5 HNS, the seller's) + our 10 HNS; the
+        // TRANSFER at the lock, our change, the price to the seller.
+        let purchase = json!({
+            "hash": "a1", "height": 300,
+            "inputs": [input(500_000, "hs1qlock", 10), input(10_000_000, "hs1qmine", 0)],
+            "outputs": [
+                {"value": 500_000, "address": "hs1qlock", "covenant": transfer},
+                {"value": 4_998_380, "address": "hs1qmine", "covenant": none},
+                {"value": 5_000_055, "address": "hs1qseller", "covenant": none}
+            ]
+        });
+        let row = classify_tx(&purchase, &ours).unwrap();
+        assert_eq!(
+            (row.action.as_str(), row.direction.as_str()),
+            ("transfer", "send")
+        );
+        assert_eq!(
+            row.value_doos, -5_000_055,
+            "the price, not price + name value"
+        );
+        // The seller's cancel: the lock coin out to the lock again, our fee.
+        let cancel = json!({
+            "hash": "a2", "height": 301,
+            "inputs": [input(500_000, "hs1qlock", 10), input(10_000_000, "hs1qmine", 0)],
+            "outputs": [
+                {"value": 500_000, "address": "hs1qlock", "covenant": transfer},
+                {"value": 9_998_000, "address": "hs1qmine", "covenant": none}
+            ]
+        });
+        assert_eq!(classify_tx(&cancel, &ours).unwrap().value_doos, 0);
+        // The buyer's FINALIZE home: the TRANSFER at the lock in, the name out
+        // to us with its value.
+        let finalize = json!({
+            "hash": "a3", "height": 312,
+            "inputs": [input(500_000, "hs1qlock", 9), input(4_998_380, "hs1qmine", 0)],
+            "outputs": [
+                {"value": 500_000, "address": "hs1qmine",
+                 "covenant": {"type": 10, "action": "FINALIZE", "items": ["deadbeef"]}},
+                {"value": 4_996_800, "address": "hs1qmine", "covenant": none}
+            ]
+        });
+        let row = classify_tx(&finalize, &ours).unwrap();
+        assert_eq!(row.value_doos, 0);
+        assert_eq!(row.name_value_doos, Some(500_000));
     }
 
     /// Item 13 (history.rs:234): a TX with a name covenant on an external
