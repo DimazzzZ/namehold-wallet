@@ -84,6 +84,12 @@ pub struct AppState {
 #[cfg(target_os = "macos")]
 const NOTIFY_BUNDLE_ID: &str = "org.zhavoronkov.nameholdwallet";
 
+/// The app's Tauri context (config, assets, resolved capabilities). One call
+/// site: the macro defines a symbol, so a second expansion would not link.
+pub(crate) fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // macOS: claim the notification sender identity as Namehold BEFORE the
@@ -719,6 +725,7 @@ pub fn run() {
             commands::bids::recover_bid_commitment,
             commands::bids::brute_force_recover_bid,
             commands::bids::export_bid_commitments,
+            commands::bids::save_bid_backup,
             commands::watchlist::add_to_watchlist,
             commands::watchlist::remove_from_watchlist,
             commands::watchlist::list_watchlist,
@@ -752,7 +759,7 @@ pub fn run() {
             #[cfg(desktop)]
             commands::update_notify::set_update_notify_enabled,
         ])
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             match event {

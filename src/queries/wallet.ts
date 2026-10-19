@@ -384,15 +384,15 @@ export function useBidCommitments() {
 }
 
 /**
- * Export every bid commitment (name, value, blind, nonce, address, txids) for
- * a profile as a JSON string, for the user to save as a local backup file.
- * Contains secret material — callers must warn the user to store it alongside
- * their seed.
+ * Save every bid commitment (name, value, blind, nonce, address, txids) for a
+ * profile as a JSON backup file at `path`, the path the save dialog gave. The
+ * backend writes the file: the webview has no fs permission. Contains secret
+ * material — callers must warn the user to store it alongside their seed.
  */
-export function useExportBidCommitments() {
+export function useSaveBidBackup() {
   return useMutation({
-    mutationFn: (walletProfileId: string | null) =>
-      invoke<string>("export_bid_commitments", { walletProfileId }),
+    mutationFn: (a: { walletProfileId: string | null; path: string }) =>
+      invoke<void>("save_bid_backup", { ...a }),
   });
 }
 

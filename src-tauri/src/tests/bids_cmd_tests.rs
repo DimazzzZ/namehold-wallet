@@ -1139,3 +1139,78 @@ async fn brute_force_skips_coin_with_non_20_byte_program() {
         .expect("should skip P2WSH coin");
     assert_eq!(result.address, good_addr);
 }
+
+// --- bid backup saved by the backend ------------------------------------------
+
+fn backup_path(tag: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    std::env::temp_dir().join(format!(
+        "namehold_bid_backup_{tag}_{}_{}.json",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ))
+}
+
+#[tokio::test]
+async fn save_bid_backup_writes_the_exact_exported_json() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        db::queries::insert_bid_commitment(
+            &conn,
+            &id,
+            "namea",
+            "aabb",
+            "rs1qaddrA",
+            0,
+            0,
+            1000,
+            2000,
+            &"11".repeat(32),
+            &"22".repeat(32),
+        )
+        .unwrap();
+        id
+    };
+    let path = backup_path("ok");
+    let app = mock_app_with(state);
+
+    bids::save_bid_backup(
+        app.state(),
+        Some(profile_id.clone()),
+        path.to_string_lossy().into_owned(),
+    )
+    .await
+    .expect("save should succeed");
+
+    let expected = bids::export_bid_commitments(app.state(), Some(profile_id))
+        .await
+        .unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(written, expected);
+    assert!(written.contains(&"22".repeat(32)));
+}
+
+#[tokio::test]
+async fn save_bid_backup_to_an_unwritable_path_is_an_error() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest")
+    };
+    let path = backup_path("bad").join("no-such-dir").join("backup.json");
+    let app = mock_app_with(state);
+
+    let err = bids::save_bid_backup(
+        app.state(),
+        Some(profile_id),
+        path.to_string_lossy().into_owned(),
+    )
+    .await
+    .expect_err("an unwritable path must fail");
+    assert!(matches!(err, crate::error::AppError::Io(_)), "{err:?}");
+    assert!(!path.exists());
+}

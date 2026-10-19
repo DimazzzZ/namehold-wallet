@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useSettingsStore } from "../stores/settings";
 import { useNodeStatus, useStartHsd, useStopHsd, useResyncHsd } from "../queries/node";
-import { useActiveProfile, useExportBidCommitments } from "../queries/wallet";
+import { useActiveProfile, useSaveBidBackup } from "../queries/wallet";
 import { open, save } from "../lib/dialog";
 import { isTauri } from "../lib/runtime";
 import { defaultNodeRpcUrl } from "../lib/utils";
@@ -61,7 +61,7 @@ export function Settings() {
   const { settings, loaded, saveAll } = useSettingsStore();
   const showToast = useUiStore((s) => s.showToast);
   const { data: profile } = useActiveProfile();
-  const exportBids = useExportBidCommitments();
+  const saveBidBackup = useSaveBidBackup();
 
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -228,16 +228,12 @@ export function Settings() {
       return;
     }
     try {
-      const json = await exportBids.mutateAsync(profile.id);
       const path = await save({
         filters: [{ name: "JSON", extensions: ["json"] }],
         defaultPath: `${profile.label || "wallet"}-bid-backup.json`,
       });
       if (!path) return;
-      if (isTauri()) {
-        const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-        await writeTextFile(path, json);
-      }
+      await saveBidBackup.mutateAsync({ walletProfileId: profile.id, path });
       showToast("Bid backup exported", "success");
     } catch (e) {
       showToast(`Bid backup export failed: ${e}`, "error");
@@ -510,10 +506,10 @@ export function Settings() {
           size="sm"
           variant="secondary"
           onClick={handleExportBidBackup}
-          disabled={exportBids.isPending || !profile}
+          disabled={saveBidBackup.isPending || !profile}
           data-testid="export-bid-backup"
         >
-          {exportBids.isPending ? "Exporting…" : "Export bid backup"}
+          {saveBidBackup.isPending ? "Exporting…" : "Export bid backup"}
         </Button>
       </div>
 

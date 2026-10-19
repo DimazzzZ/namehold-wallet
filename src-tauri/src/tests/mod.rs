@@ -19,6 +19,7 @@ mod build_renew_draft_tests;
 mod build_reveal_draft_tests;
 mod build_transfer_draft_tests;
 mod build_update_draft_tests;
+mod capability_acl_tests;
 mod chain_scan_tests;
 pub(crate) mod command_helpers;
 mod connection_tests;

@@ -1410,6 +1410,7 @@ const handlers: Record<string, Handler> = {
     tier: "round",
   }),
   export_bid_commitments: () => "[]",
+  save_bid_backup: () => null,
 
   build_send_hns_draft: (_args) => ({
     id: "draft-mock-001",

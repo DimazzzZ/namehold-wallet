@@ -363,24 +363,13 @@ struct ExportedBidCommitment {
     reveal_txid: Option<String>,
 }
 
-/// Export every bid commitment for a profile as a JSON string, for the user to
-/// save as a backup file. Contains secret nonce/blind material — the frontend
-/// must warn the user to store it alongside their seed.
-#[tauri::command]
-#[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn export_bid_commitments(
-    state: State<'_, AppState>,
-    wallet_profile_id: Option<String>,
+/// The bid backup of a profile: every bid commitment as pretty JSON. Contains
+/// secret nonce/blind material.
+pub(crate) fn bid_backup_json(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
 ) -> Result<String, AppError> {
-    let profile_id = crate::commands::read::resolve_profile(&state, wallet_profile_id)?
-        .ok_or_else(|| AppError::InvalidInput("no active wallet profile".into()))?;
-
-    let rows = {
-        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        queries::list_bid_commitments(&conn, &profile_id)?
-    };
-
-    let out: Vec<ExportedBidCommitment> = rows
+    let out: Vec<ExportedBidCommitment> = queries::list_bid_commitments(conn, profile_id)?
         .into_iter()
         .map(|r| ExportedBidCommitment {
             name: r.name,
@@ -398,4 +387,48 @@ pub async fn export_bid_commitments(
 
     serde_json::to_string_pretty(&out)
         .map_err(|e| AppError::Other(format!("failed to serialize bid backup: {e}")))
+}
+
+/// Write the bid backup of a profile to `path` (chosen in the native save
+/// dialog), as [`bid_backup_json`] renders it. A path that cannot be written
+/// is an error.
+pub(crate) fn save_bid_backup_from_conn(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    path: &std::path::Path,
+) -> Result<(), AppError> {
+    let json = bid_backup_json(conn, profile_id)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+/// Export every bid commitment for a profile as a JSON string. Contains
+/// secret nonce/blind material.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn export_bid_commitments(
+    state: State<'_, AppState>,
+    wallet_profile_id: Option<String>,
+) -> Result<String, AppError> {
+    let profile_id = crate::commands::read::resolve_profile(&state, wallet_profile_id)?
+        .ok_or_else(|| AppError::InvalidInput("no active wallet profile".into()))?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    bid_backup_json(&conn, &profile_id)
+}
+
+/// Save the bid backup of a profile to `path`, a path the renderer took from
+/// the native save dialog. The file is written here, not by the webview: the
+/// main window has no `fs:` permission (the backup holds secret material, so
+/// none is granted). See [`save_bid_backup_from_conn`].
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn save_bid_backup(
+    state: State<'_, AppState>,
+    wallet_profile_id: Option<String>,
+    path: String,
+) -> Result<(), AppError> {
+    let profile_id = crate::commands::read::resolve_profile(&state, wallet_profile_id)?
+        .ok_or_else(|| AppError::InvalidInput("no active wallet profile".into()))?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    save_bid_backup_from_conn(&conn, &profile_id, std::path::Path::new(&path))
 }
