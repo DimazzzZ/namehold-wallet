@@ -1331,6 +1331,24 @@ impl NameActionContext {
         }
     }
 
+    /// A reveal of ours for the newest bid is broadcast, waiting, or mined:
+    /// its draft says so, or the chain scan stamped a reveal with no local
+    /// draft (a reveal made elsewhere). A failed or dropped reveal is not.
+    pub(crate) fn reveal_sent_or_mined(&self) -> bool {
+        match self.reveal_draft_status {
+            Some(
+                DraftStatus::Broadcasted | DraftStatus::BroadcastPending | DraftStatus::Confirmed,
+            ) => true,
+            Some(
+                DraftStatus::Draft
+                | DraftStatus::Signed
+                | DraftStatus::Failed
+                | DraftStatus::Dropped,
+            ) => false,
+            None => self.reveal_txid.is_some(),
+        }
+    }
+
     /// Count the redeemable reveals again against the owner coin the node
     /// reports in `info` (`getnameinfo.info`), the answer the redeem builder
     /// goes by. A reply that names no owner leaves the local count in place.
@@ -1541,9 +1559,12 @@ pub(crate) fn derive_auction_task_state(
                 // names as owner before the name is tracked: losing reveals
                 // beside it are still ours to redeem, and "no urgent action"
                 // is how such money stayed put.
+                // Only the node's word makes a reveal the owner coin: offline,
+                // with no owner coin of ours, every reveal counts as
+                // "redeemable", and a win must not read as a loss.
                 if expiring_soon {
                     AuctionTaskState::ExpiringSoon
-                } else if ctx.redeemable_reveal_count > 0 {
+                } else if ctx.owner_reveal_by_node && ctx.redeemable_reveal_count > 0 {
                     AuctionTaskState::LostNeedsRedeem
                 } else {
                     AuctionTaskState::OwnedNoUrgentAction
@@ -1552,10 +1573,11 @@ pub(crate) fn derive_auction_task_state(
                 // Only a reveal that is not the owner coin lost: a reveal the
                 // node names as the owner won, and is not offered for redeem.
                 AuctionTaskState::LostNeedsRedeem
-            } else if ctx.has_bid_commitment && ctx.has_bid_coin {
+            } else if ctx.has_bid_commitment && ctx.has_bid_coin && !ctx.reveal_sent_or_mined() {
                 // A bid of this auction never revealed: its BID coin is still
                 // unspent after the reveal window, and can never be revealed
-                // or redeemed.
+                // or redeemed. A reveal of ours in flight or mined says the
+                // local coin set is behind, not that the lockup is lost.
                 AuctionTaskState::LostUnrevealed
             } else {
                 AuctionTaskState::OwnedNoUrgentAction

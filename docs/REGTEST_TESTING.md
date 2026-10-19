@@ -239,7 +239,7 @@ Run the following command to validate the capability model:
 cd src-tauri && cargo test -- auction_capabilities
 ```
 
-Expected: 49 tests pass covering all task-state derivations and next-action mappings.
+Expected: 51 tests pass covering all task-state derivations and next-action mappings.
 
 ### Full Backend Test Suite
 

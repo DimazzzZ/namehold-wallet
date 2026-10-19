@@ -144,9 +144,9 @@ never revisits a block it has passed.
 `names_action_context_tests::find_name_action_context_does_not_strand_a_spent_bid`,
 `name-acquisition.test.tsx :: names the lockup stranded in an earlier auction of the same name`.
 
-**R10a — A bid of this auction left unrevealed reads as lost.** Once the auction is CLOSED, a commitment of this auction whose BID coin is still unspent was never revealed; hsd lets a BID go only to a REVEAL, which the REVEAL phase alone accepts, so the lockup is lost. The task state is `lostUnrevealed` ("Lost — Not Revealed", in red, no action), not the CLOSED fallback "Owned", and no Redeem is offered. A redeemable losing reveal beside it keeps `lostNeedsRedeem`.
+**R10a — A bid of this auction left unrevealed reads as lost.** Once the auction is CLOSED, a commitment of this auction whose BID coin is still unspent was never revealed; hsd lets a BID go only to a REVEAL, which the REVEAL phase alone accepts, so the lockup is lost. The task state is `lostUnrevealed` ("Lost — Not Revealed", in red, no action), not the CLOSED fallback "Owned", and no Redeem is offered. A redeemable losing reveal beside it keeps `lostNeedsRedeem`. A reveal of ours broadcast, pending or mined (its draft's status, or a reveal txid the chain scan stamped with no local draft) means the local coin set is behind, and the state is not `lostUnrevealed`.
 *Enforced:* `commands/names.rs::derive_auction_task_state` (CLOSED arm).
-*Pinned:* `auction_capabilities_tests::closed_with_unrevealed_bid_yields_lost_unrevealed`, `auction.test.ts :: lostUnrevealed — a bid never revealed`, `live_node_it::live_unrevealed_bid_reads_lost_unrevealed`.
+*Pinned:* `auction_capabilities_tests::closed_with_unrevealed_bid_yields_lost_unrevealed`, `auction_capabilities_tests::closed_unrevealed_bid_with_its_reveal_sent_or_mined_is_not_lost`, `auction.test.ts :: lostUnrevealed — a bid never revealed`, `name-acquisition.test.tsx :: says a bid never revealed lost its lockup, not that the name is someone else's`, `live_node_it::live_unrevealed_bid_reads_lost_unrevealed`.
 
 ### Gates
 

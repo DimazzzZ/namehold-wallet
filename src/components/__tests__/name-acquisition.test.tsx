@@ -26,6 +26,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 import { WalletView } from "../WalletView";
 import { AuctionsView } from "../AuctionsView";
 import { NameActionsModal } from "../NameActionsModal";
+import { makeCapabilities, refused } from "../../test/fixtures/capabilities";
 
 const profile = {
   id: "p1",
@@ -805,6 +806,49 @@ describe("NameActionsModal — guided acquisition flow", () => {
     expect(
       screen.queryByText(/This name is already registered\. No auction actions are needed/i),
     ).not.toBeInTheDocument();
+  });
+
+  it("says a bid never revealed lost its lockup, not that the name is someone else's", async () => {
+    const reason =
+      "You did not reveal this bid in time; its lockup is lost and cannot be redeemed.";
+    invokeMock.mockImplementation(
+      routeModal(
+        {
+          name: "unrevealedname",
+          state: "CLOSED",
+          height: 100,
+          renewal: 200,
+          owner: { hash: "ab".repeat(32), index: 0 },
+          registered: false,
+          value: 800_000,
+          highest: 800_000,
+          stats: { blocksUntilExpire: 100 },
+        },
+        {
+          capabilities: makeCapabilities({
+            name: "unrevealedname",
+            phase: "CLOSED",
+            taskState: "lostUnrevealed",
+            ownsName: false,
+            hasBidCommitment: true,
+            hasBidCoin: true,
+            canRedeem: refused("no unspent reveal coin to redeem"),
+            nextActionKey: null,
+            nextActionLabel: "Lost — not revealed",
+            nextActionReason: reason,
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="unrevealedname" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    expect(await screen.findByTestId("lost-unrevealed")).toHaveTextContent(reason);
+    expect(
+      screen.queryByText(/This name is already registered\. No auction actions are needed/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Redeem$/i })).not.toBeInTheDocument();
   });
 
   it("auto-expands the management section for an owned name without clicking the toggle", async () => {

@@ -357,6 +357,70 @@ fn closed_without_owner_or_reveal_yields_owned_no_urgent_action() {
 }
 
 #[test]
+fn closed_unrevealed_bid_with_its_reveal_sent_or_mined_is_not_lost() {
+    // The BID coin still reads unspent locally, but our reveal of it is in
+    // flight or mined (by draft, or stamped by the chain scan with no draft):
+    // the local coin set is behind, the lockup is not lost.
+    use crate::db::queries::DraftStatus;
+    let with = |status: Option<DraftStatus>, txid: Option<&str>| {
+        derive_auction_task_state(
+            &NameActionContext {
+                has_bid_commitment: true,
+                has_bid_coin: true,
+                reveal_txid: txid.map(str::to_string),
+                reveal_draft_status: status,
+                ..Default::default()
+            },
+            "CLOSED",
+            false,
+            None,
+            Network::Main,
+        )
+    };
+    for status in [
+        DraftStatus::Broadcasted,
+        DraftStatus::BroadcastPending,
+        DraftStatus::Confirmed,
+    ] {
+        assert_ne!(
+            with(Some(status), Some("aa")),
+            AuctionTaskState::LostUnrevealed,
+            "{status:?}"
+        );
+    }
+    assert_ne!(with(None, Some("aa")), AuctionTaskState::LostUnrevealed);
+    // A reveal that failed or was dropped never happened.
+    for status in [DraftStatus::Failed, DraftStatus::Dropped] {
+        assert_eq!(
+            with(Some(status), Some("aa")),
+            AuctionTaskState::LostUnrevealed,
+            "{status:?}"
+        );
+    }
+}
+
+#[test]
+fn offline_owned_name_with_reveals_is_not_called_lost() {
+    // Node unreachable: owned by explorer evidence, no owner coin of ours, and
+    // the reveal coins counted against no owner at all. Without the node's
+    // word one of them may be the winner, so this is no "Lost — Redeem Now".
+    let ctx = NameActionContext {
+        has_reveal_coin: true,
+        redeemable_reveal_count: 1,
+        ..Default::default()
+    };
+    let state = derive_auction_task_state(&ctx, "CLOSED", true, None, Network::Main);
+    assert_eq!(state, AuctionTaskState::OwnedNoUrgentAction);
+    // With the node naming one of our reveals the owner, the other is a loss.
+    let ctx = NameActionContext {
+        owner_reveal_by_node: true,
+        ..ctx
+    };
+    let state = derive_auction_task_state(&ctx, "CLOSED", true, None, Network::Main);
+    assert_eq!(state, AuctionTaskState::LostNeedsRedeem);
+}
+
+#[test]
 fn closed_with_unrevealed_bid_yields_lost_unrevealed() {
     // This auction's commitment with its BID coin still unspent after the
     // reveal window: never revealed, the lockup is lost, not "Owned".
