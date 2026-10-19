@@ -13,7 +13,7 @@ last_verified: "bc8cd4d, 2026-10-18, report kept outside the repo"
 
 # Buying
 
-The seller profile buys names the Shakedex CLI listed: import a listing file, check it on the node, buy it through the secure window, and finalize the name. Off mainnet there is no LearnHNS Market, so every listing comes from a file or pasted JSON. Never buy a listing the app itself locked ([rules](../../rules.md)).
+The seller profile buys names the Shakedex CLI listed: import a listing file, check it on the node, buy it through the secure window, and finalize the name. Off mainnet there is no LearnHNS Market, so every listing comes from a file or pasted JSON. A listing the app itself locked is not bought (B17, [rules](../../rules.md)).
 
 ## B1 — Browse on regtest
 
@@ -385,3 +385,25 @@ Expected:
 - **Blocks mined:** 0
 - **Evidence:** screenshot `B16-1-after-relaunch`.
 - **Cleanup / end state:** the listing still buyable.
+
+## B17 — Your own listing is not bought
+
+- **Priority:** P3
+- **Covers:** R33
+- **Preconditions:** a listing file the seller profile exported (`$QA_DIR/SA.json` from [selling](selling.md), any state); the second-device profile ([environment](../../environment.md#profiles)).
+
+Steps:
+
+1. In the seller profile: Market › Browse, import `$QA_DIR/SA.json` (paste it or choose the file).
+2. Hover the row's `Buy`.
+3. [switch-profile](../../procedures/switch-profile.md) to the second device and import the same file again; hover `Buy`.
+
+Expected:
+
+- Steps 1 and 3: the row's status reads "this is your own listing: cancel it instead (My listings), buying it would only cost you network fees", whatever the listing's state on chain; `Buy` is shown, disabled, and its hint (step 2) says the same sentence. The second device of the same phrase on this machine counts as the same device.
+- Nothing opens, nothing is signed: no `Buy` draft in Activity.
+- Passes if neither profile can start a purchase of the listing.
+
+- **Blocks mined:** 0
+- **Evidence:** screenshots `B17-1-seller`, `B17-3-second-device`.
+- **Cleanup / end state:** the seller profile active; nothing bought.

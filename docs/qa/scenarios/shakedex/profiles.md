@@ -32,7 +32,7 @@ Expected:
 - My listings never shows a row, state or button of the other profile, not even for a moment; while the new profile's list loads it may show a loading state or nothing, never the old rows.
 - Browse in a regtest profile shows "There is no LearnHNS Market for this network. Import a listing file or paste one below." with the import box, and no rows carried over from the other profile.
 - Owned Names and the balances never swap.
-- The signer-state quirk after a switch is a known issue; don't report it.
+- After each switch the header shows `Signer locked` (the switch drops the other profile's signer); `Signer unlocked` right after a switch is ❌.
 - Passes if none of the snapshots (two per switch, six switches) shows a foreign row.
 
 - **Blocks mined:** 0
@@ -54,7 +54,7 @@ Steps:
 
 Expected:
 
-- Either the main window blocks the switch until the prompt is answered, or after the switch the prompt is refused or signs only for its own profile ("the unlocked signer is for a different wallet profile" is the known signer quirk).
+- Either the main window blocks the switch until the prompt is answered, or after the switch the prompt is refused (the switch dropped the signer it would sign with) or signs only for its own profile.
 - Nothing is signed or sent for the wrong profile; record exactly what happened.
 - Passes if no transaction leaves for the profile that did not build it.
 

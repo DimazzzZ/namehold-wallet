@@ -78,10 +78,10 @@ Every profile connects as **Remote Node** `http://127.0.0.1:14037`, API key `tes
 
 Creating them (mode B, or when a profile is missing):
 
-1. Onboarding: network **Regtest (local testing only)**; card **Remote Node** with the URL and key above; tick **Allow sending via remote node**; **Test connection**, then **Continue**. If Test connection answers HTTP 401 for a key you just typed, save first (a known issue, [ui](ui.md#known-issues-not-to-report-again)).
+1. Onboarding: network **Regtest (local testing only)**; card **Remote Node** with the URL and key above; tick **Allow sending via remote node**; **Test connection** (it uses the key just typed, before anything is saved), then **Continue**.
 2. **Create a new wallet** (not watch-only, not Ledger): a secure window asks for a passphrase, then shows the recovery phrase; confirm the backup.
 3. Second device: Add wallet → import the same recovery phrase as a regtest profile.
-4. Watch-only: Add wallet → watch-only → import the seller's account xpub.
+4. Watch-only: Add wallet → watch-only → import the seller's account xpub (the secure window asks "Enter the account xpub").
 
 ## Funding the app
 

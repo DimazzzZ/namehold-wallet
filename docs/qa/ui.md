@@ -69,7 +69,6 @@ Amounts on those rows: a purchase shows minus the price (not the name's value); 
 
 ## Known quirks and their workarounds
 
-- **A switched-to profile may show another profile's signer as unlocked**, and signing then refuses "the unlocked signer is for a different wallet profile": press `Lock`, then `Unlock` ([switch-profile](procedures/switch-profile.md)).
 - **The window may open on another macOS Space**; switch to it before capturing.
 - **Transient toasts and hover hints** are easy to miss: record ◐ with what was seen, not ❌.
 - **Quitting with a secure window open**: `cmd+Q` may not close the app while a secure window is up; use the app menu's Quit, or `osascript -e 'tell application "Namehold" to quit'`, and as a last resort `pkill -x namehold-wallet`.
@@ -78,10 +77,6 @@ Amounts on those rows: a purchase shows minus the price (not the name's value); 
 
 These are recorded and parked. Note what you see if a case runs into one, but file it again only if its behaviour changed.
 
-- Test connection ignores an API key typed but not yet saved (HTTP 401) until `Save settings`.
-- A new or switched-to profile shows another profile's signer as unlocked (workaround above).
-- The xpub import field shows the recovery-phrase placeholder.
-- Buying your own listing (from any profile of the same phrase) is not refused.
 - A name in the Cancelling state shows "Shakedex_cancel is broadcast and waiting to be mined. Nothing changes on-chain until it lands in a block." in its name actions instead of disabled owner buttons.
 - A Buy Now lowered after a block has moved the median time (its two steps then carry different lock times) imports in another profile as `Reverse auction`.
 - Spec §5 "Known gaps" ([the spec](../specs/2026-10-05-shakedex-name-sales.md)) lists behaviour that is by design (one device per listing, a restore sees addresses only up to the gap limit past the last used one, and so on): a case that hits one is ◐ with the gap named, not a bug.
