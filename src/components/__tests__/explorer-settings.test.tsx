@@ -68,7 +68,7 @@ describe("Settings — explorer base URL (Task 11 / S1)", () => {
     fireEvent.change(input, { target: { value: "not-a-url" } });
     // Trigger `dirty` so the Save footer renders.
     expect(await screen.findByTestId("explorer-url-error")).toBeInTheDocument();
-    const saveButton = await screen.findByRole("button", { name: /Save settings/i });
+    const saveButton = await screen.findByTestId("settings-save");
     expect(saveButton).toBeDisabled();
   });
 
@@ -79,7 +79,7 @@ describe("Settings — explorer base URL (Task 11 / S1)", () => {
     fireEvent.change(input, { target: { value: "https://my.explorer.example/" } });
     expect(screen.queryByTestId("explorer-url-error")).toBeNull();
 
-    const saveButton = await screen.findByRole("button", { name: /Save settings/i });
+    const saveButton = await screen.findByTestId("settings-save");
     expect(saveButton).not.toBeDisabled();
     fireEvent.click(saveButton);
 

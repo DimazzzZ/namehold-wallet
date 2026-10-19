@@ -98,7 +98,7 @@ describe("Settings — Test connection", () => {
     fireEvent.click(await screen.findByTestId("test-connection-button"));
     await screen.findByTestId("connection-network-mismatch");
     fireEvent.change(screen.getByTestId("settings-fee-rate"), { target: { value: "2000" } });
-    expect(await screen.findByRole("button", { name: /Save settings/i })).toBeDisabled();
+    expect(await screen.findByTestId("settings-save")).toBeDisabled();
     expect(screen.getByTestId("settings-save-blocked")).toHaveTextContent(/testnet/);
   });
 });

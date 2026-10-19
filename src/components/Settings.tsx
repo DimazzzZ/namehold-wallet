@@ -647,7 +647,10 @@ export function Settings() {
         open={advancedOpen || advancedHasError}
         onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}
       >
-        <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-gray-700">
+        <summary
+          className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-gray-700"
+          data-testid="settings-advanced"
+        >
           Advanced
         </summary>
         <div className="px-4 pb-4 space-y-3">
@@ -707,13 +710,7 @@ export function Settings() {
           ) : null}
           <Button
             onClick={handleSave}
-            disabled={
-              saving ||
-              !!explorerUrlError ||
-              !!feeRateError ||
-              !!gapLimitError ||
-              nodeNetworkMismatch
-            }
+            disabled={saving || !!saveBlockReason}
             data-testid="settings-save"
           >
             {saving ? "Saving…" : "Save settings"}

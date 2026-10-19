@@ -59,7 +59,7 @@ describe("Settings — Autostart HSD checkbox", () => {
     fireEvent.click(box); // "true" -> "false"
     expect(box).not.toBeChecked();
 
-    const save = await screen.findByRole("button", { name: /Save settings/i });
+    const save = await screen.findByTestId("settings-save");
     fireEvent.click(save);
 
     await waitFor(() => {

@@ -64,7 +64,7 @@ describe("Settings — Watchlist notifications", () => {
     const highbidInput = await screen.findByTestId("watchlist-notify-highbid-input");
     fireEvent.change(highbidInput, { target: { value: "250" } });
 
-    const save = await screen.findByRole("button", { name: /Save settings/i });
+    const save = await screen.findByTestId("settings-save");
     fireEvent.click(save);
 
     await waitFor(() => {

@@ -54,7 +54,7 @@ describe("Settings — Address gap limit", () => {
       renderSettings();
       fireEvent.change(gapInput(), { target: { value } });
       expect(await screen.findByText(RANGE_ERROR)).toBeInTheDocument();
-      const save = await screen.findByRole("button", { name: /Save settings/i });
+      const save = await screen.findByTestId("settings-save");
       expect(save).toBeDisabled();
     },
   );
@@ -64,7 +64,7 @@ describe("Settings — Address gap limit", () => {
     renderSettings();
     fireEvent.change(gapInput(), { target: { value } });
     expect(screen.queryByText(RANGE_ERROR)).not.toBeInTheDocument();
-    const save = await screen.findByRole("button", { name: /Save settings/i });
+    const save = await screen.findByTestId("settings-save");
     expect(save).toBeEnabled();
     fireEvent.click(save);
     await waitFor(() => {
@@ -79,7 +79,7 @@ describe("Settings — Address gap limit", () => {
     // Why: the field sits in the collapsed Advanced section; a stored 5000 made
     // every Save disabled with the reason hidden.
     function advanced(): HTMLDetailsElement {
-      return screen.getByText("Advanced").closest("details") as HTMLDetailsElement;
+      return screen.getByTestId("settings-advanced").closest("details") as HTMLDetailsElement;
     }
 
     it("opens Advanced, shows the reason and says why Save is disabled", async () => {
@@ -89,7 +89,7 @@ describe("Settings — Address gap limit", () => {
       expect(advanced().open).toBe(true);
       // Touch another field so the Save footer appears.
       fireEvent.change(screen.getByTestId("settings-fee-rate"), { target: { value: "2000" } });
-      const save = await screen.findByRole("button", { name: /Save settings/i });
+      const save = await screen.findByTestId("settings-save");
       expect(save).toBeDisabled();
       expect(screen.getByTestId("settings-save-blocked")).toHaveTextContent(RANGE_ERROR);
     });
@@ -100,7 +100,7 @@ describe("Settings — Address gap limit", () => {
       fireEvent.change(await screen.findByTestId("settings-gap-limit"), {
         target: { value: "1000" },
       });
-      expect(await screen.findByRole("button", { name: /Save settings/i })).toBeEnabled();
+      expect(await screen.findByTestId("settings-save")).toBeEnabled();
       expect(screen.queryByTestId("settings-save-blocked")).not.toBeInTheDocument();
     });
 
@@ -110,7 +110,7 @@ describe("Settings — Address gap limit", () => {
       fireEvent.change(await screen.findByTestId("settings-gap-limit"), {
         target: { value: "1000" },
       });
-      await screen.findByRole("button", { name: /Save settings/i });
+      await screen.findByTestId("settings-save");
       expect(screen.queryByText(RANGE_ERROR)).not.toBeInTheDocument();
       expect(advanced().open).toBe(true);
     });

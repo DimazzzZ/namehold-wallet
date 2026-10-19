@@ -93,7 +93,7 @@ describe("Settings — Fee rate override", () => {
     fireEvent.click(await screen.findByTestId("autostart-hsd-checkbox"));
 
     // Save button should be disabled
-    const saveBtn = await screen.findByRole("button", { name: /Save settings/i });
+    const saveBtn = await screen.findByTestId("settings-save");
     expect(saveBtn).toBeDisabled();
   });
 
@@ -105,7 +105,7 @@ describe("Settings — Fee rate override", () => {
     fireEvent.change(input, { target: { value: "4000" } });
 
     // Save button should be enabled
-    const saveBtn = await screen.findByRole("button", { name: /Save settings/i });
+    const saveBtn = await screen.findByTestId("settings-save");
     expect(saveBtn).toBeEnabled();
   });
 
@@ -116,7 +116,7 @@ describe("Settings — Fee rate override", () => {
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "3500" } });
 
-    const saveBtn = await screen.findByRole("button", { name: /Save settings/i });
+    const saveBtn = await screen.findByTestId("settings-save");
     fireEvent.click(saveBtn);
 
     await waitFor(() => {
@@ -141,7 +141,7 @@ describe("Settings — Fee rate override", () => {
     // No error should appear for empty input
     expect(screen.queryByTestId("settings-fee-rate-error")).not.toBeInTheDocument();
 
-    const saveBtn = await screen.findByRole("button", { name: /Save settings/i });
+    const saveBtn = await screen.findByTestId("settings-save");
     fireEvent.click(saveBtn);
 
     await waitFor(() => {
