@@ -30,6 +30,7 @@ use crate::commands::draft_ctx::active_profile;
 use crate::commands::draft_ctx::LockSend;
 use crate::commands::secure_prompt::{prompt_secure, SecurePromptRequest};
 use crate::db;
+use crate::db::queries::DraftStatus;
 use crate::error::AppError;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::{cross_network_refusal, ChainSource, NodeRpcClient};
@@ -709,7 +710,7 @@ pub(crate) async fn sign_tx_draft_inner(
             .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
         // Signing flips a draft to `signed`, which `broadcast_tx_draft` sends:
         // the same draft statuses are refused here.
-        refuse_unless_sendable(&draft.status)?;
+        refuse_unless_sendable(draft.status)?;
         let profile = db::queries::get_wallet_profile(&conn, &draft.wallet_profile_id)?
             .ok_or_else(|| {
                 AppError::NotFound(format!("wallet profile {}", draft.wallet_profile_id))
@@ -782,14 +783,14 @@ pub(crate) async fn sign_tx_draft_inner(
 /// (`broadcast_pending`), is signed or sent. A sent one is the node's to
 /// confirm; a `dropped` or `failed` one has had its coins released, which
 /// another draft may hold by now.
-fn refuse_unless_sendable(status: &str) -> Result<(), AppError> {
+fn refuse_unless_sendable(status: DraftStatus) -> Result<(), AppError> {
     match status {
-        "draft" | "signed" | "broadcast_pending" => Ok(()),
-        "broadcasted" | "confirmed" => Err(AppError::InvalidInput(
+        DraftStatus::Draft | DraftStatus::Signed | DraftStatus::BroadcastPending => Ok(()),
+        DraftStatus::Broadcasted | DraftStatus::Confirmed => Err(AppError::InvalidInput(
             "this transaction was already sent".to_string(),
         )),
-        other => Err(AppError::InvalidInput(format!(
-            "this transaction is {other} and its coins were released; build it again to send it"
+        DraftStatus::Failed | DraftStatus::Dropped => Err(AppError::InvalidInput(format!(
+            "this transaction is {status} and its coins were released; build it again to send it"
         ))),
     }
 }
@@ -1691,8 +1692,8 @@ pub async fn broadcast_tx_draft(
         } else {
             None
         };
-        refuse_unless_sendable(&draft.status)?;
-        let maybe_sent = db::queries::may_have_reached_chain(&draft.status);
+        refuse_unless_sendable(draft.status)?;
+        let maybe_sent = db::queries::may_have_reached_chain(draft.status);
         // A lock TRANSFER, and the FINALIZE into the lock, are judged by R31
         // again before they are sent.
         let lock_send = match draft.action.as_str() {
@@ -1800,21 +1801,21 @@ pub async fn broadcast_tx_draft(
             db::queries::update_tx_draft_status(
                 &conn,
                 &draft_id,
-                "broadcasted",
+                DraftStatus::Broadcasted,
                 None,
                 Some(&txid),
             )?;
             Ok(BroadcastResult {
                 draft_id,
                 txid,
-                status: "broadcasted".to_string(),
+                status: DraftStatus::Broadcasted,
             })
         }
         BroadcastOutcome::Mined(txid, height) => {
             db::queries::update_tx_draft_status(
                 &conn,
                 &draft_id,
-                "broadcasted",
+                DraftStatus::Broadcasted,
                 None,
                 Some(&txid),
             )?;
@@ -1822,7 +1823,7 @@ pub async fn broadcast_tx_draft(
             Ok(BroadcastResult {
                 draft_id,
                 txid,
-                status: "confirmed".to_string(),
+                status: DraftStatus::Confirmed,
             })
         }
         // Not sent: held as `broadcast_pending` (coins kept, retry allowed)
@@ -1831,7 +1832,7 @@ pub async fn broadcast_tx_draft(
             db::queries::update_tx_draft_status(
                 &conn,
                 &draft_id,
-                "broadcast_pending",
+                DraftStatus::BroadcastPending,
                 Some(NOT_TAKEN),
                 None,
             )?;
@@ -1840,7 +1841,13 @@ pub async fn broadcast_tx_draft(
         BroadcastOutcome::RpcError(e) => {
             // hsd's refusal itself, so its words are said once.
             let msg = e.to_string();
-            db::queries::update_tx_draft_status(&conn, &draft_id, "failed", Some(&msg), None)?;
+            db::queries::update_tx_draft_status(
+                &conn,
+                &draft_id,
+                DraftStatus::Failed,
+                Some(&msg),
+                None,
+            )?;
             db::queries::release_reserved_utxos_for_draft(&conn, &draft_id)?;
             Err(e)
         }
@@ -1849,7 +1856,7 @@ pub async fn broadcast_tx_draft(
             db::queries::update_tx_draft_status(
                 &conn,
                 &draft_id,
-                "broadcast_pending",
+                DraftStatus::BroadcastPending,
                 Some(&msg),
                 None,
             )?;
@@ -2054,7 +2061,7 @@ pub async fn refresh_tx_confirmations(
     let mut tx_index = TxIndexProbe::default();
 
     for d in &drafts {
-        if d.status == "broadcast_pending" {
+        if d.status == DraftStatus::BroadcastPending {
             let txid = match local_txid_from_summary(&d.summary_json) {
                 Some(t) => t,
                 None => continue, // can't identify the tx; nothing to poll
@@ -2107,7 +2114,7 @@ pub async fn refresh_tx_confirmations(
                 Ok(Some(height)) => confirmed_updates.push((d.id.clone(), height, None)),
                 // Was confirmed, now back in the mempool — no longer confirmed
                 // at its recorded height (reorg).
-                Ok(None) if d.status == "confirmed" => reverted.push(d.id.clone()),
+                Ok(None) if d.status == DraftStatus::Confirmed => reverted.push(d.id.clone()),
                 // Still in the mempool as expected; leave it `broadcasted`.
                 Ok(None) => {}
                 // Not hsd's answer: no verdict.
@@ -2118,7 +2125,7 @@ pub async fn refresh_tx_confirmations(
             // mined tx too: the chain decides (`chain_evidence_with_client`).
             // A purchase is the purchase job's to give up (see above).
             Err(e) if crate::noncustodial::rpc::is_tx_not_found(&e) => {
-                if d.action == PURCHASE_ACTION && d.status != "confirmed" {
+                if d.action == PURCHASE_ACTION && d.status != DraftStatus::Confirmed {
                     continue;
                 }
                 match chain_evidence_with_client(&client, draft_hex(d), txid).await {
@@ -2128,7 +2135,7 @@ pub async fn refresh_tx_confirmations(
                     // Every coin it spends is unspent: a reorg un-mined a
                     // `confirmed` one; a `broadcasted` one is a candidate for
                     // `dropped` (grace window applied below).
-                    ChainEvidence::InputsUnspent if d.status == "confirmed" => {
+                    ChainEvidence::InputsUnspent if d.status == DraftStatus::Confirmed => {
                         reverted.push(d.id.clone())
                     }
                     ChainEvidence::InputsUnspent => maybe_dropped.push(d.id.clone()),
@@ -2140,7 +2147,7 @@ pub async fn refresh_tx_confirmations(
                     ChainEvidence::InputsSpent
                         if tx_index.get(&client, tip).await == Some(true) =>
                     {
-                        if d.status == "confirmed" {
+                        if d.status == DraftStatus::Confirmed {
                             reverted.push(d.id.clone());
                         } else {
                             maybe_spent_elsewhere.push(d.id.clone());
@@ -2196,7 +2203,7 @@ pub async fn refresh_tx_confirmations(
                 db::queries::update_tx_draft_status(
                     &conn,
                     id,
-                    "dropped",
+                    DraftStatus::Dropped,
                     Some(
                         "Broadcast but never confirmed — likely evicted from the mempool \
                          (e.g. an auction bid that missed its window). The coins were not moved.",
@@ -2225,7 +2232,13 @@ pub async fn refresh_tx_confirmations(
             // `broadcast_tx_draft`): the node accepting/holding the tx
             // doesn't mean sync has marked the inputs spent yet, and the
             // reservation is what closes that window.
-            db::queries::update_tx_draft_status(&conn, id, "broadcasted", None, Some(txid))?;
+            db::queries::update_tx_draft_status(
+                &conn,
+                id,
+                DraftStatus::Broadcasted,
+                None,
+                Some(txid),
+            )?;
         }
         let mut n_fail = 0;
         for id in &maybe_failed_pending {
@@ -2233,7 +2246,7 @@ pub async fn refresh_tx_confirmations(
                 db::queries::update_tx_draft_status(
                     &conn,
                     id,
-                    "failed",
+                    DraftStatus::Failed,
                     Some(
                         "Broadcast outcome could not be confirmed by the node within the \
                          grace window — treating as failed. The coins were not moved.",
@@ -2251,7 +2264,7 @@ pub async fn refresh_tx_confirmations(
                 db::queries::update_tx_draft_status(
                     &conn,
                     id,
-                    "dropped",
+                    DraftStatus::Dropped,
                     Some(
                         "Another transaction spent this transaction's coins, so it can never \
                          confirm. Nothing was paid by this transaction.",
@@ -2565,7 +2578,7 @@ mod confirm_tests {
             signed_tx_hex: None,
             signing_inputs_json: "{}".to_string(),
             summary_json: summary_json.to_string(),
-            status: "draft".to_string(),
+            status: DraftStatus::Draft,
             error_message: None,
             txid: None,
             confirmation_height: None,
@@ -2675,12 +2688,17 @@ mod pure_helper_tests {
     #[test]
     fn every_status_my_listings_offers_to_send_is_sendable() {
         for status in db::queries::UNSENT_STATUSES
-            .iter()
-            .chain([&db::queries::BROADCAST_PENDING_STATUS])
+            .into_iter()
+            .chain([DraftStatus::BroadcastPending])
         {
             assert!(refuse_unless_sendable(status).is_ok(), "{status}");
         }
-        for status in ["broadcasted", "confirmed", "failed", "dropped"] {
+        for status in [
+            DraftStatus::Broadcasted,
+            DraftStatus::Confirmed,
+            DraftStatus::Failed,
+            DraftStatus::Dropped,
+        ] {
             assert!(refuse_unless_sendable(status).is_err(), "{status}");
         }
     }
@@ -2878,7 +2896,7 @@ mod pure_helper_tests {
             signed_tx_hex: None,
             signing_inputs_json: "{}".to_string(),
             summary_json: summary_json.to_string(),
-            status: "draft".to_string(),
+            status: DraftStatus::Draft,
             error_message: None,
             txid: None,
             confirmation_height: None,

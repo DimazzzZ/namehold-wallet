@@ -673,7 +673,7 @@ mod branch_cov {
         seed_profile(&conn, "p1");
         insert_basic_draft(&conn, "d1", "send_hns", "");
         update_tx_draft_signed(&conn, "d1", "aabb", r#"{"action":"send_hns"}"#).unwrap();
-        update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("tx1")).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Broadcasted, None, Some("tx1")).unwrap();
         let d = get_tx_draft(&conn, "d1").unwrap().unwrap();
         assert_eq!(d.status, "broadcasted");
         assert_eq!(d.txid.as_deref(), Some("tx1"));
@@ -699,7 +699,7 @@ mod branch_cov {
         let conn = db();
         seed_profile(&conn, "p1");
         insert_basic_draft(&conn, "d1", "send_hns", "");
-        update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("tx1")).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Broadcasted, None, Some("tx1")).unwrap();
         assert!(delete_tx_draft(&conn, "d1").is_err());
         assert!(delete_tx_draft(&conn, "nope").is_err());
 
@@ -713,12 +713,12 @@ mod branch_cov {
         let conn = db();
         seed_profile(&conn, "p1");
         insert_basic_draft(&conn, "b", "send_hns", "");
-        update_tx_draft_status(&conn, "b", "broadcasted", None, Some("txb")).unwrap();
+        update_tx_draft_status(&conn, "b", DraftStatus::Broadcasted, None, Some("txb")).unwrap();
         insert_basic_draft(&conn, "c", "send_hns", "");
-        update_tx_draft_status(&conn, "c", "broadcasted", None, Some("txc")).unwrap();
+        update_tx_draft_status(&conn, "c", DraftStatus::Broadcasted, None, Some("txc")).unwrap();
         update_tx_draft_confirmation(&conn, "c", 100, None).unwrap();
         insert_basic_draft(&conn, "deep", "send_hns", "");
-        update_tx_draft_status(&conn, "deep", "broadcasted", None, Some("txd")).unwrap();
+        update_tx_draft_status(&conn, "deep", DraftStatus::Broadcasted, None, Some("txd")).unwrap();
         update_tx_draft_confirmation(&conn, "deep", 1, None).unwrap();
         insert_basic_draft(&conn, "plain", "send_hns", "");
 
@@ -735,12 +735,10 @@ mod branch_cov {
         let conn = db();
         seed_profile(&conn, "p1");
         insert_basic_draft(&conn, "d1", "send_hns", "");
-        update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("txX")).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Broadcasted, None, Some("txX")).unwrap();
         assert_eq!(
-            get_draft_status_by_txid(&conn, "p1", "txX")
-                .unwrap()
-                .as_deref(),
-            Some("broadcasted")
+            get_draft_status_by_txid(&conn, "p1", "txX").unwrap(),
+            Some(DraftStatus::Broadcasted)
         );
         assert!(get_draft_status_by_txid(&conn, "p1", "nope")
             .unwrap()
@@ -1022,7 +1020,7 @@ mod branch_cov {
         let conn = db();
         seed_profile(&conn, "p1");
         insert_basic_draft(&conn, "op", "open", "opening");
-        update_tx_draft_status(&conn, "op", "broadcasted", None, Some("txop")).unwrap();
+        update_tx_draft_status(&conn, "op", DraftStatus::Broadcasted, None, Some("txop")).unwrap();
         insert_basic_draft(&conn, "plain", "open", "notqueued");
         insert_bid_commitment(&conn, "p1", "bidname", "h", "rs1q", 0, 0, 1, 2, "n", "b").unwrap();
         seed_addr(&conn, 0, 0, "rs1qown");
@@ -1107,7 +1105,14 @@ mod branch_cov_extra {
             r#"{"action":"open","other":"field"}"#,
         )
         .unwrap();
-        update_tx_draft_status(&conn, "opnn", "broadcasted", None, Some("txopnn")).unwrap();
+        update_tx_draft_status(
+            &conn,
+            "opnn",
+            DraftStatus::Broadcasted,
+            None,
+            Some("txopnn"),
+        )
+        .unwrap();
         // Even though the draft is in-flight, no "name" is inserted.
         let names = auction_position_names(&conn, "p1").unwrap();
         assert!(

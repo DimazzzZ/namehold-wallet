@@ -606,8 +606,14 @@ fn find_name_action_context_knows_the_owner_coin_is_only_spent_in_flight() {
     // A redeem in flight spends reveals, not the owner coin — it says nothing
     // about whether we still hold the name.
     seed_draft(&conn, "d-red", "redeem", NAME);
-    db::queries::update_tx_draft_status(&conn, "d-red", "broadcasted", None, Some("redtx"))
-        .unwrap();
+    db::queries::update_tx_draft_status(
+        &conn,
+        "d-red",
+        db::queries::DraftStatus::Broadcasted,
+        None,
+        Some("redtx"),
+    )
+    .unwrap();
     let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
     assert!(
         !ctx.owner_spend_in_flight,
@@ -616,8 +622,14 @@ fn find_name_action_context_knows_the_owner_coin_is_only_spent_in_flight() {
 
     // Our own register, broadcast and unmined, does.
     seed_draft(&conn, "d-reg", "register", NAME);
-    db::queries::update_tx_draft_status(&conn, "d-reg", "broadcasted", None, Some("regtx"))
-        .unwrap();
+    db::queries::update_tx_draft_status(
+        &conn,
+        "d-reg",
+        db::queries::DraftStatus::Broadcasted,
+        None,
+        Some("regtx"),
+    )
+    .unwrap();
     let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
     assert!(
         !ctx.has_owner_coin,
@@ -665,7 +677,14 @@ fn find_name_action_context_recognises_a_batched_owner_spend() {
     );
 
     seed_draft(&conn, "d-bt", "batch-transfer", NAME);
-    db::queries::update_tx_draft_status(&conn, "d-bt", "broadcasted", None, Some("bttx")).unwrap();
+    db::queries::update_tx_draft_status(
+        &conn,
+        "d-bt",
+        db::queries::DraftStatus::Broadcasted,
+        None,
+        Some("bttx"),
+    )
+    .unwrap();
     let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
     assert!(
         ctx.owner_spend_in_flight,
@@ -701,7 +720,14 @@ fn find_name_action_context_recognises_a_batched_owner_spend() {
         Some(779),
     );
     seed_draft(&conn2, "d-br", "batch-redeem", NAME);
-    db::queries::update_tx_draft_status(&conn2, "d-br", "broadcasted", None, Some("brtx")).unwrap();
+    db::queries::update_tx_draft_status(
+        &conn2,
+        "d-br",
+        db::queries::DraftStatus::Broadcasted,
+        None,
+        Some("brtx"),
+    )
+    .unwrap();
     let ctx2 = find_name_action_context(&conn2, PROFILE, NAME, Some(779)).unwrap();
     assert!(!ctx2.owner_spend_in_flight);
 }
@@ -859,7 +885,10 @@ fn find_name_action_context_reveal_draft_status() {
     .unwrap();
 
     let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
-    assert_eq!(ctx.reveal_draft_status.as_deref(), Some("confirmed"));
+    assert_eq!(
+        ctx.reveal_draft_status,
+        Some(db::queries::DraftStatus::Confirmed)
+    );
 }
 
 /// A freshly registered name's owner coin is a REGISTER, whose covenant hsd
@@ -1283,7 +1312,14 @@ fn find_name_action_context_counts_a_purchase_finalize_as_an_owner_spend() {
         crate::noncustodial::shakedex::purchase::PURCHASE_FINALIZE_ACTION,
         NAME,
     );
-    db::queries::update_tx_draft_status(&conn, "d-pf", "broadcasted", None, Some("pftx")).unwrap();
+    db::queries::update_tx_draft_status(
+        &conn,
+        "d-pf",
+        db::queries::DraftStatus::Broadcasted,
+        None,
+        Some("pftx"),
+    )
+    .unwrap();
     let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
     assert!(ctx.owner_spend_in_flight);
 }
@@ -1320,8 +1356,14 @@ fn find_name_action_context_counts_a_cancel_in_flight_as_an_owner_spend() {
         Some(779),
     );
     seed_draft(&conn, "d-cancel", "cancel", NAME);
-    db::queries::update_tx_draft_status(&conn, "d-cancel", "broadcasted", None, Some("canceltx"))
-        .unwrap();
+    db::queries::update_tx_draft_status(
+        &conn,
+        "d-cancel",
+        db::queries::DraftStatus::Broadcasted,
+        None,
+        Some("canceltx"),
+    )
+    .unwrap();
     let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
     assert!(ctx.owner_spend_in_flight);
 }
@@ -1360,8 +1402,14 @@ fn find_name_action_context_counts_a_lock_transfer_as_an_owner_spend() {
             Some(779),
         );
         seed_draft(&conn, "d-lock", action, NAME);
-        db::queries::update_tx_draft_status(&conn, "d-lock", "broadcasted", None, Some("locktx"))
-            .unwrap();
+        db::queries::update_tx_draft_status(
+            &conn,
+            "d-lock",
+            db::queries::DraftStatus::Broadcasted,
+            None,
+            Some("locktx"),
+        )
+        .unwrap();
         let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
         assert!(ctx.owner_spend_in_flight, "{action}");
     }
@@ -1421,7 +1469,14 @@ fn a_locking_listing_blocks_only_while_its_lock_draft_is_alive() {
                 crate::noncustodial::shakedex::sell::LOCK_ACTION,
                 NAME,
             );
-            db::queries::update_tx_draft_status(&conn, "d-lock", status, None, None).unwrap();
+            db::queries::update_tx_draft_status(
+                &conn,
+                "d-lock",
+                status.parse().unwrap(),
+                None,
+                None,
+            )
+            .unwrap();
         }
         conn.execute(
             "INSERT INTO shakedex_listings

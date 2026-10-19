@@ -1744,7 +1744,7 @@ fn evidence_draft() -> (crate::db::queries::TxDraftRow, String) {
         signed_tx_hex: None,
         signing_inputs_json: "{}".into(),
         summary_json: "{}".into(),
-        status: "broadcasted".into(),
+        status: crate::db::queries::DraftStatus::Broadcasted,
         error_message: None,
         txid: Some(txid.clone()),
         confirmation_height: None,

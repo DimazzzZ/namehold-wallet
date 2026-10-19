@@ -34,6 +34,7 @@ mod deadlines_cmd_tests;
 mod derivation_tests;
 mod discover_names_tests;
 mod draft_ctx_tests;
+mod draft_status_tests;
 mod error_tests;
 mod explorer_sync_timestamp_tests;
 mod history_cmd_tests;

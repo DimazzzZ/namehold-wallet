@@ -232,7 +232,7 @@ fn reveal_state(
             has_bid_commitment: true,
             has_bid_coin,
             reveal_txid: reveal_txid.map(str::to_string),
-            reveal_draft_status: reveal_draft_status.map(str::to_string),
+            reveal_draft_status: reveal_draft_status.map(|s| s.parse().unwrap()),
             ..Default::default()
         },
         "REVEAL",

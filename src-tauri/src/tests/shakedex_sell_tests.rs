@@ -317,16 +317,28 @@ fn draft_status_sets_partition_the_statuses() {
         ("dropped", false, false, false),
         ("failed", false, false, false),
     ] {
-        assert_eq!(queries::never_sent(status), unsent, "{status}");
-        assert_eq!(queries::draft_alive(status), alive, "{status}");
+        assert_eq!(
+            queries::never_sent(status.parse().unwrap()),
+            unsent,
+            "{status}"
+        );
+        assert_eq!(
+            queries::draft_alive(status.parse().unwrap()),
+            alive,
+            "{status}"
+        );
         assert_eq!(
             queries::alive_sql().contains(&format!("'{status}'")),
             alive,
             "{status}"
         );
-        assert_eq!(queries::draft_may_still_land(status), may_land, "{status}");
+        assert_eq!(
+            queries::draft_may_still_land(status.parse().unwrap()),
+            may_land,
+            "{status}"
+        );
         assert!(
-            !(unsent && queries::may_have_reached_chain(status)),
+            !(unsent && queries::may_have_reached_chain(status.parse().unwrap())),
             "{status}"
         );
     }
@@ -2006,7 +2018,14 @@ async fn locked_on_chain_on(app: &App, net: Network) -> String {
     let draft = build(app).await.expect("lock builds");
     let txid = draft.summary["txid"].as_str().unwrap().to_string();
     with_db(app, |c| {
-        queries::update_tx_draft_status(c, &draft.id, "broadcasted", None, Some(&txid)).unwrap();
+        queries::update_tx_draft_status(
+            c,
+            &draft.id,
+            queries::DraftStatus::Broadcasted,
+            None,
+            Some(&txid),
+        )
+        .unwrap();
         queries::update_tx_draft_confirmation(c, &draft.id, QUIET_TIP - 100, None).unwrap();
         // The funding coin the lock reserved stands in for its change, so
         // the cancel has a coin to pay its fee from.
@@ -2108,7 +2127,14 @@ async fn cancel_transfer_aborts_the_listing() {
         "the cancel's txid"
     );
     with_db(&app, |c| {
-        queries::update_tx_draft_status(c, &cancel.id, "broadcasted", None, Some(&ctxid)).unwrap();
+        queries::update_tx_draft_status(
+            c,
+            &cancel.id,
+            queries::DraftStatus::Broadcasted,
+            None,
+            Some(&ctxid),
+        )
+        .unwrap();
     });
 
     // Sent, nothing on chain yet: the lock TRANSFER is still unspent.
@@ -2238,7 +2264,8 @@ async fn deleting_an_unsent_cancel_unlinks_it() {
         );
         with_db(&app, |c| {
             if status != "draft" {
-                queries::update_tx_draft_status(c, &cancel.id, status, None, None).unwrap();
+                queries::update_tx_draft_status(c, &cancel.id, status.parse().unwrap(), None, None)
+                    .unwrap();
             }
             queries::delete_tx_draft(c, &cancel.id).unwrap();
         });
@@ -2264,7 +2291,14 @@ async fn deleted_dropped_cancel_mined_later_still_aborts() {
     let ctxid = cancel.summary["txid"].as_str().unwrap().to_string();
     let id = open_listing(&app).unwrap().id;
     with_db(&app, |c| {
-        queries::update_tx_draft_status(c, &cancel.id, "dropped", None, Some(&ctxid)).unwrap();
+        queries::update_tx_draft_status(
+            c,
+            &cancel.id,
+            queries::DraftStatus::Dropped,
+            None,
+            Some(&ctxid),
+        )
+        .unwrap();
         queries::delete_tx_draft(c, &cancel.id).unwrap();
         assert!(queries::get_tx_draft(c, &cancel.id).unwrap().is_none());
     });
@@ -2501,7 +2535,8 @@ async fn dead_lock_draft_aborts_and_the_name_can_be_locked_again() {
         let l = open_listing(&app).unwrap();
         with_db(&app, |c| {
             let status = if end == "deleted" { "dropped" } else { end };
-            queries::update_tx_draft_status(c, &lock.id, status, None, None).unwrap();
+            queries::update_tx_draft_status(c, &lock.id, status.parse().unwrap(), None, None)
+                .unwrap();
             queries::release_reserved_utxos_for_draft(c, &lock.id).unwrap();
             if end == "deleted" {
                 queries::delete_tx_draft(c, &lock.id).unwrap();
@@ -2559,7 +2594,8 @@ async fn lock_draft_in_flight_without_its_coin_changes_nothing() {
         let id = open_listing(&app).unwrap().id;
         if status != "draft" {
             with_db(&app, |c| {
-                queries::update_tx_draft_status(c, &lock.id, status, None, None).unwrap();
+                queries::update_tx_draft_status(c, &lock.id, status.parse().unwrap(), None, None)
+                    .unwrap();
             });
         }
         run_listing_step(
@@ -4585,7 +4621,14 @@ async fn dropped_finalize_mined_after_all_is_a_restored_lock() {
     set_lock_draft_status(&r.app, &r.listing_id, "confirmed");
     let fin_draft = r.listing().lock_finalize_draft_id.unwrap();
     with_db(&r.app, |c| {
-        queries::update_tx_draft_status(c, &fin_draft, "dropped", None, Some(&fin)).unwrap();
+        queries::update_tx_draft_status(
+            c,
+            &fin_draft,
+            queries::DraftStatus::Dropped,
+            None,
+            Some(&fin),
+        )
+        .unwrap();
     });
     let tip = ready_tip(Network::Regtest) + 1;
     let dropped = chain_at(
@@ -4744,7 +4787,14 @@ async fn refused_finalize_returns_the_listing_to_ready() {
         with_db(&r.app, |c| {
             let s = if status == "gone" { "failed" } else { status };
             if s != "signed" {
-                queries::update_tx_draft_status(c, &fin_draft, s, None, Some(&fin)).unwrap();
+                queries::update_tx_draft_status(
+                    c,
+                    &fin_draft,
+                    s.parse().unwrap(),
+                    None,
+                    Some(&fin),
+                )
+                .unwrap();
             }
             if status == "gone" {
                 queries::delete_tx_draft(c, &fin_draft).unwrap();
@@ -4824,7 +4874,14 @@ async fn finalize_facts_missing_change_nothing() {
     // A dead FINALIZE, but the lock TRANSFER cannot be read.
     let fin_draft = r.listing().lock_finalize_draft_id.unwrap();
     with_db(&r.app, |c| {
-        queries::update_tx_draft_status(c, &fin_draft, "failed", None, Some(&fin)).unwrap();
+        queries::update_tx_draft_status(
+            c,
+            &fin_draft,
+            queries::DraftStatus::Failed,
+            None,
+            Some(&fin),
+        )
+        .unwrap();
     });
     let (f, v) = (fin.clone(), vout);
     let transfer_err = MockNodeRpc::new().with_get_coin(move |txid, i| {
@@ -5201,7 +5258,14 @@ async fn dropped_finalize_mined_and_bought_before_a_sync_is_sold() {
         set_lock_draft_status(&r.app, &r.listing_id, "confirmed");
         let fin_draft = r.listing().lock_finalize_draft_id.unwrap();
         with_db(&r.app, |c| {
-            queries::update_tx_draft_status(c, &fin_draft, "dropped", None, Some(&fin)).unwrap();
+            queries::update_tx_draft_status(
+                c,
+                &fin_draft,
+                queries::DraftStatus::Dropped,
+                None,
+                Some(&fin),
+            )
+            .unwrap();
         });
         let tip = ready_tip(Network::Regtest) + 1;
         run_listing_step(
@@ -5383,7 +5447,8 @@ async fn lock_refused_while_a_dead_lock_waits_for_the_sync() {
     let e = build(&app).await.unwrap_err();
     assert!(err_text(e).contains("already locked for sale"));
     with_db(&app, |c| {
-        queries::update_tx_draft_status(c, &lock.id, "dropped", None, None).unwrap();
+        queries::update_tx_draft_status(c, &lock.id, queries::DraftStatus::Dropped, None, None)
+            .unwrap();
         queries::release_reserved_utxos_for_draft(c, &lock.id).unwrap();
     });
     let e = err_text(build(&app).await.unwrap_err());
@@ -5424,7 +5489,8 @@ async fn finalizing_with(status: &str) -> Ready {
     with_db(&r.app, |c| {
         let s = if status == "gone" { "failed" } else { status };
         if s != "signed" {
-            queries::update_tx_draft_status(c, &fin_draft, s, None, Some(&fin)).unwrap();
+            queries::update_tx_draft_status(c, &fin_draft, s.parse().unwrap(), None, Some(&fin))
+                .unwrap();
         }
         if status == "gone" {
             queries::delete_tx_draft(c, &fin_draft).unwrap();
@@ -6839,7 +6905,14 @@ impl Listed {
 async fn listed_from(r: Ready, lock: (String, u32)) -> Listed {
     let fin = r.listing().lock_finalize_draft_id.unwrap();
     with_db(&r.app, |c| {
-        queries::update_tx_draft_status(c, &fin, "broadcasted", None, Some(&lock.0)).unwrap();
+        queries::update_tx_draft_status(
+            c,
+            &fin,
+            queries::DraftStatus::Broadcasted,
+            None,
+            Some(&lock.0),
+        )
+        .unwrap();
         queries::update_tx_draft_confirmation(c, &fin, TRANSFER_HEIGHT + 20, None).unwrap();
         queries::release_reserved_utxos_for_draft(c, &fin).unwrap();
         assert_eq!(queries::mark_listing_listed(c, &r.listing_id).unwrap(), 1);
@@ -6998,7 +7071,14 @@ async fn cancel_stops_jobs() {
     );
 
     with_db(&l.r.app, |c| {
-        queries::update_tx_draft_status(c, &draft.id, "broadcasted", None, Some(&txid)).unwrap()
+        queries::update_tx_draft_status(
+            c,
+            &draft.id,
+            queries::DraftStatus::Broadcasted,
+            None,
+            Some(&txid),
+        )
+        .unwrap()
     });
     assert!(kept(&l.r.app).is_empty(), "sent: the market jobs stop");
     let followed: Vec<String> = with_db(&l.r.app, |c| {
@@ -7917,7 +7997,14 @@ async fn cancel_mined_fixture(height: i64, tip: i64, to: Option<String>) -> (Lis
     let cx = cancel(&l).await.expect("cancel");
     let c = cx.summary["txid"].as_str().unwrap().to_string();
     with_db(&l.r.app, |db| {
-        queries::update_tx_draft_status(db, &cx.id, "broadcasted", None, Some(&c)).unwrap();
+        queries::update_tx_draft_status(
+            db,
+            &cx.id,
+            queries::DraftStatus::Broadcasted,
+            None,
+            Some(&c),
+        )
+        .unwrap();
         queries::update_tx_draft_confirmation(db, &cx.id, height, None).unwrap();
         queries::release_reserved_utxos_for_draft(db, &cx.id).unwrap();
         assert_eq!(

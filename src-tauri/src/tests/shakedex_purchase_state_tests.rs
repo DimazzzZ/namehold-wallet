@@ -223,7 +223,7 @@ fn reservation(conn: &Connection) -> Option<String> {
 /// The purchase draft's status and message, as Activity shows them.
 fn draft_status(conn: &Connection) -> (String, Option<String>) {
     let d = queries::get_tx_draft(conn, DRAFT_ID).unwrap().unwrap();
-    (d.status, d.error_message)
+    (d.status.to_string(), d.error_message)
 }
 
 fn tip(blocks: i64) -> BlockchainInfo {

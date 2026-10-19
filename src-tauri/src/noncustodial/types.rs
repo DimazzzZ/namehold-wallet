@@ -93,7 +93,7 @@ pub struct TxDraftSummary {
     pub id: String,
     pub wallet_profile_id: String,
     pub action: String,
-    pub status: String,
+    pub status: crate::db::queries::DraftStatus,
     /// Parsed `summary_json` (a [`TxSummary`]); kept as a value so a legacy or
     /// partial summary never breaks listing.
     pub summary: serde_json::Value,
@@ -114,5 +114,5 @@ pub struct TxDraftSummary {
 pub struct BroadcastResult {
     pub draft_id: String,
     pub txid: String,
-    pub status: String,
+    pub status: crate::db::queries::DraftStatus,
 }

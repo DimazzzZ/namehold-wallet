@@ -492,7 +492,7 @@ fn add_draft(
     let summary = serde_json::json!({ "name": name }).to_string();
     db::queries::insert_tx_draft(conn, id, profile, action, "00", "[]", &summary).unwrap();
     if status != "draft" {
-        db::queries::update_tx_draft_status(conn, id, status, None, None).unwrap();
+        db::queries::update_tx_draft_status(conn, id, status.parse().unwrap(), None, None).unwrap();
     }
 }
 

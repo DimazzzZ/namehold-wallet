@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::db::queries;
+use crate::db::queries::{self, DraftStatus};
 use crate::error::AppError;
 use crate::noncustodial::actions::{self, PrimaryOutput};
 use crate::noncustodial::network::Network;
@@ -325,7 +325,7 @@ pub(crate) struct NameActionContext {
     /// Status of the local tx_draft matching `reveal_txid` (if one exists).
     /// `None` means either no reveal_txid or no local draft for it (cross-
     /// device / chain-scan stamped).
-    pub reveal_draft_status: Option<String>,
+    pub reveal_draft_status: Option<DraftStatus>,
     /// The wallet's true bid value (doos) from the commitment row.
     pub bid_value_doos: Option<i64>,
     /// The lockup value (doos) from the local commitment row, if any.
@@ -1474,12 +1474,18 @@ pub(crate) fn derive_auction_task_state(
             //     cross-device wallets that revealed elsewhere).
             //  3. Otherwise → ReadyToReveal (still prompt; `can_reveal.allowed`,
             //     which requires ctx.has_bid_coin, is the real button gate).
-            match ctx.reveal_draft_status.as_deref() {
-                Some("broadcasted") | Some("broadcast_pending") => {
+            match ctx.reveal_draft_status {
+                Some(DraftStatus::Broadcasted | DraftStatus::BroadcastPending) => {
                     AuctionTaskState::RevealBroadcastPending
                 }
-                Some("confirmed") => AuctionTaskState::RevealDoneWaitingForClose,
-                _ => {
+                Some(DraftStatus::Confirmed) => AuctionTaskState::RevealDoneWaitingForClose,
+                Some(
+                    DraftStatus::Draft
+                    | DraftStatus::Signed
+                    | DraftStatus::Failed
+                    | DraftStatus::Dropped,
+                )
+                | None => {
                     if ctx.reveal_txid.as_deref().is_some() && !ctx.has_bid_coin {
                         AuctionTaskState::RevealDoneWaitingForClose
                     } else {
@@ -3625,7 +3631,7 @@ mod tests {
                 owner_covenant_type,
                 has_pending_open,
                 reveal_txid: reveal_txid.map(str::to_string),
-                reveal_draft_status: reveal_draft_status.map(str::to_string),
+                reveal_draft_status: reveal_draft_status.map(|s| s.parse().unwrap()),
                 ..Default::default()
             },
             phase,

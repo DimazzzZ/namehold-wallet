@@ -54,7 +54,7 @@ fn ctx(
         current_height: None,
         renewal_height: None,
         reveal_txid,
-        reveal_draft_status,
+        reveal_draft_status: reveal_draft_status.map(|s| s.parse().unwrap()),
         bid_value_doos,
         lockup_value_doos: None,
         listing_state: None,
@@ -167,7 +167,7 @@ fn task_state_reveal_with_broadcasted_draft() {
         &NameActionContext {
             has_bid_commitment: true,
             has_bid_coin: true,
-            reveal_draft_status: Some("broadcasted".to_string()),
+            reveal_draft_status: Some(crate::db::queries::DraftStatus::Broadcasted),
             ..Default::default()
         },
         "REVEAL",
@@ -184,7 +184,7 @@ fn task_state_reveal_with_broadcast_pending_draft() {
         &NameActionContext {
             has_bid_commitment: true,
             has_bid_coin: true,
-            reveal_draft_status: Some("broadcast_pending".to_string()),
+            reveal_draft_status: Some(crate::db::queries::DraftStatus::BroadcastPending),
             ..Default::default()
         },
         "REVEAL",
@@ -201,7 +201,7 @@ fn task_state_reveal_with_confirmed_draft() {
         &NameActionContext {
             has_bid_commitment: true,
             has_bid_coin: true,
-            reveal_draft_status: Some("confirmed".to_string()),
+            reveal_draft_status: Some(crate::db::queries::DraftStatus::Confirmed),
             ..Default::default()
         },
         "REVEAL",
@@ -220,7 +220,7 @@ fn task_state_reveal_with_dropped_draft_and_unspent_bid_coin() {
             has_bid_commitment: true,
             has_bid_coin: true,
             has_reveal_coin: false,
-            reveal_draft_status: Some("dropped".to_string()),
+            reveal_draft_status: Some(crate::db::queries::DraftStatus::Dropped),
             ..Default::default()
         },
         "REVEAL",

@@ -404,8 +404,14 @@ fn pending_txid() -> String {
 /// Seed a `broadcasted` draft (with a txid) for the active profile.
 fn seed_broadcasted_draft(conn: &rusqlite::Connection, id: &str) {
     db::queries::insert_tx_draft(conn, id, PROFILE, "send_hns", &draft_hex(), "{}", "{}").unwrap();
-    db::queries::update_tx_draft_status(conn, id, "broadcasted", None, Some(draft_txid().as_str()))
-        .unwrap();
+    db::queries::update_tx_draft_status(
+        conn,
+        id,
+        db::queries::DraftStatus::Broadcasted,
+        None,
+        Some(draft_txid().as_str()),
+    )
+    .unwrap();
 }
 
 /// getblockchaininfo + getrawtransaction mocks (matched by method in the body).
@@ -676,7 +682,7 @@ async fn refresh_leaves_an_unseen_purchase_to_the_purchase_job() {
     db::queries::update_tx_draft_status(
         &conn,
         "buy",
-        "broadcasted",
+        db::queries::DraftStatus::Broadcasted,
         None,
         Some(draft_txid().as_str()),
     )
@@ -695,7 +701,7 @@ async fn refresh_leaves_an_unseen_purchase_to_the_purchase_job() {
     db::queries::update_tx_draft_status(
         &conn,
         "buy2",
-        "broadcast_pending",
+        db::queries::DraftStatus::BroadcastPending,
         Some("ambiguous"),
         None,
     )
@@ -739,7 +745,7 @@ async fn refresh_drops_an_unseen_purchase_finalize_like_any_draft() {
     db::queries::update_tx_draft_status(
         &conn,
         "fin",
-        "broadcasted",
+        db::queries::DraftStatus::Broadcasted,
         None,
         Some(draft_txid().as_str()),
     )
@@ -808,8 +814,14 @@ async fn refresh_is_a_soft_noop_when_node_unreachable() {
 /// profile.
 fn seed_confirmed_draft(conn: &rusqlite::Connection, id: &str, height: i64) {
     db::queries::insert_tx_draft(conn, id, PROFILE, "send_hns", &draft_hex(), "{}", "{}").unwrap();
-    db::queries::update_tx_draft_status(conn, id, "broadcasted", None, Some(draft_txid().as_str()))
-        .unwrap();
+    db::queries::update_tx_draft_status(
+        conn,
+        id,
+        db::queries::DraftStatus::Broadcasted,
+        None,
+        Some(draft_txid().as_str()),
+    )
+    .unwrap();
     db::queries::update_tx_draft_confirmation(conn, id, height, None).unwrap();
 }
 
@@ -959,8 +971,14 @@ fn seed_broadcast_pending_draft(conn: &rusqlite::Connection, id: &str) {
         &summary,
     )
     .unwrap();
-    db::queries::update_tx_draft_status(conn, id, "broadcast_pending", Some("ambiguous"), None)
-        .unwrap();
+    db::queries::update_tx_draft_status(
+        conn,
+        id,
+        db::queries::DraftStatus::BroadcastPending,
+        Some("ambiguous"),
+        None,
+    )
+    .unwrap();
 }
 
 #[tokio::test]

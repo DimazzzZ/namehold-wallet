@@ -1295,7 +1295,7 @@ fn purchase_draft_row(summary: &Value) -> db::queries::TxDraftRow {
         signed_tx_hex: None,
         signing_inputs_json: "{}".into(),
         summary_json: summary.to_string(),
-        status: "draft".into(),
+        status: db::queries::DraftStatus::Draft,
         error_message: None,
         txid: None,
         confirmation_height: None,
@@ -1639,7 +1639,11 @@ async fn signed_reverse_auction_purchase(
 
 fn draft_status(app: &tauri::App<tauri::test::MockRuntime>, id: &str) -> String {
     with_db(app, |c| {
-        db::queries::get_tx_draft(c, id).unwrap().unwrap().status
+        db::queries::get_tx_draft(c, id)
+            .unwrap()
+            .unwrap()
+            .status
+            .to_string()
     })
 }
 

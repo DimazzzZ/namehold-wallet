@@ -285,6 +285,44 @@ mod tests {
         assert_at_last_migration(&conn);
     }
 
+    /// Every row a release before 012 could hold (008's CHECK: five
+    /// statuses) comes through the migrations readable as the same
+    /// `DraftStatus`, and the table the migrations leave refuses any other
+    /// spelling. No database can hold a status outside the enum: the table
+    /// has had a CHECK on `status` since it was created (008).
+    #[test]
+    fn drafts_from_before_012_read_as_draft_statuses() {
+        use crate::db::queries::{get_tx_draft, DraftStatus};
+        let conn = db_before("012");
+        seed_profile(&conn, "p1");
+        let old = [
+            "draft",
+            "signed",
+            "broadcast_pending",
+            "broadcasted",
+            "failed",
+        ];
+        for status in old {
+            seed_draft(&conn, status, "p1", "send_hns", status, "n", "t");
+        }
+        let bad = "INSERT INTO wallet_tx_drafts
+                (id, wallet_profile_id, action, unsigned_tx_hex, signing_inputs_json,
+                 summary_json, status)
+             VALUES ('x', 'p1', 'send_hns', '00', '[]', '{}', 'confirmed')";
+        assert!(conn.execute(bad, []).is_err(), "008 knows no 'confirmed'");
+        run(&conn).unwrap();
+        for status in old {
+            let row = get_tx_draft(&conn, status).unwrap().unwrap();
+            assert_eq!(row.status, status.parse::<DraftStatus>().unwrap());
+        }
+        conn.execute(bad, []).unwrap();
+        let unknown = bad
+            .replace("'x'", "'y'")
+            .replace("'confirmed'", "'broadcast'");
+        assert!(conn.execute(&unknown, []).is_err());
+        assert_at_last_migration(&conn);
+    }
+
     #[test]
     fn run_is_idempotent() {
         let conn = Connection::open_in_memory().unwrap();

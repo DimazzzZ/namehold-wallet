@@ -2491,7 +2491,14 @@ fn cancel_rest(f: &Fx, txid: &str, height: i64, to: &str) -> Value {
 /// Our cancel draft `cx` (txid `c1…`, `status`) on a Cancelling listing.
 fn our_cancel(f: &Fx, status: &str) {
     queries::insert_tx_draft(&f.conn, "cx", PROFILE, "shakedex_cancel", "00", "{}", "{}").unwrap();
-    queries::update_tx_draft_status(&f.conn, "cx", status, None, Some(&txid("c1"))).unwrap();
+    queries::update_tx_draft_status(
+        &f.conn,
+        "cx",
+        status.parse().unwrap(),
+        None,
+        Some(&txid("c1")),
+    )
+    .unwrap();
     f.conn
         .execute(
             "UPDATE shakedex_listings SET state = 'cancelling', cancel_draft_id = 'cx',
@@ -2969,7 +2976,10 @@ async fn dead_cancel_finalize_returns_to_awaiting() {
         let c = cancel_mined_at(&f);
         cancel_finalizing(&f, &c);
         match status {
-            Some(s) => queries::update_tx_draft_status(&f.conn, "cfin", s, None, None).unwrap(),
+            Some(s) => {
+                queries::update_tx_draft_status(&f.conn, "cfin", s.parse().unwrap(), None, None)
+                    .unwrap()
+            }
             None => {
                 f.conn
                     .execute("DELETE FROM wallet_tx_drafts WHERE id = 'cfin'", [])
@@ -3020,8 +3030,14 @@ async fn cancel_finalized_home_is_cancelled() {
         let c = cancel_mined_at(&f);
         if finalizing {
             cancel_finalizing(&f, &c);
-            queries::update_tx_draft_status(&f.conn, "cfin", "broadcasted", None, Some(&d1))
-                .unwrap();
+            queries::update_tx_draft_status(
+                &f.conn,
+                "cfin",
+                crate::db::queries::DraftStatus::Broadcasted,
+                None,
+                Some(&d1),
+            )
+            .unwrap();
         }
         let rpc = node(
             info((&d1, 0)),

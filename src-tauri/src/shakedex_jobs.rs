@@ -69,7 +69,9 @@
 
 use std::collections::HashSet;
 
-use crate::db::queries::{self, PurchaseProgress, PurchaseState, ShakedexPurchase, TxDraftRow};
+use crate::db::queries::{
+    self, DraftStatus, PurchaseProgress, PurchaseState, ShakedexPurchase, TxDraftRow,
+};
 use crate::db::sync_lock::LockLost;
 use crate::error::AppError;
 use crate::market::learnhns::{
@@ -311,9 +313,9 @@ impl Job<'_> {
             // The draft was discarded, which is only possible before broadcast.
             return queries::delete_shakedex_purchase(self.conn, &p.id);
         };
-        match draft.status.as_str() {
-            "failed" => self.lose_unless_traced(p, REFUSED, None).await,
-            "draft" | "signed" => {
+        match draft.status {
+            DraftStatus::Failed => self.lose_unless_traced(p, REFUSED, None).await,
+            DraftStatus::Draft | DraftStatus::Signed => {
                 // Deletes only if the draft is still unsent and past the TTL
                 // and the send grace.
                 queries::delete_abandoned_shakedex_purchase(
@@ -325,7 +327,10 @@ impl Job<'_> {
                 Ok(())
             }
             // Sent, or possibly sent: only the chain can tell what happened.
-            _ => self.refresh_from_chain(p, &draft).await,
+            DraftStatus::BroadcastPending
+            | DraftStatus::Broadcasted
+            | DraftStatus::Confirmed
+            | DraftStatus::Dropped => self.refresh_from_chain(p, &draft).await,
         }
     }
 
@@ -382,7 +387,7 @@ impl Job<'_> {
         }
         // A dropped draft's coins were already released and may be spent
         // elsewhere since: never resend it.
-        if p.rebroadcast_count > 0 || draft.status == "dropped" {
+        if p.rebroadcast_count > 0 || draft.status == DraftStatus::Dropped {
             return self.lose_unless_traced(p, NEVER_CONFIRMED, None).await;
         }
         let Some(signed) = draft.signed_tx_hex.as_deref() else {
@@ -505,7 +510,7 @@ impl Job<'_> {
             queries::update_tx_draft_status(
                 &tx,
                 &p.purchase_draft_id,
-                "broadcasted",
+                DraftStatus::Broadcasted,
                 None,
                 Some(&p.purchase_txid),
             )?;
@@ -805,10 +810,14 @@ impl Job<'_> {
             None
         };
         if let Some(draft) = draft {
-            let status = match draft.status.as_str() {
-                "confirmed" => None,
-                "failed" => Some("failed"),
-                _ => Some("dropped"),
+            let status = match draft.status {
+                DraftStatus::Confirmed => None,
+                DraftStatus::Failed => Some(DraftStatus::Failed),
+                DraftStatus::Draft
+                | DraftStatus::Signed
+                | DraftStatus::BroadcastPending
+                | DraftStatus::Broadcasted
+                | DraftStatus::Dropped => Some(DraftStatus::Dropped),
             };
             if let Some(status) = status {
                 queries::update_tx_draft_status(
@@ -1225,7 +1234,7 @@ async fn settle_left_lock(
         }
     }
     let status = queries::lock_draft_status(conn, l)?;
-    if !status.is_some_and(|s| queries::draft_may_still_land(&s)) {
+    if !status.is_some_and(queries::draft_may_still_land) {
         queries::abort_shakedex_listing(conn, &l.id)?;
     }
     Ok(())
@@ -2072,7 +2081,7 @@ fn draft_dead(conn: &rusqlite::Connection, id: Option<&str>) -> Result<bool, App
         Some(id) => queries::get_tx_draft(conn, id)?.map(|d| d.status),
         None => None,
     };
-    Ok(!status.is_some_and(|s| queries::draft_alive(&s)))
+    Ok(!status.is_some_and(queries::draft_alive))
 }
 
 /// Every derived address of the profile: what "ours" means for a TRANSFER's
@@ -2505,7 +2514,7 @@ async fn replaced_cancel_release(
         Some(id) => queries::get_tx_draft(conn, id)?,
         None => None,
     };
-    let Some(d) = draft.filter(|d| d.status == queries::CONFIRMED_STATUS) else {
+    let Some(d) = draft.filter(|d| d.status == DraftStatus::Confirmed) else {
         return Ok(queries::release_replaced_cancel);
     };
     let Some(txid) = d.txid.as_deref() else {

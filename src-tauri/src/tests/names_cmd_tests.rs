@@ -4288,7 +4288,8 @@ fn seed_locking_listing(
             &summary,
         )
         .unwrap();
-        db::queries::update_tx_draft_status(conn, "d-lock", status, None, None).unwrap();
+        db::queries::update_tx_draft_status(conn, "d-lock", status.parse().unwrap(), None, None)
+            .unwrap();
     }
     conn.execute(
         "INSERT INTO shakedex_listings
@@ -4480,7 +4481,14 @@ async fn locked_name_offers_no_owner_actions() {
         .unwrap();
         // The lock TRANSFER is long mined: no spend of ours in flight
         // keeps the name counted as ours.
-        db::queries::update_tx_draft_status(&conn, "d-lock", "confirmed", None, None).unwrap();
+        db::queries::update_tx_draft_status(
+            &conn,
+            "d-lock",
+            db::queries::DraftStatus::Confirmed,
+            None,
+            None,
+        )
+        .unwrap();
     }
     set_listing_state("listed");
     let c = caps().await.unwrap();

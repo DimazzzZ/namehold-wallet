@@ -12,8 +12,8 @@ use tauri::State;
 
 use crate::commands::draft_ctx::{self, random_id, Ctx};
 use crate::db::queries::{
-    self, ListingMode, ListingState, MarketStatus, NameCoin, PurchaseState, ShakedexListing,
-    ShakedexPurchase,
+    self, DraftStatus, ListingMode, ListingState, MarketStatus, NameCoin, PurchaseState,
+    ShakedexListing, ShakedexPurchase,
 };
 use crate::error::AppError;
 use crate::market::learnhns::{
@@ -1153,7 +1153,7 @@ fn lockup_left(conn: &rusqlite::Connection, l: &ShakedexListing) -> Result<Optio
     let tip = crate::noncustodial::sync::get_sync_height(conn, &l.wallet_profile_id)?;
     Ok(queries::locking_blocks_until_finalize(
         l.state,
-        Some(draft.status.as_str()),
+        Some(draft.status),
         draft.confirmation_height,
         params,
         tip,
@@ -1357,7 +1357,7 @@ pub(crate) fn abort_may_still_land(
     let Some(id) = l.abort_draft_id.as_deref() else {
         return Ok(false);
     };
-    Ok(queries::get_tx_draft(conn, id)?.is_some_and(|d| queries::draft_may_still_land(&d.status)))
+    Ok(queries::get_tx_draft(conn, id)?.is_some_and(|d| queries::draft_may_still_land(d.status)))
 }
 
 /// Why the cancel's FINALIZE cannot be built for a listing in `state`
@@ -2197,10 +2197,10 @@ fn pending_send(
     };
     let Some(id) = id else { return Ok(None) };
     Ok(queries::get_tx_draft(conn, id)?
-        .filter(|d| queries::never_sent(&d.status) || d.status == queries::BROADCAST_PENDING_STATUS)
+        .filter(|d| queries::never_sent(d.status) || d.status == DraftStatus::BroadcastPending)
         .map(|d| PendingSend {
             signed: d.signed_tx_hex.is_some(),
-            discardable: queries::never_sent(&d.status),
+            discardable: queries::never_sent(d.status),
             draft_id: d.id,
             action: d.action,
         }))
@@ -2982,13 +2982,13 @@ pub async fn shakedex_build_purchase_finalize_draft(
             Some(old) => queries::get_tx_draft(&conn, old)?.map(|d| d.status),
             None => None,
         };
-        let replaces = match old_status.as_deref() {
+        let replaces = match old_status {
             Some(s) if queries::may_have_reached_chain(s) => {
                 return Err(AppError::InvalidInput(
                     "a finalize of this purchase is already sent".into(),
                 ));
             }
-            Some("draft" | "signed") => p.finalize_draft_id.clone(),
+            Some(DraftStatus::Draft | DraftStatus::Signed) => p.finalize_draft_id.clone(),
             _ => None,
         };
         if let Some(old) = replaces.as_deref() {

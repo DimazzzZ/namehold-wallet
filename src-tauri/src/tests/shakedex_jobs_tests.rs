@@ -74,8 +74,14 @@ fn fx_at(state: ListingState, publish: bool, mtp: u64) -> Fx {
         .unwrap()
         .address;
     queries::insert_tx_draft(&conn, "lockd", PROFILE, sell::LOCK_ACTION, "00", "{}", "{}").unwrap();
-    queries::update_tx_draft_status(&conn, "lockd", "broadcasted", None, Some(&txid("e1")))
-        .unwrap();
+    queries::update_tx_draft_status(
+        &conn,
+        "lockd",
+        queries::DraftStatus::Broadcasted,
+        None,
+        Some(&txid("e1")),
+    )
+    .unwrap();
     let locked = !matches!(state, ListingState::Locking | ListingState::ReadyToFinalize);
     let (steps_json, file) = if locked {
         let step = signed_step(&key, &payment, PRICE, sell::buy_now_lock_time(mtp));
@@ -279,11 +285,18 @@ async fn publishes_pending_on_day_zero() {
     let m = m.expect(1).create_async().await;
     let n = MockNodeRpc::new();
     // The day-0 draft not sent yet: nothing.
-    queries::update_tx_draft_status(&f.conn, "lockd", "signed", None, None).unwrap();
+    queries::update_tx_draft_status(&f.conn, "lockd", queries::DraftStatus::Signed, None, None)
+        .unwrap();
     publish(&f, &n, &s, NOW).await;
     assert!(seen.lock().unwrap().is_empty());
-    queries::update_tx_draft_status(&f.conn, "lockd", "broadcasted", None, Some(&txid("e1")))
-        .unwrap();
+    queries::update_tx_draft_status(
+        &f.conn,
+        "lockd",
+        queries::DraftStatus::Broadcasted,
+        None,
+        Some(&txid("e1")),
+    )
+    .unwrap();
     publish(&f, &n, &s, NOW).await;
     publish(&f, &n, &s, NOW + 7_200).await;
     m.assert_async().await;
@@ -2335,7 +2348,8 @@ async fn cancelling_listing_is_kept_until_its_cancel_is_sent() {
     ] {
         let f = listed_on_market(MarketStatus::Listed);
         queries::insert_tx_draft(&f.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
-        queries::update_tx_draft_status(&f.conn, "cd", "signed", None, None).unwrap();
+        queries::update_tx_draft_status(&f.conn, "cd", queries::DraftStatus::Signed, None, None)
+            .unwrap();
         f.conn
             .execute(
                 "UPDATE shakedex_listings SET state = 'cancelling', cancel_draft_id = 'cd'",
@@ -2370,8 +2384,14 @@ async fn cancelling_listing_is_kept_until_its_cancel_is_sent() {
         );
 
         // The cancel sent: nothing is asked of the market, however long after.
-        queries::update_tx_draft_status(&f.conn, "cd", "broadcasted", None, Some(&txid("c1")))
-            .unwrap();
+        queries::update_tx_draft_status(
+            &f.conn,
+            "cd",
+            queries::DraftStatus::Broadcasted,
+            None,
+            Some(&txid("c1")),
+        )
+        .unwrap();
         let mut s = market().await;
         let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
         let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
@@ -2406,7 +2426,14 @@ async fn cancelling_listing_reset_by_a_reorg_is_kept() {
     for (status, kept) in [("signed", true), ("broadcasted", false)] {
         let f = listed_on_market(MarketStatus::Reported);
         queries::insert_tx_draft(&f.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
-        queries::update_tx_draft_status(&f.conn, "cd", status, None, Some(&txid("c1"))).unwrap();
+        queries::update_tx_draft_status(
+            &f.conn,
+            "cd",
+            status.parse().unwrap(),
+            None,
+            Some(&txid("c1")),
+        )
+        .unwrap();
         f.conn
             .execute(
                 "UPDATE shakedex_listings SET state = 'cancel_awaiting_finalize',
@@ -2559,10 +2586,16 @@ fn cancelling(f: &Fx, status: &str) {
         "{}",
     )
     .unwrap();
-    let sent = !queries::never_sent(status);
+    let sent = !queries::never_sent(status.parse().unwrap());
     let c1 = txid("c1");
-    queries::update_tx_draft_status(&f.conn, "cd", status, None, sent.then_some(c1.as_str()))
-        .unwrap();
+    queries::update_tx_draft_status(
+        &f.conn,
+        "cd",
+        status.parse().unwrap(),
+        None,
+        sent.then_some(c1.as_str()),
+    )
+    .unwrap();
     f.conn
         .execute(
             "UPDATE shakedex_listings SET state = 'cancelling', cancel_draft_id = 'cd',
@@ -2575,7 +2608,14 @@ fn cancelling(f: &Fx, status: &str) {
 /// `f`'s cancel `c1…` mined: the after-lock job's CancelAwaitingFinalize
 /// (`queries::mark_listing_cancel_mined`), then `state` as given.
 fn cancel_mined(f: &Fx, state: ListingState) {
-    queries::update_tx_draft_status(&f.conn, "cd", "confirmed", None, Some(&txid("c1"))).unwrap();
+    queries::update_tx_draft_status(
+        &f.conn,
+        "cd",
+        queries::DraftStatus::Confirmed,
+        None,
+        Some(&txid("c1")),
+    )
+    .unwrap();
     assert_eq!(
         queries::mark_listing_cancel_mined(&f.conn, &f.id, (&txid("c1"), 0), (&txid("f1"), 0))
             .unwrap(),
@@ -2631,7 +2671,14 @@ async fn cancelled_listing_reports_and_stops() {
         "an unsent cancel is not reported"
     );
     // Sent, not mined: the jobs stop, nothing is reported yet.
-    queries::update_tx_draft_status(&f.conn, "cd", "broadcasted", None, Some(&txid("c1"))).unwrap();
+    queries::update_tx_draft_status(
+        &f.conn,
+        "cd",
+        queries::DraftStatus::Broadcasted,
+        None,
+        Some(&txid("c1")),
+    )
+    .unwrap();
     for at in [NOW + 3_600, NOW + 7_200] {
         publish(&f, &n, &s, at).await;
         keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at, &LockLost::default())
@@ -3353,7 +3400,14 @@ async fn lowered_listing_is_kept_while_cancelling_and_then_reported() {
         (ListingState::Cancelling, Some(MarketStatus::Listed))
     );
     // Sent, then mined: reported.
-    queries::update_tx_draft_status(&f.conn, "cd", "broadcasted", None, Some(&txid("c1"))).unwrap();
+    queries::update_tx_draft_status(
+        &f.conn,
+        "cd",
+        queries::DraftStatus::Broadcasted,
+        None,
+        Some(&txid("c1")),
+    )
+    .unwrap();
     cancel_mined(&f, ListingState::CancelAwaitingFinalize);
     let (report, body) = report_mock(&mut s, 200, CANCEL_RECORDED, 1).await;
     publish(&f, &node(&f, TIP), &s, NOW + 60).await;
@@ -3644,7 +3698,14 @@ async fn reorg_reset_listing_reads_a_differing_copy_by_its_flag() {
     for flag in [true, false] {
         let f = listed_on_market(MarketStatus::Reported);
         queries::insert_tx_draft(&f.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
-        queries::update_tx_draft_status(&f.conn, "cd", "signed", None, Some(&txid("c1"))).unwrap();
+        queries::update_tx_draft_status(
+            &f.conn,
+            "cd",
+            queries::DraftStatus::Signed,
+            None,
+            Some(&txid("c1")),
+        )
+        .unwrap();
         f.conn
             .execute(
                 "UPDATE shakedex_listings SET state = 'cancel_awaiting_finalize',
@@ -3742,7 +3803,7 @@ impl Job {
                 queries::update_tx_draft_status(
                     &f.conn,
                     "lockd",
-                    "broadcasted",
+                    queries::DraftStatus::Broadcasted,
                     None,
                     Some(&txid("e1")),
                 )

@@ -7996,7 +7996,7 @@ async fn shakedex_cli_purchase_beats_our_cancel() {
     }
     let d = draft_status(&app, &cancel.id);
     assert!(
-        !db::queries::draft_alive(&d.status),
+        !db::queries::draft_alive(d.status),
         "the cancel can never land: {}",
         d.status
     );
@@ -8183,7 +8183,7 @@ async fn shakedex_purchase_replacing_our_mined_cancel_is_sold() {
     }
     let d = draft_status(&app, &cancel.id);
     assert!(
-        !db::queries::draft_alive(&d.status),
+        !db::queries::draft_alive(d.status),
         "the cancel can never land: {}",
         d.status
     );
@@ -9278,8 +9278,14 @@ async fn dropped_send_mined_after_all_is_confirmed(url: &str, key: &str) {
     {
         let state = app.state::<AppState>();
         let c = state.db.lock().unwrap();
-        db::queries::update_tx_draft_status(&c, &d.id, "dropped", Some("judged dropped"), None)
-            .unwrap();
+        db::queries::update_tx_draft_status(
+            &c,
+            &d.id,
+            db::queries::DraftStatus::Dropped,
+            Some("judged dropped"),
+            None,
+        )
+        .unwrap();
         db::queries::release_reserved_utxos_for_draft(&c, &d.id).unwrap();
     }
     cl.generate_to_address(1, &addr).await.expect("mine");
