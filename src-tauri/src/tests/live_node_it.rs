@@ -1105,7 +1105,14 @@ async fn second_profile_after_one_sync(
     .expect("the restore's address window");
     drop(conn);
 
-    assert!(crate::commands::sync::sync_node_step(db_path.to_str().unwrap(), PROFILE).await);
+    assert!(
+        crate::commands::sync::sync_node_step(
+            db_path.to_str().unwrap(),
+            PROFILE,
+            &crate::db::sync_lock::LockLost::default()
+        )
+        .await
+    );
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let mut stmt = conn

@@ -70,6 +70,7 @@
 use std::collections::HashSet;
 
 use crate::db::queries::{self, PurchaseProgress, PurchaseState, ShakedexPurchase, TxDraftRow};
+use crate::db::sync_lock::LockLost;
 use crate::error::AppError;
 use crate::market::learnhns::{
     LearnHnsClient, ListingKind, MarketReply, PendingListing, ProofCopy, StatusRecorded,
@@ -2959,12 +2960,13 @@ fn row_for_market(
 /// the daemon's sync). Silent when the database, the profile or a client
 /// cannot be opened; a failed run is logged.
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn publish_listings_step(db_path: &str, profile_id: &str) {
+pub async fn publish_listings_step(db_path: &str, profile_id: &str, lock: &LockLost) {
     let Some((conn, node, market)) = market_job_clients(db_path, profile_id) else {
         return;
     };
     let now = chrono::Utc::now().timestamp();
-    if let Err(e) = publish_listings_with_client(&conn, &node, &market, profile_id, now).await {
+    if let Err(e) = publish_listings_with_client(&conn, &node, &market, profile_id, now, lock).await
+    {
         eprintln!("shakedex market: publish failed for {profile_id}: {e}");
     }
 }
@@ -2973,12 +2975,12 @@ pub async fn publish_listings_step(db_path: &str, profile_id: &str) {
 /// sync; the IO shell of [`keep_listed_with_client`], like
 /// [`publish_listings_step`].
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn keep_listed_step(db_path: &str, profile_id: &str) {
+pub async fn keep_listed_step(db_path: &str, profile_id: &str, lock: &LockLost) {
     let Some((conn, node, market)) = market_job_clients(db_path, profile_id) else {
         return;
     };
     let now = chrono::Utc::now().timestamp();
-    if let Err(e) = keep_listed_with_client(&conn, &node, &market, profile_id, now).await {
+    if let Err(e) = keep_listed_with_client(&conn, &node, &market, profile_id, now, lock).await {
         eprintln!("shakedex market: keep listed failed for {profile_id}: {e}");
     }
 }
@@ -2987,13 +2989,13 @@ pub async fn keep_listed_step(db_path: &str, profile_id: &str) {
 /// moved past the one the market was sent; the IO shell of
 /// [`advance_reverse_auctions_with_client`], like [`publish_listings_step`].
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn advance_reverse_auctions_step(db_path: &str, profile_id: &str) {
+pub async fn advance_reverse_auctions_step(db_path: &str, profile_id: &str, lock: &LockLost) {
     let Some((conn, node, market)) = market_job_clients(db_path, profile_id) else {
         return;
     };
     let now = chrono::Utc::now().timestamp();
     if let Err(e) =
-        advance_reverse_auctions_with_client(&conn, &node, &market, profile_id, now).await
+        advance_reverse_auctions_with_client(&conn, &node, &market, profile_id, now, lock).await
     {
         eprintln!("shakedex market: advance failed for {profile_id}: {e}");
     }
@@ -3030,6 +3032,7 @@ pub async fn advance_reverse_auctions_with_client(
     market: &LearnHnsClient,
     profile_id: &str,
     now: i64,
+    lock: &LockLost,
 ) -> Result<(), AppError> {
     use queries::MarketStatus as S;
     if queries::profile_network(conn, profile_id)? != Network::Main {
@@ -3053,6 +3056,9 @@ pub async fn advance_reverse_auctions_with_client(
         return Ok(());
     };
     for l in auctions {
+        if market_lock_lost(lock, profile_id) {
+            return Ok(());
+        }
         if let Err(e) = advance_one(conn, node, market, &l, mtp, now).await {
             eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
         }
@@ -3088,6 +3094,22 @@ async fn advance_one(
     } else {
         Ok(())
     }
+}
+
+/// Whether a market job must stop before its next listing: another process
+/// took the profile's sync lock over (`lock`), and the market calls and the
+/// bookkeeping writes are now that process's to make. Checked per listing,
+/// not between one listing's calls: a listing whose exchange with the market
+/// has begun records its answer, so the bookkeeping matches what was sent.
+/// Logs the stop.
+fn market_lock_lost(lock: &LockLost, profile_id: &str) -> bool {
+    let lost = lock.is_lost();
+    if lost {
+        eprintln!(
+            "shakedex market: the sync lock of {profile_id} was taken over by another process; stopping before the next listing"
+        );
+    }
+    lost
 }
 
 /// The database, node client and market client of a market job, on a
@@ -3132,6 +3154,7 @@ pub async fn publish_listings_with_client(
     market: &LearnHnsClient,
     profile_id: &str,
     now: i64,
+    lock: &LockLost,
 ) -> Result<(), AppError> {
     if queries::profile_network(conn, profile_id)? != Network::Main {
         return Ok(());
@@ -3140,6 +3163,9 @@ pub async fn publish_listings_with_client(
     // in two of these sets: their states differ).
     for l in queries::list_listings_to_report(conn, profile_id)? {
         if due(&l, now) {
+            if market_lock_lost(lock, profile_id) {
+                return Ok(());
+            }
             if let Err(e) = report(conn, market, &l, now).await {
                 eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
             }
@@ -3147,6 +3173,9 @@ pub async fn publish_listings_with_client(
     }
     for l in queries::list_listings_to_announce(conn, profile_id)? {
         if due(&l, now) {
+            if market_lock_lost(lock, profile_id) {
+                return Ok(());
+            }
             if let Err(e) = announce(conn, market, &l, now).await {
                 eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
             }
@@ -3163,6 +3192,9 @@ pub async fn publish_listings_with_client(
         // Cancelling one whose cancel is not sent yet.
         let listed = l.state == queries::ListingState::Listed;
         if first && listed && due(&l, now) {
+            if market_lock_lost(lock, profile_id) {
+                return Ok(());
+            }
             if let Err(e) = upload_current(conn, node, market, &l, now, None).await {
                 eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
             }
@@ -3414,6 +3446,7 @@ pub async fn keep_listed_with_client(
     market: &LearnHnsClient,
     profile_id: &str,
     now: i64,
+    lock: &LockLost,
 ) -> Result<(), AppError> {
     use queries::MarketStatus as S;
     if queries::profile_network(conn, profile_id)? != Network::Main {
@@ -3426,9 +3459,15 @@ pub async fn keep_listed_with_client(
                 if !due(&l, now) {
                     continue;
                 }
+                if market_lock_lost(lock, profile_id) {
+                    return Ok(());
+                }
                 keep_listed(conn, node, market, &l, now).await
             }
             Some(S::Refused) if listed && due(&l, now) && stored_file_near_expiry(&l, now) => {
+                if market_lock_lost(lock, profile_id) {
+                    return Ok(());
+                }
                 refresh_refused(conn, node, &l, now).await
             }
             _ => continue,

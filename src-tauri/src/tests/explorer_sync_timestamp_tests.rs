@@ -150,3 +150,23 @@ async fn cancelled_status_does_not_stamp_even_with_no_errors() {
         "a cancelled run must not stamp last_explorer_sync_at"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 4. A run whose sync lock another process took over (`lock_lost`) -> does
+//    NOT stamp: it stopped early, and writes nothing more once the lock is
+//    not its own.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn a_run_that_lost_its_sync_lock_does_not_stamp() {
+    let db = seeded_db();
+    let db_path = db.path.to_str().unwrap().to_string();
+
+    let status = Arc::new(Mutex::new(SyncStatus::default()));
+    status.lock().await.lock_lost.raise();
+    stamp_explorer_sync_if_clean(&status, &db_path, PROFILE).await;
+
+    assert!(
+        stamped_at(&db).is_none(),
+        "a run that lost its sync lock must not stamp last_explorer_sync_at"
+    );
+}

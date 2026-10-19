@@ -798,7 +798,12 @@ mod coverage_tests {
         let path = seeded_db();
         let _guard = TempDbGuard(path.clone());
 
-        let result = sync_node_step(path.to_str().unwrap(), PROFILE_A).await;
+        let result = sync_node_step(
+            path.to_str().unwrap(),
+            PROFILE_A,
+            &crate::db::sync_lock::LockLost::default(),
+        )
+        .await;
         assert!(
             !result,
             "sync_node_step must return false when node is unreachable"
@@ -828,7 +833,12 @@ mod coverage_tests {
 
         set_node(&path, &server.url());
 
-        let result = sync_node_step(path.to_str().unwrap(), PROFILE_A).await;
+        let result = sync_node_step(
+            path.to_str().unwrap(),
+            PROFILE_A,
+            &crate::db::sync_lock::LockLost::default(),
+        )
+        .await;
         assert!(result, "sync_node_step should succeed with mocked node");
     }
 
@@ -850,7 +860,12 @@ mod coverage_tests {
 
         set_node(&path, &server.url());
 
-        let result = sync_node_step(path.to_str().unwrap(), PROFILE_A).await;
+        let result = sync_node_step(
+            path.to_str().unwrap(),
+            PROFILE_A,
+            &crate::db::sync_lock::LockLost::default(),
+        )
+        .await;
         assert!(
             !result,
             "sync_node_step must return false on blockchain-info error"
@@ -910,7 +925,12 @@ mod coverage_tests {
 
         set_node(&path, &server.url());
 
-        let result = sync_node_step(path.to_str().unwrap(), PROFILE_A).await;
+        let result = sync_node_step(
+            path.to_str().unwrap(),
+            PROFILE_A,
+            &crate::db::sync_lock::LockLost::default(),
+        )
+        .await;
         assert!(
             result,
             "guard must NOT trip when at least one address query succeeds"
@@ -2095,5 +2115,210 @@ mod profile_scope_guard {
             b_count, 0,
             "profile B must not have received any writes from A's run"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A sync whose lock another process took over stops (bug
+// 2026-10-10-sync-lock-heartbeat-ignores-lost-lock).
+// ---------------------------------------------------------------------------
+
+mod lock_lost_tests {
+    use super::{seeded_db, TempDbGuard, PROFILE_A};
+    use crate::commands::sync::{
+        discover_step, finish_run, repair_step_windowed, run_sync_steps,
+        spawn_lock_heartbeat_every, SyncCaller, SyncStatus, LOCK_LOST_LABEL,
+    };
+    use crate::db::sync_lock::{self, LockLost};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    const MYADDR: &str = "hs1qmyaddr000000000000000000000000000000";
+
+    /// Another process takes the profile's lock: the row's owner is no longer
+    /// this PID, so `refresh_heartbeat` answers `false`.
+    fn steal(path: &std::path::Path, profile: &str) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute(
+            "UPDATE sync_locks SET owner_pid = 99999, owner_type = 'daemon' WHERE profile_id = ?1",
+            [profile],
+        )
+        .unwrap();
+    }
+
+    /// The heartbeat raises `lock_lost` once another process holds the lock,
+    /// and not while the lock is still ours.
+    #[tokio::test]
+    async fn heartbeat_raises_lock_lost_once_another_process_takes_the_lock() {
+        let path = seeded_db();
+        let _guard = TempDbGuard(path.clone());
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            assert!(sync_lock::acquire_for_app(&conn, PROFILE_A).unwrap());
+        }
+        let lost = LockLost::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        let hb = spawn_lock_heartbeat_every(
+            Duration::from_millis(5),
+            path.to_str().unwrap().to_string(),
+            PROFILE_A.to_string(),
+            stop.clone(),
+            lost.clone(),
+        );
+
+        // Several refreshes of a lock that is still ours.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(!lost.is_lost(), "the lock is still ours");
+
+        steal(&path, PROFILE_A);
+        for _ in 0..400 {
+            if lost.is_lost() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(lost.is_lost(), "the heartbeat must see the takeover");
+        stop.store(true, Ordering::SeqCst);
+        hb.join().unwrap();
+        // The heartbeat never took the lock back.
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let info = sync_lock::get_lock_info(&conn, PROFILE_A).unwrap().unwrap();
+        assert_eq!(info.owner_pid, 99999);
+    }
+
+    /// The lock is taken over while the node step scans the coins (the
+    /// heartbeat raising `lock_lost` mid-sync): the scan's batch is not
+    /// applied, and no later step runs — the node is asked once, not again
+    /// for the readiness check, and the run stays on the node step.
+    #[tokio::test]
+    async fn run_sync_steps_stops_once_the_lock_is_lost_mid_sync() {
+        let mut server = mockito::Server::new_async().await;
+        let path = seeded_db();
+        let _guard = TempDbGuard(path.clone());
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute(
+                "INSERT INTO derived_addresses
+                    (wallet_profile_id, account_index, branch, child_index,
+                     address, script_pubkey_hex, public_key_hex)
+                 VALUES (?1, 0, 0, 0, ?2, '0014aa', '02aa')",
+                rusqlite::params![PROFILE_A, MYADDR],
+            )
+            .unwrap();
+            crate::db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+            assert!(sync_lock::acquire_for_app(&conn, PROFILE_A).unwrap());
+        }
+        let status = Arc::new(Mutex::new(SyncStatus::default()));
+        let lost = status.lock().await.lock_lost.clone();
+
+        let info = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+            .with_body(
+                r#"{"result":{"chain":"main","blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let steal_path = path.clone();
+        let coins = server
+            .mock("GET", format!("/coin/address/{MYADDR}").as_str())
+            .with_body_from_request(move |_| {
+                steal(&steal_path, PROFILE_A);
+                // What the heartbeat does on its next refresh.
+                lost.raise();
+                b"[]".to_vec()
+            })
+            .expect(1)
+            .create_async()
+            .await;
+        let history = server
+            .mock("GET", mockito::Matcher::Regex("^/tx/address/".into()))
+            .expect(0)
+            .create_async()
+            .await;
+
+        run_sync_steps(&status, path.to_str().unwrap(), PROFILE_A, SyncCaller::App).await;
+
+        coins.assert_async().await;
+        info.assert_async().await;
+        history.assert_async().await;
+        assert_eq!(status.lock().await.step, "node", "no later step ran");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let cursors: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_cursors WHERE wallet_profile_id = ?1",
+                [PROFILE_A],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cursors, 0, "the scan's batch was not applied");
+    }
+
+    /// The repair and discover loops stop on a lost lock as on a Stop, before
+    /// any explorer call, and their label says why.
+    #[tokio::test]
+    async fn repair_and_discover_stop_on_a_lost_lock_before_any_explorer_call() {
+        let mut explorer = mockito::Server::new_async().await;
+        let path = seeded_db();
+        let _guard = TempDbGuard(path.clone());
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute(
+                "INSERT INTO assets (tld, status) VALUES ('lost1', 'not_started')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO derived_addresses
+                    (wallet_profile_id, account_index, branch, child_index,
+                     address, script_pubkey_hex, public_key_hex)
+                 VALUES (?1, 0, 0, 0, ?2, '0014aa', '02aa')",
+                rusqlite::params![PROFILE_A, MYADDR],
+            )
+            .unwrap();
+            crate::db::queries::set_setting(&conn, "explorer_api_url", &explorer.url()).unwrap();
+        }
+        let none = explorer
+            .mock("GET", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let status = Arc::new(Mutex::new(SyncStatus::default()));
+        status.lock().await.lock_lost.raise();
+        repair_step_windowed(&status, path.to_str().unwrap(), PROFILE_A, 150).await;
+        assert_eq!(status.lock().await.progress_label, LOCK_LOST_LABEL);
+        status.lock().await.progress_label.clear();
+        discover_step(&status, path.to_str().unwrap(), PROFILE_A).await;
+        let s = status.lock().await;
+        assert_eq!(s.progress_label, LOCK_LOST_LABEL);
+        assert!(!s.waiting);
+        none.assert_async().await;
+    }
+
+    /// The run's end names a lost lock apart from the user's Stop.
+    #[tokio::test]
+    async fn finish_run_names_a_lost_lock_apart_from_a_cancel() {
+        let status = Arc::new(Mutex::new(SyncStatus {
+            running: true,
+            cancel_requested: true,
+            ..SyncStatus::default()
+        }));
+        finish_run(&status).await;
+        assert_eq!(status.lock().await.step, "cancelled");
+
+        let status = Arc::new(Mutex::new(SyncStatus {
+            running: true,
+            ..SyncStatus::default()
+        }));
+        status.lock().await.lock_lost.raise();
+        finish_run(&status).await;
+        let s = status.lock().await;
+        assert_eq!(s.step, "lock_lost");
+        assert_eq!(s.progress_label, LOCK_LOST_LABEL);
+        assert!(!s.running);
     }
 }

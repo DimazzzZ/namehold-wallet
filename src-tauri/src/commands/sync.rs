@@ -143,6 +143,13 @@ pub struct SyncStatus {
     /// Reset to `false` automatically on the next `start_full_sync` (which does
     /// `*s = SyncStatus::default()`).
     pub cancel_requested: bool,
+    /// Raised by the run's heartbeat ([`spawn_lock_heartbeat`]) when another
+    /// process took this profile's sync lock over. Not the user's Stop
+    /// (`cancel_requested`): the run stops the same way, logs why and ends on
+    /// the `lock_lost` step ([`finish_run`]). Not sent to the UI; the step and
+    /// its label say it. A fresh flag with every `SyncStatus::default()`.
+    #[serde(skip)]
+    pub lock_lost: crate::db::sync_lock::LockLost,
 }
 
 impl Default for SyncStatus {
@@ -166,9 +173,14 @@ impl Default for SyncStatus {
             discover_current_name: String::new(),
             waiting: false,
             cancel_requested: false,
+            lock_lost: crate::db::sync_lock::LockLost::default(),
         }
     }
 }
+
+/// The label of a run that stopped because another process took its sync
+/// lock over ([`SyncStatus::lock_lost`]).
+pub const LOCK_LOST_LABEL: &str = "Sync stopped: another process took over this profile's sync";
 
 // ---------------------------------------------------------------------------
 // Orchestrated sync — runs in a bg thread via `start_full_sync`
@@ -356,8 +368,13 @@ pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::V
             // both processes write the same profile — the corruption the lock
             // exists to prevent).
             let hb_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let hb_handle =
-                spawn_lock_heartbeat(db_path.clone(), profile_id.clone(), hb_stop.clone());
+            let lock_lost = status.lock().await.lock_lost.clone();
+            let hb_handle = spawn_lock_heartbeat(
+                db_path.clone(),
+                profile_id.clone(),
+                hb_stop.clone(),
+                lock_lost,
+            );
 
             // Run the shared sync steps (also used by the daemon).
             run_sync_steps(&status, &db_path, &profile_id, SyncCaller::App).await;
@@ -366,20 +383,7 @@ pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::V
             hb_stop.store(true, std::sync::atomic::Ordering::SeqCst);
             let _ = hb_handle.join();
 
-            // Done — but if either step observed a cancellation request, report
-            // the run as cancelled rather than complete.
-            {
-                let mut s = status.lock().await;
-                if s.cancel_requested {
-                    s.step = "cancelled".into();
-                    s.progress_label = "Sync stopped".into();
-                } else {
-                    s.step = "done".into();
-                    s.progress_label = "Sync complete".into();
-                }
-                s.running = false;
-                s.finished_at = Some(format!("{:?}", std::time::SystemTime::now()));
-            }
+            finish_run(&status).await;
             // Task 11 review, Finding 2: stamp `last_explorer_sync_at` once,
             // OUTSIDE the per-name repair/discover loops and their windowed
             // convergence/memo/cancel/backoff logic entirely (see the
@@ -396,6 +400,37 @@ pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::V
     });
 
     Ok(serde_json::json!({"started": true}))
+}
+
+/// The end of an app run: its terminal step and label. A run whose sync lock
+/// was taken over ends on `lock_lost` ([`LOCK_LOST_LABEL`]), one the user
+/// stopped on `cancelled`, any other on `done`.
+pub(crate) async fn finish_run(status: &Arc<Mutex<SyncStatus>>) {
+    let mut s = status.lock().await;
+    if s.lock_lost.is_lost() {
+        s.step = "lock_lost".into();
+        s.progress_label = LOCK_LOST_LABEL.into();
+    } else if s.cancel_requested {
+        s.step = "cancelled".into();
+        s.progress_label = "Sync stopped".into();
+    } else {
+        s.step = "done".into();
+        s.progress_label = "Sync complete".into();
+    }
+    s.running = false;
+    s.finished_at = Some(format!("{:?}", std::time::SystemTime::now()));
+}
+
+/// Whether the run must stop before `next` because another process took its
+/// sync lock over ([`SyncStatus::lock_lost`]); logs it when so.
+fn stop_for_lost_lock(lock: &crate::db::sync_lock::LockLost, profile_id: &str, next: &str) -> bool {
+    let lost = lock.is_lost();
+    if lost {
+        eprintln!(
+            "sync: the sync lock of {profile_id} was taken over by another process; stopping before {next}"
+        );
+    }
+    lost
 }
 
 /// Who runs [`run_sync_steps`].
@@ -440,6 +475,11 @@ impl SyncCaller {
 /// UI polls them) and may rebroadcast a missing purchase; the daemon has no
 /// UI, uses a throwaway status only to satisfy the step function signatures,
 /// and never broadcasts.
+///
+/// A run whose sync lock another process took over
+/// ([`SyncStatus::lock_lost`]) stops before its next step, and inside the
+/// node step and the market jobs before their next round, write or listing:
+/// the process that took the lock syncs the profile.
 pub async fn run_sync_steps(
     status: &Arc<Mutex<SyncStatus>>,
     db_path: &str,
@@ -447,6 +487,8 @@ pub async fn run_sync_steps(
     caller: SyncCaller,
 ) {
     let report_progress = caller == SyncCaller::App;
+    let lock = status.lock().await.lock_lost.clone();
+    let lost = |next: &str| stop_for_lost_lock(&lock, profile_id, next);
     // Determine node mode from settings.
     let node_mode = open_conn(db_path)
         .ok()
@@ -469,7 +511,10 @@ pub async fn run_sync_steps(
     if node_mode.is_spv() {
         let _spv_ok = crate::commands::sync_spv::sync_spv_step(db_path, profile_id).await;
     } else {
-        let _node_ok = sync_node_step(db_path, profile_id).await;
+        let _node_ok = sync_node_step(db_path, profile_id, &lock).await;
+    }
+    if lost("the node readiness check") {
+        return;
     }
 
     // Is the node authoritative (connected AND fully synced)? When it is,
@@ -518,6 +563,9 @@ pub async fn run_sync_steps(
     };
 
     // Step 2: Repair owned names from inventory + tracked (explorer only).
+    if lost("the repair step") {
+        return;
+    }
     if report_progress {
         let mut s = status.lock().await;
         s.step = "repair".into();
@@ -533,6 +581,9 @@ pub async fn run_sync_steps(
 
     // Step 3: Minimal explorer discovery (skipped when the node is synced —
     // node-backed discovery runs in Step 1 / node_discover_step).
+    if lost("the discover step") {
+        return;
+    }
     if report_progress {
         let mut s = status.lock().await;
         s.step = "discover".into();
@@ -553,8 +604,14 @@ pub async fn run_sync_steps(
     // another network or SPV would report a mined purchase as unknown and get
     // it rebroadcast or declared lost. Best-effort, like the steps above.
     if node_authoritative {
+        if lost("the Shakedex purchases") {
+            return;
+        }
         crate::shakedex_jobs::refresh_purchases_step(db_path, profile_id, caller.rebroadcast())
             .await;
+        if lost("the Shakedex listings") {
+            return;
+        }
         // R19, R22: every listing's state from chain facts — before the
         // FINALIZE into the lock (Aborted, Expired, ReadyToFinalize,
         // Restored) and after it (Listed, SalePending, Sold). Reads the node
@@ -565,29 +622,45 @@ pub async fn run_sync_steps(
         // mainnet only. Each reads the node and writes to the market and the
         // listing's market bookkeeping only: no key, no signature, no send —
         // the daemon runs them as the app does (SECURITY.md, "The daemon
-        // never signs or broadcasts").
-        crate::shakedex_jobs::publish_listings_step(db_path, profile_id).await;
+        // never signs or broadcasts"). Each stops before its next listing
+        // once the lock is lost.
+        crate::shakedex_jobs::publish_listings_step(db_path, profile_id, &lock).await;
         // R24 (T8): a reverse auction's copy on the market follows its
         // schedule: the current step uploaded once it moves. Same contract
         // as the two around it: no key, no signature, no send.
-        crate::shakedex_jobs::advance_reverse_auctions_step(db_path, profile_id).await;
-        crate::shakedex_jobs::keep_listed_step(db_path, profile_id).await;
+        crate::shakedex_jobs::advance_reverse_auctions_step(db_path, profile_id, &lock).await;
+        crate::shakedex_jobs::keep_listed_step(db_path, profile_id, &lock).await;
     }
 }
 
 /// Spawn a background thread that refreshes the sync lock's heartbeat.
 ///
 /// Used by [`start_full_sync`] to keep the app's lock from going stale during
-/// a long sync run. The daemon has an equivalent heartbeat spawner for the
-/// same reason. Both refresh every [`crate::daemon::HEARTBEAT_INTERVAL_SECS`].
+/// a long sync run, and by the daemon for its own runs. Both refresh every
+/// [`crate::daemon::HEARTBEAT_INTERVAL_SECS`]. When a refresh finds the lock
+/// is no longer ours (another process took it over), it raises `lock_lost`,
+/// which stops the run ([`run_sync_steps`]), and refreshes no more.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn spawn_lock_heartbeat(
     db_path: String,
     profile_id: String,
     stop: Arc<std::sync::atomic::AtomicBool>,
+    lock_lost: crate::db::sync_lock::LockLost,
+) -> std::thread::JoinHandle<()> {
+    let interval = Duration::from_secs(crate::daemon::HEARTBEAT_INTERVAL_SECS);
+    spawn_lock_heartbeat_every(interval, db_path, profile_id, stop, lock_lost)
+}
+
+/// [`spawn_lock_heartbeat`] at `interval`, so a test need not wait out the
+/// production one.
+pub(crate) fn spawn_lock_heartbeat_every(
+    interval: Duration,
+    db_path: String,
+    profile_id: String,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    lock_lost: crate::db::sync_lock::LockLost,
 ) -> std::thread::JoinHandle<()> {
     use std::sync::atomic::Ordering;
-    let interval = Duration::from_secs(crate::daemon::HEARTBEAT_INTERVAL_SECS);
     std::thread::spawn(move || {
         while !stop.load(Ordering::SeqCst) {
             std::thread::sleep(interval);
@@ -595,8 +668,18 @@ pub fn spawn_lock_heartbeat(
                 break;
             }
             if let Ok(c) = open_conn(&db_path) {
-                if let Err(e) = crate::db::sync_lock::refresh_heartbeat(&c, &profile_id) {
-                    eprintln!("start_full_sync: heartbeat refresh failed for {profile_id}: {e}");
+                match crate::db::sync_lock::refresh_heartbeat(&c, &profile_id) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        eprintln!(
+                            "sync heartbeat: the sync lock of {profile_id} was taken over by another process; stopping this sync"
+                        );
+                        lock_lost.raise();
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("sync heartbeat: refresh failed for {profile_id}: {e}");
+                    }
                 }
             }
         }
@@ -664,7 +747,15 @@ fn apply_node_sync_batch(
     Ok(())
 }
 
-pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
+/// Node UTXO sync: scan the profile's addresses, apply the batch, grow the
+/// address window ([`grow_address_window`]) and apply what it found. Writes
+/// nothing more once `lock` is raised (another process took the sync lock
+/// over): the batch not yet applied is left for that process.
+pub async fn sync_node_step(
+    db_path: &str,
+    profile_id: &str,
+    lock: &crate::db::sync_lock::LockLost,
+) -> bool {
     let conn = match open_conn(db_path) {
         Ok(c) => c,
         Err(_) => return false,
@@ -696,6 +787,9 @@ pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
         None => return false,
     };
 
+    if stop_for_lost_lock(lock, profile_id, "the node sync batch") {
+        return false;
+    }
     let mut conn = match open_conn(db_path) {
         Ok(c) => c,
         Err(_) => return false,
@@ -708,13 +802,16 @@ pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
     // Grow the address window by the gap limit and scan what it adds. Its own
     // step after the scan above has landed: a failure here leaves that batch
     // applied and the window as far as it got, and the next sync goes on.
-    let found = match grow_address_window(&client, db_path, profile_id, gap).await {
+    let found = match grow_address_window(&client, db_path, profile_id, gap, lock).await {
         Ok(found) => found,
         Err(e) => {
             eprintln!("sync_node_step: growing the address window of {profile_id} failed: {e}");
             return true;
         }
     };
+    if stop_for_lost_lock(lock, profile_id, "the address window batch") {
+        return false;
+    }
     if found.is_empty() {
         return true;
     }
@@ -753,16 +850,25 @@ const MAX_WINDOW_ROUNDS: u32 = 50;
 /// only addresses that still hold coins move the window, so a run of spent
 /// addresses longer than the gap ends it. Without `--index-address` both
 /// queries return nothing and the window does not grow.
+///
+/// Stops, writing nothing more, once `lock` is raised (another process took
+/// the sync lock over): checked before each round and before each of its
+/// writes. What it found so far is returned; the caller applies none of it.
 pub(crate) async fn grow_address_window(
     client: &dyn crate::noncustodial::node_rpc::NodeRpc,
     db_path: &str,
     profile_id: &str,
     gap: u32,
+    lock: &crate::db::sync_lock::LockLost,
 ) -> Result<Vec<crate::noncustodial::rpc::NodeCoin>, AppError> {
     use crate::noncustodial::{derivation, sync as nsync};
+    let lost = || stop_for_lost_lock(lock, profile_id, "the next address window write");
     let mut found = Vec::new();
     let mut checked: HashSet<String> = HashSet::new();
     for _ in 0..MAX_WINDOW_ROUNDS {
+        if lost() {
+            break;
+        }
         let ahead = derivation::lookahead_addresses(&open_conn(db_path)?, profile_id)?;
         let mut with_history = Vec::new();
         for address in ahead {
@@ -779,6 +885,9 @@ pub(crate) async fn grow_address_window(
                 }
             }
         }
+        if lost() {
+            break;
+        }
         let added = {
             let conn = open_conn(db_path)?;
             for (address, height) in &with_history {
@@ -794,6 +903,9 @@ pub(crate) async fn grow_address_window(
             if let Ok(mut coins) = client.get_coins_by_address(&d.address).await {
                 round.append(&mut coins);
             }
+        }
+        if lost() {
+            break;
         }
         let conn = open_conn(db_path)?;
         for coin in &round {
@@ -936,9 +1048,22 @@ const DISCOVERY_MAX_PAGES_PER_ADDRESS: u32 = 8;
 /// so a name repair just stamped this same run is not re-verified by discover.
 const DISCOVER_MEMO_HOURS: i64 = 12;
 
-/// Read the cancellation flag without holding the lock across the caller's work.
-async fn cancel_requested(status: &Arc<Mutex<SyncStatus>>) -> bool {
-    status.lock().await.cancel_requested
+/// Whether the run must stop now: the user asked to (`cancel_requested`) or
+/// another process took the sync lock over (`lock_lost`). When so, clears
+/// `waiting` and says which in the progress label. Holds the status lock only
+/// for the check, not across the caller's work.
+async fn stopped(status: &Arc<Mutex<SyncStatus>>) -> bool {
+    let mut s = status.lock().await;
+    let label = if s.lock_lost.is_lost() {
+        LOCK_LOST_LABEL
+    } else if s.cancel_requested {
+        "Sync cancelled"
+    } else {
+        return false;
+    };
+    s.waiting = false;
+    s.progress_label = label.into();
+    true
 }
 
 /// Repair owned names, looping over successive candidate windows until the whole
@@ -977,8 +1102,9 @@ pub async fn repair_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profile
 ///   abort at `SYNC_MAX_CONSECUTIVE_ERRORS`; the counter resets on any
 ///   successful check (owned OR not-owned). A whole window with zero successful
 ///   checks also aborts (belt-and-suspenders against an infinite loop).
-/// * Cancellation — `cancel_requested` is checked at the top of each window AND
-///   before each per-name check, so Stop is responsive even mid-window.
+/// * Cancellation — `cancel_requested` (and a lost sync lock, see [`stopped`])
+///   is checked at the top of each window AND before each per-name check, so
+///   Stop is responsive even mid-window.
 pub async fn repair_step_windowed(
     status: &Arc<Mutex<SyncStatus>>,
     db_path: &str,
@@ -1035,10 +1161,7 @@ pub async fn repair_step_windowed(
 
     loop {
         // Cancellation is checked at the top of each window…
-        if cancel_requested(status).await {
-            let mut s = status.lock().await;
-            s.waiting = false;
-            s.progress_label = "Sync cancelled".into();
+        if stopped(status).await {
             return;
         }
 
@@ -1070,10 +1193,7 @@ pub async fn repair_step_windowed(
         let mut progressed = 0u32;
         for name in &batch {
             // …and before each per-name check, so Stop is responsive mid-window.
-            if cancel_requested(status).await {
-                let mut s = status.lock().await;
-                s.waiting = false;
-                s.progress_label = "Sync cancelled".into();
+            if stopped(status).await {
                 return;
             }
             attempted.insert(name.clone());
@@ -1233,8 +1353,9 @@ async fn record_error_and_clear_waiting(status: &Arc<Mutex<SyncStatus>>, err: &A
 /// `repair_step_windowed`/`discover_step` — so it touches none of their
 /// windowed-convergence/memo/cancel/backoff logic.
 ///
-/// A run is "clean" iff it reached here with no cancellation and no
-/// aborting error: `SyncStatus.errors` is ONLY ever pushed to by
+/// A run is "clean" iff it reached here with no cancellation, its sync lock
+/// still its own (a run that lost it writes nothing more, this stamp
+/// included) and no aborting error: `SyncStatus.errors` is ONLY ever pushed to by
 /// [`record_error_and_clear_waiting`], which fires exclusively when a step
 /// aborts after `SYNC_MAX_CONSECUTIVE_ERRORS` consecutive explorer errors —
 /// so an empty `errors` here means repair + discover both ran to
@@ -1252,7 +1373,7 @@ pub async fn stamp_explorer_sync_if_clean(
 ) {
     let clean = {
         let s = status.lock().await;
-        !s.cancel_requested && s.errors.is_empty()
+        !s.cancel_requested && !s.lock_lost.is_lost() && s.errors.is_empty()
     };
     if !clean {
         return;
@@ -1322,10 +1443,7 @@ pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profi
     let mut seen_tx: HashSet<String> = HashSet::new();
     for (i, addr) in addrs.iter().enumerate() {
         // Cancellation is checked per-address (before any explorer call)…
-        if cancel_requested(status).await {
-            let mut s = status.lock().await;
-            s.waiting = false;
-            s.progress_label = "Sync cancelled".into();
+        if stopped(status).await {
             return;
         }
         // Update progress: which address we are scanning.
@@ -1337,10 +1455,7 @@ pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profi
         let mut pages = 0u32;
         loop {
             // …and per-page, so Stop is responsive even mid-crawl of a busy addr.
-            if cancel_requested(status).await {
-                let mut s = status.lock().await;
-                s.waiting = false;
-                s.progress_label = "Sync cancelled".into();
+            if stopped(status).await {
                 return;
             }
             {
@@ -1379,10 +1494,7 @@ pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profi
                 if !seen_tx.insert(txid.clone()) {
                     continue;
                 }
-                if cancel_requested(status).await {
-                    let mut s = status.lock().await;
-                    s.waiting = false;
-                    s.progress_label = "Sync cancelled".into();
+                if stopped(status).await {
                     return;
                 }
                 sleep(DISCOVERY_THROTTLE).await;
@@ -1472,10 +1584,7 @@ pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profi
     let mut discovered = 0u32;
     for name in &candidates {
         // Cancellation is checked before each per-candidate check.
-        if cancel_requested(status).await {
-            let mut s = status.lock().await;
-            s.waiting = false;
-            s.progress_label = "Sync cancelled".into();
+        if stopped(status).await {
             return;
         }
         if !seen_names.insert(name.clone()) {
@@ -1814,7 +1923,12 @@ mod db_hardening_tests {
         drop(conn);
 
         // Run sync_node_step — must bail out because every coin query errored.
-        let success = sync_node_step(db_path.to_str().unwrap(), "p1").await;
+        let success = sync_node_step(
+            db_path.to_str().unwrap(),
+            "p1",
+            &crate::db::sync_lock::LockLost::default(),
+        )
+        .await;
         assert!(
             !success,
             "sync_node_step must return false when all coin queries error"
@@ -1867,7 +1981,7 @@ mod db_hardening_tests {
     #[tokio::test]
     async fn sync_node_step_returns_false_when_conn_cannot_open() {
         let bad = unopenable_db_path();
-        let ok = sync_node_step(&bad, "p1").await;
+        let ok = sync_node_step(&bad, "p1", &crate::db::sync_lock::LockLost::default()).await;
         assert!(!ok, "sync_node_step must return false when open_conn fails");
     }
 
@@ -2126,7 +2240,14 @@ mod address_window_tests {
         queries::set_setting(&conn, "node_rpc_api_key", "x").unwrap();
         drop(conn);
 
-        assert!(sync_node_step(db_path.to_str().unwrap(), "p1").await);
+        assert!(
+            sync_node_step(
+                db_path.to_str().unwrap(),
+                "p1",
+                &crate::db::sync_lock::LockLost::default()
+            )
+            .await
+        );
 
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let tracked: HashSet<String> = {
@@ -2152,6 +2273,131 @@ mod address_window_tests {
             derivation::max_derived_index(&conn, "p1", 0, BRANCH_CHANGE).unwrap(),
             Some(3 + GAP)
         );
+        drop(conn);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    }
+
+    /// The sync lock is taken over while the first round of window growth
+    /// scans the addresses it added (the coin at receive 4 is fetched): that
+    /// round writes nothing more, no later round runs (receive 7 is never
+    /// asked for) and the coins found are not applied. The window stays where
+    /// round one's growth left it, and only the coin of the first batch
+    /// (receive 2) is tracked.
+    #[tokio::test]
+    async fn a_lost_lock_stops_the_window_before_its_next_round() {
+        let mut server = mockito::Server::new_async().await;
+        let _info = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+            .with_body(r#"{"result":{"chain":"main","blocks":100},"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let lock = crate::db::sync_lock::LockLost::default();
+        let (r2, r4, r7) = (
+            addr(BRANCH_RECEIVE, 2),
+            addr(BRANCH_RECEIVE, 4),
+            addr(BRANCH_RECEIVE, 7),
+        );
+        let _r2 = server
+            .mock("GET", format!("/coin/address/{r2}").as_str())
+            .with_body(coin_body(1, &r2))
+            .create_async()
+            .await;
+        let raise = lock.clone();
+        let body = coin_body(2, &r4);
+        let r4_mock = server
+            .mock("GET", format!("/coin/address/{r4}").as_str())
+            .with_body_from_request(move |_| {
+                // What the heartbeat does once another process holds the lock.
+                raise.raise();
+                body.clone().into_bytes()
+            })
+            .expect(1)
+            .create_async()
+            .await;
+        let r7_mock = server
+            .mock("GET", format!("/coin/address/{r7}").as_str())
+            .expect(0)
+            .create_async()
+            .await;
+        let _rest = server
+            .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+            .with_body("[]")
+            .create_async()
+            .await;
+        let _history = server
+            .mock("GET", mockito::Matcher::Regex("^/tx/address/".into()))
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        let db_path = std::env::temp_dir().join(format!(
+            "namehold_address_window_lost_{}_{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        let xpub_str = xpub().to_base58check(Network::Main);
+        queries::insert_wallet_profile(
+            &conn,
+            "p1",
+            "Watch",
+            "watch_only_xpub",
+            "mainnet",
+            &xpub_str,
+            0,
+            true,
+        )
+        .unwrap();
+        crate::commands::secure_wallet::provision_addresses(
+            &conn,
+            "p1",
+            Network::Main,
+            &xpub_str,
+            GAP,
+        )
+        .unwrap();
+        queries::set_setting(&conn, "address_gap_limit", &GAP.to_string()).unwrap();
+        queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+        queries::set_setting(&conn, "node_rpc_api_key", "x").unwrap();
+        drop(conn);
+
+        assert!(!sync_node_step(db_path.to_str().unwrap(), "p1", &lock).await);
+
+        r4_mock.assert_async().await;
+        r7_mock.assert_async().await;
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let tracked: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT txid FROM tracked_utxos WHERE wallet_profile_id = 'p1'")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert_eq!(tracked, vec![txid(1)], "only the first batch is applied");
+        // Round one grew receive to receive 2 + GAP; receive 4 was never
+        // marked used, so no round grew it further.
+        assert_eq!(
+            derivation::max_derived_index(&conn, "p1", 0, BRANCH_RECEIVE).unwrap(),
+            Some(2 + GAP)
+        );
+        let r4_used: bool = conn
+            .query_row(
+                "SELECT used FROM derived_addresses WHERE address = ?1",
+                [&r4],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!r4_used, "round one wrote nothing once the lock was lost");
         drop(conn);
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_file(db_path.with_extension("db-wal"));

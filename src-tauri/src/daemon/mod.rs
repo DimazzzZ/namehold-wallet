@@ -89,24 +89,35 @@ async fn sync_all_profiles(db_path: &str) -> Result<(), AppError> {
             continue;
         }
 
-        // Spawn a heartbeat refresher for this profile.
+        // Spawn a heartbeat refresher for this profile. It raises
+        // `lock_lost` when the app (or another process) takes the lock over,
+        // and the run then stops before its next step.
         let hb_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lock_lost = sync_lock::LockLost::default();
         let hb_handle = sync_cmd::spawn_lock_heartbeat(
             db_path.to_string(),
             profile_id.clone(),
             hb_stop.clone(),
+            lock_lost.clone(),
         );
 
         // Run the sync steps. If any step fails internally, it's logged;
         // the daemon just moves on. `sync_profile` itself never errors.
-        sync_profile(db_path, &profile_id).await;
-        eprintln!("namehold-syncd: synced profile {}", profile_id);
+        sync_profile(db_path, &profile_id, &lock_lost).await;
+        if lock_lost.is_lost() {
+            eprintln!(
+                "namehold-syncd: stopped syncing profile {profile_id}: its sync lock was taken over"
+            );
+        } else {
+            eprintln!("namehold-syncd: synced profile {}", profile_id);
+        }
 
         // Stop the heartbeat thread.
         hb_stop.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = hb_handle.join();
 
-        // Release the lock.
+        // Release the lock (a no-op when it was taken over: only our own
+        // row is deleted).
         let c = sync_cmd::open_conn(db_path)?;
         sync_lock::release(&c, &profile_id)?;
     }
@@ -117,17 +128,19 @@ async fn sync_all_profiles(db_path: &str) -> Result<(), AppError> {
 /// Sync a single profile (3 steps: node sync, repair, discover).
 ///
 /// Uses a locally-owned `SyncStatus` (never surfaced anywhere) purely as
-/// the argument type expected by the shared step functions. The daemon
+/// the argument type expected by the shared step functions, and to carry
+/// `lock_lost` (raised by the profile's heartbeat) to them. The daemon
 /// intentionally does not report progress to any UI.
-pub(crate) async fn sync_profile(db_path: &str, profile_id: &str) {
+pub(crate) async fn sync_profile(db_path: &str, profile_id: &str, lock_lost: &sync_lock::LockLost) {
     // Local status — never shared, never observed. Just satisfies the API of
     // the shared step functions, which use it internally for progress labels
-    // and cancel_requested checks. The daemon never sets cancel_requested,
-    // so the steps run to completion.
+    // and the stop checks. The daemon never sets cancel_requested; a lost
+    // lock stops the steps as it does the app's.
     let status: Arc<AsyncMutex<SyncStatus>> = Arc::new(AsyncMutex::new(SyncStatus::default()));
     {
         let mut s = status.lock().await;
         s.running = true;
+        s.lock_lost = lock_lost.clone();
     }
 
     // Run the shared sync steps (the single source of truth, also

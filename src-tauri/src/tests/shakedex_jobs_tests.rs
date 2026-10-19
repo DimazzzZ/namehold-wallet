@@ -8,6 +8,7 @@ use rusqlite::Connection;
 use serde_json::json;
 
 use crate::db::queries::{self, ListingMode, ListingState, MarketStatus, ShakedexListing};
+use crate::db::sync_lock::LockLost;
 use crate::market::learnhns::LearnHnsClient;
 use crate::noncustodial::derivation;
 use crate::noncustodial::hd::ExtendedPrivKey;
@@ -235,9 +236,16 @@ fn client(s: &ServerGuard) -> LearnHnsClient {
 }
 
 async fn publish(f: &Fx, node: &MockNodeRpc, s: &ServerGuard, now: i64) {
-    publish_listings_with_client(&f.conn, node, &client(s), PROFILE, now)
-        .await
-        .unwrap();
+    publish_listings_with_client(
+        &f.conn,
+        node,
+        &client(s),
+        PROFILE,
+        now,
+        &LockLost::default(),
+    )
+    .await
+    .unwrap();
 }
 
 /// The market's upload acceptance (`UPLOAD_ACCEPTED`, MKT's shape) for
@@ -397,7 +405,7 @@ async fn nothing_published_when_the_box_is_off() {
         let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
         let n = node(&f, TIP);
         publish(&f, &n, &s, NOW).await;
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW)
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
             .await
             .unwrap();
         any.assert_async().await;
@@ -477,7 +485,7 @@ async fn nothing_published_off_mainnet() {
         let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
         let n = node(&f, TIP);
         publish(&f, &n, &s, NOW).await;
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW)
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
             .await
             .unwrap();
         any.assert_async().await;
@@ -1107,9 +1115,16 @@ fn listing_file_market_copy(stored: &str) -> String {
 }
 
 async fn keep(f: &Fx, s: &ServerGuard, now: i64) {
-    keep_listed_with_client(&f.conn, &node(f, TIP), &client(s), PROFILE, now)
-        .await
-        .unwrap();
+    keep_listed_with_client(
+        &f.conn,
+        &node(f, TIP),
+        &client(s),
+        PROFILE,
+        now,
+        &LockLost::default(),
+    )
+    .await
+    .unwrap();
 }
 
 /// The market serves `body` (200) as its copy of NAME.
@@ -1148,9 +1163,16 @@ async fn reuploads_when_replaced() {
 }
 
 async fn keep_at(f: &Fx, s: &ServerGuard, now: i64, mtp: u64) {
-    keep_listed_with_client(&f.conn, &node_at(f, TIP, mtp), &client(s), PROFILE, now)
-        .await
-        .unwrap();
+    keep_listed_with_client(
+        &f.conn,
+        &node_at(f, TIP, mtp),
+        &client(s),
+        PROFILE,
+        now,
+        &LockLost::default(),
+    )
+    .await
+    .unwrap();
 }
 
 /// [`uploads_current_step_only`]'s first upload: a reverse auction of
@@ -1255,9 +1277,16 @@ async fn foreign_copy_after_the_step_moved_is_replaced() {
 }
 
 async fn advance(f: &Fx, node: &MockNodeRpc, s: &ServerGuard, now: i64) {
-    advance_reverse_auctions_with_client(&f.conn, node, &client(s), PROFILE, now)
-        .await
-        .unwrap();
+    advance_reverse_auctions_with_client(
+        &f.conn,
+        node,
+        &client(s),
+        PROFILE,
+        now,
+        &LockLost::default(),
+    )
+    .await
+    .unwrap();
 }
 
 /// A Listed reverse auction on [`schedule`] whose current step at MTP
@@ -1462,9 +1491,16 @@ async fn our_earlier_step_on_the_market_is_not_a_replacement() {
     let mut s = market().await;
     let _get = copy_mock(&mut s, earlier, 1).await;
     let (m, seen) = upload_mock(&mut s, 1).await;
-    keep_listed_with_client(&f.conn, &node_at(&f, TIP, mtp), &client(&s), PROFILE, retry)
-        .await
-        .unwrap();
+    keep_listed_with_client(
+        &f.conn,
+        &node_at(&f, TIP, mtp),
+        &client(&s),
+        PROFILE,
+        retry,
+        &LockLost::default(),
+    )
+    .await
+    .unwrap();
     m.assert_async().await;
     let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
     assert_eq!(
@@ -1555,9 +1591,16 @@ async fn never_taken_auction_does_not_claim_the_markets_copy() {
     let mut s = market().await;
     let _get = copy_mock(&mut s, theirs, 1).await;
     let (m, seen) = upload_mock(&mut s, 1).await;
-    keep_listed_with_client(&f.conn, &node_at(&f, TIP, mtp), &client(&s), PROFILE, retry)
-        .await
-        .unwrap();
+    keep_listed_with_client(
+        &f.conn,
+        &node_at(&f, TIP, mtp),
+        &client(&s),
+        PROFILE,
+        retry,
+        &LockLost::default(),
+    )
+    .await
+    .unwrap();
     m.assert_async().await;
     let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
     assert_eq!(
@@ -2026,7 +2069,7 @@ async fn refused_listing_near_expiry_is_refreshed_without_a_market_call() {
     let any = s.mock("GET", Matcher::Any).expect(0).create_async().await;
     let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
     let n = node(&g, TIP);
-    keep_listed_with_client(&g.conn, &n, &client(&s), PROFILE, NOW)
+    keep_listed_with_client(&g.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
         .await
         .unwrap();
     any.assert_async().await;
@@ -2050,7 +2093,7 @@ async fn refused_listing_near_expiry_is_refreshed_without_a_market_call() {
     let any = s.mock("GET", Matcher::Any).expect(0).create_async().await;
     let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
     let n = node(&h, TIP);
-    keep_listed_with_client(&h.conn, &n, &client(&s), PROFILE, NOW)
+    keep_listed_with_client(&h.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
         .await
         .unwrap();
     any.assert_async().await;
@@ -2077,7 +2120,7 @@ async fn refused_listing_expiry_is_read_from_its_file_once_due() {
     let s = market().await;
     let n = node(&f, TIP);
     for at in [NOW, NOW + 3_600] {
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at)
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at, &LockLost::default())
             .await
             .unwrap();
     }
@@ -2122,7 +2165,7 @@ async fn refused_listing_expiry_is_read_from_its_file_once_due() {
         .unwrap();
     let s = market().await;
     let n = node(&h, TIP);
-    keep_listed_with_client(&h.conn, &n, &client(&s), PROFILE, NOW)
+    keep_listed_with_client(&h.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
         .await
         .unwrap();
     assert_eq!(n.call_count(), 0, "not due: nothing read");
@@ -2145,7 +2188,7 @@ async fn nothing_kept_off_mainnet() {
     let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
     let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
     let n = node(&f, TIP);
-    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW)
+    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
         .await
         .unwrap();
     any.assert_async().await;
@@ -2271,7 +2314,7 @@ async fn only_listings_the_market_took_are_kept() {
         let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
         let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
         let n = node(&f, TIP);
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW)
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
             .await
             .unwrap();
         get.assert_async().await;
@@ -2333,9 +2376,16 @@ async fn cancelling_listing_is_kept_until_its_cancel_is_sent() {
         let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
         let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
         let n = node(&f, TIP);
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW + 86_400)
-            .await
-            .unwrap();
+        keep_listed_with_client(
+            &f.conn,
+            &n,
+            &client(&s),
+            PROFILE,
+            NOW + 86_400,
+            &LockLost::default(),
+        )
+        .await
+        .unwrap();
         get.assert_async().await;
         post.assert_async().await;
         assert_eq!(n.call_count(), 0);
@@ -2571,7 +2621,7 @@ async fn cancelled_listing_reports_and_stops() {
     let (up, _) = upload_mock(&mut s, 0).await;
     let n = node(&f, TIP);
     // Unsent: still kept, checked like any listed one, not reported.
-    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW)
+    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
         .await
         .unwrap();
     publish(&f, &n, &s, NOW).await;
@@ -2584,7 +2634,7 @@ async fn cancelled_listing_reports_and_stops() {
     queries::update_tx_draft_status(&f.conn, "cd", "broadcasted", None, Some(&txid("c1"))).unwrap();
     for at in [NOW + 3_600, NOW + 7_200] {
         publish(&f, &n, &s, at).await;
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at)
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at, &LockLost::default())
             .await
             .unwrap();
     }
@@ -2596,7 +2646,7 @@ async fn cancelled_listing_reports_and_stops() {
     cancel_mined(&f, ListingState::CancelAwaitingFinalize);
     for at in [NOW + 10_800, NOW + 86_400, NOW + 7 * 86_400] {
         publish(&f, &n, &s, at).await;
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at)
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at, &LockLost::default())
             .await
             .unwrap();
     }
@@ -3632,4 +3682,77 @@ async fn reorg_reset_listing_reads_a_differing_copy_by_its_flag() {
             "flag {flag}"
         );
     }
+}
+
+/// A market that must see no request at all.
+async fn no_market_call(s: &mut ServerGuard) -> [mockito::Mock; 2] {
+    [
+        s.mock("POST", Matcher::Any).expect(0).create_async().await,
+        s.mock("GET", Matcher::Any).expect(0).create_async().await,
+    ]
+}
+
+/// The market bookkeeping of `f`'s listing.
+fn bookkeeping(f: &Fx) -> (Option<MarketStatus>, Option<String>, Option<String>) {
+    let l = listing(f);
+    (l.market_status, l.market_retry_at, l.market_sent_step)
+}
+
+/// A sync whose lock another process took over (`LockLost`, raised by the
+/// heartbeat) makes no market call and writes no market bookkeeping: each
+/// job stops before the listing it would otherwise send — publishing's
+/// first upload, the advance of a moved reverse auction, keep-listed's
+/// hourly check — and leaves it to the process that holds the lock.
+#[tokio::test]
+async fn market_jobs_stop_before_a_listing_once_the_sync_lock_is_lost() {
+    let lost = LockLost::default();
+    lost.raise();
+
+    // Publish: a Listed, published listing the market has not taken.
+    let f = fx(ListingState::Listed, true);
+    let before = bookkeeping(&f);
+    let mut s = market().await;
+    let quiet = no_market_call(&mut s).await;
+    let n = node(&f, TIP);
+    publish_listings_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &lost)
+        .await
+        .unwrap();
+    for m in &quiet {
+        m.assert_async().await;
+    }
+    assert_eq!(bookkeeping(&f), before);
+
+    // Advance: a reverse auction whose step moved.
+    let (f, _) = auction_on_market().await;
+    let before = bookkeeping(&f);
+    let (mtp, later) = moved();
+    let mut s = market().await;
+    let quiet = no_market_call(&mut s).await;
+    advance_reverse_auctions_with_client(
+        &f.conn,
+        &node_at(&f, TIP, mtp),
+        &client(&s),
+        PROFILE,
+        later,
+        &lost,
+    )
+    .await
+    .unwrap();
+    for m in &quiet {
+        m.assert_async().await;
+    }
+    assert_eq!(bookkeeping(&f), before);
+
+    // Keep listed: a listing on the market whose hourly check is due.
+    let f = listed_on_market(MarketStatus::Listed);
+    let before = bookkeeping(&f);
+    let mut s = market().await;
+    let quiet = no_market_call(&mut s).await;
+    keep_listed_with_client(&f.conn, &node(&f, TIP), &client(&s), PROFILE, NOW, &lost)
+        .await
+        .unwrap();
+    for m in &quiet {
+        m.assert_async().await;
+    }
+    assert_eq!(bookkeeping(&f), before);
 }

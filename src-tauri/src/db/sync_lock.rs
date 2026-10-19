@@ -29,6 +29,28 @@ impl LockOwnerType {
     }
 }
 
+/// Raised when a sync run's lock was taken over by another process.
+///
+/// The heartbeat (`commands::sync::spawn_lock_heartbeat`) raises it when
+/// [`refresh_heartbeat`] answers `false`: the row is no longer ours. The run
+/// then stops before its next step, address-window round or write, and the
+/// market jobs before their next listing, so two processes do not go on
+/// syncing one profile. Clones share one flag.
+#[derive(Debug, Clone, Default)]
+pub struct LockLost(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl LockLost {
+    /// Record that the lock was taken over.
+    pub fn raise(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether the lock was taken over.
+    pub fn is_lost(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// Information about a currently-held lock.
 #[derive(Debug)]
 pub struct SyncLockInfo {

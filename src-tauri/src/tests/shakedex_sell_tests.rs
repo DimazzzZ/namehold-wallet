@@ -2369,7 +2369,14 @@ async fn sync_aborts_the_listing_in_the_app_and_the_daemon() {
             .await;
 
         match caller {
-            SyncCaller::Daemon => crate::daemon::sync_profile(&db_path, PROFILE).await,
+            SyncCaller::Daemon => {
+                crate::daemon::sync_profile(
+                    &db_path,
+                    PROFILE,
+                    &crate::db::sync_lock::LockLost::default(),
+                )
+                .await
+            }
             SyncCaller::App => {
                 let status = std::sync::Arc::new(tokio::sync::Mutex::new(SyncStatus::default()));
                 run_sync_steps(&status, &db_path, PROFILE, SyncCaller::App).await;
@@ -4976,7 +4983,14 @@ async fn sync_lists_the_listing_in_the_app_and_the_daemon() {
             .await;
 
         match caller {
-            SyncCaller::Daemon => crate::daemon::sync_profile(&db_path, PROFILE).await,
+            SyncCaller::Daemon => {
+                crate::daemon::sync_profile(
+                    &db_path,
+                    PROFILE,
+                    &crate::db::sync_lock::LockLost::default(),
+                )
+                .await
+            }
             SyncCaller::App => {
                 let status = std::sync::Arc::new(tokio::sync::Mutex::new(SyncStatus::default()));
                 run_sync_steps(&status, &db_path, PROFILE, SyncCaller::App).await;
