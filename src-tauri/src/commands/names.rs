@@ -232,7 +232,9 @@ pub struct NameActionCapabilities {
     pub pending_broadcast_action: Option<String>,
     /// Bids this wallet placed in an EARLIER auction of the same name whose
     /// lockup is stranded: unrevealable and unredeemable, and invisible in the
-    /// bids panel now that it is scoped to the current auction.
+    /// bids panel now that it is scoped to the current auction. A reveal of an
+    /// earlier auction left unredeemed counts here too, with its value: hsd
+    /// redeems a reveal only on its own auction.
     pub stranded_bid_count: i64,
     pub stranded_lockup_doos: i64,
     /// Losing reveals on this name that a REDEEM would reclaim, and what they
@@ -287,6 +289,9 @@ pub(crate) struct NameActionContext {
     /// was never created), so the lockup is gone — and scoping the bids panel
     /// by auction made them invisible, which is worse than the wrong count it
     /// replaced: the money is missing with nothing on screen to explain it.
+    /// An unspent REVEAL coin of an earlier auction counts here too, with its
+    /// value: a REDEEM is valid only while the name is on the reveal's own
+    /// auction (`bad-redeem-nonlocal`), so it is just as gone.
     pub stranded_bid_count: i64,
     pub stranded_lockup_doos: i64,
     /// Unspent REVEAL coins for this name that are NOT the name's owner — the
@@ -295,8 +300,9 @@ pub(crate) struct NameActionContext {
     pub redeemable_reveal_count: i64,
     /// What those reveals are worth together — the sum a REDEEM reclaims.
     pub redeemable_value_doos: i64,
-    /// Every unspent REVEAL coin of ours for this name, the set the two
-    /// counts above are taken from, kept so the node's word on the owner
+    /// Every unspent REVEAL coin of ours for this name in the current auction
+    /// (an earlier auction's is stranded), the set the two counts above are
+    /// taken from, kept so the node's word on the owner
     /// ([`NameActionContext::with_node_owner`]) can count them again.
     pub reveal_coins: Vec<queries::NameCoin>,
     /// The node names one of our reveal coins as the name's owner
@@ -484,12 +490,31 @@ pub(crate) fn find_name_action_context(
             unrevealed_bid_coins.push(coin);
         }
     }
-    let reveal_coins = queries::find_unspent_covenant_utxos_by_name_hash(
-        conn,
-        profile_id,
-        COV_REVEAL as i64,
-        &name_hash_hex,
-    )?;
+    // This auction's reveals only. A REDEEM carries its reveal's auction
+    // height and hsd accepts it only while the name is on that auction
+    // (`rules.js` "Heights must match", `chain.js` `bad-redeem-nonlocal`), so
+    // a reveal left from an earlier auction of the name can never be
+    // redeemed: the name's height only moves forward. A REGISTER is held to
+    // the same rule, so that reveal is gone for good, like a bid stranded in
+    // a lapsed auction, and is reported with them.
+    let (reveal_coins, stranded_reveals): (Vec<_>, Vec<_>) =
+        queries::find_unspent_covenant_utxos_by_name_hash(
+            conn,
+            profile_id,
+            COV_REVEAL as i64,
+            &name_hash_hex,
+        )?
+        .into_iter()
+        .partition(|c| c.belongs_to_auction(auction_start));
+    let (stranded_bid_count, stranded_lockup_doos) =
+        stranded_reveals
+            .iter()
+            .fold((stranded_bid_count, stranded_lockup_doos), |(n, sum), c| {
+                (
+                    n.saturating_add(1),
+                    sum.saturating_add(i64::try_from(c.value).unwrap_or(i64::MAX)),
+                )
+            });
     let owner_coin = queries::get_name_coin(conn, profile_id, name)?;
     // A reveal coin that is NOT the name's owner is a losing bid this wallet
     // can still reclaim. Outbidding yourself leaves exactly this: you own the
@@ -2465,6 +2490,14 @@ pub(crate) fn build_redeem_draft_inner(
             "no unspent losing reveal coin for '{name}' (sync first?)"
         )));
     }
+    let reveal_coins_held = reveal_coins.len();
+    let reveal_coins: Vec<&queries::NameCoin> = reveal_coins
+        .iter()
+        .filter(|c| reveal_of_this_auction(c, ns))
+        .collect();
+    if reveal_coins.is_empty() {
+        return Err(only_earlier_auction_reveals(name, reveal_coins_held));
+    }
     let rate = self::fee_rate(ctx, fee_rate);
     let nh = names::hash_name(name)?;
 
@@ -2490,6 +2523,25 @@ pub(crate) fn build_redeem_draft_inner(
         rate,
     )?;
     persist_with_conn(conn, &ctx.profile_id, "redeem", name, None, None, &res)
+}
+
+/// Whether `coin` belongs to the auction the name is on now (`ns.height`),
+/// the only reveals a REDEEM can spend. A REDEEM carries its reveal's auction
+/// height (`rules.js`: "Heights must match") and hsd accepts it only while
+/// that is the name's height (`chain.js`, `bad-redeem-nonlocal`). A name
+/// auctioned again after it expired leaves the earlier auction's unredeemed
+/// reveals in the wallet, and one of them in the transaction would take the
+/// redeemable reveals down with it.
+fn reveal_of_this_auction(coin: &queries::NameCoin, ns: &NameState) -> bool {
+    coin.belongs_to_auction(Some(i64::from(ns.height)))
+}
+
+/// The refusal when every reveal held for `name` is from an earlier auction.
+fn only_earlier_auction_reveals(name: &str, count: usize) -> AppError {
+    AppError::NotFound(format!(
+        "no losing reveal of the current auction of '{name}' to redeem: {count} reveal(s) \
+         from an earlier auction of the name can no longer be redeemed"
+    ))
 }
 
 // --- owner actions (spend the name's owner UTXO) ---------------------------
@@ -3390,6 +3442,21 @@ pub(crate) fn build_batch_redeem_draft_inner(
     let mut primaries = Vec::with_capacity(per_name.len());
     let mut name_inputs = Vec::with_capacity(per_name.len());
     let mut batch_names = Vec::with_capacity(per_name.len());
+
+    // Each name's reveals of its current auction only
+    // ([`reveal_of_this_auction`]): an earlier auction's reveal is refused by
+    // hsd, and the whole batch with it. A name left with none is refused here,
+    // not dropped from the batch unsaid.
+    let (per_name, earlier): (PerNameBid, PerNameBid) = per_name
+        .into_iter()
+        .partition(|(_, _, _, coin, ns)| reveal_of_this_auction(coin, ns));
+    if let Some((name, ..)) = earlier
+        .iter()
+        .find(|(name, ..)| !per_name.iter().any(|(n, ..)| n == name))
+    {
+        let count = earlier.iter().filter(|(n, ..)| n == name).count();
+        return Err(only_earlier_auction_reveals(name, count));
+    }
 
     for (name, nh, _bid, coin, ns) in per_name {
         let cov = covenants::redeem(&nh, ns.height);

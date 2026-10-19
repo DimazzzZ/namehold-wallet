@@ -226,3 +226,79 @@ fn batch_redeem_single_name() {
     let summary = build_batch_redeem_draft_inner(&conn, &ctx, per_name, 42).unwrap();
     assert_eq!(summary.action, "batch-redeem");
 }
+
+/// `reveal_coin` with the covenant items hsd writes for a REVEAL (`rules.js`:
+/// name hash, the auction's start height as a u32 LE, nonce).
+fn with_auction_start(coin: NameCoin, name: &str, auction_start: u32) -> NameCoin {
+    let nh_hex = hex::encode(names::hash_name(name).unwrap());
+    let cov_json = serde_json::json!({
+        "type": sync::COV_REVEAL,
+        "action": "REVEAL",
+        "items": [nh_hex, hex::encode(auction_start.to_le_bytes()), "00".repeat(32)],
+    })
+    .to_string();
+    NameCoin {
+        covenant_json: Some(cov_json),
+        ..coin
+    }
+}
+
+/// A name auctioned again after it expired keeps the earlier auction's
+/// reveal in the wallet. hsd refuses a REDEEM of it (`chain.js`,
+/// `bad-redeem-nonlocal`) and with it the whole batch, so the batch spends
+/// each name's reveals of its current auction only.
+#[test]
+fn batch_redeem_leaves_out_a_reveal_of_an_earlier_auction() {
+    let (conn, ctx, mut per_name) = setup(&["alpha", "bravo"]);
+    let (name, nh, bid, coin, ns) = per_name[0].clone();
+    per_name[0].3 = with_auction_start(coin.clone(), &name, ns.height);
+    let old_txid = "ee".repeat(32);
+    seed_reveal_coin(&conn, &name, &old_txid, 9_000_000, &coin.address);
+    let old = NameCoin {
+        txid: old_txid,
+        value: 9_000_000,
+        ..with_auction_start(coin, &name, 500)
+    };
+    per_name.push((name, nh, bid, old, ns));
+
+    build_batch_redeem_draft_inner(&conn, &ctx, per_name, 10).unwrap();
+
+    let reserved: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT txid FROM tracked_utxos
+                 WHERE reserved_by_draft_id IS NOT NULL AND covenant_type = ?1 ORDER BY txid",
+            )
+            .unwrap();
+        stmt.query_map(rusqlite::params![sync::COV_REVEAL as i64], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        reserved,
+        vec!["d0".repeat(32), "d1".repeat(32)],
+        "both names' current reveals, not the earlier auction's"
+    );
+}
+
+/// A name of the batch whose only reveals are from an earlier auction has
+/// nothing to redeem; the batch says so instead of leaving the name out
+/// silently.
+#[test]
+fn batch_redeem_refuses_a_name_whose_reveals_are_all_from_an_earlier_auction() {
+    let (conn, ctx, mut per_name) = setup(&["alpha", "bravo"]);
+    let (name, _, _, coin, _) = per_name[1].clone();
+    per_name[1].3 = with_auction_start(coin, &name, 500);
+
+    let err = build_batch_redeem_draft_inner(&conn, &ctx, per_name, 10).unwrap_err();
+    match err {
+        AppError::NotFound(msg) => {
+            assert!(
+                msg.contains("bravo") && msg.contains("earlier auction"),
+                "got {msg}"
+            )
+        }
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+}

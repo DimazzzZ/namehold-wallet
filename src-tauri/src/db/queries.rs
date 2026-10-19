@@ -5464,6 +5464,42 @@ pub struct NameCoin {
     pub name_height: Option<i64>,
 }
 
+impl NameCoin {
+    /// The auction this coin's covenant commits to: `items[1]`, the start
+    /// height as a u32 LE, which hsd writes into BID, REVEAL, REDEEM and
+    /// REGISTER alike (`lib/covenants/rules.js`). `None` when the stored
+    /// covenant does not carry a 4-byte item there.
+    pub fn covenant_auction_start(&self) -> Option<i64> {
+        let item = hex::decode(covenant_item_hex(self.covenant_json.as_deref(), 1)?).ok()?;
+        let bytes: [u8; 4] = item.try_into().ok()?;
+        Some(i64::from(u32::from_le_bytes(bytes)))
+    }
+
+    /// Whether this coin belongs to the auction that opened at
+    /// `auction_start`, by the rule [`same_auction`] applies to bids.
+    pub fn belongs_to_auction(&self, auction_start: Option<i64>) -> bool {
+        same_auction(auction_start, self.covenant_auction_start())
+    }
+}
+
+/// Whether something placed in the auction that started at `placed` belongs to
+/// the auction that started at `auction_start`.
+///
+/// A name can be auctioned many times: one nobody reveals in lapses, an
+/// expired or revoked name opens again, so a bid or a reveal from a dead
+/// auction must not count in the live one. Two unknowns are deliberately
+/// permissive: a record with no auction of its own, and a caller that could
+/// not resolve the auction's start. Counting one that may be dead is a wrong
+/// number on screen, while hiding a live one is money the user is never told
+/// about. Only a recorded mismatch excludes.
+pub fn same_auction(auction_start: Option<i64>, placed: Option<i64>) -> bool {
+    match (auction_start, placed) {
+        (Some(start), Some(placed)) => placed == start,
+        (Some(_), None) => true,
+        (None, _) => true,
+    }
+}
+
 /// Find the spendable owner UTXO for `name`, joining name-state → tracked UTXO →
 /// derived address. `None` if we don't currently hold the name's coin.
 pub fn get_name_coin(
@@ -5806,22 +5842,11 @@ impl BidCommitmentRow {
     /// Whether this commitment belongs to the auction that opened at
     /// `auction_start`.
     ///
-    /// A name can be auctioned many times: one nobody reveals in lapses and the
-    /// name becomes available again, so a commitment from a dead auction must
-    /// not count as a bid on the live one.
-    ///
-    /// Two unknowns are deliberately permissive. A commitment recovered from
-    /// the chain rather than built here has no recorded auction (migration
-    /// 030), and a caller that could not resolve the auction's start passes
-    /// `None`; in both cases counting one that may be dead is a wrong number on
-    /// screen, while hiding a live one is a bid the user is never told to
-    /// reveal. Only a recorded mismatch excludes.
+    /// A commitment recovered from the chain rather than built here has no
+    /// recorded auction (migration 030); like a caller that could not resolve
+    /// the auction's start, it is not excluded ([`same_auction`]).
     pub fn belongs_to_auction(&self, auction_start: Option<i64>) -> bool {
-        match (auction_start, self.name_start_height) {
-            (Some(start), Some(placed)) => placed == start,
-            (Some(_), None) => true,
-            (None, _) => true,
-        }
+        same_auction(auction_start, self.name_start_height)
     }
 }
 
@@ -7585,6 +7610,38 @@ mod noncustodial_query_tests {
         // A no-op update against a non-existent id still succeeds because the
         // early return fires before any SQL runs.
         update_asset(&conn, 999, None, None, None, None, None, None, None).unwrap();
+    }
+
+    /// The auction a covenant commits to is `items[1]` as a u32 LE, as hsd
+    /// writes it (`rules.js`); anything but four bytes there is unknown.
+    #[test]
+    fn covenant_auction_start_reads_items_1_as_u32_le() {
+        let coin = |items: serde_json::Value| NameCoin {
+            txid: "t".into(),
+            vout: 0,
+            value: 0,
+            address: "a".into(),
+            branch: 0,
+            child_index: 0,
+            covenant_type: 4,
+            covenant_json: Some(serde_json::json!({ "type": 4, "items": items }).to_string()),
+            name_height: None,
+        };
+        let c = coin(serde_json::json!(["aa", "0b030000", "00"]));
+        assert_eq!(c.covenant_auction_start(), Some(779));
+        assert!(c.belongs_to_auction(Some(779)));
+        assert!(!c.belongs_to_auction(Some(111)));
+        assert!(c.belongs_to_auction(None));
+        let short = coin(serde_json::json!(["aa", "0b0300"]));
+        assert_eq!(short.covenant_auction_start(), None);
+        assert!(
+            short.belongs_to_auction(Some(111)),
+            "unknown is not excluded"
+        );
+        assert_eq!(
+            coin(serde_json::json!(["aa"])).covenant_auction_start(),
+            None
+        );
     }
 
     /// Item 4 (queries.rs:2113): `covenant_item_hex` returns `None` when the

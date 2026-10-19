@@ -4703,6 +4703,185 @@ async fn live_reopened_name_scopes_its_bids_and_strands_the_old_lockup() {
     let _ = std::fs::remove_file(&db_path);
 }
 
+/// A reveal left unredeemed in an auction that ended is never spent by a
+/// redeem in the next auction of the name. A rival wins the first auction,
+/// registers and revokes the name; once the revoke matures the name expires
+/// and this wallet opens it again, outbids itself and redeems. hsd accepts a
+/// REDEEM only while the name is on the reveal's own auction
+/// (`bad-redeem-nonlocal`), so a redeem that took the first auction's reveal
+/// too would be refused, the redeemable reveal with it. The node mines the
+/// redeem of the current loser and still holds the first auction's reveal,
+/// which the wallet names as stranded.
+#[tokio::test]
+async fn live_redeem_leaves_out_a_reveal_of_an_earlier_auction() {
+    let Some((url, key)) = it_env() else {
+        eprintln!(
+            "skip live_redeem_leaves_out_a_reveal_of_an_earlier_auction: set HNS_IT_NODE_URL"
+        );
+        return;
+    };
+    let cl = client(&url, &key);
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let acct = fresh_acct(tip);
+    let app = app_with(seeded_conn_acct(&url, &key, acct));
+    let (addr, _, _) = leaf00_at(acct);
+    // The rival's REVOKE leaves a revoked coin on its address, which hsd's
+    // addrindex cannot list (see `live_revoke_burns_control`): the rival is
+    // not synced after it, and this wallet's addresses never hold it.
+    let (rival, rival_addr) = rival_wallet(&url, &key);
+    fund(&cl, &addr, 101).await;
+    cl.generate_to_address(5, &rival_addr)
+        .await
+        .expect("fund rival");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let name = format!("reauc{tip}");
+
+    // --- First auction: the rival outbids us; our reveal is never redeemed.
+    let open1 = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open 1");
+    execute(&app, &cl, &addr, open1.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+    let first_start = auction_start(&cl, &name).await.expect("first auction");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    const OLD_REVEAL: i64 = 500_000;
+    let bid1 = build_bid_draft(app.state(), name.clone(), OLD_REVEAL, 1_000_000, Some(1))
+        .await
+        .expect("build bid 1");
+    execute(&app, &cl, &addr, bid1.id).await;
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let rival_bid = build_bid_draft(rival.state(), name.clone(), 800_000, 1_600_000, Some(1))
+        .await
+        .expect("build rival bid");
+    execute(&rival, &cl, &addr, rival_bid.id).await;
+    assert!(mine_until(&cl, &name, "REVEAL", &addr, 30).await);
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let reveal1 = build_reveal_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build reveal 1");
+    execute(&app, &cl, &addr, reveal1.id.clone()).await;
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let rival_reveal = build_reveal_draft(rival.state(), name.clone(), Some(1))
+        .await
+        .expect("build rival reveal");
+    execute(&rival, &cl, &addr, rival_reveal.id).await;
+    assert!(mine_until(&cl, &name, "CLOSED", &addr, 40).await);
+    let old_reveal = covenant_outpoints(
+        &cl,
+        &draft_status(&app, &reveal1.id).txid.expect("reveal 1 txid"),
+        COV_TYPE_REVEAL,
+    )
+    .await;
+    assert_eq!(old_reveal.len(), 1, "one reveal of ours: {old_reveal:?}");
+
+    // The rival registers and revokes; the revoked name expires once the
+    // revoke is `auction_maturity` blocks deep.
+    track_name(&rival, &name);
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let reg = build_register_draft(rival.state(), name.clone(), None, Some(1))
+        .await
+        .expect("build rival register");
+    execute(&rival, &cl, &addr, reg.id).await;
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let revoke = crate::commands::names::build_revoke_draft(rival.state(), name.clone(), Some(1))
+        .await
+        .expect("build rival revoke");
+    execute(&rival, &cl, &addr, revoke.id).await;
+    assert_eq!(node_state(&cl, &name).await.as_deref(), Some("REVOKED"));
+    assert!(
+        mine_until_auction_lapses(&cl, &name, &addr, 100).await,
+        "the revoked name must expire"
+    );
+
+    // --- Second auction: two bids of ours, the lower one loses.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let open2 = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("an expired name opens again");
+    execute(&app, &cl, &addr, open2.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+    let second_start = auction_start(&cl, &name).await.expect("second auction");
+    assert_ne!(second_start, first_start, "a genuinely new auction");
+    const LOSER: i64 = 300_000;
+    for (bid_v, lockup) in [(1_000_000i64, 2_000_000i64), (LOSER, 600_000)] {
+        sync_wallet_state(app.state(), None).await.expect("sync");
+        let d = build_bid_draft(app.state(), name.clone(), bid_v, lockup, Some(1))
+            .await
+            .unwrap_or_else(|e| panic!("build bid {bid_v}: {e:?}"));
+        execute(&app, &cl, &addr, d.id).await;
+    }
+    assert!(mine_until(&cl, &name, "REVEAL", &addr, 30).await);
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let reveal2 = build_reveal_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build reveal 2");
+    execute(&app, &cl, &addr, reveal2.id.clone()).await;
+    assert!(mine_until(&cl, &name, "CLOSED", &addr, 40).await);
+    track_name(&app, &name);
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // The second auction's loser, by the node's owner answer.
+    let owner = name_owner(&cl, &name).await;
+    let loser: Vec<(String, u32)> = covenant_outpoints(
+        &cl,
+        &draft_status(&app, &reveal2.id).txid.expect("reveal 2 txid"),
+        COV_TYPE_REVEAL,
+    )
+    .await
+    .into_iter()
+    .filter(|o| *o != owner)
+    .collect();
+    assert_eq!(loser.len(), 1, "one losing reveal this auction: {loser:?}");
+
+    let caps = crate::commands::names::get_name_action_capabilities(
+        app.state(),
+        name.clone(),
+        Some(PROFILE.into()),
+    )
+    .await
+    .expect("caps");
+    assert!(caps.can_redeem.allowed, "{:?}", caps.can_redeem.reason);
+    assert_eq!(caps.redeemable_reveal_count, 1, "this auction's loser only");
+    assert_eq!(caps.redeemable_value_doos, LOSER);
+    assert_eq!(caps.stranded_bid_count, 1, "the first auction's reveal");
+    assert_eq!(caps.stranded_lockup_doos, OLD_REVEAL);
+
+    // The redeem is mined: it spends the current loser and nothing hsd
+    // refuses. The first auction's reveal is still an unspent coin.
+    let redeem = build_redeem_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build redeem");
+    execute(&app, &cl, &addr, redeem.id.clone()).await;
+    let redeem_txid = draft_status(&app, &redeem.id).txid.expect("redeem txid");
+    assert_spends_reveals(&cl, &redeem_txid, &loser).await;
+    let (old_hash, old_index) = &old_reveal[0];
+    assert!(
+        cl.get_coin(old_hash, *old_index)
+            .await
+            .expect("coin")
+            .is_some(),
+        "the first auction's reveal is left alone"
+    );
+
+    // With only that one left, Redeem says why there is nothing to redeem.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    expect_err(
+        build_redeem_draft(app.state(), name.clone(), Some(1)).await,
+        "earlier auction",
+    );
+}
+
 /// Three bids on ONE name, then reveal. Every one of them must be revealed:
 /// an unrevealed BID coin can only ever be spent by a REVEAL, and a REVEAL is
 /// only valid while the auction is in its reveal window — miss it and the

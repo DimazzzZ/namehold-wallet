@@ -1711,3 +1711,69 @@ async fn an_unrevealed_bid_is_not_lost_without_the_nodes_word() {
         .await;
     assert!(ctx.unrevealed_bid_on_node);
 }
+
+/// A REVEAL covenant's items as hsd writes them (`rules.js`, REVEAL: name
+/// hash, the auction's start height as a u32 LE, nonce), stored the way
+/// `sync::covenant_json` keeps them.
+fn reveal_covenant_of_auction(name_hash_hex: &str, auction_start: u32) -> String {
+    serde_json::json!({
+        "type": COV_REVEAL,
+        "action": "REVEAL",
+        "items": [name_hash_hex, hex::encode(auction_start.to_le_bytes()), "00".repeat(32)],
+    })
+    .to_string()
+}
+
+/// A name auctioned again after it expired keeps the earlier auction's
+/// unredeemed reveal in the wallet. hsd accepts a REDEEM only while the
+/// name is on the reveal's own auction (`chain.js`, `bad-redeem-nonlocal`;
+/// `rules.js` makes the REDEEM carry the reveal's height), and the name's
+/// height only moves forward, so that reveal can never be redeemed. It is
+/// not counted as redeemable in the new auction, and it is reported like a
+/// stranded lockup, with its value.
+#[test]
+fn a_reveal_of_an_earlier_auction_is_stranded_not_redeemable() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    let cov = reveal_covenant_of_auction(&nh_hex, 111);
+    seed_tracked_utxo(
+        &conn,
+        "oldreveal",
+        0,
+        ADDRESS,
+        COV_REVEAL as i64,
+        Some(&cov),
+    );
+
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert_eq!(
+        ctx.redeemable_reveal_count, 0,
+        "not redeemable in THIS auction"
+    );
+    assert_eq!(ctx.redeemable_value_doos, 0);
+    assert!(!ctx.has_reveal_coin);
+    assert!(ctx.reveal_coins.is_empty());
+    assert_eq!(ctx.stranded_bid_count, 1);
+    assert_eq!(ctx.stranded_lockup_doos, 100_000);
+
+    // The node's owner answer counts the reveals again: it must count this
+    // auction's only, so the earlier reveal stays out.
+    let info = serde_json::json!({ "owner": { "hash": "ff".repeat(32), "index": 0 } });
+    let ctx = ctx.with_node_owner(Some(&info));
+    assert_eq!(ctx.redeemable_reveal_count, 0);
+    assert_eq!(ctx.redeemable_value_doos, 0);
+
+    // Viewed from its own auction it is an ordinary losing reveal.
+    let own = find_name_action_context(&conn, PROFILE, NAME, Some(111)).unwrap();
+    assert_eq!(own.redeemable_reveal_count, 1);
+    assert_eq!(own.redeemable_value_doos, 100_000);
+    assert_eq!(own.stranded_bid_count, 0);
+    assert_eq!(own.stranded_lockup_doos, 0);
+
+    // An auction we cannot tell filters nothing, as for the bids.
+    let unknown = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    assert_eq!(unknown.redeemable_reveal_count, 1);
+    assert_eq!(unknown.stranded_bid_count, 0);
+}
