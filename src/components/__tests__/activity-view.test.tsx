@@ -615,6 +615,91 @@ describe("ActivityView — inline draft actions", () => {
     window.confirm = origConfirm;
   });
 
+  // Discarding a purchase draft deletes its purchase record, which Owned
+  // Names ("purchase pending") and the market page read.
+  it.each([
+    ["shakedex_purchase", true],
+    ["send_hns", false],
+  ])("discarding a %s draft refreshes Owned Names: %s", async (action, refreshes) => {
+    const origConfirm = window.confirm;
+    window.confirm = vi.fn(() => true);
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "read_action_history":
+          return Promise.resolve([]);
+        case "list_tx_drafts":
+          return Promise.resolve(draftPayload("draft", { action }));
+        default:
+          return Promise.resolve(null);
+      }
+    });
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={["/activity"]}>
+          <ActivityView />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByTestId("activity-draft-discard"));
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some((c) => c[0] === "delete_tx_draft")).toBe(true),
+    );
+    // The shared draft hooks refresh the wallet on every discard.
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: ["wallet"] }));
+    if (refreshes) {
+      expect(spy).toHaveBeenCalledWith({ queryKey: ["read"] });
+      expect(spy).toHaveBeenCalledWith({ queryKey: ["shakedex"] });
+    } else {
+      expect(spy).not.toHaveBeenCalledWith({ queryKey: ["read"] });
+    }
+    window.confirm = origConfirm;
+  });
+
+  it("a purchase draft whose send fails from Activity refreshes Owned Names", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "read_action_history":
+          return Promise.resolve([]);
+        case "list_tx_drafts":
+          return Promise.resolve(draftPayload("failed", { action: "shakedex_purchase" }));
+        case "get_signer_session":
+          return Promise.resolve({
+            walletProfileId: "p1",
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 3_600_000,
+          });
+        case "sign_tx_draft":
+          return Promise.resolve({ id: "draft-act-1", status: "signed" });
+        case "broadcast_tx_draft":
+          return Promise.reject("TX rejected: bad-txns-inputs-missingorspent");
+        default:
+          return Promise.resolve(null);
+      }
+    });
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={["/activity"]}>
+          <ActivityView />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByTestId("activity-draft-execute"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: ["read"] }));
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["shakedex"] });
+  });
+
   it("Txid cell for a draft row renders a span, not a button (regression guard)", async () => {
     invokeMock.mockImplementation(routeDrafts("draft"));
     render(<ActivityView />, { wrapper: wrapper() });

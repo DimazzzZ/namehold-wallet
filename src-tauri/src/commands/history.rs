@@ -261,9 +261,12 @@ pub fn classify_tx(tx: &serde_json::Value, our_addrs: &HashSet<String>) -> Optio
             COV_CLAIM => "claim",
             _ => "other",
         };
+        // Without an input of ours, anything paid to us is income, wherever
+        // the covenant output sits: the buyer's Shakedex fill leaves its
+        // TRANSFER at the lock address and pays the price to the seller.
         let dir = if spends_ours {
             "send"
-        } else if name_cov_addr_is_ours {
+        } else if name_cov_addr_is_ours || received_by_us > 0 {
             "receive"
         } else {
             "internal"
@@ -780,15 +783,17 @@ mod tests {
     }
 
     /// Item 13 (history.rs:234): a TX with a name covenant on an external
-    /// address that does NOT spend our coins → direction = "internal".
+    /// address that does NOT spend our coins but pays one of our addresses →
+    /// direction = "receive": what reached us is income, whoever's covenant
+    /// rides along (a Shakedex fill paying the seller is this shape).
     #[test]
-    fn classify_name_covenant_external_is_internal() {
+    fn classify_name_covenant_external_paying_us_is_receive() {
         let ours = addrs(&["hs1qmine"]);
         // External input (spends_ours=false), a plain output landing on our
         // address (received_by_us > 0, so the tx passes the touch-our-wallet
         // gate), and the name-covenant output at an EXTERNAL address
-        // (name_cov_addr_is_ours=false). Neither send nor receive on the
-        // covenant → direction = "internal".
+        // (name_cov_addr_is_ours=false). Nothing of ours was spent and 1 HNS
+        // reached us → direction = "receive", +1 HNS.
         let tx = json!({
             "hash": "ff",
             "height": 300,
@@ -807,7 +812,8 @@ mod tests {
         });
         let row = classify_tx(&tx, &ours).unwrap();
         assert_eq!(row.action, "bid");
-        assert_eq!(row.direction, "internal");
+        assert_eq!(row.direction, "receive");
+        assert_eq!(row.value_doos, 1_000_000);
         // No counterparty since it's not a TRANSFER.
         assert!(row.counterparty.is_none());
     }

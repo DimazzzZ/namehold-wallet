@@ -47,6 +47,8 @@ fn ctx(
         stranded_lockup_doos: 0,
         redeemable_reveal_count: 0,
         redeemable_value_doos: 0,
+        reveal_coins: Vec::new(),
+        owner_reveal_by_node: false,
         owner_spend_in_flight: false,
         transfer_height: None,
         current_height: None,
@@ -321,6 +323,7 @@ fn task_state_closed_lost_has_reveal_coin() {
         &NameActionContext {
             has_bid_commitment: false,
             has_reveal_coin: true,
+            redeemable_reveal_count: 1,
             has_owner_coin: false,
             ..Default::default()
         },

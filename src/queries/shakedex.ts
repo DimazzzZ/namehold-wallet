@@ -1,4 +1,10 @@
-import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useQuery,
+  useMutation,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
 import { useActiveProfile } from "./wallet";
 import type {
@@ -144,6 +150,20 @@ export function useKeptDraft() {
       return null;
     }
   };
+}
+
+/** `wallet_tx_drafts.action` of a purchase draft (`purchase.rs::PURCHASE_ACTION`). */
+export const PURCHASE_ACTION = "shakedex_purchase";
+
+/**
+ * What a purchase draft's send or discard changes besides the drafts: its
+ * purchase record, which Owned Names ("purchase pending") and the market
+ * page read. Called however the send or discard ended — a failed send may
+ * have deleted the draft and its record, or kept them broadcast_pending.
+ */
+export function invalidatePurchaseViews(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: ["read"] });
+  qc.invalidateQueries({ queryKey: ["shakedex"] });
 }
 
 /** A selling command: listings, drafts and names change together. */

@@ -2005,6 +2005,118 @@ async fn capabilities_closed_loser_with_reveal_coin_allows_redeem() {
     );
 }
 
+/// A synced node reporting `name` CLOSED with `owner` as its owner coin, the
+/// shape hsd 8.0.0's `getnameinfo` gives (`info.owner` is `{hash, index}`).
+async fn mock_closed_with_owner(
+    server: &mut mockito::Server,
+    name: &str,
+    owner_hash: &str,
+    owner_index: u32,
+) -> Vec<mockito::Mock> {
+    let mut mocks = mock_blockchain_and_name(server, 1.0, None).await;
+    let body = serde_json::json!({
+        "result": {"info": {
+            "name": name, "state": "CLOSED", "height": 100,
+            "owner": {"hash": owner_hash, "index": owner_index},
+            "value": 1000, "highest": 1000, "stats": {}
+        }},
+        "error": null, "id": 1
+    });
+    mocks.push(
+        server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+            .with_body(body.to_string())
+            .expect_at_least(1)
+            .create_async()
+            .await,
+    );
+    mocks
+}
+
+/// The wallet's only reveal won, on a name it never tracked: no
+/// `tracked_name_states` row, so the local database cannot tell the reveal is
+/// the owner coin. The node can (`getnameinfo.info.owner`), and the redeem
+/// builder already asks it (`draft_ctx::exclude_owner_reveal`), so the button
+/// must not offer what the builder refuses — nor call the auction lost.
+#[tokio::test]
+async fn capabilities_untracked_winner_only_reveal_offers_no_redeem() {
+    let reveal_txid = "dd".repeat(32);
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_closed_with_owner(&mut server, "wonname", &reveal_txid, 0).await;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "wonname",
+            &reveal_txid,
+            crate::noncustodial::sync::COV_REVEAL,
+        );
+        id
+    };
+    let app = mock_app_with(state);
+    let caps = names::get_name_action_capabilities(app.state(), "wonname".into(), Some(profile_id))
+        .await
+        .expect("capabilities should resolve");
+
+    assert!(caps.has_reveal_coin);
+    assert!(
+        !caps.can_redeem.allowed,
+        "the node's owner coin is not redeemable, got {:?}",
+        caps.can_redeem
+    );
+    assert_eq!(
+        caps.can_redeem.reason.as_deref(),
+        Some("your only reveal here won the auction (nothing to redeem)")
+    );
+    assert_eq!(caps.redeemable_reveal_count, 0);
+    assert_ne!(
+        caps.task_state,
+        names::AuctionTaskState::LostNeedsRedeem,
+        "a won auction is not a lost one"
+    );
+}
+
+/// The same untracked name, but the node names another bidder's reveal as
+/// the owner: ours lost and is redeemable.
+#[tokio::test]
+async fn capabilities_untracked_loser_reveal_offers_redeem() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_closed_with_owner(&mut server, "lostname", &"ee".repeat(32), 0).await;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "lostname",
+            &"dd".repeat(32),
+            crate::noncustodial::sync::COV_REVEAL,
+        );
+        id
+    };
+    let app = mock_app_with(state);
+    let caps =
+        names::get_name_action_capabilities(app.state(), "lostname".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve");
+
+    assert!(
+        caps.can_redeem.allowed,
+        "a losing reveal is redeemable, got {:?}",
+        caps.can_redeem
+    );
+    assert_eq!(caps.redeemable_reveal_count, 1);
+    assert_eq!(caps.redeemable_value_doos, 2000);
+    assert_eq!(caps.task_state, names::AuctionTaskState::LostNeedsRedeem);
+}
+
 #[tokio::test]
 async fn test_fetch_name_state_rpc_error() {
     let mut server = mockito::Server::new_async().await;

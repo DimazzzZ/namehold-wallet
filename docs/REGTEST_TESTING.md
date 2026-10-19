@@ -223,12 +223,14 @@ The following scenarios must be validated against a running regtest node to conf
 
 ### Scenario 4: Missed Reveal (simulated)
 
+A bid that is never revealed loses its whole lockup: it cannot be redeemed. In hsd 8.0.0 a BID coin can only be spent by a REVEAL (`lib/covenants/rules.js`, `verifyCovenants`: "Bid has to go to a reveal"), a REVEAL is accepted only while the name is in the REVEAL phase (`lib/blockchain/chain.js`, `verifyCovenants`: `bad-reveal-state`), and a REDEEM spends only a REVEAL output ("Reveal has to go to a REGISTER, or a REDEEM" in `rules.js`). Once the reveal window closes, the BID coin stays unspent for good and nothing can move it.
+
 | Step | Action | Expected Result |
 |------|--------|----------------|
 | 1 | Open a name and bid | BID tx broadcasted |
 | 2 | Mine through REVEAL phase without revealing | Phase transitions to CLOSED |
-| 3 | Verify task state is `lostNeedsRedeem` | `canRedeem` is `true`; bid lockup still reclaimable |
-| 4 | Redeem the lockup | Lockup value returned to wallet |
+| 3 | Check the name's capabilities | Task state is `ownedNoUrgentAction`, the CLOSED fallback for a wallet holding neither a reveal coin nor the owner coin — not `lostNeedsRedeem`; `canRedeem` is `false` with "no unspent reveal coin to redeem" |
+| 4 | Check the bid's coin on the node | The BID output is still unspent and no transaction the wallet can build spends it: the lockup is lost |
 
 ### Backend Capability Verification
 
@@ -237,7 +239,7 @@ Run the following command to validate the capability model:
 cd src-tauri && cargo test -- auction_capabilities
 ```
 
-Expected: 25 tests pass covering all task-state derivations and next-action mappings.
+Expected: 48 tests pass covering all task-state derivations and next-action mappings.
 
 ### Full Backend Test Suite
 

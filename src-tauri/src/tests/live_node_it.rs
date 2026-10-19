@@ -558,7 +558,8 @@ async fn live_auction_open_bid_reveal_redeem() {
 /// The guard behind REDEEM on a real node: a lone bidder's reveal won, and
 /// until REGISTER spends it it is the name's owner coin, which hsd refuses to
 /// redeem (`bad-redeem-owner`). The name is never tracked, so the wallet has
-/// no record of the owner of its own — only the node's answer can refuse it.
+/// no record of the owner of its own — only the node's answer can refuse it,
+/// and the Redeem button goes by the same answer: it is not offered.
 #[tokio::test]
 async fn live_redeem_of_the_winning_reveal_is_refused() {
     let Some((url, key)) = it_env() else {
@@ -603,6 +604,49 @@ async fn live_redeem_of_the_winning_reveal_is_refused() {
         build_redeem_draft(app.state(), name.clone(), Some(1)).await,
         "won the auction",
     );
+
+    // The wallet holds the reveal coin and no tracked row for the name.
+    let tracked: i64 = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.query_row(
+            "SELECT COUNT(*) FROM tracked_name_states WHERE wallet_profile_id = ?1 AND name = ?2",
+            params![PROFILE, name],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(tracked, 0, "the name must be untracked for this check");
+    let caps = crate::commands::names::get_name_action_capabilities(
+        app.state(),
+        name.clone(),
+        Some(PROFILE.into()),
+    )
+    .await
+    .expect("capabilities");
+    assert_eq!(caps.phase, "CLOSED", "read from the node: {caps:?}");
+    assert!(
+        caps.has_reveal_coin,
+        "the wallet holds its reveal: {caps:?}"
+    );
+    // The node's owner coin is the one reveal output of ours.
+    assert_eq!(
+        covenant_outpoints(&cl, &reveal_txid, COV_TYPE_REVEAL).await,
+        vec![name_owner(&cl, &name).await]
+    );
+    assert!(
+        !caps.can_redeem.allowed,
+        "Redeem offered on the node's owner coin: {:?}",
+        caps.can_redeem
+    );
+    assert_eq!(caps.redeemable_reveal_count, 0);
+    assert_ne!(
+        caps.task_state,
+        crate::commands::names::AuctionTaskState::LostNeedsRedeem,
+        "a won auction must not read as lost"
+    );
+    assert!(caps.owns_name, "the node's owner coin is ours");
+
     // Nothing spent it: it is still the owner coin, waiting for REGISTER.
     let (hash, index) = name_owner(&cl, &name).await;
     assert!(cl.get_coin(&hash, index).await.expect("coin").is_some());

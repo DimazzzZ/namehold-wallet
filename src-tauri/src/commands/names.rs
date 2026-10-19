@@ -288,6 +288,14 @@ pub(crate) struct NameActionContext {
     pub redeemable_reveal_count: i64,
     /// What those reveals are worth together — the sum a REDEEM reclaims.
     pub redeemable_value_doos: i64,
+    /// Every unspent REVEAL coin of ours for this name, the set the two
+    /// counts above are taken from, kept so the node's word on the owner
+    /// ([`NameActionContext::with_node_owner`]) can count them again.
+    pub reveal_coins: Vec<queries::NameCoin>,
+    /// The node names one of our reveal coins as the name's owner
+    /// (`getnameinfo.info.owner`): this wallet won the auction, whether or
+    /// not it tracks the name.
+    pub owner_reveal_by_node: bool,
     /// The owner coin is spent, but only by a transaction this wallet
     /// broadcast and the chain has not mined. We still own the name — we just
     /// cannot spend it until the block lands.
@@ -426,17 +434,16 @@ pub(crate) fn find_name_action_context(
     let owner_coin = queries::get_name_coin(conn, profile_id, name)?;
     // A reveal coin that is NOT the name's owner is a losing bid this wallet
     // can still reclaim. Outbidding yourself leaves exactly this: you own the
-    // name AND hold losing reveals on it.
-    let (redeemable_reveal_count, redeemable_value_doos) = reveal_coins
-        .iter()
-        .filter(|c| {
-            owner_coin
-                .as_ref()
-                .map(|o| !(o.txid == c.txid && o.vout == c.vout))
-                .unwrap_or(true)
-        })
-        .fold((0i64, 0i64), |(n, sum), c| (n + 1, sum + c.value as i64));
-    let reveal_coin = reveal_coins.into_iter().next();
+    // name AND hold losing reveals on it. The owner here is the tracked one,
+    // the cached node answer; with the node at hand, `with_node_owner` counts
+    // again from its live answer.
+    let (redeemable_reveal_count, redeemable_value_doos) = redeemable_reveals(
+        &reveal_coins,
+        owner_coin
+            .as_ref()
+            .map(|o| (o.txid.as_str(), u64::from(o.vout))),
+    );
+    let reveal_coin = reveal_coins.first().cloned();
     let owner_cov_type = owner_coin.as_ref().map(|c| c.covenant_type);
     let nh = owner_coin.as_ref().and_then(|c| c.name_height);
 
@@ -556,6 +563,8 @@ pub(crate) fn find_name_action_context(
         stranded_lockup_doos,
         redeemable_reveal_count,
         redeemable_value_doos,
+        reveal_coins,
+        owner_reveal_by_node: false,
         owner_spend_in_flight,
         reveal_txid,
         reveal_draft_status,
@@ -715,7 +724,13 @@ async fn evaluate_name_action_capabilities(
             };
             let stats = name_info.get("info").and_then(|i| i.get("stats"));
 
-            let action_ctx = action_ctx.with_live_tip(live_tip);
+            // Which reveal is the owner coin is the node's to say, and the
+            // redeem builder asks it (`draft_ctx::exclude_owner_reveal`): on a
+            // name the wallet never tracked, the local answer has no owner and
+            // read a winning reveal as a losing one.
+            let action_ctx = action_ctx
+                .with_live_tip(live_tip)
+                .with_node_owner(name_info.get("info"));
             let NameOwnership {
                 owns_name,
                 spend_locked,
@@ -1295,6 +1310,40 @@ impl NameActionContext {
             ..self
         }
     }
+
+    /// Count the redeemable reveals again against the owner coin the node
+    /// reports in `info` (`getnameinfo.info`), the answer the redeem builder
+    /// goes by. A reply that names no owner leaves the local count in place.
+    pub(crate) fn with_node_owner(self, info: Option<&serde_json::Value>) -> Self {
+        let Some(owner) = info.and_then(crate::commands::draft_ctx::owner_outpoint) else {
+            return self;
+        };
+        let (redeemable_reveal_count, redeemable_value_doos) =
+            redeemable_reveals(&self.reveal_coins, Some(owner));
+        let owner_reveal_by_node = self
+            .reveal_coins
+            .iter()
+            .any(|c| crate::commands::draft_ctx::is_outpoint(c, owner));
+        Self {
+            redeemable_reveal_count,
+            redeemable_value_doos,
+            owner_reveal_by_node,
+            ..self
+        }
+    }
+}
+
+/// How many of `reveal_coins` a REDEEM may spend, and what they hold: every
+/// one but the `owner` outpoint. hsd refuses to redeem the owner coin
+/// (`bad-redeem-owner`, lib/blockchain/chain.js).
+fn redeemable_reveals(
+    reveal_coins: &[queries::NameCoin],
+    owner: Option<(&str, u64)>,
+) -> (i64, i64) {
+    reveal_coins
+        .iter()
+        .filter(|c| !owner.is_some_and(|o| crate::commands::draft_ctx::is_outpoint(c, o)))
+        .fold((0i64, 0i64), |(n, sum), c| (n + 1, sum + c.value as i64))
 }
 
 /// `owner_address` is the owner recorded for the name (from the node payload
@@ -1312,9 +1361,12 @@ pub(crate) fn derive_name_ownership(
         // open, though its coin sits at the lock address: the owner actions
         // stay on screen, each refused with `NAME_LOCKED_FOR_SALE`, instead of
         // the modal reading it as somebody else's registered name.
+        // Our reveal being the node's owner coin is ours too: the auction is
+        // won before the name is tracked, and then nothing local says so.
         owns_name: ctx.has_owner_coin
             || ctx.owner_spend_in_flight
             || explorer_owned
+            || ctx.owner_reveal_by_node
             || ctx.listing_state.is_some(),
         spend_locked: !ctx.has_owner_coin,
     }
@@ -1436,7 +1488,7 @@ pub(crate) fn derive_auction_task_state(
                         // ahead of everything quiet, because finalizing is the
                         // one thing the name is waiting on.
                         AuctionTaskState::TransferPendingFinalize
-                    } else if ctx.has_reveal_coin {
+                    } else if ctx.redeemable_reveal_count > 0 {
                         // Registered, and still holding a REVEAL coin. The
                         // winning one was spent by that REGISTER, so whatever
                         // is left lost — this wallet outbid itself, and those
@@ -1464,7 +1516,9 @@ pub(crate) fn derive_auction_task_state(
                 } else {
                     AuctionTaskState::OwnedNoUrgentAction
                 }
-            } else if ctx.has_reveal_coin {
+            } else if ctx.redeemable_reveal_count > 0 {
+                // Only a reveal that is not the owner coin lost: a reveal the
+                // node names as the owner won, and is not offered for redeem.
                 AuctionTaskState::LostNeedsRedeem
             } else {
                 AuctionTaskState::OwnedNoUrgentAction
@@ -3498,6 +3552,8 @@ mod tests {
             stranded_lockup_doos: 0,
             redeemable_reveal_count: 0,
             redeemable_value_doos: 0,
+            reveal_coins: Vec::new(),
+            owner_reveal_by_node: false,
             owner_spend_in_flight: false,
             transfer_height: None,
             current_height: None,
@@ -3945,9 +4001,23 @@ mod tests {
 
     #[test]
     fn derive_closed_not_owned_has_reveal_coin_lost() {
-        // !owns + has_reveal_coin → LostNeedsRedeem.
+        // !owns + a reveal coin that is not the owner → LostNeedsRedeem.
+        let ctx = NameActionContext {
+            has_reveal_coin: true,
+            redeemable_reveal_count: 1,
+            ..ctx_default()
+        };
         assert_eq!(
-            derive("CLOSED", false, false, false, true, false, None, None, false, None, None),
+            derive_auction_task_state(&ctx, "CLOSED", false, None, Network::Main),
+            AuctionTaskState::LostNeedsRedeem
+        );
+        // A reveal coin that is the owner coin did not lose.
+        let won = NameActionContext {
+            has_reveal_coin: true,
+            ..ctx_default()
+        };
+        assert_ne!(
+            derive_auction_task_state(&won, "CLOSED", false, None, Network::Main),
             AuctionTaskState::LostNeedsRedeem
         );
     }

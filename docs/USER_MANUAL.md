@@ -268,9 +268,7 @@ yours", and the bids panel lists every bid on the name with yours tinted.
 **Reveal** and **Redeem** act on all of your bids on that name at once, and
 the confirm dialog sums every output they carry.
 
-A bid you did not reveal in time keeps its lockup on-chain. If you bid on a
-name again in a later auction, the guided panel names that stranded lockup and
-its amount, so the money is not mistaken for part of the new bid.
+A bid you did not reveal in time loses its whole lockup: Handshake lets a bid be spent only by a reveal, and only a reveal can be redeemed, so the coin stays on-chain where nothing can move it. If you bid on a name again in a later auction, the guided panel names that stranded lockup and its amount, so the money is not mistaken for part of the new bid.
 
 ### Active Auctions
 

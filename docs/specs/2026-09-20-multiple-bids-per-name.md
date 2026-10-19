@@ -115,20 +115,11 @@ reveal command) — the plan in `noncustodial/actions.rs` carries no txid.
 *Pinned:* `names_cmd_tests::build_reveal_draft_persists_reveal_txid_on_its_commitment`,
 `deadlines_cmd_tests::revealed_bid_is_excluded_even_if_the_window_would_be_imminent`.
 
-**R7 — Redeeming reclaims every losing reveal in one transaction.** All
-unspent REVEAL coins for the name except the owner's are inputs. Owning the
-name does not disqualify a redeem: winning with one of your bids and losing
-with the others is the ordinary outcome of bidding twice. Holding no reveal
-besides the winner does disqualify it.
-*Enforced:* `commands/names.rs::build_redeem_draft` / `build_redeem_draft_inner`,
-`can_redeem = phase == "CLOSED" && redeemable_reveal_count > 0`.
-*Pinned:* `name_capabilities_tests::cap_closed_phase_can_redeem_own_losing_bids_while_owning_the_name`,
-`name_capabilities_tests::cap_closed_phase_cannot_redeem_when_the_only_reveal_won`,
-`live_node_it::live_redeem_when_won_rejected`.
+**R7 — Redeeming reclaims every losing reveal in one transaction.** All unspent REVEAL coins for the name except the owner's are inputs. Owning the name does not disqualify a redeem: winning with one of your bids and losing with the others is the ordinary outcome of bidding twice. Holding no reveal besides the winner does disqualify it. The owner coin is the node's answer (`getnameinfo.info.owner`) for the builder and for the button alike, so a winning reveal on a name the wallet never tracked is not offered for redeem; only with no synced node does the button fall back to the tracked owner coin, the cached node answer.
+*Enforced:* `commands/names.rs::build_redeem_draft` / `build_redeem_draft_inner` (`draft_ctx::exclude_owner_reveal`), `can_redeem = phase == "CLOSED" && redeemable_reveal_count > 0` with the count taken against the node's owner (`NameActionContext::with_node_owner`, `draft_ctx::owner_outpoint`).
+*Pinned:* `name_capabilities_tests::cap_closed_phase_can_redeem_own_losing_bids_while_owning_the_name`, `name_capabilities_tests::cap_closed_phase_cannot_redeem_when_the_only_reveal_won`, `names_cmd_tests::capabilities_untracked_winner_only_reveal_offers_no_redeem`, `names_cmd_tests::capabilities_untracked_loser_reveal_offers_redeem`, `live_node_it::live_redeem_when_won_rejected`, `live_node_it::live_redeem_of_the_winning_reveal_is_refused`.
 
-**R8 — A registered name with losing reveals still asks to be redeemed.** The
-guided panel reports `lostNeedsRedeem` for a CLOSED, owned, registered name
-that still holds a reveal coin, rather than "no urgent action".
+**R8 — A registered name with losing reveals still asks to be redeemed.** The guided panel reports `lostNeedsRedeem` for a CLOSED, owned, registered name that still holds a losing reveal coin (`redeemable_reveal_count > 0`), rather than "no urgent action".
 *Enforced:* `commands/names.rs::derive_auction_task_state`.
 *Pinned:* `auction_capabilities_tests::closed_with_reveal_coin_yields_lost_needs_redeem`,
 `name_capabilities_tests::task_state_closed_lost_has_reveal_coin`.

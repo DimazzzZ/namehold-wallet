@@ -452,6 +452,21 @@ pub(crate) async fn ensure_finalize_matured(
     Ok(())
 }
 
+/// The name's owner coin in a `getnameinfo.info` reply (`owner.{hash,index}`),
+/// or `None` when the reply does not name one. Shared by the redeem builder
+/// ([`exclude_owner_reveal`]) and the Redeem button
+/// (`NameActionContext::with_node_owner`), so the two cannot disagree.
+pub(crate) fn owner_outpoint(info: &serde_json::Value) -> Option<(&str, u64)> {
+    let owner = info.get("owner")?;
+    Some((owner.get("hash")?.as_str()?, owner.get("index")?.as_u64()?))
+}
+
+/// Is `coin` the outpoint `(hash, index)`? hsd's hashes are lowercase hex;
+/// the comparison does not rest on it.
+pub(crate) fn is_outpoint(coin: &queries::NameCoin, (hash, index): (&str, u64)) -> bool {
+    coin.txid.eq_ignore_ascii_case(hash) && u64::from(coin.vout) == index
+}
+
 /// The reveal coins in `coins` that a REDEEM may spend: every one but the
 /// name's owner coin as the node reports it (`getnameinfo.info.owner`). Until
 /// REGISTER spends it, the winning reveal IS the owner coin, and hsd rejects
@@ -467,17 +482,14 @@ pub(crate) async fn exclude_owner_reveal(
         return Ok(coins);
     }
     let info = node_name_info(client, name).await?;
-    let owner = info.get("owner");
-    let hash = owner.and_then(|o| o.get("hash")).and_then(|h| h.as_str());
-    let index = owner.and_then(|o| o.get("index")).and_then(|i| i.as_u64());
-    let (Some(hash), Some(index)) = (hash, index) else {
+    let Some(owner) = owner_outpoint(&info) else {
         return Err(AppError::Rpc(format!(
             "node did not report the name's owner for '{name}'"
         )));
     };
     let losing: Vec<_> = coins
         .into_iter()
-        .filter(|c| !(c.txid.eq_ignore_ascii_case(hash) && u64::from(c.vout) == index))
+        .filter(|c| !is_outpoint(c, owner))
         .collect();
     if losing.is_empty() {
         return Err(AppError::InvalidInput(format!(

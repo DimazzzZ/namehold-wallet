@@ -331,8 +331,19 @@ fn closed_with_owner_registered_yields_owned_no_urgent_action() {
 #[test]
 fn closed_with_reveal_coin_yields_lost_needs_redeem() {
     // Post-auction: no more bid coin (it was spent by the reveal), an unspent
-    // REVEAL coin is what signals "lost, redeemable".
-    let state = state_no_owner("CLOSED", false, false, false, true);
+    // REVEAL coin that is not the owner coin is what signals "lost,
+    // redeemable".
+    let state = derive_auction_task_state(
+        &NameActionContext {
+            has_reveal_coin: true,
+            redeemable_reveal_count: 1,
+            ..Default::default()
+        },
+        "CLOSED",
+        false,
+        None,
+        Network::Main,
+    );
     assert_eq!(state, AuctionTaskState::LostNeedsRedeem);
 }
 

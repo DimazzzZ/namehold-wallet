@@ -896,3 +896,53 @@ async fn classify_covenant_received_direction() {
     assert_eq!(rows[0].action, "finalize");
     assert_eq!(rows[0].direction, "receive");
 }
+
+/// The seller's view of a Shakedex fill, shaped like the buyer's real
+/// transaction (`noncustodial::shakedex::purchase`): `[lock coin, buyer
+/// funding] -> [TRANSFER at the lock address, market fee, buyer change,
+/// payment]`. No input is ours (the lock address is not one of our derived
+/// addresses) and the TRANSFER sits at the lock, yet the payment output pays
+/// us: the row is income, +price, not a neutral "internal".
+#[tokio::test]
+async fn classify_shakedex_fill_paying_us_is_income() {
+    let lock = crate::noncustodial::shakedex::script::lock_address(
+        crate::noncustodial::network::Network::Regtest,
+        &[2u8; 33],
+    )
+    .unwrap();
+    let nh = "aa".repeat(32);
+    let price: i64 = 250_000_000;
+    let tx = serde_json::json!({
+        "hash": "fill",
+        "height": 700,
+        "time": 1_700_000_000i64,
+        "inputs": [
+            {"prevout": {"hash": "11".repeat(32), "index": 0},
+             "coin": {"value": 1_000_000i64, "address": lock,
+                      "covenant": {"type": 10, "action": "FINALIZE",
+                                   "items": [nh, "64000000", hex::encode("dexsale"),
+                                             "00", "01000000", "00000000", "bb".repeat(32)]}}},
+            {"prevout": {"hash": "22".repeat(32), "index": 1},
+             "coin": {"value": 400_000_000i64, "address": "hs1qbuyerfunding",
+                      "covenant": {"type": 0, "action": "NONE", "items": []}}}
+        ],
+        "outputs": [
+            {"value": 1_000_000i64, "address": lock,
+             "covenant": {"type": 9, "action": "TRANSFER",
+                          "items": [nh, "64000000", "00", "cc".repeat(20)]}},
+            {"value": 2_500_000i64, "address": "hs1qmarketfee",
+             "covenant": {"type": 0, "action": "NONE", "items": []}},
+            {"value": 147_490_000i64, "address": "hs1qbuyerchange",
+             "covenant": {"type": 0, "action": "NONE", "items": []}},
+            {"value": price, "address": "hs1qmine",
+             "covenant": {"type": 0, "action": "NONE", "items": []}}
+        ]
+    });
+    let rows = history_with_txs(vec![tx]).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].value_doos, price, "the sale pays the price to us");
+    assert_eq!(
+        rows[0].direction, "receive",
+        "a sale paid to us is income, not a neutral internal move"
+    );
+}
