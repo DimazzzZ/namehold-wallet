@@ -220,6 +220,66 @@ export function scanInvokeArgs(
 }
 
 /**
+ * The callers of `useWalletMutation` (src/queries/wallet.ts), which invokes
+ * its command with its caller's arguments, so the scan above sees only
+ * `args(a)` there. Each call names its keys either in its mapper, an arrow
+ * function returning an object literal, or, without a mapper, in its type
+ * argument: a type literal, or `void` for no arguments. Anything else is
+ * unchecked.
+ */
+export function scanWalletMutationCalls(
+  text: string,
+  fileName: string,
+): { offenders: Finding[]; unchecked: string[]; calls: number } {
+  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const offenders: Finding[] = [];
+  const unchecked: string[] = [];
+  let calls = 0;
+  const at = (n: ts.Node) =>
+    `${fileName}:${sf.getLineAndCharacterOfPosition(n.getStart()).line + 1}`;
+  const check = (where: ts.Node, name: ts.PropertyName | undefined): boolean => {
+    const k = name ? propName(name) : null;
+    if (k === null) return false;
+    if (SNAKE_CASE.test(k)) offenders.push({ where: at(where), key: k });
+    return true;
+  };
+  const visit = (n: ts.Node) => {
+    if (
+      ts.isCallExpression(n) &&
+      ts.isIdentifier(n.expression) &&
+      n.expression.text === "useWalletMutation"
+    ) {
+      calls += 1;
+      const mapper = n.arguments[1];
+      const typeArg = n.typeArguments?.[0];
+      let ok = false;
+      if (mapper) {
+        if (ts.isArrowFunction(mapper) && !ts.isBlock(mapper.body)) {
+          let body: ts.Expression = mapper.body;
+          while (ts.isParenthesizedExpression(body)) body = body.expression;
+          if (ts.isObjectLiteralExpression(body)) {
+            ok = body.properties.every(
+              (p) =>
+                (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+                check(p, p.name),
+            );
+          }
+        }
+      } else if (typeArg) {
+        if (typeArg.kind === ts.SyntaxKind.VoidKeyword) ok = true;
+        else if (ts.isTypeLiteralNode(typeArg)) {
+          ok = typeArg.members.every((m) => ts.isPropertySignature(m) && check(m, m.name));
+        }
+      }
+      if (!ok) unchecked.push(at(n));
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return { offenders, unchecked, calls };
+}
+
+/**
  * Calls whose arguments the scan cannot see through (file:line is not pinned,
  * since lines move; the file and a count are). A new entry means a new place
  * where a snake_case argument name could hide: look at it by hand, then add it.
@@ -227,9 +287,9 @@ export function scanInvokeArgs(
 const UNCHECKED_CALLS: Record<string, number> = {
   // The wrapper itself: forwards whatever its caller passed.
   "src/lib/invoke.ts": 1,
-  // useWalletMutation forwards its caller's args. Its call sites were read by
-  // hand: they pass `{ label, network, kind }` or a mapper returning
-  // `{ walletProfileId }`, all camelCase.
+  // useWalletMutation forwards its caller's args (`args(a)`); every one of
+  // its callers is checked by `scanWalletMutationCalls` instead (the
+  // "useWalletMutation callers" test below), not by hand.
   "src/queries/wallet.ts": 1,
 };
 
@@ -254,6 +314,32 @@ describe("invoke argument names are camelCase", () => {
       seen,
       `unresolved calls: ${JSON.stringify(results.flatMap((r) => r.unchecked))}`,
     ).toEqual(UNCHECKED_CALLS);
+  });
+});
+
+describe("useWalletMutation callers pass camelCase argument names", () => {
+  const rel = "src/queries/wallet.ts";
+  const text = sourceFiles().find(([r]) => r === rel)?.[1] ?? "";
+  const r = scanWalletMutationCalls(text, rel);
+
+  it("finds every caller, each resolved, none with a snake_case key", () => {
+    expect(r.calls).toBeGreaterThanOrEqual(10);
+    expect(r.unchecked, `unresolved: ${r.unchecked.join(", ")}`).toEqual([]);
+    expect(r.offenders).toEqual([]);
+  });
+
+  it("the scanner reads a mapper, a type argument and void, and flags the rest", () => {
+    const src = [
+      `useWalletMutation<string>("a", (id) => ({ walletProfileId: id, bad_one: 1 }));`,
+      `useWalletMutation<{ label: string; bad_two: string }>("b");`,
+      `useWalletMutation<void>("c");`,
+      `useWalletMutation<Args>("d");`,
+      `useWalletMutation<string>("e", (id) => build(id));`,
+    ].join("\n");
+    const s = scanWalletMutationCalls(src, "x.ts");
+    expect(s.calls).toBe(5);
+    expect(s.offenders.map((o) => o.key)).toEqual(["bad_one", "bad_two"]);
+    expect(s.unchecked).toEqual(["x.ts:4", "x.ts:5"]);
   });
 });
 
