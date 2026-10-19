@@ -986,6 +986,7 @@ function demoListing(
     floorPrice,
     steps: [],
     expiresAt: null,
+    own: false,
   };
 }
 

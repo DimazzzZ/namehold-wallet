@@ -96,7 +96,7 @@ function ListingsTable({ rows, canBuy, refusal, onBuy }: ListingsTableProps) {
   return (
     <ul className="divide-y divide-gray-100 border-y border-gray-100 bg-white">
       {rows.map(({ row, origin }, i) => {
-        const buyable = row.verdict.verdict === "buyable";
+        const buyable = row.verdict.verdict === "buyable" && !row.own;
         const status = listingStatus(row);
         const listedUntil = row.expiresAt != null ? listedUntilText(row.expiresAt) : null;
         return (

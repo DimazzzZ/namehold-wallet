@@ -859,6 +859,8 @@ export interface MarketRow {
   floorPrice: number;
   steps: PriceStepView[];
   expiresAt: number | null;
+  /** Locked to one of this device's own lock addresses (R33): shown as yours, with no Buy. */
+  own: boolean;
 }
 
 export interface HiddenCounts {

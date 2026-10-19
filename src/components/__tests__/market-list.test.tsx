@@ -43,6 +43,7 @@ function row(overrides: Record<string, unknown> = {}) {
     floorPrice: 250_000_000,
     steps: [],
     expiresAt: null,
+    own: false,
     ...overrides,
   };
 }
@@ -327,6 +328,16 @@ describe("MarketPage", () => {
     const items = screen.getAllByTestId("hidden-row");
     expect(items[0]).toHaveTextContent(".unknown");
     expect(items[1]).toHaveTextContent("Unnamed listing");
+  });
+
+  it("shows a row locked by this device as yours, without Buy", async () => {
+    mockMarket(page({ rows: [row({ own: true })] }));
+    renderPage();
+    expect(await screen.findByText(".dexreviews")).toBeInTheDocument();
+    expect(screen.getByTestId("market-status")).toHaveTextContent(
+      "Your own listing: manage it in My listings",
+    );
+    expect(screen.queryByTestId("market-buy")).not.toBeInTheDocument();
   });
 
   it("in SPV mode shows rows as not verified and without Buy", async () => {

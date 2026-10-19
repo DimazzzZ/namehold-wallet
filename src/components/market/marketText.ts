@@ -172,7 +172,10 @@ export const TONE_DOT: Record<StatusTone, string> = {
   bad: "bg-red-500",
 };
 
+export const OWN_LISTING_STATUS = "Your own listing: manage it in My listings";
+
 export function listingStatus(row: MarketRow): { tone: StatusTone; text: string } {
+  if (row.own) return { tone: "muted", text: OWN_LISTING_STATUS };
   const v = row.verdict;
   if (v.verdict === "buyable") {
     return v.warnExpiry

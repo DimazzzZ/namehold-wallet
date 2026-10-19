@@ -90,6 +90,9 @@ pub struct MarketRow {
     pub floor_price: u64,
     pub steps: Vec<PriceStepView>,
     pub expires_at: Option<u64>,
+    /// The listing is locked to one of this device's own lock addresses (R33):
+    /// shown as yours, with no Buy.
+    pub own: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -281,6 +284,7 @@ fn market_row(listing_json: String, l: &ListingFile, verdict: Verdict) -> Market
             })
             .collect(),
         expires_at: l.expires_at,
+        own: false,
         verdict,
     }
 }
@@ -434,21 +438,43 @@ fn refuse_own_listing(
     ctx: &Ctx,
     listing: &ListingFile,
 ) -> Result<(), AppError> {
-    let theirs = lock_address(ctx.network, &listing.public_key)?;
+    let own = own_lock_addresses(state, ctx.network)?;
+    if own.contains(&lock_address(ctx.network, &listing.public_key)?) {
+        return Err(AppError::InvalidInput(OWN_LISTING.into()));
+    }
+    Ok(())
+}
+
+/// The lock addresses, on `network`, of every listing row on this device
+/// (any profile, any state).
+fn own_lock_addresses(
+    state: &State<'_, AppState>,
+    network: Network,
+) -> Result<std::collections::HashSet<String>, AppError> {
     let keys = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         queries::shakedex_lock_pubkeys(&conn)?
     };
-    let own = keys.iter().any(|hex_key| {
-        <[u8; 33]>::try_from(hex::decode(hex_key).unwrap_or_default())
-            .ok()
-            .and_then(|key| lock_address(ctx.network, &key).ok())
-            .is_some_and(|mine| mine == theirs)
-    });
-    if own {
-        return Err(AppError::InvalidInput(OWN_LISTING.into()));
-    }
-    Ok(())
+    Ok(keys
+        .iter()
+        .filter_map(|hex_key| {
+            // A stored key that does not decode is skipped: it can name no
+            // address, and a purchase gate fails safe on what it cannot read.
+            let key = <[u8; 33]>::try_from(hex::decode(hex_key).ok()?).ok()?;
+            lock_address(network, &key).ok()
+        })
+        .collect())
+}
+
+/// `row` marked as ours (R33) when its lock address is in `own`.
+fn mark_own(
+    mut row: MarketRow,
+    l: &ListingFile,
+    network: Network,
+    own: &std::collections::HashSet<String>,
+) -> MarketRow {
+    row.own = lock_address(network, &l.public_key).is_ok_and(|a| own.contains(&a));
+    row
 }
 
 /// Run the purchase gates in order, verify the listing on the node and
@@ -2645,6 +2671,7 @@ pub async fn shakedex_list_market(
     let page_count = u32::try_from(total.div_ceil(u64::from(MARKET_PER_PAGE)))
         .unwrap_or(u32::MAX)
         .max(1);
+    let own = own_lock_addresses(&state, ctx.network)?;
     let mut rows = Vec::new();
     let mut hidden = HiddenCounts::default();
     let mut hidden_rows = Vec::new();
@@ -2675,14 +2702,24 @@ pub async fn shakedex_list_market(
         };
         let verdict = match &at {
             None => {
-                rows.push(market_row(text, &listing, unverified()));
+                rows.push(mark_own(
+                    market_row(text, &listing, unverified()),
+                    &listing,
+                    ctx.network,
+                    &own,
+                ));
                 continue;
             }
             Some(Err(h)) => Verdict::Hidden(h.clone()),
             Some(Ok(at)) => verify::verify_listing_at(&ctx.node, ctx.network, &listing, *at).await,
         };
         match verdict {
-            v @ Verdict::Buyable(_) => rows.push(market_row(text, &listing, v)),
+            v @ Verdict::Buyable(_) => rows.push(mark_own(
+                market_row(text, &listing, v),
+                &listing,
+                ctx.network,
+                &own,
+            )),
             Verdict::Hidden(h) => {
                 hidden.count(&h);
                 hidden_rows.push(HiddenRow {
@@ -2742,7 +2779,13 @@ pub async fn shakedex_import_listing(
         )));
     }
     let verdict = verdict_for(&ctx, &listing).await;
-    Ok(market_row(text, &listing, verdict))
+    let own = own_lock_addresses(&state, ctx.network)?;
+    Ok(mark_own(
+        market_row(text, &listing, verdict),
+        &listing,
+        ctx.network,
+        &own,
+    ))
 }
 
 /// Price, market fee, network fee and total of buying `listing_json` at its

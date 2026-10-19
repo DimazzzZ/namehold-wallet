@@ -884,6 +884,38 @@ async fn list_market_survives_one_lookup_failure() {
     assert_eq!(v["steps"][0]["lockTime"], 1_783_696_480u64);
 }
 
+/// R33: a market row whose lock is one of this device's own is marked `own`
+/// (the page shows it as yours, without Buy); other rows are not.
+#[tokio::test]
+async fn list_market_marks_the_rows_locked_by_this_device() {
+    let mut node = mockito::Server::new_async().await;
+    let _m = live_node(&mut node).await;
+    let mut market = mockito::Server::new_async().await;
+    let _p = mock_market_page(&mut market, &[LISTING_FILE]).await;
+    let conn = mainnet(&node.url());
+    set(&conn, "learnhns_base_url", &market.url());
+    let app = app_with(conn);
+    let page = shakedex_list_market(app.state(), None, None)
+        .await
+        .expect("page");
+    assert!(!page.rows[0].own, "a listing locked elsewhere is not ours");
+    let key = hex::encode(
+        crate::noncustodial::shakedex::listing_file::ListingFile::parse(
+            LISTING_FILE,
+            Network::Main,
+        )
+        .unwrap()
+        .public_key,
+    );
+    with_db(&app, |c| own_listing_row(c, PROFILE, "mine", &key));
+    let page = shakedex_list_market(app.state(), None, None)
+        .await
+        .expect("page");
+    assert_eq!(page.rows.len(), 1);
+    assert!(page.rows[0].own);
+    assert_eq!(serde_json::to_value(&page.rows[0]).unwrap()["own"], true);
+}
+
 /// The page exactly as the live Market served it (ISO `expiresAt`, `bids`,
 /// `createdAt`, `id`, ...): the row the node can check is listed, the two it
 /// cannot are "could not check", and none fails verification on its shape.
