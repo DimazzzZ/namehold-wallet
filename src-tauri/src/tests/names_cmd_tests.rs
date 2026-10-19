@@ -3628,8 +3628,14 @@ fn bid_covenant_of_auction(name: &str, auction_start: u32) -> String {
 /// An address reused across auctions of `name`: our unrevealed BID coin of
 /// an earlier auction (opened at 50) and this auction's (100, the mocked
 /// `getnameinfo` height) sit at one address, with this auction's commitment
-/// there. Returns the two txids (earlier, this auction's).
-fn reused_address_bids(conn: &rusqlite::Connection, id: &str, name: &str) -> (String, String) {
+/// there (its auction recorded when `recorded`; a commitment recovered from
+/// the chain has none). Returns the two txids (earlier, this auction's).
+fn reused_address_bids(
+    conn: &rusqlite::Connection,
+    id: &str,
+    name: &str,
+    recorded: bool,
+) -> (String, String) {
     let old = "e1".repeat(32);
     let new = "e2".repeat(32);
     let addr = first_derived_address(conn, id);
@@ -3645,7 +3651,9 @@ fn reused_address_bids(conn: &rusqlite::Connection, id: &str, name: &str) -> (St
         );
     }
     seed_bid_commitment(conn, id, name, &addr);
-    db::queries::set_auction_heights(conn, id, &format!("blind-{name}"), 100, 121).unwrap();
+    if recorded {
+        db::queries::set_auction_heights(conn, id, &format!("blind-{name}"), 100, 121).unwrap();
+    }
     (old, new)
 }
 
@@ -3662,7 +3670,34 @@ async fn reveal_uses_this_auctions_bid_coin_beside_an_earlier_auctions_at_one_ad
         let id = insert_valid_profile(&conn, "regtest");
         set_node_rpc_url(&conn, &server.url());
         insert_extra_funding(&conn, &id, &"34".repeat(32));
-        reused_address_bids(&conn, &id, "namea")
+        reused_address_bids(&conn, &id, "namea", true)
+    };
+    let app = mock_app_with(state);
+    let draft = names::build_reveal_draft(app.state(), "namea".into(), None)
+        .await
+        .expect("the reveal builds from this auction's coin");
+    let inputs = draft_signing_inputs(&app, &draft.id);
+    assert!(inputs.contains(&new), "this auction's coin: {inputs}");
+    assert!(
+        !inputs.contains(&old),
+        "never the earlier auction's: {inputs}"
+    );
+}
+
+/// The same with a commitment recovered from the chain, which records no
+/// auction: the builder keeps it (`same_auction` is permissive) and still
+/// takes the coin of the auction the node reports, by the coin's covenant.
+#[tokio::test]
+async fn reveal_of_a_commitment_with_no_recorded_auction_uses_this_auctions_coin() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    let (old, new) = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"34".repeat(32));
+        reused_address_bids(&conn, &id, "namea", false)
     };
     let app = mock_app_with(state);
     let draft = names::build_reveal_draft(app.state(), "namea".into(), None)
@@ -3687,7 +3722,7 @@ async fn batch_reveal_uses_this_auctions_bid_coin_beside_an_earlier_auctions_at_
         let id = insert_valid_profile(&conn, "regtest");
         set_node_rpc_url(&conn, &server.url());
         insert_extra_funding(&conn, &id, &"34".repeat(32));
-        reused_address_bids(&conn, &id, "namea")
+        reused_address_bids(&conn, &id, "namea", true)
     };
     let app = mock_app_with(state);
     let batch = names::build_batch_reveal_draft(app.state(), vec!["namea".into()], None)
@@ -3752,7 +3787,7 @@ async fn capabilities_reveal_this_auctions_bid_beside_an_earlier_auctions_at_one
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
         set_node_rpc_url(&conn, &server.url());
-        reused_address_bids(&conn, &id, "namea");
+        reused_address_bids(&conn, &id, "namea", true);
         id
     };
     let app = mock_app_with(state);

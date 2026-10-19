@@ -180,11 +180,12 @@ export function NameActionsModal({
       ? REVOKED_REDEEM_GUIDE
       : null);
   const summary = taskSummaryFromCapabilities(caps);
-  // A name with no task of ours whose capabilities still give a reason: our
-  // losing reveals in the last block before the name expires, when hsd takes
-  // no redeem any more. Said instead of "no auction actions are needed".
-  const noTaskReason =
-    caps?.taskState === "unavailableOther" ? (caps.nextActionReason ?? null) : null;
+  // Our losing reveals in the last block before the name expires, when hsd
+  // takes no redeem any more: the backend raises `redeemWindowClosing` and
+  // says why in `nextActionReason`. Said instead of "no auction actions are
+  // needed". Only on that flag: other no-task capabilities (the fallbacks)
+  // carry internal reasons that are not for this panel.
+  const noTaskReason = caps?.redeemWindowClosing ? (caps.nextActionReason ?? null) : null;
   // Loading gate for the phase badge: the yellow `badge.label` fallback is the
   // raw on-chain phase (e.g. "Bidding"), which contradicts the table's
   // task-state label (e.g. "Waiting for Bidding") while the SINGLE caps query

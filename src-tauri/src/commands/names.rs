@@ -254,6 +254,12 @@ pub struct NameActionCapabilities {
     /// it could not check, which is not the same as "nothing stranded"; never
     /// a loss verdict.
     pub stranded_unchecked_count: i64,
+    /// Our losing reveals on this name can no longer be redeemed: the name
+    /// expires with the next block ([`RedeemWindow::ExpiresNextBlock`]) and
+    /// nothing else of ours on it sets a task, so the state is
+    /// `unavailableOther` and `next_action_reason` says why. The UI shows that
+    /// reason on this flag, not on comparing it.
+    pub redeem_window_closing: bool,
     /// Losing reveals on this name that a REDEEM would reclaim, and what they
     /// are worth. Reported so the button can say what it does: "Redeem" alone
     /// is a covenant name, not an explanation, and this is money the wallet is
@@ -267,7 +273,7 @@ pub struct NameActionCapabilities {
 /// `Default` is the no-evidence state — nothing held, nothing pending, nothing
 /// known — which is what the capability model falls back to and what a test
 /// wants as a base before naming the one or two facts it is about.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct NameActionContext {
     pub has_bid_commitment: bool,
     /// Unspent COV_BID coin for this name (the coin a REVEAL spends). Gates
@@ -1381,12 +1387,25 @@ pub(crate) fn build_name_action_capabilities(
     // The last block before expiry: hsd takes no redeem in the block the name
     // expires in, so Redeem is refused above ([`RedeemWindow::ExpiresNextBlock`]).
     // A "Redeem Lockup" task and the Wallet's lost banner would urge a button
-    // that is disabled; the state agrees with the button instead, and the
-    // reason says why.
+    // that is disabled; the state agrees with the button instead. It is read
+    // again as if no reveal were redeemable, so whatever else the name holds
+    // still decides (a bid lost unrevealed on the node's word still reads
+    // "Lost — Not Revealed"); only where nothing else does is the reason the
+    // closed redeem window.
     let redeem_closing = matches!(task_state, AuctionTaskState::LostNeedsRedeem)
         && window == RedeemWindow::ExpiresNextBlock;
     let task_state = if redeem_closing {
-        AuctionTaskState::UnavailableOther
+        derive_auction_task_state(
+            &NameActionContext {
+                redeemable_reveal_count: 0,
+                redeemable_value_doos: 0,
+                ..action_ctx.clone()
+            },
+            &phase,
+            owns_name,
+            days_until_expire,
+            network,
+        )
     } else {
         task_state
     };
@@ -1423,7 +1442,9 @@ pub(crate) fn build_name_action_capabilities(
         );
     }
 
-    if redeem_closing {
+    let redeem_window_closing =
+        redeem_closing && matches!(task_state, AuctionTaskState::UnavailableOther);
+    if redeem_window_closing {
         next_action_reason = Some(REDEEM_WINDOW_CLOSING_REASON.into());
     }
 
@@ -1471,6 +1492,7 @@ pub(crate) fn build_name_action_capabilities(
         stranded_bid_count: action_ctx.stranded_bid_count,
         stranded_lockup_doos: action_ctx.stranded_lockup_doos,
         stranded_unchecked_count: action_ctx.stranded_unchecked_count,
+        redeem_window_closing,
         redeemable_reveal_count: action_ctx.redeemable_reveal_count,
         redeemable_value_doos: action_ctx.redeemable_value_doos,
     }
@@ -1526,6 +1548,7 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         stranded_bid_count: 0,
         stranded_lockup_doos: 0,
         stranded_unchecked_count: 0,
+        redeem_window_closing: false,
         redeemable_reveal_count: 0,
         redeemable_value_doos: 0,
     }

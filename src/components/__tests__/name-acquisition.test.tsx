@@ -639,6 +639,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
               "the name expires with the next block, and hsd takes no redeem of it from then on",
             ),
             nextActionReason: reason,
+            redeemWindowClosing: true,
           }),
         },
       ),
@@ -648,6 +649,29 @@ describe("NameActionsModal — guided acquisition flow", () => {
     expect(await screen.findByTestId("no-task-reason")).toHaveTextContent(reason);
     expect(screen.queryByText(/No auction actions are needed/)).toBeNull();
     expect(screen.queryByTestId("guided-redeem")).toBeNull();
+  });
+
+  it("shows no fallback reason for a name without a task", async () => {
+    // The backend's fallback capabilities (node unreachable, no profile) have
+    // no task and an internal reason; it is not shown as the name's status.
+    invokeMock.mockImplementation(
+      routeModal(
+        { name: "fallback", state: "CLOSED", height: 100, stats: null },
+        {
+          capabilities: makeCapabilities({
+            name: "fallback",
+            phase: "UNKNOWN",
+            taskState: "unavailableOther",
+            nextActionReason: "node unreachable",
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="fallback" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    expect(await screen.findByText(/No auction actions are needed/)).toBeInTheDocument();
+    expect(screen.queryByTestId("no-task-reason")).toBeNull();
+    expect(screen.queryByText("node unreachable")).toBeNull();
   });
 
   it("shows Bid for a BIDDING name", async () => {

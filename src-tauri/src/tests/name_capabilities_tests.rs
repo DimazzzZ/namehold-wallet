@@ -1328,10 +1328,61 @@ fn no_redeem_task_when_the_name_expires_with_the_next_block() {
             Some(crate::commands::names::REDEEM_WINDOW_CLOSING_REASON),
             "{what}"
         );
+        assert!(caps.redeem_window_closing, "{what}");
         assert!(!caps.can_redeem.allowed, "{what}");
     }
     for (what, caps) in [("revoked", revoked_caps(2)), ("closed", closed(2))] {
         assert_eq!(caps.task_state, AuctionTaskState::LostNeedsRedeem, "{what}");
         assert_eq!(caps.next_action_key.as_deref(), Some("REDEEM"), "{what}");
+        assert!(!caps.redeem_window_closing, "{what}");
     }
+}
+
+/// In the last block before expiry the state is read again as if no reveal
+/// were redeemable, not set to "no task": a bid of this auction the node
+/// says was never revealed still reads "Lost — Not Revealed", with its own
+/// reason, and the closed-redeem flag is not raised for it.
+#[test]
+fn the_last_block_still_reads_a_bid_lost_unrevealed() {
+    let stats = serde_json::json!({
+        "renewalPeriodStart": 100,
+        "renewalPeriodEnd": 2600,
+        "blocksUntilExpire": 1,
+        "daysUntilExpire": 0.01,
+    });
+    let caps = build_name_action_capabilities(
+        "example".into(),
+        "CLOSED".into(),
+        "CLOSED",
+        Some(&stats),
+        &NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            unrevealed_bid_on_node: true,
+            has_reveal_coin: true,
+            redeemable_reveal_count: 1,
+            ..Default::default()
+        },
+        false,
+        true,
+        None,
+        Network::Regtest,
+    );
+    assert_eq!(caps.task_state, AuctionTaskState::LostUnrevealed);
+    assert!(!caps.redeem_window_closing);
+    assert_ne!(
+        caps.next_action_reason.as_deref(),
+        Some(crate::commands::names::REDEEM_WINDOW_CLOSING_REASON)
+    );
+    assert!(!caps.can_redeem.allowed);
+}
+
+/// The fallback capabilities (no profile, node unreachable) carry an
+/// internal reason with no task; they never raise the closed-redeem flag,
+/// which is what the UI shows a reason on.
+#[test]
+fn conservative_capabilities_raise_no_closed_redeem_flag() {
+    let caps = crate::commands::names::conservative_capabilities("example", "node unreachable");
+    assert_eq!(caps.task_state, AuctionTaskState::UnavailableOther);
+    assert!(!caps.redeem_window_closing);
 }

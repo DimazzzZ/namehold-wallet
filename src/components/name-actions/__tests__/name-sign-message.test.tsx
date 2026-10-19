@@ -71,6 +71,7 @@ function capsFor(name: string, ownsName: boolean): NameActionCapabilities {
     strandedBidCount: 0,
     strandedLockupDoos: 0,
     strandedUncheckedCount: 0,
+    redeemWindowClosing: false,
     lockedForSale: false,
   };
 }
