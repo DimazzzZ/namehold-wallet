@@ -172,7 +172,6 @@ export function Settings() {
   // section while Save stays disabled; open the section and say why next to
   // Save, so the block is never silent.
   const advancedHasError = !!feeRateError || !!gapLimitError;
-  const saveBlockReason = explorerUrlError || feeRateError || gapLimitError;
 
   // Pick the hsd data directory with the native folder browser (Finder).
   const pickDataDir = async () => {
@@ -196,6 +195,14 @@ export function Settings() {
   // just parks a broken setting. Only a POSITIVE mismatch blocks — a node that
   // was never tested, or one that didn't report its chain, saves as before.
   const nodeNetworkMismatch = nodeProbe.result?.networkMatches === false;
+
+  const saveBlockReason =
+    explorerUrlError ||
+    feeRateError ||
+    gapLimitError ||
+    (nodeNetworkMismatch
+      ? `the node is on ${nodeProbe.result?.network ?? "another network"}, not this wallet's network`
+      : null);
 
   const handleSave = async () => {
     if (explorerUrlError) {

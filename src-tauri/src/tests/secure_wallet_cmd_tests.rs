@@ -160,6 +160,28 @@ fn test_gap_limit_clamp_is_logged_once() {
 }
 
 #[test]
+fn test_gap_limit_logs_only_when_it_clamps() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let with = |raw: &str| {
+        let mut settings = std::collections::HashMap::new();
+        settings.insert("address_gap_limit".to_string(), raw.to_string());
+        settings
+    };
+    for raw in ["50", "1000", "0", "abc"] {
+        let flag = AtomicBool::new(false);
+        secure_wallet::gap_limit_logging(&with(raw), &flag);
+        assert!(
+            !flag.load(Ordering::Relaxed),
+            "{raw:?} is not clamped and must not log"
+        );
+    }
+    let flag = AtomicBool::new(false);
+    let got = secure_wallet::gap_limit_logging(&with("5000"), &flag);
+    assert_eq!(got, secure_wallet::MAX_GAP_LIMIT);
+    assert!(flag.load(Ordering::Relaxed), "a clamped stored value logs");
+}
+
+#[test]
 fn test_gap_limit_default() {
     let settings = std::collections::HashMap::new();
     assert_eq!(secure_wallet::gap_limit(&settings), 20);

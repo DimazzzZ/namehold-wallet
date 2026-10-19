@@ -104,6 +104,17 @@ describe("Settings — Address gap limit", () => {
       expect(screen.queryByTestId("settings-save-blocked")).not.toBeInTheDocument();
     });
 
+    it("keeps Advanced open after the field is fixed", async () => {
+      loadSettings({ address_gap_limit: "5000" });
+      renderSettings();
+      fireEvent.change(await screen.findByTestId("settings-gap-limit"), {
+        target: { value: "1000" },
+      });
+      await screen.findByRole("button", { name: /Save settings/i });
+      expect(screen.queryByText(RANGE_ERROR)).not.toBeInTheDocument();
+      expect(advanced().open).toBe(true);
+    });
+
     it("opens Advanced for an invalid stored fee rate too", async () => {
       loadSettings({ fee_rate_doos_per_kvb: "abc" });
       renderSettings();

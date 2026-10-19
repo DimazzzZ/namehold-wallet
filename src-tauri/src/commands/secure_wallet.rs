@@ -97,6 +97,15 @@ pub(crate) fn log_clamp_once(flag: &std::sync::atomic::AtomicBool, stored: u32) 
 
 /// `address_gap_limit`, in `1..=MAX_GAP_LIMIT`.
 pub(crate) fn gap_limit(settings: &std::collections::HashMap<String, String>) -> u32 {
+    gap_limit_logging(settings, &CLAMP_LOGGED)
+}
+
+/// `gap_limit` with the once-flag of the clamp log passed in, so a test can
+/// see whether a call flagged (logged) a clamp without sharing process state.
+pub(crate) fn gap_limit_logging(
+    settings: &std::collections::HashMap<String, String>,
+    clamp_flag: &std::sync::atomic::AtomicBool,
+) -> u32 {
     let stored = settings
         .get("address_gap_limit")
         .and_then(|s| s.parse::<u32>().ok())
@@ -105,7 +114,7 @@ pub(crate) fn gap_limit(settings: &std::collections::HashMap<String, String>) ->
         // default is what a fresh install provisions with.
         .unwrap_or(DEFAULT_GAP_LIMIT);
     if stored > MAX_GAP_LIMIT {
-        log_clamp_once(&CLAMP_LOGGED, stored);
+        log_clamp_once(clamp_flag, stored);
     }
     stored.min(MAX_GAP_LIMIT)
 }

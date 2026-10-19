@@ -87,4 +87,18 @@ describe("Settings — Test connection", () => {
     // Still reachable — the green summary stays; the warning is additive.
     expect(screen.getByTestId("connection-success")).toBeInTheDocument();
   });
+
+  it("says in the footer that a cross-network node blocks Save", async () => {
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "check_node_connection"
+        ? Promise.resolve({ ...reachable, network: "testnet", networkMatches: false })
+        : routeSettingsCommand(cmd),
+    );
+    renderSettings();
+    fireEvent.click(await screen.findByTestId("test-connection-button"));
+    await screen.findByTestId("connection-network-mismatch");
+    fireEvent.change(screen.getByTestId("settings-fee-rate"), { target: { value: "2000" } });
+    expect(await screen.findByRole("button", { name: /Save settings/i })).toBeDisabled();
+    expect(screen.getByTestId("settings-save-blocked")).toHaveTextContent(/testnet/);
+  });
 });
