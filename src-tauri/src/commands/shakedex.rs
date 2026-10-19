@@ -409,6 +409,10 @@ fn software_writer_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
     Ok(ctx)
 }
 
+/// What buying a listing locked by this device is refused with (R33).
+const OWN_LISTING: &str = "this is your own listing: cancel it instead (My listings), \
+                           buying it would only cost you network fees";
+
 /// R15/R29: a new purchase or a new listing on mainnet needs the
 /// `shakedex_experimental` setting; testnet and regtest need nothing.
 /// Actions on what already exists never ask.
@@ -419,6 +423,32 @@ fn new_trade_allowed(ctx: &Ctx) -> bool {
             .get("shakedex_experimental")
             .map(String::as_str)
             == Some("true")
+}
+
+/// R33: a listing locked to this device's own lock address is not bought.
+/// The TRANSFER would commit to an address of ours, so the buyer would pay
+/// the fees of a purchase and a FINALIZE for a name that comes home anyway,
+/// and the cancel path would offer a second FINALIZE of the same TRANSFER.
+fn refuse_own_listing(
+    state: &State<'_, AppState>,
+    ctx: &Ctx,
+    listing: &ListingFile,
+) -> Result<(), AppError> {
+    let theirs = lock_address(ctx.network, &listing.public_key)?;
+    let keys = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        queries::shakedex_lock_pubkeys(&conn)?
+    };
+    let own = keys.iter().any(|hex_key| {
+        <[u8; 33]>::try_from(hex::decode(hex_key).unwrap_or_default())
+            .ok()
+            .and_then(|key| lock_address(ctx.network, &key).ok())
+            .is_some_and(|mine| mine == theirs)
+    });
+    if own {
+        return Err(AppError::InvalidInput(OWN_LISTING.into()));
+    }
+    Ok(())
 }
 
 /// Run the purchase gates in order, verify the listing on the node and
@@ -438,6 +468,7 @@ async fn prepare(
         ));
     }
     let listing = ListingFile::parse(listing_json, ctx.network)?;
+    refuse_own_listing(state, &ctx, &listing)?;
     let buyable = match verify::verify_listing(&ctx.node, ctx.network, &listing).await {
         Verdict::Buyable(b) => b,
         Verdict::Hidden(h) => return Err(hidden_to_error(h)),

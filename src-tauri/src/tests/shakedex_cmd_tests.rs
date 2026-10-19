@@ -526,6 +526,113 @@ async fn sold_listing_refused() {
     assert!(err_text(err).contains("sold or cancelled"));
 }
 
+/// A `shakedex_listings` row of `profile` that locks with `pubkey_hex`.
+fn own_listing_row(conn: &rusqlite::Connection, profile: &str, id: &str, pubkey_hex: &str) {
+    db::queries::insert_shakedex_listing(
+        conn,
+        &db::queries::ShakedexListing {
+            id: id.into(),
+            wallet_profile_id: profile.into(),
+            name: "regname".into(),
+            mode: db::queries::ListingMode::BuyNow,
+            state: db::queries::ListingState::Listed,
+            lock_pubkey_hex: pubkey_hex.into(),
+            lock_transfer_draft_id: None,
+            lock_finalize_draft_id: None,
+            lock_transfer_txid: None,
+            lock_txid: None,
+            lock_vout: None,
+            payment_address: None,
+            cancel_address: None,
+            cancel_child_index: None,
+            steps_json: "[]".into(),
+            listing_file_json: None,
+            publish: false,
+            market_status: None,
+            market_retry_at: None,
+            market_attempts: 0,
+            market_error: None,
+            market_accepted: false,
+            market_changed: false,
+            market_told: false,
+            market_sent_step: None,
+            expires_at: None,
+            abort_draft_id: None,
+            abort_txid: None,
+            sold_txid: None,
+            cancel_txid: None,
+            cancel_draft_id: None,
+            cancel_vout: None,
+            cancel_finalize_draft_id: None,
+            cancel_blocks_remaining: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        },
+    )
+    .unwrap();
+}
+
+/// R33: a listing whose lock address is the lock address of a listing row on
+/// this device is refused with "your own listing", by the preview and the
+/// build alike, whichever profile holds the row; a listing locked elsewhere
+/// is still bought.
+#[tokio::test]
+async fn own_listing_is_refused_and_another_is_bought() {
+    let r = regtest_listing();
+    let own_key = hex::encode(
+        crate::noncustodial::shakedex::listing_file::ListingFile::parse(&r.json, Network::Regtest)
+            .unwrap()
+            .public_key,
+    );
+    let mut node = mockito::Server::new_async().await;
+    let _b = mock_blockchain_info(&mut node, REGTEST_TIP, Some(REGTEST_MTP)).await;
+    let _n = mock_name_info(&mut node, r.name_info.clone()).await;
+    let _c = mock_coin(&mut node, &r.txid, r.coin.clone()).await;
+    let app = app_with(seeded("regtest", "mnemonic_hot", &node.url()));
+    // Another key's row (the shape of any other seller's lock) changes nothing.
+    with_db(&app, |c| {
+        own_listing_row(c, PROFILE, "other", &"02".repeat(33))
+    });
+    // The row is of ANOTHER profile of this device.
+    with_db(&app, |c| {
+        db::queries::insert_wallet_profile(
+            c,
+            "shk2",
+            "Second",
+            "mnemonic_hot",
+            "regtest",
+            "x",
+            1,
+            false,
+        )
+        .unwrap();
+        own_listing_row(c, "shk2", "mine", &own_key);
+    });
+    let sentence = "this is your own listing: cancel it instead";
+    let err = shakedex_preview_purchase(app.state(), r.json.clone(), false, false, None)
+        .await
+        .unwrap_err();
+    assert!(err_text(err).contains(sentence));
+    let err = shakedex_build_purchase_draft(app.state(), r.json.clone(), None, false, None)
+        .await
+        .unwrap_err();
+    assert!(err_text(err).contains(sentence));
+    with_db(&app, |c| {
+        assert!(db::queries::list_open_shakedex_purchases(c, PROFILE)
+            .unwrap()
+            .is_empty());
+        let drafts: i64 = c
+            .query_row("SELECT COUNT(*) FROM wallet_tx_drafts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(drafts, 0, "the refusal leaves no draft behind");
+        c.execute("DELETE FROM shakedex_listings WHERE id = 'mine'", [])
+            .unwrap();
+    });
+    shakedex_build_purchase_draft(app.state(), r.json.clone(), None, false, None)
+        .await
+        .expect("a listing locked by another key is still bought");
+}
+
 // --- build: what is written -------------------------------------------------
 
 #[tokio::test]

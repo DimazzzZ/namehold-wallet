@@ -2380,6 +2380,14 @@ pub fn shakedex_listing_holds_lock_coin(
     Ok(found.is_some())
 }
 
+/// The lock public keys (hex) of every listing row on this device, any
+/// profile and any state: a lock key stays this device's own for good.
+pub fn shakedex_lock_pubkeys(conn: &rusqlite::Connection) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare("SELECT DISTINCT lock_pubkey_hex FROM shakedex_listings")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 /// The open listing that keeps `name`'s owner actions away (R27), if any.
 /// A listing past Locking always does. A Locking one does only while its
 /// lock TRANSFER draft is alive ([`draft_alive`]): a dropped,
