@@ -25,15 +25,17 @@ fn reserved_addresses_are_not_reissued() {
     // Two reservations give two addresses, next to the used range.
     let a = reserve_receive_address(&conn, "p1").unwrap();
     let b = reserve_receive_address(&conn, "p1").unwrap();
-    assert_ne!(a, b);
-    assert_eq!(a, receive(&xpub, 1));
-    assert_eq!(b, receive(&xpub, 2));
+    assert_ne!(a.address, b.address);
+    assert_eq!(a.address, receive(&xpub, 1));
+    assert_eq!(b.address, receive(&xpub, 2));
+    assert_eq!((a.branch, a.child_index), (BRANCH_RECEIVE, 1));
+    assert_eq!((b.branch, b.child_index), (BRANCH_RECEIVE, 2));
 
     // Ordinary allocation skips both, and the receive list shows them used.
     let next = next_unused_receive_address(&conn, "p1", 0, Network::Main, &xpub).unwrap();
     assert_eq!(next.child_index, 3);
     let rows = list_receive_addresses(&conn, "p1", 0).unwrap();
-    for addr in [&a, &b] {
+    for addr in [&a.address, &b.address] {
         assert!(rows.iter().any(|r| &r.address == addr && r.used), "{addr}");
     }
 
@@ -41,5 +43,6 @@ fn reserved_addresses_are_not_reissued() {
     let tx = conn.unchecked_transaction().unwrap();
     let c = reserve_receive_address(&tx, "p1").unwrap();
     tx.commit().unwrap();
-    assert_eq!(c, receive(&xpub, 3));
+    assert_eq!(c.address, receive(&xpub, 3));
+    assert_eq!((c.branch, c.child_index), (BRANCH_RECEIVE, 3));
 }

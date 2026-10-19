@@ -26,6 +26,15 @@ pub fn is_shakedex_action(action: &str) -> bool {
     action.starts_with(ACTION_PREFIX)
 }
 
+/// Why a new listing on mainnet is refused until Settings allows it (R15,
+/// R29). The Lock dialog shows the same sentence (T7).
+pub const MAINNET_SELLING_EXPERIMENTAL: &str =
+    "Selling names through Shakedex on mainnet is experimental: enable it in Settings";
+
+/// Why an owner action is not offered on a name that is locking or locked
+/// for sale (R27).
+pub const NAME_LOCKED_FOR_SALE: &str = "this name is locked for sale through Shakedex";
+
 /// Why any profile but a recovery-phrase (mnemonic) one is refused (R16): a
 /// Ledger, a watch-only profile or an imported extended private key. The UI
 /// shows the same sentence on its disabled buttons
@@ -76,6 +85,6 @@ mod tests {
                 );
             }
         }
-        assert_eq!(seen, 5, "the five Shakedex action constants");
+        assert_eq!(seen, 6, "the six Shakedex action constants");
     }
 }

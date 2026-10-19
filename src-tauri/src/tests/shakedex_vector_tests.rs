@@ -434,3 +434,27 @@ fn cancel_finalize_matches_hsd_signed_hex() {
         "fee on hsd's vsize"
     );
 }
+
+/// R1, day 0: the TRANSFER that sends the name toward its lock commits to
+/// SHA3-256 of the lock script of the R17 key, as hsd encodes it.
+#[test]
+fn lock_transfer_covenant_matches_hsd() {
+    use crate::noncustodial::shakedex::lock_key::derive_lock_key;
+    use crate::noncustodial::shakedex::sell::lock_transfer_covenant;
+    let v = sd();
+    let name = v["name"].as_str().unwrap();
+    let key = derive_lock_key(
+        &crate::tests::hsd_parity_tests::master_from_known_mnemonic(),
+        Network::Main,
+        0,
+        name,
+    )
+    .unwrap();
+    let t = &v["sell"]["lockTransfer"];
+    let cov = lock_transfer_covenant(name, t["nameHeight"].as_u64().unwrap() as u32, &key.pubkey)
+        .unwrap();
+    assert_eq!(
+        hex::encode(cov.to_raw()),
+        t["covenantRaw"].as_str().unwrap()
+    );
+}

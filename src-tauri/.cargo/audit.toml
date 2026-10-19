@@ -50,4 +50,20 @@ ignore = [
   "RUSTSEC-2025-0081", # unic-char-property
   "RUSTSEC-2025-0098", # unic-ucd-version
   "RUSTSEC-2025-0100", # unic-ucd-ident
+
+  # zip 4.6.1 — extraction follows symlinks and keeps permission bits
+  # (3 vulns), fixed only in >=9.0.0 (semver-major). Pinned by
+  # tauri-plugin-updater (even 2.14.0 depends on zip 4.6.1). Extraction runs
+  # only in the Windows updater, on a bundle whose Ed25519 signature
+  # `download_and_install` has already verified against our pubkey.
+  "RUSTSEC-2026-0367",
+  "RUSTSEC-2026-0368",
+  "RUSTSEC-2026-0369",
+
+  # zvariant, zbus_names, zvariant_derive (4.x and 5.x) — unmaintained.
+  # Pulled in by zbus (Linux D-Bus) via notify-rust,
+  # tauri-plugin-notification and tauri-plugin-opener. No fixed release.
+  "RUSTSEC-2026-0370", # zvariant
+  "RUSTSEC-2026-0371", # zbus_names
+  "RUSTSEC-2026-0372", # zvariant_derive
 ]

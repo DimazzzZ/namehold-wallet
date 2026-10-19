@@ -382,12 +382,21 @@ export function WalletView() {
   // supports it (canX.allowed = true). Empty selection ⇒ false.
   const batchEligibility = useMemo(() => {
     if (selectedNames.size === 0 || nameCaps.length === 0) {
-      return { canReveal: false, canRedeem: false, canFinalize: false, canTransfer: false };
+      return {
+        canReveal: false,
+        canRedeem: false,
+        canFinalize: false,
+        canTransfer: false,
+        canRenew: false,
+      };
     }
     let canReveal = true;
     let canRedeem = true;
     let canFinalize = true;
     let canTransfer = true;
+    // R27: a name locked for sale (or not renewable yet) refuses a renewal;
+    // the batch is refused by the backend too, but is not offered here.
+    let canRenew = true;
     for (const n of selectedNames) {
       const c = capsByName.get(n);
       if (!c) {
@@ -395,14 +404,16 @@ export function WalletView() {
         canRedeem = false;
         canFinalize = false;
         canTransfer = false;
+        canRenew = false;
         break;
       }
       if (!c.canReveal.allowed) canReveal = false;
       if (!c.canRedeem.allowed) canRedeem = false;
       if (!c.canFinalize.allowed) canFinalize = false;
       if (!c.canTransfer.allowed) canTransfer = false;
+      if (!c.canRenew.allowed) canRenew = false;
     }
-    return { canReveal, canRedeem, canFinalize, canTransfer };
+    return { canReveal, canRedeem, canFinalize, canTransfer, canRenew };
   }, [selectedNames, nameCaps]);
 
   // Compute the fee-rate arg once for all batch handlers (null = use setting default).
@@ -1421,9 +1432,23 @@ export function WalletView() {
                     data-testid="batch-action-bar"
                   >
                     <span className="text-blue-800 font-medium">{selectedNames.size} selected</span>
-                    <Button size="sm" variant="primary" onClick={handleBatchRenew}>
-                      Renew Selected
-                    </Button>
+                    <Tooltip
+                      content={
+                        batchEligibility.canRenew
+                          ? undefined
+                          : "All selected names must be renewable now"
+                      }
+                    >
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={handleBatchRenew}
+                        disabled={!batchEligibility.canRenew}
+                        data-testid="batch-renew-btn"
+                      >
+                        Renew Selected
+                      </Button>
+                    </Tooltip>
                     <Tooltip
                       content={
                         batchEligibility.canReveal

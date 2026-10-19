@@ -76,14 +76,7 @@ pub(crate) fn gap_limit(settings: &std::collections::HashMap<String, String>) ->
         .unwrap_or(20)
 }
 
-pub(crate) fn session_ttl_ms(settings: &std::collections::HashMap<String, String>) -> u128 {
-    let secs = settings
-        .get("signer_session_timeout_seconds")
-        .and_then(|s| s.parse::<u64>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(900);
-    (secs as u128) * 1000
-}
+pub(crate) use crate::noncustodial::session::session_ttl_ms;
 
 /// Derive the BIP44 account-level xpub string `m/44'/coin'/account'`.
 pub(crate) fn account_xpub_from_seed(

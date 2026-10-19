@@ -9,17 +9,126 @@ use tauri::State;
 
 use crate::db::queries;
 use crate::error::AppError;
+use crate::noncustodial::actions::{NameInputSpec, PlanResult};
 use crate::noncustodial::hd::ExtendedPubKey;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::NodeRpcClient;
 use crate::noncustodial::send::{self, SpendableCoin};
+use crate::noncustodial::shakedex::sell;
+use crate::noncustodial::tx::sighash;
+use crate::noncustodial::types::TxDraftSummary;
 use crate::AppState;
 
 pub(crate) fn random_id() -> String {
     let mut b = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut b);
     hex::encode(b)
+}
+
+/// The summary a name draft stores (`wallet_tx_drafts.summary_json`). It
+/// reads as a plain `TxSummary`: the secure window shows its numbers as the
+/// generic rows and each of `warnings` as a Warning row.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActionSummary<'a> {
+    action: &'a str,
+    name: &'a str,
+    send_total_doos: i64,
+    fee_doos: i64,
+    change_doos: i64,
+    input_total_doos: i64,
+    num_inputs: i64,
+    recipient_address: Option<&'a str>,
+    txid: Option<&'a str>,
+    /// Full list of names when this draft covers more than one (batch-bid,
+    /// batch-renew, etc.). Serialized as `nameList` in JSON so
+    /// `has_pending_*_draft_for_name` queries can enumerate the batch's
+    /// members and match any of them. `None` for single-name drafts keeps
+    /// their `summary_json` byte-identical to pre-batch-bid history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name_list: Option<&'a [&'a str]>,
+    /// Left out when empty, so a draft without warnings keeps the
+    /// `summary_json` it had before the field existed.
+    #[serde(skip_serializing_if = "no_warnings")]
+    warnings: &'a [String],
+}
+
+fn no_warnings(w: &&[String]) -> bool {
+    w.is_empty()
+}
+
+/// What a draft says about itself besides the plan's own numbers.
+pub(crate) struct DraftLabel<'a> {
+    pub(crate) action: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) recipient: Option<&'a str>,
+    pub(crate) name_list: Option<&'a [&'a str]>,
+    pub(crate) warnings: &'a [String],
+}
+
+/// The summary of the draft [`persist_in_tx`] just inserted.
+pub(crate) fn draft_summary(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<TxDraftSummary, AppError> {
+    queries::get_tx_draft(conn, id)?
+        .map(|d| d.to_summary())
+        .ok_or_else(|| AppError::Other("draft vanished after insert".into()))
+}
+
+/// Insert a planned draft inside the caller's transaction, for a draft that
+/// commits together with other writes; returns the new draft's id. An error
+/// leaves the caller's transaction to roll back on drop.
+pub(crate) fn persist_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    profile_id: &str,
+    label: &DraftLabel<'_>,
+    res: &PlanResult,
+) -> Result<String, AppError> {
+    let summary = ActionSummary {
+        action: label.action,
+        name: label.name,
+        // Every output the action carries, change excluded — not the first
+        // one. A name action can have several: revealing a name you bid on
+        // more than once emits one REVEAL per bid, and redeeming reclaims one
+        // per losing reveal. Reporting `outputs[0]` made the confirm dialog
+        // offer to reclaim 28 HNS and print 12, which is the one figure a user
+        // checks before signing.
+        send_total_doos: res
+            .plan
+            .outputs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != res.plan.change_output_index)
+            .map(|(_, o)| o.value as i64)
+            .sum(),
+        fee_doos: res.fee as i64,
+        change_doos: res.change as i64,
+        input_total_doos: res.input_total as i64,
+        num_inputs: res.plan.inputs.len() as i64,
+        recipient_address: label.recipient,
+        txid: Some(&res.txid),
+        name_list: label.name_list,
+        warnings: label.warnings,
+    };
+    let id = random_id();
+    // Reserve every input of ours the plan spends (I3): the funding coins
+    // AND, when present, the name UTXO itself — two covenant drafts must not
+    // be able to grab the same name coin (e.g. two REVEALs) any more than two
+    // plain sends can grab the same liquid coin. A foreign or lock-key input
+    // is not ours to reserve (`DraftPlan::own_inputs`).
+    queries::insert_tx_draft_reserving_coins_in_tx(
+        tx,
+        &id,
+        profile_id,
+        label.action,
+        &res.unsigned_tx_hex,
+        &serde_json::to_string(&res.plan)?,
+        &serde_json::to_string(&summary)?,
+        &res.plan.own_inputs(),
+    )?;
+    Ok(id)
 }
 
 /// Resolved, secret-free build context for a covenant action.
@@ -91,6 +200,18 @@ pub(crate) fn load_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
     })
 }
 
+/// The input spending our owner coin of a name, signed SIGHASH_ALL.
+pub(crate) fn name_input_from(coin: queries::NameCoin) -> NameInputSpec {
+    NameInputSpec {
+        txid: coin.txid,
+        vout: coin.vout,
+        value: coin.value,
+        branch: coin.branch,
+        child_index: coin.child_index,
+        sighash_type: sighash::ALL,
+    }
+}
+
 /// The fee rate to build with: the caller's, else the user's setting, else
 /// the default. An unset or unreadable setting falls back to the default
 /// rather than failing the build: the resulting fee is shown in the
@@ -147,7 +268,12 @@ pub(crate) async fn fetch_name_state_strict(
     client: &dyn NodeRpc,
     name: &str,
 ) -> Result<NameState, AppError> {
-    let v = client.get_name_info(name).await?;
+    name_state_strict(&client.get_name_info(name).await?, name)
+}
+
+/// [`fetch_name_state_strict`] of a `getnameinfo` reply already in hand, so a
+/// caller that also reads other fields of it judges them on the same reply.
+pub(crate) fn name_state_strict(v: &serde_json::Value, name: &str) -> Result<NameState, AppError> {
     // hsd always sends `info` (`null` for a name with no state): a reply
     // without the key is not its answer.
     let info = match v.get("info") {
@@ -360,4 +486,33 @@ pub(crate) async fn exclude_owner_reveal(
         )));
     }
     Ok(losing)
+}
+
+/// R31 again when a lock TRANSFER draft is sent: it may be broadcast days
+/// after it was built, and the guard then counts the full transfer lockup
+/// from the node's tip now. `Ok(Some(refusal))` when the guard refuses, with
+/// the build's own sentence; an error when the node's word is missing, so
+/// nothing could be checked.
+pub(crate) async fn recheck_lock_expiry(
+    client: &dyn NodeRpc,
+    network: Network,
+    name: &str,
+) -> Result<Option<AppError>, AppError> {
+    let reply = client.get_name_info(name).await?;
+    let tip = client
+        .get_blockchain_info()
+        .await
+        .map_err(|e| {
+            AppError::Rpc(format!(
+                "node did not report its tip: could not check when '{name}' expires ({e})"
+            ))
+        })?
+        .blocks;
+    let params = network.name_params();
+    match sell::lock_expiry_guard(&params, &reply, tip, i64::from(params.transfer_lockup))? {
+        sell::ExpiryNotice::Refuse { expiry_end } => {
+            Ok(Some(sell::expires_before_the_lock(name, expiry_end)))
+        }
+        sell::ExpiryNotice::Warn { .. } | sell::ExpiryNotice::Ok => Ok(None),
+    }
 }

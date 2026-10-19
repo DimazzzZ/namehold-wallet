@@ -14,45 +14,28 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::db::{self, queries};
+use crate::db::queries;
 use crate::error::AppError;
-use crate::noncustodial::actions::{self, NameInputSpec, PrimaryOutput};
+use crate::noncustodial::actions::{self, PrimaryOutput};
 use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::NodeRpcClient;
 use crate::noncustodial::sync::{self, COV_REGISTER, COV_REVEAL};
-use crate::noncustodial::tx::sighash;
 use crate::noncustodial::types::TxDraftSummary;
 use crate::noncustodial::{address, bids, covenants, names, resource};
 use crate::AppState;
 
-use super::draft_ctx::{ensure_finalize_matured, ensure_renew_not_premature, exclude_owner_reveal};
+use super::draft_ctx::{
+    draft_summary, ensure_finalize_matured, ensure_renew_not_premature, exclude_owner_reveal,
+    persist_in_tx, DraftLabel,
+};
 // Re-exported: the `*_inner` builders take these, and their tests name them
 // through this module.
+#[cfg(test)]
+pub(crate) use super::draft_ctx::random_id;
 pub(crate) use super::draft_ctx::{
-    fee_rate, fetch_name_state, load_ctx, random_id, renewal_block, Ctx, NameState,
+    fee_rate, fetch_name_state, load_ctx, name_input_from, renewal_block, Ctx, NameState,
 };
 use super::names_pure;
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ActionSummary<'a> {
-    action: &'a str,
-    name: &'a str,
-    send_total_doos: i64,
-    fee_doos: i64,
-    change_doos: i64,
-    input_total_doos: i64,
-    num_inputs: i64,
-    recipient_address: Option<&'a str>,
-    txid: Option<&'a str>,
-    /// Full list of names when this draft covers more than one (batch-bid,
-    /// batch-renew, etc.). Serialized as `nameList` in JSON so
-    /// `has_pending_*_draft_for_name` queries can enumerate the batch's
-    /// members and match any of them. `None` for single-name drafts keeps
-    /// their `summary_json` byte-identical to pre-batch-bid history.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name_list: Option<&'a [&'a str]>,
-}
 
 /// Persist a planned covenant draft and return its summary.
 fn persist(
@@ -82,66 +65,17 @@ fn persist_with_conn(
     name_list: Option<&[&str]>,
     res: &actions::PlanResult,
 ) -> Result<TxDraftSummary, AppError> {
-    let summary = ActionSummary {
+    let tx = conn.unchecked_transaction()?;
+    let label = DraftLabel {
         action,
         name,
-        // Every output the action carries, change excluded — not the first
-        // one. A name action can have several: revealing a name you bid on
-        // more than once emits one REVEAL per bid, and redeeming reclaims one
-        // per losing reveal. Reporting `outputs[0]` made the confirm dialog
-        // offer to reclaim 28 HNS and print 12, which is the one figure a user
-        // checks before signing.
-        send_total_doos: res
-            .plan
-            .outputs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| Some(*i) != res.plan.change_output_index)
-            .map(|(_, o)| o.value as i64)
-            .sum(),
-        fee_doos: res.fee as i64,
-        change_doos: res.change as i64,
-        input_total_doos: res.input_total as i64,
-        num_inputs: res.plan.inputs.len() as i64,
-        recipient_address: recipient,
-        txid: Some(&res.txid),
+        recipient,
         name_list,
+        warnings: &[],
     };
-    let id = random_id();
-    // Reserve every input the plan spends (I3): the funding coins AND, when
-    // present, the name UTXO itself — two covenant drafts must not be able to
-    // grab the same name coin (e.g. two REVEALs) any more than two plain
-    // sends can grab the same liquid coin.
-    let reserved_inputs: Vec<(String, u32)> = res
-        .plan
-        .inputs
-        .iter()
-        .map(|i| (i.txid.clone(), i.vout))
-        .collect();
-    db::queries::insert_tx_draft_reserving_coins(
-        conn,
-        &id,
-        profile_id,
-        action,
-        &res.unsigned_tx_hex,
-        &serde_json::to_string(&res.plan)?,
-        &serde_json::to_string(&summary)?,
-        &reserved_inputs,
-    )?;
-    db::queries::get_tx_draft(conn, &id)?
-        .map(|d| d.to_summary())
-        .ok_or_else(|| AppError::Other("draft vanished after insert".into()))
-}
-
-pub(crate) fn name_input_from(coin: queries::NameCoin) -> NameInputSpec {
-    NameInputSpec {
-        txid: coin.txid,
-        vout: coin.vout,
-        value: coin.value,
-        branch: coin.branch,
-        child_index: coin.child_index,
-        sighash_type: sighash::ALL,
-    }
+    let id = persist_in_tx(&tx, profile_id, &label, res)?;
+    tx.commit()?;
+    draft_summary(conn, &id)
 }
 
 // ============================================================================
@@ -376,6 +310,10 @@ pub(crate) struct NameActionContext {
     pub bid_value_doos: Option<i64>,
     /// The lockup value (doos) from the local commitment row, if any.
     pub lockup_value_doos: Option<i64>,
+    /// The state of the Shakedex listing that keeps this name's owner
+    /// actions away (R27, [`queries::listing_blocking_owner_actions`]);
+    /// `None` when there is none.
+    pub listing_state: Option<queries::ListingState>,
 }
 
 /// Gather wallet evidence from the DB for a name.
@@ -554,10 +492,13 @@ pub(crate) fn find_name_action_context(
                     | "update"
                     | "transfer"
                     | "finalize"
-                    | "cancel_transfer"
+                    // build_cancel_draft's action; "cancel_transfer" is the capability's name, never a draft's.
+                    | "cancel"
                     | "renew"
                     | "revoke"
                     | crate::noncustodial::shakedex::purchase::PURCHASE_FINALIZE_ACTION
+                    | crate::noncustodial::shakedex::sell::LOCK_ACTION
+                    | crate::noncustodial::shakedex::sell::LOCK_FINALIZE_ACTION
             )
         });
 
@@ -589,6 +530,8 @@ pub(crate) fn find_name_action_context(
     // compares a height against the tip.
     let current_height =
         crate::commands::node_readiness::estimate_persisted_height(conn, profile_id)?;
+    let listing_state =
+        queries::listing_blocking_owner_actions(conn, profile_id, name)?.map(|l| l.state);
 
     Ok(NameActionContext {
         has_bid_commitment: bid.is_some(),
@@ -613,6 +556,7 @@ pub(crate) fn find_name_action_context(
         reveal_draft_status,
         bid_value_doos,
         lockup_value_doos,
+        listing_state,
     })
 }
 
@@ -1132,6 +1076,28 @@ pub(crate) fn build_name_action_capabilities(
             can_revoke,
         )
     };
+
+    // R27: a name locking or locked for sale is not updated, renewed,
+    // transferred, finalized or revoked from here, whatever else is true of it; this
+    // reason wins over the spend lock, since a listed name has no owner coin
+    // of ours by design. Cancel transfer stays while it is the listing's
+    // abort (R19); after that, the listing's own Cancel (T5) is the way out.
+    let for_sale = |cap: NameActionCapability, still_allowed: bool| match action_ctx.listing_state {
+        Some(_) if !still_allowed => NameActionCapability {
+            allowed: false,
+            reason: Some(crate::noncustodial::shakedex::NAME_LOCKED_FOR_SALE.to_string()),
+        },
+        _ => cap,
+    };
+    let abortable = action_ctx
+        .listing_state
+        .is_some_and(|s| s.aborts_by_cancel_transfer());
+    let can_update = for_sale(can_update, false);
+    let can_transfer = for_sale(can_transfer, false);
+    let can_finalize = for_sale(can_finalize, false);
+    let can_renew = for_sale(can_renew, false);
+    let can_revoke = for_sale(can_revoke, false);
+    let can_cancel_transfer = for_sale(can_cancel_transfer, abortable);
 
     // 5. Derive task state. Days-until-expire comes from the node/explorer
     // stats when present (`daysUntilExpire`, falling back to
@@ -2347,6 +2313,32 @@ pub(crate) fn build_register_draft_inner(
     persist_with_conn(conn, &ctx.profile_id, "register", name, None, None, &res)
 }
 
+/// R27: the owner actions a name locking or locked for sale refuses, checked
+/// against [`queries::listing_blocking_owner_actions`] before anything is
+/// built or asked of the node.
+/// `cancel` is the Cancel transfer, which stays the listing's abort while
+/// [`queries::ListingState::aborts_by_cancel_transfer`] says so (R19).
+fn refuse_while_listed(
+    state: &State<'_, AppState>,
+    profile_id: &str,
+    names: &[String],
+    cancel: bool,
+) -> Result<(), AppError> {
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    for name in names {
+        if let Some(l) = queries::listing_blocking_owner_actions(&conn, profile_id, name)? {
+            if cancel && l.state.aborts_by_cancel_transfer() {
+                continue;
+            }
+            return Err(AppError::InvalidInput(format!(
+                "'{name}': {}",
+                crate::noncustodial::shakedex::NAME_LOCKED_FOR_SALE
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_update_draft(
@@ -2356,6 +2348,7 @@ pub async fn build_update_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), false)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     build_update_draft_inner(&conn, &ctx, &name, &records, fee_rate, &ns, &coin)
@@ -2407,6 +2400,7 @@ pub async fn build_renew_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), false)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = ctx.node.clone();
     ensure_renew_not_premature(&client, ctx.network, &name).await?;
@@ -2462,6 +2456,7 @@ pub async fn build_transfer_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), false)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     build_transfer_draft_inner(&conn, &ctx, &name, &recipient, fee_rate, &ns, &coin)
@@ -2522,6 +2517,7 @@ pub async fn build_finalize_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), false)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = ctx.node.clone();
     ensure_finalize_matured(&client, ctx.network, &name).await?;
@@ -2623,6 +2619,7 @@ pub async fn build_cancel_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), true)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
@@ -2639,7 +2636,32 @@ pub async fn build_cancel_draft(
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "cancel", &name, None, None, &res)
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    // R19: a Cancel transfer of a name still locking is its listing's abort.
+    // The link commits with the draft; the listing becomes Aborted only once
+    // this cancel is mined (`shakedex_jobs::refresh_listings_before_lock_with_client`).
+    let tx = conn.unchecked_transaction()?;
+    let label = DraftLabel {
+        action: "cancel",
+        name: &name,
+        recipient: None,
+        name_list: None,
+        warnings: &[],
+    };
+    let id = persist_in_tx(&tx, &ctx.profile_id, &label, &res)?;
+    // `res.txid` is the txid of the unsigned tx the draft stores (the
+    // no-witness hash, the same once signed).
+    queries::link_shakedex_listing_abort(
+        &tx,
+        &ctx.profile_id,
+        &name,
+        &coin.txid,
+        coin.vout,
+        &id,
+        &res.txid,
+    )?;
+    tx.commit()?;
+    draft_summary(&conn, &id)
 }
 
 #[tauri::command]
@@ -2650,6 +2672,7 @@ pub async fn build_revoke_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), false)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
@@ -2704,6 +2727,7 @@ pub async fn build_batch_renew_draft(
         )));
     }
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, &names, false)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
@@ -2791,6 +2815,7 @@ pub async fn build_batch_transfer_draft(
         )));
     }
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, &names, false)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     // Decode the shared recipient once, up front, so a bad address aborts the
     // whole batch before any owner-coin prefetch or DB write.
@@ -3154,6 +3179,7 @@ pub async fn build_batch_finalize_draft(
         )));
     }
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, &names, false)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
@@ -3311,6 +3337,7 @@ pub async fn build_finalize_with_payment_draft(
         ));
     }
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), false)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = ctx.node.clone();
@@ -3459,6 +3486,7 @@ mod tests {
             reveal_draft_status: None,
             bid_value_doos: None,
             lockup_value_doos: None,
+            listing_state: None,
         }
     }
 

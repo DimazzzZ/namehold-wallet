@@ -1264,10 +1264,40 @@ pub const REACHED_CHAIN_STATUSES: [&str; 3] = ["broadcasted", "confirmed", "broa
 /// [`REACHED_CHAIN_STATUSES`] as an SQL list, for `status IN {..}` in the
 /// queries that ask the same question of the database.
 pub fn reached_chain_sql() -> String {
-    let quoted: Vec<String> = REACHED_CHAIN_STATUSES
-        .iter()
-        .map(|s| format!("'{s}'"))
-        .collect();
+    sql_list(REACHED_CHAIN_STATUSES.iter().copied())
+}
+
+/// The draft statuses of a draft never sent: discarding it changes nothing
+/// on chain. Disjoint from [`REACHED_CHAIN_STATUSES`].
+pub const UNSENT_STATUSES: [&str; 2] = ["draft", "signed"];
+
+/// Whether a draft in `status` was never sent ([`UNSENT_STATUSES`]).
+pub fn never_sent(status: &str) -> bool {
+    UNSENT_STATUSES.contains(&status)
+}
+
+/// The status of a draft the chain has mined.
+const CONFIRMED_STATUS: &str = "confirmed";
+
+/// Whether a lock TRANSFER draft in `status` still holds its name for a
+/// Locking listing (R27): it may yet be sent ([`never_sent`]), or it was
+/// sent and not given up ([`may_have_reached_chain`]). A dropped, failed or
+/// deleted lock draft does not.
+pub fn lock_draft_holds_name(status: &str) -> bool {
+    never_sent(status) || may_have_reached_chain(status)
+}
+
+/// Whether a lock TRANSFER draft in `status` may still land on chain: it
+/// holds the name ([`lock_draft_holds_name`]) and is not mined yet. Until it
+/// is mined or given up, a missing lock coin proves nothing (R19).
+pub fn lock_draft_may_still_land(status: &str) -> bool {
+    lock_draft_holds_name(status) && status != CONFIRMED_STATUS
+}
+
+/// `items` quoted as an SQL list, `('a', 'b')`. Only for the fixed spellings
+/// of this module's constants, never for user input.
+fn sql_list<'a>(items: impl Iterator<Item = &'a str>) -> String {
+    let quoted: Vec<String> = items.map(|s| format!("'{s}'")).collect();
     format!("({})", quoted.join(", "))
 }
 
@@ -1318,11 +1348,33 @@ pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result
          WHERE purchase_draft_id = ?1 AND state = ?2",
         params![id, PurchaseState::PendingSend],
     )?;
+    // A listing still Locking goes with its lock TRANSFER draft only when the
+    // draft was never sent (`draft`, `signed`): the name never left; its
+    // reserved addresses stay used. A `dropped` or `failed` draft was
+    // broadcast and may still be mined, so its listing stays.
+    if never_sent(&status) {
+        tx.execute(
+            "DELETE FROM shakedex_listings WHERE lock_transfer_draft_id = ?1 AND state = ?2",
+            params![id, ListingState::Locking],
+        )?;
+    }
     tx.execute(
         "UPDATE shakedex_purchases SET finalize_draft_id = NULL, updated_at = datetime('now')
          WHERE finalize_draft_id = ?1",
         params![id],
     )?;
+    // A Cancel transfer never sent (`draft`, `signed`) aborts nothing, so its
+    // listing loses the link and the cancel's txid (R19). A `dropped` or
+    // `failed` one was broadcast and may still be mined: its listing keeps
+    // both, and the abort job reads the txid from the listing, not the draft.
+    if never_sent(&status) {
+        tx.execute(
+            "UPDATE shakedex_listings
+             SET abort_draft_id = NULL, abort_txid = NULL, updated_at = datetime('now')
+             WHERE abort_draft_id = ?1",
+            params![id],
+        )?;
+    }
     Ok(())
 }
 
@@ -1382,6 +1434,464 @@ impl rusqlite::types::FromSql for PurchaseState {
             .parse()
             .map_err(|e: AppError| rusqlite::types::FromSqlError::Other(e.to_string().into()))
     }
+}
+
+/// Where a Shakedex listing is (`shakedex_listings.state`). Stored by
+/// [`ListingState::as_str`], the spellings the table's CHECK lists; sent to
+/// the UI in camelCase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ListingState {
+    Locking,
+    ReadyToFinalize,
+    Finalizing,
+    Listed,
+    SalePending,
+    Sold,
+    Cancelling,
+    CancelAwaitingFinalize,
+    CancelFinalizing,
+    Cancelled,
+    Aborted,
+    Restored,
+    Expired,
+}
+
+impl ListingState {
+    pub const ALL: [ListingState; 13] = [
+        Self::Locking,
+        Self::ReadyToFinalize,
+        Self::Finalizing,
+        Self::Listed,
+        Self::SalePending,
+        Self::Sold,
+        Self::Cancelling,
+        Self::CancelAwaitingFinalize,
+        Self::CancelFinalizing,
+        Self::Cancelled,
+        Self::Aborted,
+        Self::Restored,
+        Self::Expired,
+    ];
+
+    /// The states a listing ends in; the name is no longer locking or locked
+    /// by it. `idx_shakedex_listings_open_name` lists the same spellings.
+    pub const TERMINAL: [ListingState; 4] =
+        [Self::Sold, Self::Cancelled, Self::Aborted, Self::Expired];
+
+    /// The stored spelling, as the table's CHECK constraint lists it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Locking => "locking",
+            Self::ReadyToFinalize => "ready_to_finalize",
+            Self::Finalizing => "finalizing",
+            Self::Listed => "listed",
+            Self::SalePending => "sale_pending",
+            Self::Sold => "sold",
+            Self::Cancelling => "cancelling",
+            Self::CancelAwaitingFinalize => "cancel_awaiting_finalize",
+            Self::CancelFinalizing => "cancel_finalizing",
+            Self::Cancelled => "cancelled",
+            Self::Aborted => "aborted",
+            Self::Restored => "restored",
+            Self::Expired => "expired",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        Self::TERMINAL.contains(&self)
+    }
+
+    /// The states in which the name's own Cancel transfer is still the
+    /// listing's abort (R19): from day 0 until the FINALIZE into the lock is
+    /// built, the owner coin is our TRANSFER to the lock and nothing else
+    /// spends it.
+    pub const CANCEL_ABORTABLE: [ListingState; 2] = [Self::Locking, Self::ReadyToFinalize];
+
+    /// Whether this state is one of [`Self::CANCEL_ABORTABLE`].
+    pub fn aborts_by_cancel_transfer(self) -> bool {
+        Self::CANCEL_ABORTABLE.contains(&self)
+    }
+
+    /// [`Self::CANCEL_ABORTABLE`] as an SQL list, for `state IN {..}`.
+    pub fn cancel_abortable_sql() -> String {
+        sql_list(Self::CANCEL_ABORTABLE.iter().map(|s| s.as_str()))
+    }
+}
+
+impl std::str::FromStr for ListingState {
+    type Err = AppError;
+
+    fn from_str(s: &str) -> Result<Self, AppError> {
+        Self::ALL
+            .into_iter()
+            .find(|state| state.as_str() == s)
+            .ok_or_else(|| AppError::Other(format!("unknown listing state '{s}'")))
+    }
+}
+
+impl rusqlite::ToSql for ListingState {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
+impl rusqlite::types::FromSql for ListingState {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        value
+            .as_str()?
+            .parse()
+            .map_err(|e: AppError| rusqlite::types::FromSqlError::Other(e.to_string().into()))
+    }
+}
+
+/// How a listing prices the name (`shakedex_listings.mode`). Stored by
+/// [`ListingMode::as_str`]; the command argument and the UI use camelCase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ListingMode {
+    BuyNow,
+    ReverseAuction,
+}
+
+impl ListingMode {
+    /// The stored spelling, as the table's CHECK constraint lists it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BuyNow => "buy_now",
+            Self::ReverseAuction => "reverse_auction",
+        }
+    }
+}
+
+impl std::str::FromStr for ListingMode {
+    type Err = AppError;
+
+    fn from_str(s: &str) -> Result<Self, AppError> {
+        Ok(match s {
+            "buy_now" => Self::BuyNow,
+            "reverse_auction" => Self::ReverseAuction,
+            other => return Err(AppError::Other(format!("unknown listing mode '{other}'"))),
+        })
+    }
+}
+
+impl rusqlite::ToSql for ListingMode {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
+impl rusqlite::types::FromSql for ListingMode {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        value
+            .as_str()?
+            .parse()
+            .map_err(|e: AppError| rusqlite::types::FromSqlError::Other(e.to_string().into()))
+    }
+}
+
+/// One row of `shakedex_listings`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShakedexListing {
+    pub id: String,
+    pub wallet_profile_id: String,
+    pub name: String,
+    pub mode: ListingMode,
+    pub state: ListingState,
+    pub lock_pubkey_hex: String,
+    pub lock_transfer_draft_id: Option<String>,
+    pub lock_transfer_txid: Option<String>,
+    pub lock_txid: Option<String>,
+    pub lock_vout: Option<i64>,
+    pub payment_address: Option<String>,
+    pub cancel_address: Option<String>,
+    /// Receive-branch index of `cancel_address`.
+    pub cancel_child_index: Option<i64>,
+    pub steps_json: String,
+    pub listing_file_json: Option<String>,
+    pub publish: bool,
+    pub market_status: Option<String>,
+    pub market_retry_at: Option<String>,
+    pub expires_at: Option<i64>,
+    pub abort_draft_id: Option<String>,
+    /// The txid of the Cancel transfer `abort_draft_id` holds; kept when that
+    /// draft is deleted after it was broadcast.
+    pub abort_txid: Option<String>,
+    pub sold_txid: Option<String>,
+    pub cancel_txid: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+const SHAKEDEX_LISTING_COLS: &str = "id, wallet_profile_id, name, mode, state, lock_pubkey_hex, \
+    lock_transfer_draft_id, lock_transfer_txid, lock_txid, lock_vout, payment_address, \
+    cancel_address, cancel_child_index, steps_json, listing_file_json, publish, market_status, \
+    market_retry_at, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, created_at, \
+    updated_at";
+
+fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShakedexListing> {
+    Ok(ShakedexListing {
+        id: row.get("id")?,
+        wallet_profile_id: row.get("wallet_profile_id")?,
+        name: row.get("name")?,
+        mode: row.get("mode")?,
+        state: row.get("state")?,
+        lock_pubkey_hex: row.get("lock_pubkey_hex")?,
+        lock_transfer_draft_id: row.get("lock_transfer_draft_id")?,
+        lock_transfer_txid: row.get("lock_transfer_txid")?,
+        lock_txid: row.get("lock_txid")?,
+        lock_vout: row.get("lock_vout")?,
+        payment_address: row.get("payment_address")?,
+        cancel_address: row.get("cancel_address")?,
+        cancel_child_index: row.get("cancel_child_index")?,
+        steps_json: row.get("steps_json")?,
+        listing_file_json: row.get("listing_file_json")?,
+        publish: row.get::<_, i64>("publish")? != 0,
+        market_status: row.get("market_status")?,
+        market_retry_at: row.get("market_retry_at")?,
+        expires_at: row.get("expires_at")?,
+        abort_draft_id: row.get("abort_draft_id")?,
+        abort_txid: row.get("abort_txid")?,
+        sold_txid: row.get("sold_txid")?,
+        cancel_txid: row.get("cancel_txid")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+    })
+}
+
+/// Insert a listing. The indexes refuse a second open listing of the name
+/// and a lock outpoint another listing already tracks.
+pub fn insert_shakedex_listing(
+    conn: &rusqlite::Connection,
+    l: &ShakedexListing,
+) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO shakedex_listings
+            (id, wallet_profile_id, name, mode, state, lock_pubkey_hex, lock_transfer_draft_id,
+             lock_transfer_txid, lock_txid, lock_vout, payment_address, cancel_address,
+             cancel_child_index, steps_json, listing_file_json, publish, market_status,
+             market_retry_at, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                 ?18, ?19, ?20, ?21, ?22, ?23)",
+        params![
+            l.id,
+            l.wallet_profile_id,
+            l.name,
+            l.mode,
+            l.state,
+            l.lock_pubkey_hex,
+            l.lock_transfer_draft_id,
+            l.lock_transfer_txid,
+            l.lock_txid,
+            l.lock_vout,
+            l.payment_address,
+            l.cancel_address,
+            l.cancel_child_index,
+            l.steps_json,
+            l.listing_file_json,
+            i64::from(l.publish),
+            l.market_status,
+            l.market_retry_at,
+            l.expires_at,
+            l.abort_draft_id,
+            l.abort_txid,
+            l.sold_txid,
+            l.cancel_txid
+        ],
+    )?;
+    Ok(())
+}
+
+/// Fetch one listing, or `None`.
+pub fn get_shakedex_listing(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<Option<ShakedexListing>, AppError> {
+    let sql = format!("SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings WHERE id = ?1");
+    let row = conn
+        .query_row(&sql, params![id], row_to_shakedex_listing)
+        .optional()?;
+    Ok(row)
+}
+
+/// The listing of `name` that is still open (not in a terminal state), newest
+/// first: while there is one, the name is locking or locked (R27).
+pub fn open_shakedex_listing_for_name(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+) -> Result<Option<ShakedexListing>, AppError> {
+    let [t0, t1, t2, t3] = ListingState::TERMINAL;
+    let sql = format!(
+        "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
+         WHERE wallet_profile_id = ?1 AND name = ?2 AND state NOT IN (?3, ?4, ?5, ?6)
+         ORDER BY created_at DESC LIMIT 1"
+    );
+    let row = conn
+        .query_row(
+            &sql,
+            params![profile_id, name, t0, t1, t2, t3],
+            row_to_shakedex_listing,
+        )
+        .optional()?;
+    Ok(row)
+}
+
+/// The open listing that keeps `name`'s owner actions away (R27), if any.
+/// A listing past Locking always does. A Locking one does only while its
+/// lock TRANSFER draft is alive ([`lock_draft_holds_name`]): a dropped,
+/// failed or deleted lock draft does not freeze the name; the chain refresh
+/// (T4) resolves the row, and a TRANSFER mined after all shows as a pending
+/// transfer that Cancel transfer handles.
+pub fn listing_blocking_owner_actions(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+) -> Result<Option<ShakedexListing>, AppError> {
+    let Some(listing) = open_shakedex_listing_for_name(conn, profile_id, name)? else {
+        return Ok(None);
+    };
+    if listing.state != ListingState::Locking {
+        return Ok(Some(listing));
+    }
+    let status = lock_draft_status(conn, &listing)?;
+    let alive = status.is_some_and(|s| lock_draft_holds_name(&s));
+    Ok(alive.then_some(listing))
+}
+
+/// The status of the listing's lock TRANSFER draft, `None` when the listing
+/// has none or the draft row is gone.
+pub fn lock_draft_status(
+    conn: &rusqlite::Connection,
+    listing: &ShakedexListing,
+) -> Result<Option<String>, AppError> {
+    let Some(id) = listing.lock_transfer_draft_id.as_deref() else {
+        return Ok(None);
+    };
+    Ok(conn
+        .query_row(
+            "SELECT status FROM wallet_tx_drafts WHERE id = ?1 AND wallet_profile_id = ?2",
+            params![id, listing.wallet_profile_id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// R19: link a Cancel transfer draft to the listing it aborts: the open
+/// listing of `name` whose abort is still the Cancel transfer
+/// ([`ListingState::aborts_by_cancel_transfer`]) and whose lock TRANSFER is
+/// the coin `(transfer_txid, transfer_vout)` the cancel spends. Any other
+/// cancel links nothing. Returns how many listings were linked (0 or 1).
+pub fn link_shakedex_listing_abort(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+    transfer_txid: &str,
+    transfer_vout: u32,
+    draft_id: &str,
+    cancel_txid: &str,
+) -> Result<usize, AppError> {
+    // The lock TRANSFER is output 0 of its draft (the plan's covenant output).
+    if transfer_vout != 0 {
+        return Ok(0);
+    }
+    let sql = format!(
+        "UPDATE shakedex_listings
+         SET abort_draft_id = ?1, abort_txid = ?5, updated_at = datetime('now')
+         WHERE wallet_profile_id = ?2 AND name = ?3 AND lock_transfer_txid = ?4
+           AND state IN {}",
+        ListingState::cancel_abortable_sql()
+    );
+    Ok(conn.execute(
+        &sql,
+        params![draft_id, profile_id, name, transfer_txid, cancel_txid],
+    )?)
+}
+
+/// The listings the chain may still move before the FINALIZE into the lock
+/// (R19): those whose abort is still the Cancel transfer
+/// ([`ListingState::CANCEL_ABORTABLE`]), and those Aborted within the last
+/// `recheck_days`, which a reorg could still make Locking again.
+pub fn list_shakedex_listings_before_lock(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    recheck_days: u32,
+) -> Result<Vec<ShakedexListing>, AppError> {
+    let sql = format!(
+        "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
+         WHERE wallet_profile_id = ?1
+           AND (state IN {}
+                OR (state = ?2 AND updated_at >= datetime('now', ?3)))
+         ORDER BY created_at",
+        ListingState::cancel_abortable_sql()
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params![
+            profile_id,
+            ListingState::Aborted,
+            format!("-{recheck_days} days")
+        ],
+        row_to_shakedex_listing,
+    )?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// R19: the name left the lock TRANSFER before the FINALIZE into the lock
+/// (a mined Cancel transfer, a REVOKE, or a lock TRANSFER that never
+/// landed), so the listing is Aborted. Only a listing whose abort is still
+/// the Cancel transfer moves. Returns how many rows changed (0 or 1).
+pub fn abort_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
+    end_listing_before_lock(conn, id, ListingState::Aborted)
+}
+
+/// hsd reports no live state for the name (`getnameinfo` with `info: null`)
+/// before the FINALIZE into the lock, so the listing is Expired. Only a
+/// listing whose abort is still the Cancel transfer moves. Returns how many
+/// rows changed (0 or 1).
+pub fn expire_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
+    end_listing_before_lock(conn, id, ListingState::Expired)
+}
+
+fn end_listing_before_lock(
+    conn: &rusqlite::Connection,
+    id: &str,
+    to: ListingState,
+) -> Result<usize, AppError> {
+    let sql = format!(
+        "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now')
+         WHERE id = ?1 AND state IN {}",
+        ListingState::cancel_abortable_sql()
+    );
+    Ok(conn.execute(&sql, params![id, to])?)
+}
+
+/// R19: a reorg took an Aborted listing's abort out of the chain (its lock
+/// TRANSFER is a coin or the owner again), so the listing is Locking again — unless another listing of the name is
+/// open by now (`idx_shakedex_listings_open_name` allows one): that newer
+/// listing stays the open one, and this one stays Aborted. Returns how many
+/// rows changed (0 or 1).
+pub fn unabort_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
+    let [t0, t1, t2, t3] = ListingState::TERMINAL;
+    Ok(conn.execute(
+        "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now')
+         WHERE id = ?1 AND state = ?3
+           AND NOT EXISTS (
+               SELECT 1 FROM shakedex_listings o
+               WHERE o.wallet_profile_id = shakedex_listings.wallet_profile_id
+                 AND o.name = shakedex_listings.name AND o.id <> shakedex_listings.id
+                 AND o.state NOT IN (?4, ?5, ?6, ?7))",
+        params![
+            id,
+            ListingState::Locking,
+            ListingState::Aborted,
+            t0,
+            t1,
+            t2,
+            t3
+        ],
+    )?)
 }
 
 /// A purchase's state with the chain facts tracked alongside it; written
