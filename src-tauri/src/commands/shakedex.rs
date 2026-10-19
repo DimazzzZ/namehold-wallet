@@ -91,7 +91,7 @@ pub struct MarketRow {
     pub steps: Vec<PriceStepView>,
     pub expires_at: Option<u64>,
     /// The listing is locked to one of this device's own lock addresses (R33):
-    /// shown as yours, with no Buy.
+    /// its Buy shows disabled, with [`OWN_LISTING`].
     pub own: bool,
 }
 
@@ -413,8 +413,10 @@ fn software_writer_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
     Ok(ctx)
 }
 
-/// What buying a listing locked by this device is refused with (R33).
-const OWN_LISTING: &str = "this is your own listing: cancel it instead (My listings), \
+/// What buying a listing locked by this device is refused with (R33). The
+/// Market row of such a listing shows its Buy disabled with the same
+/// sentence (`marketText.ts::OWN_LISTING`).
+pub const OWN_LISTING: &str = "this is your own listing: cancel it instead (My listings), \
                            buying it would only cost you network fees";
 
 /// R15/R29: a new purchase or a new listing on mainnet needs the

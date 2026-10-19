@@ -1216,6 +1216,37 @@ async fn import_link_refuses_a_file_for_another_name() {
     );
 }
 
+/// R33: an imported listing locked by this device comes back marked `own`,
+/// read from the same rows as the Market page; one locked elsewhere does not.
+#[tokio::test]
+async fn import_listing_marks_a_listing_locked_by_this_device() {
+    let mut node = mockito::Server::new_async().await;
+    let _m = live_node(&mut node).await;
+    let app = app_with(mainnet(&node.url()));
+    let import = || {
+        shakedex_import_listing(
+            app.state(),
+            ImportSource::Text {
+                json: LISTING_FILE.into(),
+            },
+        )
+    };
+    let row = import().await.expect("import");
+    assert!(!row.own, "a listing locked elsewhere is not ours");
+    let key = hex::encode(
+        crate::noncustodial::shakedex::listing_file::ListingFile::parse(
+            LISTING_FILE,
+            Network::Main,
+        )
+        .unwrap()
+        .public_key,
+    );
+    with_db(&app, |c| own_listing_row(c, PROFILE, "mine", &key));
+    let row = import().await.expect("import");
+    assert!(row.own);
+    assert_eq!(serde_json::to_value(&row).unwrap()["own"], true);
+}
+
 #[tokio::test]
 async fn import_text_and_file() {
     let mut node = mockito::Server::new_async().await;
@@ -2026,6 +2057,7 @@ fn refusal_sentences_match_the_uis_word_for_word() {
             "CANCEL_LOCKUP_NOT_COUNTED",
             crate::commands::shakedex::CANCEL_LOCKUP_NOT_COUNTED,
         ),
+        ("OWN_LISTING", crate::commands::shakedex::OWN_LISTING),
     ] {
         let decl = format!("export const {name} = {sentence:?};");
         assert!(ui.contains(&decl), "marketText.ts lacks `{decl}`");

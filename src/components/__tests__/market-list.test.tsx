@@ -11,6 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
 import MarketPage from "../market/MarketPage";
+import { OWN_LISTING } from "../market/marketText";
 import { useSettingsStore, DEFAULT_SETTINGS } from "../../stores/settings";
 
 const noHidden = {
@@ -330,14 +331,26 @@ describe("MarketPage", () => {
     expect(items[1]).toHaveTextContent("Unnamed listing");
   });
 
-  it("shows a row locked by this device as yours, without Buy", async () => {
+  it("shows a row locked by this device with Buy disabled and the backend's refusal (R33)", async () => {
     mockMarket(page({ rows: [row({ own: true })] }));
     renderPage();
     expect(await screen.findByText(".dexreviews")).toBeInTheDocument();
-    expect(screen.getByTestId("market-status")).toHaveTextContent(
-      "Your own listing: manage it in My listings",
+    expect(screen.getByTestId("market-status")).toHaveTextContent(OWN_LISTING);
+    const buy = screen.getByTestId("market-buy");
+    expect(buy).toBeDisabled();
+    fireEvent.mouseEnter(buy.parentElement!);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(OWN_LISTING);
+  });
+
+  it("shows Buy disabled on an own row the node did not verify too (R33 refuses first)", async () => {
+    mockMarket(
+      page({
+        rows: [row({ own: true, verdict: { verdict: "hidden", kind: "soldOrCancelled" } })],
+      }),
     );
-    expect(screen.queryByTestId("market-buy")).not.toBeInTheDocument();
+    renderPage();
+    expect(await screen.findByText(".dexreviews")).toBeInTheDocument();
+    expect(screen.getByTestId("market-buy")).toBeDisabled();
   });
 
   it("in SPV mode shows rows as not verified and without Buy", async () => {

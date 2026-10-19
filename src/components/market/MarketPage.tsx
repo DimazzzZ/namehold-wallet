@@ -12,6 +12,7 @@ import { MyListings } from "./MyListings";
 import { PurchaseConfirm } from "./PurchaseConfirm";
 import {
   MARKET_MAINNET_ONLY,
+  OWN_LISTING,
   TONE_DOT,
   approxWait,
   canBuyShakedex,
@@ -97,6 +98,10 @@ function ListingsTable({ rows, canBuy, refusal, onBuy }: ListingsTableProps) {
     <ul className="divide-y divide-gray-100 border-y border-gray-100 bg-white">
       {rows.map(({ row, origin }, i) => {
         const buyable = row.verdict.verdict === "buyable" && !row.own;
+        // R33: the backend refuses a row of ours before it asks the node, so
+        // Buy shows on every own row, disabled with that refusal's sentence;
+        // a profile that cannot buy at all is refused first, with its reason.
+        const buyReason = canBuy ? (row.own ? OWN_LISTING : null) : refusal;
         const status = listingStatus(row);
         const listedUntil = row.expiresAt != null ? listedUntilText(row.expiresAt) : null;
         return (
@@ -137,17 +142,17 @@ function ListingsTable({ rows, canBuy, refusal, onBuy }: ListingsTableProps) {
               <span className="text-sm font-semibold tabular-nums text-gray-900">
                 {buyable ? `${formatHns(row.currentPrice)} HNS` : "—"}
               </span>
-              {buyable && (
+              {(buyable || row.own) && (
                 // Only a row verified on the node is buyable: in SPV and
                 // Explorer modes every row comes back unverified. A LearnHNS
                 // link is the market's own listing file: its published fee
                 // applies just as for a row of the market page.
-                <Tooltip content={canBuy ? null : refusal}>
+                <Tooltip content={buyReason}>
                   <Button
                     size="sm"
                     variant="primary"
                     data-testid="market-buy"
-                    disabled={!canBuy}
+                    disabled={!canBuy || row.own}
                     onClick={() => onBuy(row, origin !== "file")}
                   >
                     Buy

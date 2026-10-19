@@ -172,10 +172,12 @@ export const TONE_DOT: Record<StatusTone, string> = {
   bad: "bg-red-500",
 };
 
-export const OWN_LISTING_STATUS = "Your own listing: manage it in My listings";
+/** `commands/shakedex.rs::OWN_LISTING` (R33): a row this device locked, on its status and its disabled Buy. */
+export const OWN_LISTING =
+  "this is your own listing: cancel it instead (My listings), buying it would only cost you network fees";
 
 export function listingStatus(row: MarketRow): { tone: StatusTone; text: string } {
-  if (row.own) return { tone: "muted", text: OWN_LISTING_STATUS };
+  if (row.own) return { tone: "muted", text: OWN_LISTING };
   const v = row.verdict;
   if (v.verdict === "buyable") {
     return v.warnExpiry
