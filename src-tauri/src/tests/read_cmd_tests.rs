@@ -3491,6 +3491,7 @@ fn add_listing(
             market_accepted: false,
             market_changed: false,
             market_told: false,
+            market_sent_step: None,
             expires_at: None,
             abort_draft_id: None,
             abort_txid: None,

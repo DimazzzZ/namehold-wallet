@@ -1908,19 +1908,23 @@ impl ListingWrite {
 /// The SET fragment that starts a fresh listing's market bookkeeping over
 /// ([`ListingWrite::market_reset_sql`]).
 const MARKET_RESET_SQL: &str = ", market_status = NULL, market_retry_at = NULL, \
-     market_attempts = 0, market_error = NULL, market_accepted = 0, market_changed = 0";
+     market_attempts = 0, market_error = NULL, market_accepted = 0, market_changed = 0, \
+     market_sent_step = NULL";
 
 /// The SET fragment of a Listed to Listed write that changes what is sent
 /// ([`ListingWrite::market_reset_sql`]): a listing the market was told about
 /// is Retrying, due now, no failure counted, its acceptance kept, and
-/// `market_changed` set (a differing market copy is then our own older
-/// one); one never told stays untold (its first upload is the publish
-/// job's). The status is spelled by [`MarketStatus::as_str`], never by
-/// hand.
+/// `market_changed` set once the market took it (`market_accepted`: a
+/// differing market copy is then our own older one; a listing the market
+/// never took has no copy of ours there, the rule of
+/// [`record_market_result`]'s moved step); one never told stays untold
+/// (its first upload is the publish job's). The status is spelled by
+/// [`MarketStatus::as_str`], never by hand.
 fn market_changed_sql() -> String {
     format!(
         ", market_status = CASE WHEN market_status IS NULL THEN NULL ELSE '{}' END, \
-         market_retry_at = NULL, market_attempts = 0, market_error = NULL, market_changed = 1",
+         market_retry_at = NULL, market_attempts = 0, market_error = NULL, \
+         market_changed = CASE WHEN market_accepted = 1 THEN 1 ELSE market_changed END",
         MarketStatus::Retrying.as_str()
     )
 }
@@ -2147,15 +2151,25 @@ pub struct ShakedexListing {
     /// listing for the first time.
     pub market_accepted: bool,
     /// What is sent changed since the market last accepted or served our
-    /// copy (a Lower price, an expiry refresh, a reorg back to an unsent
-    /// cancel): a market copy that differs is then our own older one, not
-    /// someone else's. Cleared only by an accepted upload or a matched copy.
+    /// copy: a market copy that differs is then our own older one, not
+    /// someone else's. Set by a Lower price or an expiry refresh and by a
+    /// moved step not taken (T8), each only once the market accepted the
+    /// listing (`market_accepted`; one it never took has no copy of ours
+    /// there), and by a reorg back to an unsent cancel of a told listing
+    /// (`market_status` set, not Refused: [`mark_listing_cancel_unmined`]),
+    /// also only once accepted.
+    /// Cleared only by an accepted upload or a matched copy, and by a move
+    /// into Listed.
     pub market_changed: bool,
     /// The market took something of ours for this listing (its pending post
     /// accepted, an upload accepted, our copy served back): its mined cancel
     /// or sale is then reported (R28). Sticky: nothing clears it, since a
     /// listing row is one lock (a new lock is a new row).
     pub market_told: bool,
+    /// The signature (hex) of the step the market was last sent or found
+    /// holding as ours (R24, T8); `None` before any upload, and after a
+    /// move into Listed.
+    pub market_sent_step: Option<String>,
     pub expires_at: Option<i64>,
     pub abort_draft_id: Option<String>,
     /// The txid of the Cancel transfer `abort_draft_id` holds; kept when that
@@ -2183,7 +2197,7 @@ pub struct ShakedexListing {
 const SHAKEDEX_LISTING_COLS: &str = "id, wallet_profile_id, name, mode, state, lock_pubkey_hex, \
     lock_transfer_draft_id, lock_finalize_draft_id, lock_transfer_txid, lock_txid, lock_vout, \
     payment_address, cancel_address, cancel_child_index, steps_json, listing_file_json, publish, market_status, \
-    market_retry_at, market_attempts, market_error, market_accepted, market_changed, market_told, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout, \
+    market_retry_at, market_attempts, market_error, market_accepted, market_changed, market_told, market_sent_step, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout, \
     cancel_finalize_draft_id, cancel_blocks_remaining, created_at, updated_at";
 
 fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShakedexListing> {
@@ -2212,6 +2226,7 @@ fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<Shakedex
         market_accepted: row.get::<_, i64>("market_accepted")? != 0,
         market_changed: row.get::<_, i64>("market_changed")? != 0,
         market_told: row.get::<_, i64>("market_told")? != 0,
+        market_sent_step: row.get("market_sent_step")?,
         expires_at: row.get("expires_at")?,
         abort_draft_id: row.get("abort_draft_id")?,
         abort_txid: row.get("abort_txid")?,
@@ -2247,9 +2262,10 @@ pub fn insert_shakedex_listing(
              market_status, market_retry_at, market_attempts, market_error, expires_at,
              abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout,
              cancel_finalize_draft_id, cancel_blocks_remaining, market_accepted, market_changed,
-             market_told)
+             market_told, market_sent_step)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
+                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33,
+                 ?34)",
         params![
             l.id,
             l.wallet_profile_id,
@@ -2283,7 +2299,8 @@ pub fn insert_shakedex_listing(
             l.cancel_blocks_remaining,
             i64::from(l.market_accepted),
             i64::from(l.market_changed),
-            i64::from(l.market_told)
+            i64::from(l.market_told),
+            l.market_sent_step
         ],
     )?;
     Ok(())
@@ -3157,7 +3174,9 @@ pub fn mark_listing_cancel_mined(
 /// the market bookkeeping of a listing the market was told about
 /// (`market_status` set) starts over as Retrying, due now (a `Reported` left
 /// from the mined cancel would stop the jobs), `market_accepted` kept: the
-/// market may still hold the copy it accepted. One the market was never told
+/// market may still hold the copy it accepted, and `market_changed` set only
+/// then (once `market_accepted`: one the market never took has no copy of
+/// ours there, as for a Lower price). One the market was never told
 /// about stays untold, and a Refused one stays Refused (not retried until
 /// what is sent changes). With the cancel sent it all stays. Returns how
 /// many rows changed (0 or 1).
@@ -3181,7 +3200,8 @@ pub fn mark_listing_cancel_unmined(
              market_retry_at = CASE WHEN {told} THEN NULL ELSE market_retry_at END,
              market_attempts = CASE WHEN {told} THEN 0 ELSE market_attempts END,
              market_error = CASE WHEN {told} THEN NULL ELSE market_error END,
-             market_changed = CASE WHEN {told} THEN 1 ELSE market_changed END
+             market_changed = CASE WHEN {told} AND market_accepted = 1 THEN 1
+                                   ELSE market_changed END
          WHERE id = ?1 AND {} AND cancel_txid = ?3",
         w.source_sql()
     );
@@ -3379,6 +3399,13 @@ pub struct MarketUpdate<'a> {
     /// The market took something of ours (the pending post, an upload, our
     /// copy served back): sets `market_told`, which nothing clears.
     pub told: bool,
+    /// The signature (hex) of the one step this result sent (an upload) or
+    /// found on the market as ours; `None` when no step was sent (a report,
+    /// a pending post, a row that does not read). Recorded as
+    /// `market_sent_step`; a step other than the one recorded, not taken,
+    /// sets `market_changed` once the market had taken this listing
+    /// (`market_accepted`).
+    pub sent_step: Option<&'a str>,
 }
 
 /// Write a market job's result. Not a state write (no `ListingWrite`): the
@@ -3398,6 +3425,14 @@ pub struct MarketUpdate<'a> {
 /// lost-lock answer of `refresh_heartbeat`), so an app job and a daemon job
 /// may overlap then.
 ///
+/// A result that sent a step records it (`market_sent_step`); a step other
+/// than the recorded one that the market did not take sets
+/// `market_changed`, as a Lower price does, when the market had taken this
+/// listing before (`market_accepted`, as the row stood): the market's copy
+/// is then our own earlier step. A listing the market never took (its
+/// earlier step refused, or never answered) has no earlier copy there, so
+/// a differing copy stays someone else's.
+///
 /// Returns how many rows changed.
 pub fn record_market_result(
     conn: &rusqlite::Connection,
@@ -3405,12 +3440,20 @@ pub fn record_market_result(
     seen: &MarketSeen,
     u: &MarketUpdate,
 ) -> Result<usize, AppError> {
+    // SQLite evaluates every SET expression over the row as it was, so
+    // `market_changed` compares with the old `market_sent_step` and reads
+    // the old `market_accepted`.
     Ok(conn.execute(
         "UPDATE shakedex_listings
          SET market_status = ?2, market_retry_at = ?3, market_attempts = ?4,
              market_error = ?5, market_accepted = MAX(market_accepted, ?9),
-             market_changed = CASE WHEN ?9 THEN 0 ELSE market_changed END,
+             market_changed = CASE
+                 WHEN ?9 THEN 0
+                 WHEN ?11 IS NOT NULL AND market_sent_step IS NOT NULL
+                      AND ?11 <> market_sent_step AND market_accepted = 1 THEN 1
+                 ELSE market_changed END,
              market_told = MAX(market_told, ?10),
+             market_sent_step = COALESCE(?11, market_sent_step),
              updated_at = datetime('now')
          WHERE id = ?1 AND state = ?6 AND steps_json = ?7 AND listing_file_json IS ?8",
         params![
@@ -3423,7 +3466,8 @@ pub fn record_market_result(
             seen.steps_json,
             seen.listing_file_json,
             i64::from(u.accepted),
-            i64::from(u.told)
+            i64::from(u.told),
+            u.sent_step
         ],
     )?)
 }

@@ -87,6 +87,7 @@ Locally `cargo test` is enough; CI uses nextest for its two-lane split (see
 - A test that passes alone and fails in the suite is a defect in the test, not
   a reason to retry it. Find the shared state; the two rules above are the two
   ways it has bitten so far.
+- **mockito's `matched()` is "exactly one hit".** A mock with no `.expect(n)` reads as not matched after zero hits and after two or more alike, so `!matched()` checked once after several calls passes even when every call hit it. Assert "not called" with `.expect(0)` and `.assert_async()`, or check `!matched()` after every single call (see `shakedex_sell_tests::assert_node_not_read`).
 
 ## TypeScript ↔ Rust bridge
 
