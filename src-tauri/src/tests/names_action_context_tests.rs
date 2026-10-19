@@ -439,8 +439,8 @@ fn find_name_action_context_counts_only_this_auctions_bids() {
 /// REVEAL output that was never created). Scoping the bids panel by auction
 /// hid it, so the wallet has to report it explicitly or the money just vanishes
 /// from the UI.
-#[test]
-fn find_name_action_context_reports_a_stranded_bid_from_a_lapsed_auction() {
+#[tokio::test]
+async fn find_name_action_context_reports_a_stranded_bid_from_a_lapsed_auction() {
     let conn = test_db();
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
@@ -461,13 +461,37 @@ fn find_name_action_context_reports_a_stranded_bid_from_a_lapsed_auction() {
 
     let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert_eq!(ctx.existing_bid_count, 0, "not a bid in THIS auction");
+    assert_eq!(ctx.stranded_bid_count, 0, "not before the node answers");
+    let candidates: Vec<_> = ctx
+        .stranded_candidates
+        .iter()
+        .map(|c| c.txid.as_str())
+        .collect();
+    assert_eq!(candidates, ["oldbid"]);
+
+    // The node still holds the coin as ours: stranded, at the coin's value.
+    let mut node = mockito::Server::new_async().await;
+    let _m = node
+        .mock("GET", "/coin/oldbid/0")
+        .with_body(
+            serde_json::json!({
+                "version": 0, "height": 120, "value": 100_000, "address": ADDRESS,
+                "coinbase": false, "hash": "oldbid", "index": 0,
+                "covenant": { "type": sync::COV_BID, "action": "BID", "items": [nh_hex] }
+            })
+            .to_string(),
+        )
+        .expect(1)
+        .create_async()
+        .await;
+    let ctx = ctx.with_node_stranded_coins(&client(&node.url())).await;
     assert_eq!(ctx.stranded_bid_count, 1);
-    assert_eq!(ctx.stranded_lockup_doos, 2_000_000);
+    assert_eq!(ctx.stranded_lockup_doos, 100_000);
 
     // Viewed from its own auction it is an ordinary bid, not stranded.
     let own = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(111)).unwrap();
     assert_eq!(own.existing_bid_count, 1);
-    assert_eq!(own.stranded_bid_count, 0);
+    assert!(own.stranded_candidates.is_empty());
 }
 
 /// Reported from a live regtest wallet: Reveal stayed enabled on a name whose
@@ -509,7 +533,8 @@ fn find_name_action_context_does_not_count_a_stranded_coin_as_revealable() {
     let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert_eq!(ctx.existing_bid_count, 1, "one bid belongs to this auction");
     assert_eq!(
-        ctx.stranded_bid_count, 1,
+        ctx.stranded_candidates.len(),
+        1,
         "and one is stranded in the old one"
     );
     assert!(
@@ -1557,10 +1582,12 @@ fn two_bids(conn: &rusqlite::Connection) {
     }
 }
 
-/// hsd's `GET /coin` answer for our BID coin `txid`:0 at `addr`.
+/// hsd's `GET /coin` answer for our BID coin `txid`:0 at `addr`, holding the
+/// 100 000 doos [`seed_tracked_utxo`] records for it (the sync stores the
+/// node's own value).
 fn node_bid_coin(txid: &str, addr: &str, kind: u8) -> String {
     serde_json::json!({
-        "version": 0, "height": 120, "value": 2_000_000, "address": addr,
+        "version": 0, "height": 120, "value": 100_000, "address": addr,
         "coinbase": false, "hash": txid, "index": 0,
         "covenant": { "type": kind, "action": "BID", "items": [name_hash(), "00"] }
     })
@@ -1757,8 +1784,9 @@ fn a_reveal_of_an_earlier_auction_is_stranded_not_redeemable() {
     assert_eq!(ctx.redeemable_value_doos, 0);
     assert!(!ctx.has_reveal_coin);
     assert!(ctx.reveal_coins.is_empty());
-    assert_eq!(ctx.stranded_bid_count, 1);
-    assert_eq!(ctx.stranded_lockup_doos, 100_000);
+    // A stranded candidate, counted on the node's word
+    // (`a_reveal_of_an_earlier_auction_is_stranded_only_on_the_nodes_word`).
+    assert_eq!(ctx.stranded_candidates.len(), 1);
 
     // The node's owner answer counts the reveals again: it must count this
     // auction's only, so the earlier reveal stays out.
@@ -1771,13 +1799,12 @@ fn a_reveal_of_an_earlier_auction_is_stranded_not_redeemable() {
     let own = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(111)).unwrap();
     assert_eq!(own.redeemable_reveal_count, 1);
     assert_eq!(own.redeemable_value_doos, 100_000);
-    assert_eq!(own.stranded_bid_count, 0);
-    assert_eq!(own.stranded_lockup_doos, 0);
+    assert!(own.stranded_candidates.is_empty());
 
     // An auction we cannot tell filters nothing, as for the bids.
     let unknown = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert_eq!(unknown.redeemable_reveal_count, 1);
-    assert_eq!(unknown.stranded_bid_count, 0);
+    assert!(unknown.stranded_candidates.is_empty());
 }
 
 // ============================================================================
@@ -1833,10 +1860,11 @@ fn lapsed_bid_and_reveal(conn: &rusqlite::Connection) {
     );
 }
 
-/// hsd's `GET /coin` answer for our REVEAL coin `revold`:0.
+/// hsd's `GET /coin` answer for our REVEAL coin `revold`:0, holding the
+/// value [`seed_tracked_utxo`] records for it.
 fn node_reveal_coin() -> String {
     serde_json::json!({
-        "version": 0, "height": 125, "value": 700_000, "address": NEW_ADDR,
+        "version": 0, "height": 125, "value": 100_000, "address": NEW_ADDR,
         "coinbase": false, "hash": "revold", "index": 0,
         "covenant": { "type": COV_REVEAL, "action": "REVEAL",
                       "items": [name_hash(), "6f000000", "00".repeat(32)] }
@@ -1845,8 +1873,8 @@ fn node_reveal_coin() -> String {
 }
 
 /// The node holds both coins of the expired name: they are counted as the
-/// stranded lockup, with the values the node reports, and neither is offered
-/// as a bid to reveal or a reveal to redeem.
+/// stranded lockup, at the values we hold and the node reports alike, and
+/// neither is offered as a bid to reveal or a reveal to redeem.
 #[tokio::test]
 async fn an_expired_auction_strands_our_lockup_on_the_nodes_word() {
     let conn = test_db();
@@ -1872,16 +1900,16 @@ async fn an_expired_auction_strands_our_lockup_on_the_nodes_word() {
         .expect(1)
         .create_async()
         .await;
-    let ctx = ctx.with_node_lapsed_coins(&client(&node.url())).await;
+    let ctx = ctx.with_node_stranded_coins(&client(&node.url())).await;
     bid.assert_async().await;
     reveal.assert_async().await;
     assert_eq!(ctx.stranded_bid_count, 2);
-    assert_eq!(ctx.stranded_lockup_doos, 2_000_000 + 700_000);
+    assert_eq!(ctx.stranded_lockup_doos, 100_000 + 100_000);
 }
 
 /// Without the node's word nothing is claimed: a coin it does not hold (404),
-/// a node error, and a coin that is not ours as we hold it leave the count
-/// at zero. A name whose auction is live, or that we cannot place, asks the
+/// a node error, and a coin that is not ours as we hold it (another address,
+/// another value) leave the count at zero. A name whose auction is live, or that we cannot place, asks the
 /// node nothing here.
 #[tokio::test]
 async fn an_expired_auction_claims_no_lockup_without_the_nodes_word() {
@@ -1894,6 +1922,11 @@ async fn an_expired_auction_claims_no_lockup_without_the_nodes_word() {
             "another address",
             200,
             node_bid_coin("bidold", NEW_ADDR, sync::COV_BID),
+        ),
+        (
+            "another value",
+            200,
+            node_bid_coin("bidold", OLD_ADDR, sync::COV_BID).replace("100000", "-5"),
         ),
     ] {
         let mut node = mockito::Server::new_async().await;
@@ -1915,7 +1948,7 @@ async fn an_expired_auction_claims_no_lockup_without_the_nodes_word() {
             .await;
         let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Lapsed)
             .unwrap()
-            .with_node_lapsed_coins(&client(&node.url()))
+            .with_node_stranded_coins(&client(&node.url()))
             .await;
         assert_eq!(ctx.stranded_bid_count, 0, "{label}");
         assert_eq!(ctx.stranded_lockup_doos, 0, "{label}");
@@ -1929,10 +1962,115 @@ async fn an_expired_auction_claims_no_lockup_without_the_nodes_word() {
             .await;
         let ctx = find_name_action_context(&conn, PROFILE, NAME, scope)
             .unwrap()
-            .with_node_lapsed_coins(&client(&node.url()))
+            .with_node_stranded_coins(&client(&node.url()))
             .await;
         none.assert_async().await;
         assert!(ctx.has_bid_coin, "{scope:?}: the bid is this auction's");
         assert_eq!(ctx.stranded_bid_count, 0, "{scope:?}");
+    }
+}
+
+// ============================================================================
+// Every stranded lockup rests on the node's word
+// ============================================================================
+
+/// hsd's `GET /coin` answer for the reveal of the auction at 111 that
+/// `a_reveal_of_an_earlier_auction_is_stranded_not_redeemable` seeds.
+fn node_old_reveal_coin(value: u64) -> String {
+    serde_json::json!({
+        "version": 0, "height": 125, "value": value, "address": ADDRESS,
+        "coinbase": false, "hash": "oldreveal", "index": 0,
+        "covenant": { "type": COV_REVEAL, "action": "REVEAL",
+                      "items": [name_hash(), "6f000000", "00".repeat(32)] }
+    })
+    .to_string()
+}
+
+/// A reveal of an earlier auction beside a live newer one is a loss verdict,
+/// and the local coin set can be behind a spend made elsewhere: it is counted
+/// stranded only once the node answers that it still holds the coin as ours.
+/// A coin it does not have, a node error, or a reply of another value claims
+/// nothing.
+#[tokio::test]
+async fn a_reveal_of_an_earlier_auction_is_stranded_only_on_the_nodes_word() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let cov = reveal_covenant_of_auction(&name_hash(), 111);
+    seed_tracked_utxo(
+        &conn,
+        "oldreveal",
+        0,
+        ADDRESS,
+        COV_REVEAL as i64,
+        Some(&cov),
+    );
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
+    assert_eq!(ctx.stranded_bid_count, 0, "not on the local coin set alone");
+    assert_eq!(ctx.stranded_candidates.len(), 1);
+
+    for (label, status, body) in [
+        ("spent", 404, String::new()),
+        ("node error", 500, "boom".to_string()),
+        ("another value", 200, node_old_reveal_coin(999)),
+    ] {
+        let mut node = mockito::Server::new_async().await;
+        let _m = node
+            .mock("GET", "/coin/oldreveal/0")
+            .with_status(status)
+            .with_body(body)
+            .create_async()
+            .await;
+        let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779))
+            .unwrap()
+            .with_node_stranded_coins(&client(&node.url()))
+            .await;
+        assert_eq!(ctx.stranded_bid_count, 0, "{label}");
+        assert_eq!(ctx.stranded_lockup_doos, 0, "{label}");
+    }
+
+    let mut node = mockito::Server::new_async().await;
+    let _m = node
+        .mock("GET", "/coin/oldreveal/0")
+        .with_body(node_old_reveal_coin(100_000))
+        .expect(1)
+        .create_async()
+        .await;
+    let ctx = ctx.with_node_stranded_coins(&client(&node.url())).await;
+    assert_eq!(ctx.stranded_bid_count, 1);
+    assert_eq!(ctx.stranded_lockup_doos, 100_000);
+    assert_eq!(ctx.redeemable_reveal_count, 0, "never offered to redeem");
+}
+
+/// Two BID coins of the name at one address make the coin lookup refuse to
+/// pick one. Among stranded candidates that is skipped (and logged), not the
+/// whole capabilities read: the candidates only feed a notice the node
+/// confirms, and an error here took Reveal, Redeem and every other
+/// capability of the name down with it.
+#[test]
+fn an_ambiguous_address_among_the_stranded_candidates_is_skipped_not_an_error() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, OLD_ADDR, 0, 0);
+    let nh = name_hash();
+    db::queries::insert_bid_commitment(
+        &conn, PROFILE, NAME, &nh, OLD_ADDR, 0, 0, 1_000_000, 2_000_000, "nonce", "b-old",
+    )
+    .unwrap();
+    db::queries::set_auction_heights(&conn, PROFILE, "b-old", 111, 132).unwrap();
+    for txid in ["bidold", "bidold2"] {
+        seed_tracked_utxo(
+            &conn,
+            txid,
+            0,
+            OLD_ADDR,
+            sync::COV_BID as i64,
+            Some(&bid_cov(&nh)),
+        );
+    }
+    for scope in [AuctionScope::Lapsed, AuctionScope::Live(779)] {
+        let ctx = find_name_action_context(&conn, PROFILE, NAME, scope)
+            .unwrap_or_else(|e| panic!("{scope:?}: {e:?}"));
+        assert!(ctx.stranded_candidates.is_empty(), "{scope:?}");
     }
 }

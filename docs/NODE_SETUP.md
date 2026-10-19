@@ -68,6 +68,7 @@ Instead of running hsd locally, you can point the wallet at an existing hsd RPC:
   the onboarding Remote step and in Settings → Connections). This sets the
   `allow_remote_broadcast` flag, which gates the broadcast path. Your recovery phrase
   never leaves this device — remote is a privacy/trust tradeoff, not custody.
+- **A full node, not SPV:** the remote hsd must be a full node with the same indexes as a local one (`--index-tx --index-address`). An hsd started with `--spv` keeps no name state and no coins: it answers `getnameinfo` with no state for every name and cannot answer a coin lookup, so the wallet sees no auction on any name and cannot confirm a stranded lockup, an unrevealed bid or a balance against it.
 - **Plaintext-key guard:** the app refuses to send an API key over plaintext HTTP to a
   non-loopback host (e.g., `http://example.com`). Use `https://` for remote nodes or
   `http://127.0.0.1` for local testing.

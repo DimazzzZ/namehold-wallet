@@ -4649,3 +4649,116 @@ async fn dead_lock_draft_does_not_freeze_the_name() {
         }
     }
 }
+
+// ============================================================================
+// An expired name: the capabilities command asks the node, and offline the
+// cached answer still names the auction lapsed
+// ============================================================================
+
+/// hsd's `GET /coin` answer for our BID coin `txid`:0 of `name` at `addr`,
+/// holding `value`, in `NodeCoin`'s wire shape (`lib/primitives/coin.js`
+/// `getJSON`).
+fn node_bid_coin_json(txid: &str, addr: &str, name: &str, value: i64) -> String {
+    let nh = hex::encode(crate::noncustodial::names::hash_name(name).unwrap());
+    serde_json::json!({
+        "version": 0, "height": 120, "value": value, "address": addr,
+        "coinbase": false, "hash": txid, "index": 0,
+        "covenant": { "type": crate::noncustodial::sync::COV_BID, "action": "BID",
+                      "items": [nh, "64000000", hex::encode(name.as_bytes()), "blindaa"] }
+    })
+    .to_string()
+}
+
+/// The capabilities command, not only the context it builds on, asks the node
+/// about an expired name's coins: `getnameinfo` answers `info: null`, `GET
+/// /coin` that our BID coin is still unspent at our address, and the stranded
+/// lockup is reported. Without that step the count would stay at zero.
+#[tokio::test]
+async fn capabilities_of_an_expired_name_count_the_lockup_the_node_still_holds() {
+    let txid = "ab".repeat(32);
+    let mut server = mockito::Server::new_async().await;
+    let mut mocks = mock_blockchain_and_name(&mut server, 1.0, None).await;
+    mocks.push(
+        server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+            .with_body(
+                r#"{"result":{"start":{"reserved":false,"week":17,"start":34},"info":null},"error":null,"id":1}"#,
+            )
+            .expect_at_least(1)
+            .create_async()
+            .await,
+    );
+    let state = create_full_test_state();
+    let (profile_id, addr) = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        let addr = seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "lapsedname",
+            &txid,
+            crate::noncustodial::sync::COV_BID,
+        );
+        (id, addr)
+    };
+    let coin = server
+        .mock("GET", format!("/coin/{txid}/0").as_str())
+        .with_body(node_bid_coin_json(&txid, &addr, "lapsedname", 2000))
+        .expect(1)
+        .create_async()
+        .await;
+    let app = mock_app_with(state);
+    let caps =
+        names::get_name_action_capabilities(app.state(), "lapsedname".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve");
+    coin.assert_async().await;
+    assert_eq!(caps.stranded_bid_count, 1, "{caps:?}");
+    assert_eq!(caps.stranded_lockup_doos, 2000);
+    assert_eq!(caps.my_bid_count, 0, "no live auction to have bid in");
+    assert!(!caps.can_reveal.allowed);
+}
+
+/// Offline, the cached `getnameinfo` (`raw_json`) is the evidence of the
+/// auction. `upsert_name_state` records the node's `info: null` there on
+/// purpose, and an expiry never undoes itself (only a new OPEN starts another
+/// auction, which no cache sees either), so the name reads lapsed as on the
+/// node path: our bid is not counted as one of a live auction.
+#[tokio::test]
+async fn capabilities_node_down_read_a_cached_expiry_as_a_lapsed_auction() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_unreachable_node(&conn);
+        seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "lapsedoffline",
+            &"ac".repeat(32),
+            crate::noncustodial::sync::COV_BID,
+        );
+        crate::noncustodial::sync::upsert_name_state(
+            &conn,
+            &id,
+            "lapsedoffline",
+            &serde_json::json!({ "start": {}, "info": null }),
+        )
+        .unwrap();
+        id
+    };
+    let app = mock_app_with(state);
+    let caps =
+        names::get_name_action_capabilities(app.state(), "lapsedoffline".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve via local evidence");
+    assert_eq!(caps.my_bid_count, 0, "{caps:?}");
+    assert!(!caps.has_bid_commitment);
+    assert!(!caps.has_bid_coin);
+    assert_eq!(
+        caps.stranded_bid_count, 0,
+        "no node to confirm the coin: nothing claimed"
+    );
+}

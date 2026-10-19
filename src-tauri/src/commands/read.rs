@@ -1055,6 +1055,23 @@ pub async fn read_name_bids(
     // explorer when the scanner hasn't caught up yet.
     if crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await {
         let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name(&name)?);
+        // Which auction the name is on, by the node's word and read as the
+        // capabilities read it (`AuctionScope`), so the panel and the
+        // stranded-lockup notice agree on the same bid. An expired name has
+        // no auction to list: our bids of the lapsed one belong to the
+        // notice. A node that does not answer leaves the tracked row's
+        // height to decide, as before.
+        let client = {
+            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+            crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, &id)?
+        };
+        let scope = match client.get_name_info(&name).await {
+            Ok(reply) => crate::commands::names::AuctionScope::from_name_info(&reply),
+            Err(_) => crate::commands::names::AuctionScope::Unknown,
+        };
+        if scope == crate::commands::names::AuctionScope::Lapsed {
+            return Ok(empty_name_bids_response(&name));
+        }
         let (indexed_bids, commitments, scanner_height, name_height) = {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
             // Both the index and the cursor are network-keyed (028): a name
@@ -1076,7 +1093,7 @@ pub async fn read_name_bids(
             // The OPEN height of the name's CURRENT auction. `upsert_name_state`
             // clears it when the node reports no auction, so `None` means the
             // name has none open right now — not merely that we haven't looked.
-            let nh: Option<i64> = conn
+            let tracked_nh: Option<i64> = conn
                 .query_row(
                     "SELECT height FROM tracked_name_states WHERE wallet_profile_id = ?1 AND name = ?2",
                     rusqlite::params![id, name],
@@ -1084,6 +1101,10 @@ pub async fn read_name_bids(
                 )
                 .ok()
                 .flatten();
+            let nh = match scope {
+                crate::commands::names::AuctionScope::Live(start) => Some(start),
+                _ => tracked_nh,
+            };
             // Bids belong to an auction, not to a name (029). Without a current
             // auction there is nothing to show: a lapsed auction's bids are
             // still indexed, and serving them is what made a name sitting at

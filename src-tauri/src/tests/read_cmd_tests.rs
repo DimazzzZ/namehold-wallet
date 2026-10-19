@@ -1273,6 +1273,51 @@ async fn read_name_bids_shows_nothing_when_the_name_has_no_open_auction() {
     );
 }
 
+/// An expired name, by the node's word (`getnameinfo` → `info: null`), has no
+/// auction to list bids of — the same reading the capabilities give it
+/// (`AuctionScope::Lapsed`), where our bids of it are a stranded lockup. An
+/// explorer that still reports the lapsed auction's bids must not put ours
+/// back in the panel as bids of a live one.
+#[tokio::test]
+async fn read_name_bids_lists_nothing_for_a_name_the_node_reports_expired() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(r#"{"result":{"start":{"reserved":false,"week":17,"start":34},"info":null},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _explorer = server
+        .mock("GET", "/api/names/expired")
+        .with_status(200)
+        .with_body(
+            r#"{"name":"expired","state":"CLOSED","highest":2000000,
+                "bids":[{"txid":"txOurs","index":0,"lockup":2000000}]}"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+    db::queries::insert_bid_commitment(
+        &conn, "W1", "expired", "aabb", "addr", 0, 0, 1_000_000, 2_000_000, "nonce", "blind1",
+    )
+    .unwrap();
+    db::queries::set_bid_txid(&conn, "W1", "blind1", "txOurs").unwrap();
+
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "expired".into(), Some("W1".into()))
+        .await
+        .unwrap();
+    let bids = val["bids"].as_array().expect("bids array");
+    assert!(bids.is_empty(), "an expired name lists no bids: {val}");
+    assert_eq!(val["myBidCount"], 0);
+}
+
 #[tokio::test]
 async fn read_name_bids_shows_only_the_current_auctions_bids() {
     let mut server = mockito::Server::new_async().await;

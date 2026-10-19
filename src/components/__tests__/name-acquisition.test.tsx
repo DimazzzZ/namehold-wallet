@@ -521,8 +521,41 @@ describe("NameActionsModal — guided acquisition flow", () => {
     render(<NameActionsModal name="reopened" open onClose={() => {}} />, { wrapper: wrapper() });
 
     const notice = await screen.findByTestId("stranded-bids");
-    expect(notice).toHaveTextContent("1 bid from an earlier auction of this name");
+    expect(notice).toHaveTextContent("1 bid of yours from an auction that is over");
     expect(notice).toHaveTextContent("100 HNS is still locked");
+    expect(notice).toHaveTextContent(/cannot be recovered/i);
+  });
+
+  it("names the lockup stranded on an expired name with no later auction", async () => {
+    // Nobody revealed, so the name expired as the auction closed and reads
+    // Available again: there is no later auction, and the stranded coin is a
+    // bid never revealed, not a losing reveal.
+    invokeMock.mockImplementation(
+      routeModal(
+        { name: "lapsedname", state: "AVAILABLE", height: null, stats: null },
+        {
+          capabilities: makeCapabilities({
+            name: "lapsedname",
+            phase: "AVAILABLE",
+            taskState: "availableToOpen",
+            canOpen: { allowed: true, reason: null },
+            nextActionKey: "OPEN",
+            nextActionLabel: "Open Auction",
+            strandedBidCount: 2,
+            strandedLockupDoos: 3_000_000,
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="lapsedname" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    const notice = await screen.findByTestId("stranded-bids");
+    expect(notice).toHaveTextContent("2 bids of yours from auctions that are over");
+    expect(notice).toHaveTextContent("3 HNS is still locked in them");
+    expect(notice).not.toHaveTextContent(/earlier auction/i);
+    expect(notice).not.toHaveTextContent(/losing reveal/i);
     expect(notice).toHaveTextContent(/cannot be recovered/i);
   });
 

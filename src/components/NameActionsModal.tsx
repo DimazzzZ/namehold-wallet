@@ -820,11 +820,12 @@ export function NameActionsModal({
           suppressEmptyHint={biddingNotOpenYet}
         />
 
-        {/* A bid this wallet placed in an EARLIER auction of this name whose
-            lockup is stranded: never revealed, or revealed and never redeemed.
-            The bids panel above is scoped to the current auction, so without
-            this the coin is simply missing from the UI with nothing to explain
-            where the money went. */}
+        {/* A bid this wallet placed in an auction of this name that is over —
+            an earlier one of a name auctioned again, or the lapsed one of a
+            name that expired — whose lockup is stranded: never revealed, or
+            revealed and never redeemed or registered. The bids panel above is
+            scoped to the current auction, so without this the coin is simply
+            missing from the UI with nothing to explain where the money went. */}
         {(caps?.strandedBidCount ?? 0) > 0 && (
           <div
             className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
@@ -832,13 +833,13 @@ export function NameActionsModal({
           >
             <span className="font-semibold">
               {caps!.strandedBidCount === 1
-                ? "1 bid from an earlier auction of this name"
-                : `${caps!.strandedBidCount} bids from earlier auctions of this name`}
+                ? "1 bid of yours from an auction that is over"
+                : `${caps!.strandedBidCount} bids of yours from auctions that are over`}
             </span>{" "}
             {formatHnsShort(caps!.strandedLockupDoos ?? 0)} HNS is still locked in{" "}
-            {caps!.strandedBidCount === 1 ? "it" : "them"}. A bid can be revealed, and a losing
-            reveal redeemed, only while its own auction is the name's current one. That auction is
-            over, so the lockup cannot be recovered.
+            {caps!.strandedBidCount === 1 ? "it" : "them"}. A bid can be revealed, and a reveal
+            redeemed or registered, only while its own auction is the name's current one. That
+            auction has ended, so the lockup cannot be recovered.
           </div>
         )}
 

@@ -39,10 +39,7 @@ showing a stale state the user reads as a bug.
 - **Current auction** — the auction of the name state the UI is looking at.
   Commitments and indexed bids for any other start height belong to a
   different auction and are not part of it.
-- **Stranded lockup** — a BID coin of ours still unspent, from an auction that
-  is not the current one. Its only valid spend was a REVEAL inside that
-  auction's window, so it is unrecoverable; it is reported, never offered as
-  an action.
+- **Stranded lockup** — a BID or REVEAL coin of ours still unspent, from an auction that is not the current one (an earlier auction of a name auctioned again, or the lapsed auction of a name that expired). A BID's only valid spend was a REVEAL inside that auction's window, a REVEAL's a REDEEM or REGISTER while the name was on that auction, so it is unrecoverable; it is reported once the node confirms the coin (R10), never offered as an action.
 - **Registered** — the name's owner coin is at `COV_REGISTER` or later.
   Distinct from **owned**: during REVEAL hsd reports the highest revealer as
   the owner, so a wallet leading its own auction is "owned" while holding
@@ -70,11 +67,12 @@ migration `028_chain_scan_network_scope.sql`.
 
 **R2 — The bids panel shows this auction's bids and no others.** Indexed bids
 are filtered by the current auction's start height. A name with no auction
-open shows nothing, not the bids of the auction that lapsed.
+open shows nothing, not the bids of the auction that lapsed. With a synced node the auction is the node's (`AuctionScope`, as for the capabilities): a name it reports expired lists no bids, whatever an explorer still reports, and our bids of it are the stranded lockup of R10.
 *Enforced:* `commands/read.rs::read_name_bids`, migration
 `029_bid_auction_scope.sql`.
 *Pinned:* `read_cmd_tests::read_name_bids_shows_only_the_current_auctions_bids`,
 `read_cmd_tests::read_name_bids_shows_nothing_when_the_name_has_no_open_auction`,
+`read_cmd_tests::read_name_bids_lists_nothing_for_a_name_the_node_reports_expired`,
 `live_node_it::live_reopened_name_scopes_its_bids_and_strands_the_old_lockup`.
 
 **R3 — "N of yours" counts this auction's commitments.** Commitments are
@@ -85,8 +83,9 @@ be dead is a wrong number; hiding a live one loses the lockup.
 *Enforced:* `commands/names.rs::find_name_action_context(.., auction)` (`AuctionScope`: the live auction's start, `Lapsed` for a name the node reports no state for, `Unknown` when it could not answer),
 migration `030_bid_commitment_auction.sql` (backfilled per network from the
 stored reveal deadline).
+Offline the cached `getnameinfo` (`raw_json`) is read the same way (`AuctionScope::from_name_info`): `upsert_name_state` records the node's `info: null` there on purpose and an expiry never undoes itself, so a cached expiry stays `Lapsed`.
 *Pinned:* `names_action_context_tests::find_name_action_context_counts_only_this_auctions_bids`,
-`names_action_context_tests::find_name_action_context_keeps_a_commitment_with_no_known_auction`.
+`names_action_context_tests::find_name_action_context_keeps_a_commitment_with_no_known_auction`, `names_action_context_tests::an_expired_auction_strands_our_lockup_on_the_nodes_word` (`Lapsed` counts no commitment as this auction's), `names_cmd_tests::capabilities_node_down_read_a_cached_expiry_as_a_lapsed_auction`.
 
 **R4 — A lapsed auction leaves no state behind.** When the node reports a name
 with a null `info`, every column derived from `info` is cleared, not just
@@ -137,15 +136,15 @@ never revisits a block it has passed.
 `live_node_it::live_scanner_pairs_each_reveal_with_its_own_bid`.
 
 **R10 — A stranded lockup is named, with its amount.** The capabilities carry
-`strandedBidCount` and `strandedLockupDoos`, and the guided panel states them. A reveal of an earlier auction left unredeemed is counted with them, at its value: a REDEEM and a REGISTER are valid only while the name is on the reveal's own auction, and the name's height only moves forward. A name nobody revealed in expires as soon as it closes, and a name expires once its renewal window or a revocation's maturity has passed; the node then answers `getnameinfo` with `info: null`, and no BID or REVEAL of ours on it can ever be revealed or redeemed (the next transaction on the name resets its state, `namestate.js` `maybeExpire`). With that answer every unspent BID and REVEAL coin of ours for the name is a candidate, and it is counted, at the value the node reports, only on the node's answer that it still holds the coin as ours (`GET /coin`, every field matched); a coin it does not have, a node error, or a reply that is not that coin claims nothing. None of those coins is offered to reveal or redeem.
-*Enforced:* `commands/names.rs::{find_name_action_context, with_node_lapsed_coins, node_name_coin_matches}`,
+`strandedBidCount` and `strandedLockupDoos`, and the guided panel states them. A reveal of an earlier auction left unredeemed is counted with them, at its value: a REDEEM and a REGISTER are valid only while the name is on the reveal's own auction, and the name's height only moves forward. A name nobody revealed in expires as soon as it closes, and a name expires once its renewal window or a revocation's maturity has passed; the node then answers `getnameinfo` with `info: null`, and no BID or REVEAL of ours on it can ever be revealed or redeemed (the next transaction on the name resets its state, `namestate.js` `maybeExpire`). With that answer every unspent BID and REVEAL coin of ours for the name is a candidate, as are, beside a live auction, our unspent BID and REVEAL coins of an earlier one. A stranded lockup is a loss verdict and the local coin set can be behind a spend made elsewhere, so each candidate is counted, at the value we hold, only on the node's answer that it still holds the coin as ours (`GET /coin`, every field matched, the value included; a negative one is no match); a coin it does not have, a node error, or a reply that is not that coin claims nothing, and without a synced node nothing is counted. A candidate whose lookup fails (two of our coins of the name at one address) is skipped and logged, not the whole capabilities read. The node's misses are logged once per read, not once per coin: a remote hsd running `--spv` answers every name with `info: null` and refuses every coin lookup. None of those coins is offered to reveal or redeem.
+*Enforced:* `commands/names.rs::{find_name_action_context, with_node_stranded_coins, node_name_coin_matches, evaluate_name_action_capabilities}` (the candidates are `stranded_candidates`, asked about on the synced-node path only),
 `src/components/name-actions/` (acquisition panel).
 *Pinned:* `names_action_context_tests::find_name_action_context_reports_a_stranded_bid_from_a_lapsed_auction`,
 `names_action_context_tests::find_name_action_context_does_not_strand_a_spent_bid`,
 `names_action_context_tests::a_reveal_of_an_earlier_auction_is_stranded_not_redeemable`,
-`names_action_context_tests::{the_scope_is_read_off_getnameinfo, an_expired_auction_strands_our_lockup_on_the_nodes_word, an_expired_auction_claims_no_lockup_without_the_nodes_word}`,
+`names_action_context_tests::{the_scope_is_read_off_getnameinfo, an_expired_auction_strands_our_lockup_on_the_nodes_word, an_expired_auction_claims_no_lockup_without_the_nodes_word, a_reveal_of_an_earlier_auction_is_stranded_only_on_the_nodes_word, an_ambiguous_address_among_the_stranded_candidates_is_skipped_not_an_error}`, `names_cmd_tests::capabilities_of_an_expired_name_count_the_lockup_the_node_still_holds` (the command asks the node, mock node), `live_node_it::live_redeem_leaves_out_a_reveal_of_an_earlier_auction`,
 `live_node_it::live_bid_of_an_auction_nobody_revealed_is_a_stranded_lockup`,
-`name-acquisition.test.tsx :: names the lockup stranded in an earlier auction of the same name`.
+`name-acquisition.test.tsx :: names the lockup stranded in an earlier auction of the same name`, `name-acquisition.test.tsx :: names the lockup stranded on an expired name with no later auction`.
 
 **R10a — A bid of this auction left unrevealed reads as lost, on the node's word.** Once the auction is CLOSED, a commitment of this auction whose BID coin is still unspent was never revealed; hsd lets a BID go only to a REVEAL, which the REVEAL phase alone accepts, so the lockup is lost. That is a final verdict, so it rests on the node: with a synced node, every commitment of this auction (not only the newest) whose own reveal is neither broadcast, pending nor mined (its draft's status, or a reveal txid the chain scan stamped on that commitment with no local draft) and whose BID coin is unspent in the local coin set is a candidate, and the node is asked about each (`GET /coin`). Only its answer that the coin is still an unspent BID of this name at that address, every field matched, makes the task state `lostUnrevealed` ("Lost — Not Revealed", in red, no action) instead of `closedResultUnknown`, with no Redeem offered. A coin the node does not have was spent, by a reveal made on another device or one in its mempool (hsd answers 404 for a coin a mempool transaction spends), and is not lost; a node error or a reply that is not that coin decides nothing. Without that answer (no synced node, a node error, or a node that no longer has the coin) a CLOSED name that is not ours with a BID coin of this auction unspent in the local coin set is `closedResultUnknown` ("Closed — Sync to See Result", neutral blue, no action; the Auctions row stays and the name modal says to connect a synced node and Refresh): the local coin set can be behind a reveal made elsewhere, so a loss is not declared from it, and the bid is ours, so the name reads neither "Owned" nor "Unavailable". A CLOSED name that is not ours with no BID coin, redeemable reveal or owner coin of ours is someone else's and reads `unavailableOther`, as the catch-all for a name not owned does. A redeemable losing reveal beside it keeps `lostNeedsRedeem`.
 *Enforced:* `commands/names.rs::{find_name_action_context, reveal_sent_or_mined, with_node_unrevealed_bids, node_name_coin_matches, evaluate_name_action_capabilities, derive_auction_task_state}` (the candidates are `unrevealed_bid_coins`; the node is asked only in CLOSED, on the synced-node path; the verdict is the CLOSED arm).

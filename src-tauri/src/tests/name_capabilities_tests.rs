@@ -60,7 +60,7 @@ fn ctx(
         listing_state: None,
         unrevealed_bid_coins: Vec::new(),
         unrevealed_bid_on_node: false,
-        lapsed_auction_coins: Vec::new(),
+        stranded_candidates: Vec::new(),
     }
 }
 
