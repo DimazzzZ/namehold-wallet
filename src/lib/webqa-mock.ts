@@ -1409,7 +1409,6 @@ const handlers: Record<string, Handler> = {
     lockupValueDoos: 10_000_000,
     tier: "round",
   }),
-  export_bid_commitments: () => "[]",
   save_bid_backup: () => null,
 
   build_send_hns_draft: (_args) => ({

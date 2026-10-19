@@ -307,10 +307,10 @@ async fn export_returns_all_fields_for_every_commitment() {
         id
     };
 
-    let app = mock_app_with(state);
-    let json = bids::export_bid_commitments(app.state(), Some(profile_id))
-        .await
-        .expect("export should succeed");
+    let json = {
+        let conn = state.db.lock().unwrap();
+        bids::bid_backup_json(&conn, &profile_id).expect("export should succeed")
+    };
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     let arr = v.as_array().expect("export must be a JSON array");
     assert_eq!(arr.len(), 2);
@@ -342,10 +342,10 @@ async fn export_empty_for_profile_with_no_commitments() {
         let conn = state.db.lock().unwrap();
         insert_valid_profile(&conn, "regtest")
     };
-    let app = mock_app_with(state);
-    let json = bids::export_bid_commitments(app.state(), Some(profile_id))
-        .await
-        .unwrap();
+    let json = {
+        let conn = state.db.lock().unwrap();
+        bids::bid_backup_json(&conn, &profile_id).unwrap()
+    };
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(v.as_array().unwrap().len(), 0);
 }
@@ -1185,10 +1185,18 @@ async fn save_bid_backup_writes_the_exact_exported_json() {
     .await
     .expect("save should succeed");
 
-    let expected = bids::export_bid_commitments(app.state(), Some(profile_id))
-        .await
-        .unwrap();
+    let expected = {
+        let state = app.state::<crate::AppState>();
+        let conn = state.db.lock().unwrap();
+        bids::bid_backup_json(&conn, &profile_id).unwrap()
+    };
     let written = std::fs::read_to_string(&path).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "the backup holds secrets: owner only");
+    }
     std::fs::remove_file(&path).unwrap();
     assert_eq!(written, expected);
     assert!(written.contains(&"22".repeat(32)));

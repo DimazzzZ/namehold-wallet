@@ -4,7 +4,7 @@
 //! value and nonce (the chain only carries the blind). Losing the row makes
 //! the lockup unrecoverable without this module: `recover_bid_commitment`
 //! rebuilds it from the account xpub + a user-supplied candidate value, and
-//! `export_bid_commitments` lets the user back the whole table up alongside
+//! `save_bid_backup` lets the user back the whole table up alongside
 //! their seed.
 //!
 //! Neither command touches secret key material — the nonce derivation (see
@@ -390,7 +390,7 @@ pub(crate) fn bid_backup_json(
 }
 
 /// Write the bid backup of a profile to `path` (chosen in the native save
-/// dialog), as [`bid_backup_json`] renders it. A path that cannot be written
+/// dialog), as [`bid_backup_json`] renders it, readable by the owner only. A path that cannot be written
 /// is an error.
 pub(crate) fn save_bid_backup_from_conn(
     conn: &rusqlite::Connection,
@@ -398,22 +398,14 @@ pub(crate) fn save_bid_backup_from_conn(
     path: &std::path::Path,
 ) -> Result<(), AppError> {
     let json = bid_backup_json(conn, profile_id)?;
-    std::fs::write(path, json)?;
+    // The backup holds secret nonces: owner-only on unix (an existing file
+    // keeps its mode, as `write` would).
+    let mut file = std::fs::OpenOptions::new();
+    file.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut file, 0o600);
+    std::io::Write::write_all(&mut file.open(path)?, json.as_bytes())?;
     Ok(())
-}
-
-/// Export every bid commitment for a profile as a JSON string. Contains
-/// secret nonce/blind material.
-#[tauri::command]
-#[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn export_bid_commitments(
-    state: State<'_, AppState>,
-    wallet_profile_id: Option<String>,
-) -> Result<String, AppError> {
-    let profile_id = crate::commands::read::resolve_profile(&state, wallet_profile_id)?
-        .ok_or_else(|| AppError::InvalidInput("no active wallet profile".into()))?;
-    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    bid_backup_json(&conn, &profile_id)
 }
 
 /// Save the bid backup of a profile to `path`, a path the renderer took from

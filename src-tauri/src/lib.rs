@@ -724,7 +724,6 @@ pub fn run() {
             commands::names::get_names_action_capabilities,
             commands::bids::recover_bid_commitment,
             commands::bids::brute_force_recover_bid,
-            commands::bids::export_bid_commitments,
             commands::bids::save_bid_backup,
             commands::watchlist::add_to_watchlist,
             commands::watchlist::remove_from_watchlist,
