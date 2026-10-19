@@ -3345,13 +3345,53 @@ pub fn mark_cancelled_listing_unmined(
     cancel_txid: &str,
 ) -> Result<usize, AppError> {
     let guard = format!(" AND {}", no_other_open_listing_sql());
-    cancel_unmined_write(
+    let changed = cancel_unmined_write(
         conn,
         id,
         cancel_txid,
         ListingWrite::CancelledUnmined,
         &guard,
-    )
+    )?;
+    log_blocked_by_open_listing(conn, id, changed, "Cancelling")?;
+    Ok(changed)
+}
+
+/// Another open listing of the same name as listing `id` (its id), the one
+/// that keeps `no_other_open_listing_sql` from moving `id` back to an open
+/// state; `None` when there is none.
+pub fn other_open_listing_of_its_name(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<Option<String>, AppError> {
+    let sql = format!(
+        "SELECT o.id FROM shakedex_listings l JOIN shakedex_listings o
+           ON o.wallet_profile_id = l.wallet_profile_id AND o.name = l.name AND o.id <> l.id
+         WHERE l.id = ?1 AND o.state NOT IN {}
+         ORDER BY o.id LIMIT 1",
+        sql_list(ListingState::TERMINAL.iter().map(|s| s.as_str()))
+    );
+    Ok(conn.query_row(&sql, params![id], |r| r.get(0)).optional()?)
+}
+
+/// A reorg write that changed nothing because another listing of the name
+/// is open is logged: the chain says the name is back in this listing's
+/// cancel or lock, and only one listing per name may be open, so the
+/// listing stays as it is until the other one ends.
+fn log_blocked_by_open_listing(
+    conn: &rusqlite::Connection,
+    id: &str,
+    changed: usize,
+    to: &str,
+) -> Result<(), AppError> {
+    if changed == 0 {
+        if let Some(other) = other_open_listing_of_its_name(conn, id)? {
+            eprintln!(
+                "shakedex: listing {id} is not moved back to {to} after a reorg: \
+                 listing {other} of the same name is open"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// The write of [`mark_listing_cancel_unmined`] for `w`'s sources, with
@@ -3492,10 +3532,12 @@ pub fn mark_listing_cancel_undone(
         w.source_sql(),
         no_other_open_listing_sql()
     );
-    Ok(conn.execute(
+    let changed = conn.execute(
         &sql,
         params![id, w.target(), listing_txid(cancel.0), i64::from(cancel.1)],
-    )?)
+    )?;
+    log_blocked_by_open_listing(conn, id, changed, "CancelAwaitingFinalize")?;
+    Ok(changed)
 }
 
 /// What Lower price writes (R26).

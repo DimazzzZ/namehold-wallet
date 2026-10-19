@@ -648,3 +648,21 @@ fn unavailable_other_next_action_is_none() {
     assert!(label.is_none());
     assert!(reason.is_none());
 }
+
+/// F7: one spelling of the lostUnrevealed label: the backend's next-action
+/// label (the Auctions row) is the UI's task label (the modal's badge).
+#[test]
+fn lost_unrevealed_label_matches_the_uis() {
+    const UI: &str = include_str!("../../../src/lib/auction.ts");
+    let decl = format!(
+        "case \"lostUnrevealed\":\n      return {:?};",
+        crate::commands::names::LOST_UNREVEALED_LABEL
+    );
+    assert!(UI.contains(&decl), "auction.ts lacks `{decl}`");
+    let (_, label, _) =
+        crate::commands::names::next_action_for_task(&AuctionTaskState::LostUnrevealed);
+    assert_eq!(
+        label.as_deref(),
+        Some(crate::commands::names::LOST_UNREVEALED_LABEL)
+    );
+}

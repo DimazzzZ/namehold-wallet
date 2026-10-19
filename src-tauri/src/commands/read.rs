@@ -385,9 +385,7 @@ pub async fn read_balance(
     if addrs.is_empty() {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         if let Ok(Some(profile)) = queries::get_wallet_profile(&conn, &id) {
-            let gap = crate::commands::secure_wallet::gap_limit(
-                &queries::get_settings(&conn).unwrap_or_default(),
-            );
+            let gap = crate::commands::secure_wallet::gap_limit(&queries::get_settings(&conn)?);
             if let Ok(network) =
                 crate::noncustodial::derivation::network_from_profile(&profile.network)
             {
@@ -523,7 +521,7 @@ fn collect_read_names_data(
         id,
         network.name_params(),
         tip,
-        crate::shakedex_jobs::SOLD_RECHECK_DAYS,
+        crate::shakedex_jobs::AFTER_LOCK_RECHECK_DAYS,
     )?;
     for r in rows {
         let listing = serde_json::to_value(&r.listing)?;

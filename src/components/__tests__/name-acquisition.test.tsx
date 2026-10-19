@@ -834,7 +834,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
             hasBidCoin: true,
             canRedeem: refused("no unspent reveal coin to redeem"),
             nextActionKey: null,
-            nextActionLabel: "Lost — not revealed",
+            nextActionLabel: "Lost — Not Revealed",
             nextActionReason: reason,
           }),
         },

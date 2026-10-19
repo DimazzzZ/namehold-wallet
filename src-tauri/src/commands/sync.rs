@@ -764,9 +764,12 @@ pub async fn sync_node_step(
         Ok(a) => a,
         Err(_) => return false,
     };
-    let gap = crate::commands::secure_wallet::gap_limit(
-        &queries::get_settings(&conn).unwrap_or_default(),
-    );
+    // The settings read fails as the reads above do: no sync step, not a
+    // window grown by a gap the user did not set.
+    let gap = match queries::get_settings(&conn) {
+        Ok(s) => crate::commands::secure_wallet::gap_limit(&s),
+        Err(_) => return false,
+    };
     // Resolve the profile's effective node config (per-profile override ->
     // global -> default) rather than reading global settings directly.
     let client = match NodeRpcClient::for_profile(&conn, profile_id) {
@@ -875,14 +878,23 @@ pub(crate) async fn grow_address_window(
             if !checked.insert(address.clone()) {
                 continue;
             }
-            if let Ok(txs) = client.get_txs_by_address(&address).await {
-                if let Some(tx) = txs.first() {
-                    let height = tx
-                        .get("height")
-                        .and_then(|h| h.as_i64())
-                        .filter(|h| *h >= 0);
-                    with_history.push((address, height));
+            // An address the node did not answer for counts as unused this
+            // round (best effort: the window it reaches is persisted, and the
+            // next sync asks again), and the failure is logged.
+            match client.get_txs_by_address(&address).await {
+                Ok(txs) => {
+                    if let Some(tx) = txs.first() {
+                        let height = tx
+                            .get("height")
+                            .and_then(|h| h.as_i64())
+                            .filter(|h| *h >= 0);
+                        with_history.push((address, height));
+                    }
                 }
+                Err(e) => eprintln!(
+                    "sync: profile {profile_id}: no history for {address} from the node ({e}); \
+                     read as unused this sync"
+                ),
             }
         }
         if lost() {
@@ -900,8 +912,15 @@ pub(crate) async fn grow_address_window(
         }
         let mut round = Vec::new();
         for d in &added {
-            if let Ok(mut coins) = client.get_coins_by_address(&d.address).await {
-                round.append(&mut coins);
+            // Best effort, as above: the new address is stored, and the next
+            // sync's coin scan reads it again; the failure is logged.
+            match client.get_coins_by_address(&d.address).await {
+                Ok(mut coins) => round.append(&mut coins),
+                Err(e) => eprintln!(
+                    "sync: profile {profile_id}: no coins for new address {} from the node ({e}); \
+                     the next sync reads it",
+                    d.address
+                ),
             }
         }
         if lost() {

@@ -461,7 +461,11 @@ fn own_lock_addresses(
         .iter()
         .filter_map(|hex_key| {
             // A stored key that does not decode is skipped: it can name no
-            // address, and a purchase gate fails safe on what it cannot read.
+            // address. This fails OPEN: a listing locked with that key is not
+            // recognised as ours and may be bought (R33's gate is a fee
+            // saver, not a safety check; the name comes home either way).
+            // Every row's key is written from one this wallet derived or a
+            // file it parsed, so an undecodable one is a corrupted row.
             let key = <[u8; 33]>::try_from(hex::decode(hex_key).ok()?).ok()?;
             lock_address(network, &key).ok()
         })
@@ -475,6 +479,10 @@ fn mark_own(
     network: Network,
     own: &std::collections::HashSet<String>,
 ) -> MarketRow {
+    // Why `is_ok_and`: `lock_address` only hashes the parsed 33-byte key and
+    // encodes the program, so it does not fail here; if it ever did, the row
+    // is shown as anyone's and the purchase gate (`refuse_own_listing`)
+    // returns that error instead of building.
     row.own = lock_address(network, &l.public_key).is_ok_and(|a| own.contains(&a));
     row
 }

@@ -101,8 +101,11 @@ pub(crate) fn persist_in_tx(
             .iter()
             .enumerate()
             .filter(|(i, _)| Some(*i) != res.plan.change_output_index)
-            .map(|(_, o)| o.value as i64)
-            .sum(),
+            .fold(0u64, |sum, (_, o)| sum.saturating_add(o.value))
+            .try_into()
+            // Why: a total past i64::MAX doos is far beyond the HNS supply;
+            // it is shown as the largest number, never wrapped negative.
+            .unwrap_or(i64::MAX),
         fee_doos: res.fee as i64,
         change_doos: res.change as i64,
         input_total_doos: res.input_total as i64,
@@ -452,19 +455,16 @@ pub(crate) async fn ensure_finalize_matured(
     Ok(())
 }
 
-/// The name's owner coin in a `getnameinfo.info` reply (`owner.{hash,index}`),
-/// or `None` when the reply does not name one. Shared by the redeem builder
-/// ([`exclude_owner_reveal`]) and the Redeem button
-/// (`NameActionContext::with_node_owner`), so the two cannot disagree.
-pub(crate) fn owner_outpoint(info: &serde_json::Value) -> Option<(&str, u64)> {
-    let owner = info.get("owner")?;
-    Some((owner.get("hash")?.as_str()?, owner.get("index")?.as_u64()?))
-}
+/// The name's owner coin in a `getnameinfo.info` reply, read once for the
+/// redeem builder ([`exclude_owner_reveal`]), the Redeem button
+/// (`NameActionContext::with_node_owner`) and the Shakedex jobs: see
+/// [`crate::noncustodial::rpc::name_owner_outpoint`].
+pub(crate) use crate::noncustodial::rpc::name_owner_outpoint as owner_outpoint;
 
-/// Is `coin` the outpoint `(hash, index)`? hsd's hashes are lowercase hex;
-/// the comparison does not rest on it.
-pub(crate) fn is_outpoint(coin: &queries::NameCoin, (hash, index): (&str, u64)) -> bool {
-    coin.txid.eq_ignore_ascii_case(hash) && u64::from(coin.vout) == index
+/// Is `coin` the outpoint `(hash, index)`?
+/// ([`crate::noncustodial::rpc::same_outpoint`]).
+pub(crate) fn is_outpoint(coin: &queries::NameCoin, outpoint: (&str, u32)) -> bool {
+    crate::noncustodial::rpc::same_outpoint((&coin.txid, coin.vout), outpoint)
 }
 
 /// The reveal coins in `coins` that a REDEEM may spend: every one but the

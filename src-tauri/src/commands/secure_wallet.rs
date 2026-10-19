@@ -168,14 +168,20 @@ pub(crate) fn activate_profile(state: &AppState, id: &str) -> Result<(), AppErro
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         db::queries::set_active_profile(&conn, id)?;
     }
+    drop_signer_if(state, |owner| owner != id)
+}
+
+/// Drop the signer session when it belongs to a profile `drop_for` picks
+/// (by its profile id); no session, nothing to drop. Shared by the profile
+/// activation (another profile's signer) and deletion (the deleted one's).
+fn drop_signer_if(state: &AppState, drop_for: impl FnOnce(&str) -> bool) -> Result<(), AppError> {
     let mut slot = state
         .signer
         .lock()
         .map_err(|e| AppError::Lock(e.to_string()))?;
     if slot
         .as_ref()
-        .map(|s| s.wallet_profile_id() != id)
-        .unwrap_or(false)
+        .is_some_and(|s| drop_for(s.wallet_profile_id()))
     {
         *slot = None;
     }
@@ -656,18 +662,7 @@ pub async fn delete_wallet_profile(
             db::queries::set_active_profile(&conn, "")?;
         }
     }
-    let mut slot = state
-        .signer
-        .lock()
-        .map_err(|e| AppError::Lock(e.to_string()))?;
-    if slot
-        .as_ref()
-        .map(|s| s.wallet_profile_id() == wallet_profile_id)
-        .unwrap_or(false)
-    {
-        *slot = None;
-    }
-    Ok(())
+    drop_signer_if(&state, |owner| owner == wallet_profile_id)
 }
 
 /// Read a profile summary by id (helper for command returns).

@@ -681,9 +681,18 @@ fn cancel_writes_take_only_their_own_coin() {
         "another listing of the name is open"
     );
     assert_eq!(listing(&f).state, S::Cancelled);
+    // What the blocked write logs names that listing (F14).
+    assert_eq!(
+        queries::other_open_listing_of_its_name(&f.conn, &f.id).unwrap(),
+        Some("l2".to_string())
+    );
     f.conn
         .execute("DELETE FROM shakedex_listings WHERE id = 'l2'", [])
         .unwrap();
+    assert_eq!(
+        queries::other_open_listing_of_its_name(&f.conn, &f.id).unwrap(),
+        None
+    );
     assert_eq!(
         queries::mark_listing_cancel_undone(&f.conn, &f.id, (&txid("c1"), 0)).unwrap(),
         1
@@ -3143,12 +3152,12 @@ fn cancelled_at(f: &Fx) -> (String, u32) {
 }
 
 /// R28 with R22's reorg rule: a Cancelled listing is read again within
-/// [`crate::shakedex_jobs::SOLD_RECHECK_DAYS`]. When the name's owner is the
-/// cancel's TRANSFER again (a reorg took the FINALIZE home out), the listing
-/// awaits its finalize again, its cancel kept, its FINALIZE draft link
-/// forgotten, and its lockup counted in the same sync while that TRANSFER is
-/// a mined coin; with the FINALIZE back in the mempool (the TRANSFER hsd's
-/// 404) it awaits it uncounted, and is Cancelled again once that FINALIZE
+/// [`crate::shakedex_jobs::AFTER_LOCK_RECHECK_DAYS`]. When the name's owner
+/// is the cancel's TRANSFER again (a reorg took the FINALIZE home out), the
+/// listing awaits its finalize again, its cancel kept, its FINALIZE draft
+/// link forgotten, and its lockup counted in the same sync while that
+/// TRANSFER is a mined coin; with the FINALIZE back in the mempool (the
+/// TRANSFER hsd's 404) it awaits it uncounted, and is Cancelled again once that FINALIZE
 /// is mined. A FINALIZE home that still stands, another owner, or no live
 /// name leaves it Cancelled and unwritten, so it leaves the after-lock set
 /// once the window passes; past it nothing is read.
@@ -4033,7 +4042,7 @@ async fn sold_follows_its_purchase_back_to_the_mempool_and_a_competing_purchase(
 
 /// A Sold listing whose purchase is still the one hsd shows is not written
 /// again: each sync leaves `updated_at` as it was, so the listing leaves
-/// the after-lock set once [`crate::shakedex_jobs::SOLD_RECHECK_DAYS`]
+/// the after-lock set once [`crate::shakedex_jobs::AFTER_LOCK_RECHECK_DAYS`]
 /// pass, instead of being re-checked for ever.
 #[tokio::test]
 async fn a_stable_sold_listing_is_not_written_again() {
@@ -4067,7 +4076,7 @@ async fn a_stable_sold_listing_is_not_written_again() {
     );
     assert_eq!(l.updated_at, before, "not written again");
     // A day later the window is over.
-    let window = crate::shakedex_jobs::SOLD_RECHECK_DAYS - 1;
+    let window = crate::shakedex_jobs::AFTER_LOCK_RECHECK_DAYS - 1;
     assert!(
         queries::list_shakedex_listings_after_lock(&f.conn, PROFILE, window)
             .unwrap()

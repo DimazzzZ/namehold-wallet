@@ -117,10 +117,11 @@ pub(crate) const SEND_GRACE_SECS: i64 = 600;
 /// reorg.
 pub const REVIVE_WINDOW_DAYS: u32 = 7;
 
-/// How long a Sold listing is looked at again for a reorg that takes its
-/// purchase out of the chain, and a Cancelled one for a reorg that takes its
-/// FINALIZE home out, the same window as a lost purchase's revival.
-pub const SOLD_RECHECK_DAYS: u32 = REVIVE_WINDOW_DAYS;
+/// How long a listing that ended after its lock is looked at again for a
+/// reorg: a Sold one for a reorg that takes its purchase out of the chain, a
+/// Cancelled one for a reorg that takes its FINALIZE home (or its cancel) out.
+/// The same window as a lost purchase's revival.
+pub const AFTER_LOCK_RECHECK_DAYS: u32 = REVIVE_WINDOW_DAYS;
 
 /// hsd's own JSON-RPC error to the broadcast. hsd 8.0.0 answers
 /// `sendrawtransaction` with the txid whatever its mempool does (it relays
@@ -1415,7 +1416,8 @@ pub async fn refresh_listings_with_client(
     profile_id: &str,
 ) -> Result<(), AppError> {
     let before = queries::list_shakedex_listings_before_lock(conn, profile_id, ABORT_RECHECK_DAYS)?;
-    let after = queries::list_shakedex_listings_after_lock(conn, profile_id, SOLD_RECHECK_DAYS)?;
+    let after =
+        queries::list_shakedex_listings_after_lock(conn, profile_id, AFTER_LOCK_RECHECK_DAYS)?;
     if before.is_empty() && after.is_empty() {
         return Ok(());
     }
@@ -1435,8 +1437,8 @@ pub async fn refresh_listings_with_client(
 
 /// The after-lock job of [`refresh_listings_with_client`] (R19, R22, R28),
 /// for one listing of [`queries::ListingState::AFTER_LOCK_JOB`] (a Sold or
-/// Cancelled one within [`SOLD_RECHECK_DAYS`]), from hsd's `GET /coin` of
-/// its lock outpoint `(lock_txid, lock_vout)`:
+/// Cancelled one within [`AFTER_LOCK_RECHECK_DAYS`]), from hsd's
+/// `GET /coin` of its lock outpoint `(lock_txid, lock_vout)`:
 ///
 /// - a FINALIZE of the name at the listing's lock address mined in a block → a
 ///   Finalizing listing Listed; in the mempool (`height: -1`) → a Listed one
@@ -1738,7 +1740,7 @@ async fn lock_coin_spent(
         return Ok(());
     };
     let owner = owner_of(info)?;
-    let owner_is_lock = owner.0 == lock.0 && owner.1 == lock.1;
+    let owner_is_lock = rpc::same_outpoint((&owner.0, owner.1), lock);
     // R28: a mined TRANSFER out of this lock coin to an address of ours is
     // a cancel (ours, another device's, or our own purchase), judged before
     // any sale: the sale rule says "not ours" of it.
@@ -1852,16 +1854,9 @@ enum Sale {
 /// The name's owner outpoint from `info`; a reply without `owner.hash` or
 /// `owner.index` is not hsd's whole answer.
 fn owner_of(info: &serde_json::Value) -> Result<(String, u32), AppError> {
-    let owner = info.get("owner");
-    let hash = owner.and_then(|o| o.get("hash")).and_then(|h| h.as_str());
-    let index = owner
-        .and_then(|o| o.get("index"))
-        .and_then(|i| i.as_u64())
-        .and_then(|i| u32::try_from(i).ok());
-    match (hash, index) {
-        (Some(h), Some(i)) => Ok((h.to_string(), i)),
-        _ => Err(AppError::Rpc("node did not report the name's owner".into())),
-    }
+    rpc::name_owner_outpoint(info)
+        .map(|(h, i)| (h.to_string(), i))
+        .ok_or_else(|| AppError::Rpc("node did not report the name's owner".into()))
 }
 
 /// hsd's view of transaction `txid`: `GET /tx` (the mempool always, a block
@@ -2119,7 +2114,7 @@ async fn cancel_of_lock(
     owner: &(String, u32),
     lock: (&str, u32),
 ) -> Result<Option<(String, u32)>, AppError> {
-    if owner.0 == lock.0 && owner.1 == lock.1 {
+    if rpc::same_outpoint((&owner.0, owner.1), lock) {
         return Ok(None);
     }
     let Some(coin) = client.get_coin(&owner.0, owner.1).await? else {
@@ -2324,7 +2319,7 @@ async fn cancel_on_its_way_home(
 }
 
 /// R28 with R22's reorg rule, for a Cancelled listing within
-/// [`SOLD_RECHECK_DAYS`], from the name's owner hsd names (a coin is the
+/// [`AFTER_LOCK_RECHECK_DAYS`], from the name's owner hsd names (a coin is the
 /// owner only once its block is connected):
 ///
 /// - the listing's cancel TRANSFER (a reorg took the FINALIZE home out) →
@@ -2358,7 +2353,7 @@ async fn cancelled_home_undone(
         return Ok(());
     };
     let owner = owner_of(info)?;
-    let is = |o: (&str, u32)| owner.0.eq_ignore_ascii_case(o.0) && owner.1 == o.1;
+    let is = |o: (&str, u32)| rpc::same_outpoint((&owner.0, owner.1), o);
     if !is(cancel) {
         if stored_lock(l)?.is_some_and(is) {
             queries::mark_cancelled_listing_unmined(conn, &l.id, cancel.0)?;
@@ -2426,7 +2421,7 @@ async fn cancel_transfer_held(
         return Ok(());
     };
     let owner = owner_of(info)?;
-    if !(owner.0.eq_ignore_ascii_case(cancel.0) && owner.1 == cancel.1) {
+    if !rpc::same_outpoint((&owner.0, owner.1), cancel) {
         // hsd names a coin the owner once its block is connected: a
         // mined cancel that is not the owner is no consistent answer.
         return Ok(());
@@ -2471,7 +2466,7 @@ async fn cancel_replaced(
     cancel: (&str, u32),
 ) -> Result<(), AppError> {
     if let Some(c) = cancel_of_lock(conn, client, network, l, owner, lock).await? {
-        if !(c.0.eq_ignore_ascii_case(cancel.0) && c.1 == cancel.1) {
+        if !rpc::same_outpoint((&c.0, c.1), cancel) {
             let release = replaced_cancel_release(conn, client, l).await?;
             cancel_mined(conn, l, (&c.0, c.1), lock, release)?;
         }
@@ -2484,7 +2479,7 @@ async fn cancel_replaced(
         }
         return Ok(());
     }
-    let owner_is_lock = owner.0 == lock.0 && owner.1 == lock.1;
+    let owner_is_lock = rpc::same_outpoint((&owner.0, owner.1), lock);
     if let (Sale::Mined { txid, lock }, false) = (
         find_sale(conn, client, network, l, owner).await?,
         owner_is_lock,

@@ -318,9 +318,7 @@ pub async fn sync_wallet_state(
         // Auto-provision derived addresses if none exist yet (e.g., wallet
         // created before the address-derivation step ran, or DB was migrated).
         if addresses.is_empty() {
-            let gap = crate::commands::secure_wallet::gap_limit(
-                &db::queries::get_settings(&conn).unwrap_or_default(),
-            );
+            let gap = crate::commands::secure_wallet::gap_limit(&db::queries::get_settings(&conn)?);
             if let Ok(network) = derivation::network_from_profile(&profile.network) {
                 if let Ok(xpub) = crate::noncustodial::hd::ExtendedPubKey::from_xpub(
                     network,
@@ -2337,9 +2335,7 @@ pub(crate) fn signer_unlocked_for(
     session: Option<&crate::noncustodial::session::SignerSession>,
     active_id: &str,
 ) -> bool {
-    session
-        .map(|s| s.is_unlocked() && s.wallet_profile_id() == active_id)
-        .unwrap_or(false)
+    session.is_some_and(|s| s.is_unlocked() && s.wallet_profile_id() == active_id)
 }
 
 /// Report non-custodial write capability: writes require an unlocked signer AND

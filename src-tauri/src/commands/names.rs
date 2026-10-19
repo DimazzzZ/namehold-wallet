@@ -416,7 +416,7 @@ pub(crate) fn find_name_action_context(
             .is_some()
         })
         .fold((0i64, 0i64), |(n, sum), b| {
-            (n + 1, sum + b.lockup_value_doos)
+            (n.saturating_add(1), sum.saturating_add(b.lockup_value_doos))
         });
     // Part 3 (confirmed pre-existing bug, folded in from the Task 2 review):
     // revealing SPENDS the COV_BID coin and CREATES a COV_REVEAL coin — so a
@@ -498,9 +498,7 @@ pub(crate) fn find_name_action_context(
     // again from its live answer.
     let (redeemable_reveal_count, redeemable_value_doos) = redeemable_reveals(
         &reveal_coins,
-        owner_coin
-            .as_ref()
-            .map(|o| (o.txid.as_str(), u64::from(o.vout))),
+        owner_coin.as_ref().map(|o| (o.txid.as_str(), o.vout)),
     );
     let reveal_coin = reveal_coins.first().cloned();
     let owner_cov_type = owner_coin.as_ref().map(|c| c.covenant_type);
@@ -1433,7 +1431,17 @@ impl NameActionContext {
     /// reports in `info` (`getnameinfo.info`), the answer the redeem builder
     /// goes by. A reply that names no owner leaves the local count in place.
     pub(crate) fn with_node_owner(self, info: Option<&serde_json::Value>) -> Self {
-        let Some(owner) = info.and_then(crate::commands::draft_ctx::owner_outpoint) else {
+        let Some(info) = info else {
+            return self;
+        };
+        let Some(owner) = crate::commands::draft_ctx::owner_outpoint(info) else {
+            // hsd always names an owner beside `info`: a reply without one is
+            // not its whole answer. The local count stays, and that is logged.
+            eprintln!(
+                "names: the node's getnameinfo names no owner outpoint ({:?}); \
+                 the redeemable reveals stay counted against the tracked owner",
+                info.get("owner")
+            );
             return self;
         };
         let (redeemable_reveal_count, redeemable_value_doos) =
@@ -1482,12 +1490,17 @@ fn node_bid_coin_matches(
 /// (`bad-redeem-owner`, lib/blockchain/chain.js).
 fn redeemable_reveals(
     reveal_coins: &[queries::NameCoin],
-    owner: Option<(&str, u64)>,
+    owner: Option<(&str, u32)>,
 ) -> (i64, i64) {
-    reveal_coins
+    let (n, sum) = reveal_coins
         .iter()
         .filter(|c| !owner.is_some_and(|o| crate::commands::draft_ctx::is_outpoint(c, o)))
-        .fold((0i64, 0i64), |(n, sum), c| (n + 1, sum + c.value as i64))
+        .fold((0i64, 0u64), |(n, sum), c| {
+            (n.saturating_add(1), sum.saturating_add(c.value))
+        });
+    // Why: a sum past i64::MAX doos is far beyond the HNS supply; it is shown
+    // as the largest number, never wrapped negative.
+    (n, i64::try_from(sum).unwrap_or(i64::MAX))
 }
 
 /// `owner_address` is the owner recorded for the name (from the node payload
@@ -1706,6 +1719,14 @@ pub(crate) fn derive_auction_task_state(
     }
 }
 
+/// The label of [`AuctionTaskState::LostUnrevealed`], cased as its
+/// neighbours ("Lost — Redeem Now"). The UI's task label for the state is
+/// the same string (`src/lib/auction.ts::taskStateLabel`), pinned by
+/// `auction_capabilities_tests::lost_unrevealed_label_matches_the_uis`, so
+/// the Auctions row (this label) and the name modal's badge (the UI's) read
+/// the same.
+pub(crate) const LOST_UNREVEALED_LABEL: &str = "Lost — Not Revealed";
+
 /// Map task state to the recommended next action.
 pub(crate) fn next_action_for_task(
     task: &AuctionTaskState,
@@ -1738,7 +1759,7 @@ pub(crate) fn next_action_for_task(
             (Some("REDEEM".into()), Some("Redeem Lockup".into()), Some("Your bid lost. Redeem your reveal coin to reclaim the funds.".into()))
         }
         AuctionTaskState::LostUnrevealed => {
-            (None, Some("Lost — not revealed".into()), Some("You did not reveal this bid in time; its lockup is lost and cannot be redeemed.".into()))
+            (None, Some(LOST_UNREVEALED_LABEL.into()), Some("You did not reveal this bid in time; its lockup is lost and cannot be redeemed.".into()))
         }
         AuctionTaskState::TransferPendingFinalize => {
             (Some("FINALIZE".into()), Some("Finalize Transfer".into()), Some("This name is being transferred. Finalize to complete the transfer.".into()))
@@ -4193,6 +4214,29 @@ mod tests {
         assert_ne!(
             derive_auction_task_state(&won, "CLOSED", false, None, Network::Main),
             AuctionTaskState::LostNeedsRedeem
+        );
+    }
+
+    /// F11: the redeemable sum saturates instead of wrapping negative, and
+    /// the owner reveal is left out of it.
+    #[test]
+    fn redeemable_reveals_saturate_and_skip_the_owner() {
+        let coin = |txid: &str, value: u64| queries::NameCoin {
+            txid: txid.into(),
+            vout: 0,
+            value,
+            address: "a".into(),
+            branch: 0,
+            child_index: 0,
+            covenant_type: COV_REVEAL as i64,
+            covenant_json: None,
+            name_height: None,
+        };
+        let coins = [coin("a1", u64::MAX), coin("a2", u64::MAX), coin("own", 5)];
+        assert_eq!(redeemable_reveals(&coins, Some(("OWN", 0))), (2, i64::MAX));
+        assert_eq!(
+            redeemable_reveals(&[coin("a1", 7), coin("own", 5)], Some(("own", 0))),
+            (1, 7)
         );
     }
 
