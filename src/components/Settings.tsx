@@ -67,6 +67,9 @@ export function Settings() {
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  // Advanced is collapsed by default; the user's own toggle is kept here and
+  // an error inside it forces it open (see `advancedHasError`).
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const nodeProbe = useNodeConnectionCheck();
 
   // The persisted pair the Chain source selector reads and writes, resolved
@@ -164,6 +167,12 @@ export function Settings() {
     !(/^\d+$/.test(gapRaw) && Number(gapRaw) >= 1 && Number(gapRaw) <= MAX_ADDRESS_GAP_LIMIT)
       ? `Address gap limit must be a whole number from 1 to ${MAX_ADDRESS_GAP_LIMIT}`
       : null;
+
+  // A stored value outside its range lands here as an error in a collapsed
+  // section while Save stays disabled; open the section and say why next to
+  // Save, so the block is never silent.
+  const advancedHasError = !!feeRateError || !!gapLimitError;
+  const saveBlockReason = explorerUrlError || feeRateError || gapLimitError;
 
   // Pick the hsd data directory with the native folder browser (Finder).
   const pickDataDir = async () => {
@@ -626,7 +635,11 @@ export function Settings() {
       )}
 
       {/* Advanced (collapsed by default — rarely changed). */}
-      <details className="bg-white rounded border border-gray-200 group">
+      <details
+        className="bg-white rounded border border-gray-200 group"
+        open={advancedOpen || advancedHasError}
+        onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}
+      >
         <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-gray-700">
           Advanced
         </summary>
@@ -665,7 +678,9 @@ export function Settings() {
               data-testid="settings-fee-rate"
             />
             {feeRateError ? (
-              <div className="text-xs text-red-600 mt-1">{feeRateError}</div>
+              <div className="text-xs text-red-600 mt-1" data-testid="settings-fee-rate-error">
+                {feeRateError}
+              </div>
             ) : (
               <div className="text-xs text-gray-500 mt-1">
                 Applied when a transaction is built without an explicit Advanced &gt; Fee rate
@@ -678,6 +693,11 @@ export function Settings() {
 
       {dirty && (
         <StickyFooter>
+          {saveBlockReason ? (
+            <div className="text-xs text-red-600 mr-3" data-testid="settings-save-blocked">
+              Can&rsquo;t save: {saveBlockReason}
+            </div>
+          ) : null}
           <Button
             onClick={handleSave}
             disabled={

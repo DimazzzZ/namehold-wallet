@@ -75,4 +75,48 @@ describe("Settings — Address gap limit", () => {
       expect(call?.[1]).toEqual({ key: "address_gap_limit", value });
     });
   });
+
+  describe("a stored value outside the range", () => {
+    // Why: the field sits in the collapsed Advanced section; a stored 5000 made
+    // every Save disabled with the reason hidden.
+    function advanced(): HTMLDetailsElement {
+      return screen.getByText("Advanced").closest("details") as HTMLDetailsElement;
+    }
+
+    it("opens Advanced, shows the reason and says why Save is disabled", async () => {
+      loadSettings({ address_gap_limit: "5000" });
+      renderSettings();
+      expect(await screen.findByText(RANGE_ERROR)).toBeVisible();
+      expect(advanced().open).toBe(true);
+      // Touch another field so the Save footer appears.
+      fireEvent.change(screen.getByTestId("settings-fee-rate"), { target: { value: "2000" } });
+      const save = await screen.findByRole("button", { name: /Save settings/i });
+      expect(save).toBeDisabled();
+      expect(screen.getByTestId("settings-save-blocked")).toHaveTextContent(RANGE_ERROR);
+    });
+
+    it("fixing the field enables Save and drops the reason", async () => {
+      loadSettings({ address_gap_limit: "5000" });
+      renderSettings();
+      fireEvent.change(await screen.findByTestId("settings-gap-limit"), {
+        target: { value: "1000" },
+      });
+      expect(await screen.findByRole("button", { name: /Save settings/i })).toBeEnabled();
+      expect(screen.queryByTestId("settings-save-blocked")).not.toBeInTheDocument();
+    });
+
+    it("opens Advanced for an invalid stored fee rate too", async () => {
+      loadSettings({ fee_rate_doos_per_kvb: "abc" });
+      renderSettings();
+      await waitFor(() => expect(advanced().open).toBe(true));
+      expect(screen.getByTestId("settings-fee-rate-error")).toBeVisible();
+    });
+
+    it("leaves Advanced collapsed when nothing in it is wrong", async () => {
+      loadSettings();
+      renderSettings();
+      await screen.findByTestId("settings-gap-limit");
+      expect(advanced().open).toBe(false);
+    });
+  });
 });

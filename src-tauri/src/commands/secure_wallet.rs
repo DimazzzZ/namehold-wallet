@@ -79,16 +79,35 @@ pub(crate) const MAX_GAP_LIMIT: u32 = 1000;
 /// The BIP44 default gap.
 const DEFAULT_GAP_LIMIT: u32 = 20;
 
+/// Set once the first clamp of a stored gap limit has been logged.
+static CLAMP_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Log, once per `flag`, that a stored gap limit above the cap is being
+/// clamped. `gap_limit` runs on every sync, so a line per call would flood
+/// the log. Returns whether this call logged.
+pub(crate) fn log_clamp_once(flag: &std::sync::atomic::AtomicBool, stored: u32) -> bool {
+    if flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    eprintln!(
+        "warning: stored address_gap_limit {stored} exceeds the cap {MAX_GAP_LIMIT}; using {MAX_GAP_LIMIT}"
+    );
+    true
+}
+
 /// `address_gap_limit`, in `1..=MAX_GAP_LIMIT`.
 pub(crate) fn gap_limit(settings: &std::collections::HashMap<String, String>) -> u32 {
-    settings
+    let stored = settings
         .get("address_gap_limit")
         .and_then(|s| s.parse::<u32>().ok())
         .filter(|n| *n > 0)
         // Why: absent, zero or not a number is no gap the user chose; the
         // default is what a fresh install provisions with.
-        .unwrap_or(DEFAULT_GAP_LIMIT)
-        .min(MAX_GAP_LIMIT)
+        .unwrap_or(DEFAULT_GAP_LIMIT);
+    if stored > MAX_GAP_LIMIT {
+        log_clamp_once(&CLAMP_LOGGED, stored);
+    }
+    stored.min(MAX_GAP_LIMIT)
 }
 
 pub(crate) use crate::noncustodial::session::session_ttl_ms;

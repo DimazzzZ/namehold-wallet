@@ -143,6 +143,23 @@ fn test_fingerprint_empty_string() {
 // --- gap_limit tests ---
 
 #[test]
+fn test_gap_limit_clamp_is_logged_once() {
+    let flag = std::sync::atomic::AtomicBool::new(false);
+    assert!(
+        secure_wallet::log_clamp_once(&flag, 5000),
+        "the first clamp logs"
+    );
+    assert!(
+        !secure_wallet::log_clamp_once(&flag, 5000),
+        "a repeat stays silent"
+    );
+    assert!(
+        !secure_wallet::log_clamp_once(&flag, 9000),
+        "so does another value"
+    );
+}
+
+#[test]
 fn test_gap_limit_default() {
     let settings = std::collections::HashMap::new();
     assert_eq!(secure_wallet::gap_limit(&settings), 20);
