@@ -885,7 +885,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
 
   it("says a closed auction's bid is not settled yet offline, not that the name is owned or someone else's", async () => {
     const reason =
-      "This auction closed with a bid of yours the wallet cannot settle yet. Connect a synced node and Refresh to see whether it was revealed in time.";
+      "This auction closed with a bid of yours the wallet cannot settle yet. Sync with your node, then Refresh to see whether it was revealed in time.";
     invokeMock.mockImplementation(
       routeModal(
         {

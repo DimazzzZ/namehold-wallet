@@ -394,6 +394,26 @@ fn closed_result_unknown_label_matches_the_uis() {
     assert!(UI.contains(&decl), "auction.ts lacks `{decl}`");
 }
 
+/// The closedResultUnknown reason is shown also when a synced node did answer
+/// (a 404, an error, a reply that does not match): telling that user to
+/// "connect a synced node" is wrong. The sentence lives in the backend only;
+/// the guided panel shows its reason as it is.
+#[test]
+fn closed_result_unknown_reason_asks_to_sync_not_to_connect_a_node() {
+    let (_, _, reason) = next_action_for_task(&AuctionTaskState::ClosedResultUnknown);
+    let reason = reason.expect("a reason");
+    assert!(
+        reason.contains("Sync with your node, then Refresh"),
+        "{reason}"
+    );
+    assert!(!reason.contains("Connect a synced node"), "{reason}");
+    const UI: &str = include_str!("../../../src/components/name-actions/GuidedAction.tsx");
+    assert!(
+        !UI.contains("This auction closed with a bid of yours"),
+        "GuidedAction.tsx keeps its own copy of the sentence"
+    );
+}
+
 #[test]
 fn reveal_sent_or_mined_reads_the_draft_then_the_stamped_txid() {
     // A reveal in flight or mined (by draft, or stamped by the chain scan

@@ -2002,7 +2002,7 @@ pub(crate) fn next_action_for_task(
             (None, Some(LOST_UNREVEALED_LABEL.into()), Some("You did not reveal this bid in time; its lockup is lost and cannot be redeemed.".into()))
         }
         AuctionTaskState::ClosedResultUnknown => {
-            (None, Some(CLOSED_RESULT_UNKNOWN_LABEL.into()), Some("This auction closed with a bid of yours the wallet cannot settle yet. Connect a synced node and Refresh to see whether it was revealed in time.".into()))
+            (None, Some(CLOSED_RESULT_UNKNOWN_LABEL.into()), Some("This auction closed with a bid of yours the wallet cannot settle yet. Sync with your node, then Refresh to see whether it was revealed in time.".into()))
         }
         AuctionTaskState::TransferPendingFinalize => {
             (Some("FINALIZE".into()), Some("Finalize Transfer".into()), Some("This name is being transferred. Finalize to complete the transfer.".into()))

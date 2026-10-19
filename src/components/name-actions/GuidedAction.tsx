@@ -473,13 +473,14 @@ export function GuidedAction({
             </div>
           );
         }
-        // A bid of ours the wallet cannot settle without a synced node: no
-        // verdict, so neither "lost" nor "registered by another wallet".
+        // A bid of ours the wallet cannot settle yet (no synced node, or one
+        // that could not tell): no verdict, so neither "lost" nor "registered
+        // by another wallet". The sentence is the backend's reason alone
+        // (`next_action_for_task`), so the two cannot drift apart.
         if (caps?.taskState === "closedResultUnknown") {
           return (
             <div className="text-sm text-gray-700" data-testid="closed-result-unknown">
-              {caps.nextActionReason ??
-                "This auction closed with a bid of yours the wallet cannot settle yet. Connect a synced node and Refresh to see whether it was revealed in time."}
+              {caps.nextActionReason}
             </div>
           );
         }

@@ -1714,7 +1714,7 @@ async fn an_unrevealed_bid_is_not_lost_without_the_nodes_word() {
             .with_node_unrevealed_bids(&client(&node.url()))
             .await;
         assert!(!ctx.unrevealed_bid_on_node, "{label}");
-        assert_ne!(
+        assert_eq!(
             crate::commands::names::derive_auction_task_state(
                 &ctx,
                 "CLOSED",
@@ -1722,8 +1722,8 @@ async fn an_unrevealed_bid_is_not_lost_without_the_nodes_word() {
                 None,
                 crate::noncustodial::network::Network::Main
             ),
-            crate::commands::names::AuctionTaskState::LostUnrevealed,
-            "{label}"
+            crate::commands::names::AuctionTaskState::ClosedResultUnknown,
+            "{label}: no verdict, and the bid is ours"
         );
     }
     // And the node's yes is a yes.
