@@ -623,6 +623,7 @@ export type AuctionTaskState =
   | "wonNeedsRegister"
   | "lostNeedsRedeem"
   | "lostUnrevealed"
+  | "closedResultUnknown"
   | "transferPendingFinalize"
   | "ownedNoUrgentAction"
   | "expiringSoon"

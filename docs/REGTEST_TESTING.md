@@ -229,7 +229,7 @@ A bid that is never revealed loses its whole lockup: it cannot be redeemed. In h
 |------|--------|----------------|
 | 1 | Open a name and bid; have another wallet bid and reveal (with no reveal at all the auction lapses: see the variant below) | BID txs broadcasted |
 | 2 | Mine through REVEAL phase without revealing yours | Phase transitions to CLOSED |
-| 3 | Check the name's capabilities | Task state is `lostUnrevealed` ("Lost — Not Revealed"), not `lostNeedsRedeem` or `ownedNoUrgentAction`; `canRedeem` is `false` with "no unspent reveal coin to redeem" |
+| 3 | Check the name's capabilities | Task state is `lostUnrevealed` ("Lost — Not Revealed"), not `lostNeedsRedeem`, `ownedNoUrgentAction` or `closedResultUnknown` (the reading without a synced node); `canRedeem` is `false` with "no unspent reveal coin to redeem" |
 | 4 | Check the bid's coin on the node | The BID output is still unspent and no transaction the wallet can build spends it: the lockup is lost |
 
 Variant, nobody reveals: hsd expires a name nobody revealed in as soon as it closes (`lib/covenants/namestate.js`, `isExpired`: "If nobody revealed their bids, start over"), and `getnameinfo` answers `info: null`. The name reads `AVAILABLE` ("Available to Open"), and the guided panel names the bid's lockup as stranded, with its amount, once the node confirms the BID coin is still unspent; Reveal and Redeem are not offered. Pinned live by `live_bid_of_an_auction_nobody_revealed_is_a_stranded_lockup`.
@@ -241,7 +241,7 @@ Run the following command to validate the capability model:
 cd src-tauri && cargo test -- auction_capabilities
 ```
 
-Expected: 51 tests pass covering all task-state derivations and next-action mappings.
+Expected: 55 tests pass covering all task-state derivations and next-action mappings.
 
 ### Full Backend Test Suite
 

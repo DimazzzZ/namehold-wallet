@@ -473,6 +473,16 @@ export function GuidedAction({
             </div>
           );
         }
+        // A bid of ours the wallet cannot settle without a synced node: no
+        // verdict, so neither "lost" nor "registered by another wallet".
+        if (caps?.taskState === "closedResultUnknown") {
+          return (
+            <div className="text-sm text-gray-700" data-testid="closed-result-unknown">
+              {caps.nextActionReason ??
+                "This auction closed with a bid of yours the wallet cannot settle yet. Connect a synced node and Refresh to see whether it was revealed in time."}
+            </div>
+          );
+        }
         // Owned registered name — no auction urgency, just manage.
         if (caps?.ownsName) {
           // Explorer-confirmed ownership but no local node-synced owner coin:

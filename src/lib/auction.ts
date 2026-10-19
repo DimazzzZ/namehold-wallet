@@ -234,6 +234,8 @@ export function taskStateLabel(state: AuctionTaskState): string {
       return "Lost — Redeem Now";
     case "lostUnrevealed":
       return "Lost — Not Revealed";
+    case "closedResultUnknown":
+      return "Closed — Sync to See Result";
     case "transferPendingFinalize":
       return "Transfer — Finalize";
     case "ownedNoUrgentAction":
@@ -272,6 +274,9 @@ export function taskStateBadgeVariant(
       return "error";
     case "lostUnrevealed":
       return "error";
+    case "closedResultUnknown":
+      // Neutral blue: no verdict yet, only a sync to wait for.
+      return "info";
     case "transferPendingFinalize":
       return "info";
     case "ownedNoUrgentAction":

@@ -123,6 +123,16 @@ pub enum AuctionTaskState {
     /// REDEEM exists for it: it is lost.
     #[serde(rename = "lostUnrevealed")]
     LostUnrevealed,
+    /// The auction closed, the name is not ours, and a BID coin of ours in
+    /// this auction is still unspent in the local coin set, but the node has
+    /// not confirmed it (no synced node, a node error, or a node that no
+    /// longer has the coin). The local coin
+    /// set can be behind a reveal made on another device, so this is no loss
+    /// ([`AuctionTaskState::LostUnrevealed`] needs the node's word), and the
+    /// bid is ours, so it is no "Owned" or "Unavailable" either: the outcome
+    /// is unknown until a sync settles it.
+    #[serde(rename = "closedResultUnknown")]
+    ClosedResultUnknown,
     #[serde(rename = "transferPendingFinalize")]
     TransferPendingFinalize,
     #[serde(rename = "ownedNoUrgentAction")]
@@ -1511,7 +1521,8 @@ impl NameActionContext {
     /// have was spent, by a reveal made elsewhere or one in its mempool (hsd
     /// answers 404 for a coin a mempool transaction spends), so it is not
     /// lost; a node error or a reply that does not match decides nothing
-    /// either. Logged, since either leaves the name on the CLOSED fallback.
+    /// either. Logged, since either leaves the result unknown
+    /// ([`AuctionTaskState::ClosedResultUnknown`]).
     pub(crate) async fn with_node_unrevealed_bids(self, client: &NodeRpcClient) -> Self {
         let mut on_node = false;
         for c in &self.unrevealed_bid_coins {
@@ -1858,10 +1869,19 @@ pub(crate) fn derive_auction_task_state(
                 // the node's answer decides it (a final verdict needs a
                 // found fact): the local coin set can be behind a reveal made
                 // on another device. Without that answer (no synced node, or
-                // it failed) the name takes the fallback below.
+                // it failed) the outcome is unknown, below.
                 AuctionTaskState::LostUnrevealed
+            } else if ctx.has_bid_coin {
+                // A BID coin of this auction is still unspent here, and the
+                // node has not said so: offline, a node error, or a node that
+                // no longer has it (spent by a reveal the local coin set has
+                // not caught up with). Not a loss without the node's word,
+                // and the bid is ours, so neither "Owned" nor "Unavailable".
+                AuctionTaskState::ClosedResultUnknown
             } else {
-                AuctionTaskState::OwnedNoUrgentAction
+                // Not ours, and nothing of ours left in its auction: someone
+                // else's name, as the `_` arm answers for one not owned.
+                AuctionTaskState::UnavailableOther
             }
         }
         // No `"TRANSFER"` arm: hsd has no such state. A transfer is handled
@@ -1884,6 +1904,11 @@ pub(crate) fn derive_auction_task_state(
 /// the Auctions row (this label) and the name modal's badge (the UI's) read
 /// the same.
 pub(crate) const LOST_UNREVEALED_LABEL: &str = "Lost — Not Revealed";
+
+/// The label of [`AuctionTaskState::ClosedResultUnknown`], spelled once with
+/// the UI's (`src/lib/auction.ts::taskStateLabel`), pinned by
+/// `auction_capabilities_tests::closed_result_unknown_label_matches_the_uis`.
+pub(crate) const CLOSED_RESULT_UNKNOWN_LABEL: &str = "Closed — Sync to See Result";
 
 /// Map task state to the recommended next action.
 pub(crate) fn next_action_for_task(
@@ -1918,6 +1943,9 @@ pub(crate) fn next_action_for_task(
         }
         AuctionTaskState::LostUnrevealed => {
             (None, Some(LOST_UNREVEALED_LABEL.into()), Some("You did not reveal this bid in time; its lockup is lost and cannot be redeemed.".into()))
+        }
+        AuctionTaskState::ClosedResultUnknown => {
+            (None, Some(CLOSED_RESULT_UNKNOWN_LABEL.into()), Some("This auction closed with a bid of yours the wallet cannot settle yet. Connect a synced node and Refresh to see whether it was revealed in time.".into()))
         }
         AuctionTaskState::TransferPendingFinalize => {
             (Some("FINALIZE".into()), Some("Finalize Transfer".into()), Some("This name is being transferred. Finalize to complete the transfer.".into()))
@@ -4442,11 +4470,11 @@ mod tests {
     }
 
     #[test]
-    fn derive_closed_catch_all_owned_no_urgent() {
-        // !owns + no reveal coin → catch-all OwnedNoUrgentAction.
+    fn derive_closed_catch_all_is_unavailable() {
+        // !owns + no reveal coin + no bid coin → someone else's name.
         assert_eq!(
             derive("CLOSED", false, false, false, false, false, None, None, false, None, None),
-            AuctionTaskState::OwnedNoUrgentAction
+            AuctionTaskState::UnavailableOther
         );
     }
 

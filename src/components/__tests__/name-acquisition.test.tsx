@@ -850,6 +850,49 @@ describe("NameActionsModal — guided acquisition flow", () => {
     expect(screen.queryByRole("button", { name: /^Redeem$/i })).not.toBeInTheDocument();
   });
 
+  it("says a closed auction's bid is not settled yet offline, not that the name is owned or someone else's", async () => {
+    const reason =
+      "This auction closed with a bid of yours the wallet cannot settle yet. Connect a synced node and Refresh to see whether it was revealed in time.";
+    invokeMock.mockImplementation(
+      routeModal(
+        {
+          name: "unsettledname",
+          state: "CLOSED",
+          height: 100,
+          renewal: 200,
+          owner: { hash: "ab".repeat(32), index: 0 },
+          registered: false,
+          value: 800_000,
+          highest: 800_000,
+          stats: { blocksUntilExpire: 100 },
+        },
+        {
+          capabilities: makeCapabilities({
+            name: "unsettledname",
+            phase: "CLOSED",
+            taskState: "closedResultUnknown",
+            ownsName: false,
+            hasBidCommitment: true,
+            hasBidCoin: true,
+            canRedeem: refused("no unspent reveal coin to redeem"),
+            nextActionKey: null,
+            nextActionLabel: "Closed — Sync to See Result",
+            nextActionReason: reason,
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="unsettledname" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    expect(await screen.findByTestId("closed-result-unknown")).toHaveTextContent(reason);
+    expect(screen.getByTestId("name-phase")).toHaveTextContent("Closed — Sync to See Result");
+    expect(screen.queryByText(/^Owned$/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/already registered/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Redeem$/i })).not.toBeInTheDocument();
+  });
+
   it("auto-expands the management section for an owned name without clicking the toggle", async () => {
     invokeMock.mockImplementation(
       routeModal(

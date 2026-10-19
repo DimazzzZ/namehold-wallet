@@ -148,6 +148,29 @@ describe("lostUnrevealed — a bid never revealed", () => {
   });
 });
 
+describe("closedResultUnknown — a closed auction with a bid not settled yet", () => {
+  // Offline, a CLOSED name with an unspent BID coin of ours used to fall to
+  // "Owned" in green. Not a loss without the node's word, and not ours.
+  it("reads neutral, not Owned and not Lost, and raises no alarm", () => {
+    expect(taskStateLabel("closedResultUnknown")).toBe("Closed — Sync to See Result");
+    expect(taskStateBadgeVariant("closedResultUnknown")).toBe("info");
+    expect(taskStateUrgency("closedResultUnknown")).toBeNull();
+    const s = taskSummaryFromCapabilities(
+      makeCapabilities({ phase: "CLOSED", taskState: "closedResultUnknown", ownsName: false }),
+    );
+    expect(s?.label).toBe("Closed — Sync to See Result");
+    expect(s?.variant).toBe("info");
+  });
+
+  it("a closed name that is not ours reads Unavailable, not Owned", () => {
+    const s = taskSummaryFromCapabilities(
+      makeCapabilities({ phase: "CLOSED", taskState: "unavailableOther", ownsName: false }),
+    );
+    expect(s?.label).toBe("Unavailable");
+    expect(s?.variant).toBe("default");
+  });
+});
+
 describe("hnsToDollarydoos / doosToHns", () => {
   it("converts HNS to doos (integer)", () => {
     expect(hnsToDollarydoos(1)).toBe(1_000_000);

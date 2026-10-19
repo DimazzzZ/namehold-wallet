@@ -730,6 +730,8 @@ export function NameActionsModal({
             (won/register, lost/redeem, or owned), or a bid of ours that was
             never revealed: nothing to act on, but the panel says its lockup
             is lost, where the static block would call the name registered.
+            The same holds for a bid of ours whose outcome the wallet cannot
+            settle yet (no synced node): the panel says to sync.
             Skip for third-party CLOSED names. */}
         {!isLoading &&
           !isError &&
@@ -738,7 +740,8 @@ export function NameActionsModal({
           caps?.ownsName ||
           caps?.taskState === "wonNeedsRegister" ||
           caps?.taskState === "lostNeedsRedeem" ||
-          caps?.taskState === "lostUnrevealed" ? (
+          caps?.taskState === "lostUnrevealed" ||
+          caps?.taskState === "closedResultUnknown" ? (
             <div className="bg-blue-50 border border-blue-200 rounded p-3">
               <div className="font-medium text-blue-900 mb-2">
                 {summary?.nextActionLabel ?? guide.title}
