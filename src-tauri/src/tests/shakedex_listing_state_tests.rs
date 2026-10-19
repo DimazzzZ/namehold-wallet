@@ -232,6 +232,9 @@ fn apply(f: &Fx, w: ListingWrite, to: ListingState) -> Result<usize, crate::erro
         }
         ListingWrite::CancelDone => queries::mark_listing_cancelled(c, id, (&txid("c1"), 0)),
         ListingWrite::CancelUndone => queries::mark_listing_cancel_undone(c, id, (&txid("c1"), 0)),
+        ListingWrite::CancelledUnmined => {
+            queries::mark_cancelled_listing_unmined(c, id, &txid("c1"))
+        }
         ListingWrite::LowerPrice => queries::lower_listing_price(
             c,
             id,
@@ -317,6 +320,8 @@ fn each_listing_write_moves_exactly_its_transitions() {
             S::Cancelled,
             S::CancelAwaitingFinalize,
         ),
+        // ... and the cancel's TRANSFER too.
+        (ListingWrite::CancelledUnmined, S::Cancelled, S::Cancelling),
         (ListingWrite::LowerPrice, S::Listed, S::Listed),
         (ListingWrite::RefreshExpiry, S::Listed, S::Listed),
     ];
@@ -699,6 +704,49 @@ fn cancel_writes_take_only_their_own_coin() {
             None,
             None
         )
+    );
+    // CancelledUnmined: the cancel the listing stores, and only while no
+    // other listing of the name is open; the mined output, the count and
+    // the FINALIZE draft link are forgotten, the cancel txid kept.
+    assert_eq!(
+        queries::mark_listing_cancelled(&f.conn, &f.id, (&txid("c1"), 0)).unwrap(),
+        1
+    );
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET cancel_finalize_draft_id = 'cfin',
+                 cancel_blocks_remaining = 2",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        queries::mark_cancelled_listing_unmined(&f.conn, &f.id, &txid("c9")).unwrap(),
+        0
+    );
+    queries::insert_shakedex_listing(&f.conn, &newer).unwrap();
+    assert_eq!(
+        queries::mark_cancelled_listing_unmined(&f.conn, &f.id, &txid("c1")).unwrap(),
+        0,
+        "another listing of the name is open"
+    );
+    assert_eq!(listing(&f).state, S::Cancelled);
+    f.conn
+        .execute("DELETE FROM shakedex_listings WHERE id = 'l2'", [])
+        .unwrap();
+    assert_eq!(
+        queries::mark_cancelled_listing_unmined(&f.conn, &f.id, &txid("c1")).unwrap(),
+        1
+    );
+    let l = listing(&f);
+    assert_eq!(
+        (
+            l.state,
+            l.cancel_txid,
+            l.cancel_vout,
+            l.cancel_blocks_remaining,
+            l.cancel_finalize_draft_id
+        ),
+        (S::Cancelling, Some(txid("c1")), None, None, None)
     );
 
     // A Sold listing whose purchase a reorg replaced with a mined cancel of
@@ -3217,6 +3265,146 @@ async fn cancelled_listing_awaits_its_finalize_again_after_a_reorg() {
     run(&f, &rpc).await;
     assert_eq!(names_read(&rpc), 0, "past the window");
     assert_eq!(listing(&f).state, ListingState::Cancelled);
+}
+
+/// The fixture Cancelled by our own cancel draft `cx` (txid `c1…`,
+/// `confirmed`), mined at `c1…:0` and finalized home.
+fn cancelled_by_our_cancel(f: &Fx) -> String {
+    our_cancel(f, "confirmed");
+    let c1 = txid("c1");
+    assert_eq!(
+        queries::mark_listing_cancel_mined(&f.conn, &f.id, (&c1, 0), (&f.lock_txid, f.lock_vout))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        queries::mark_listing_cancelled(&f.conn, &f.id, (&c1, 0)).unwrap(),
+        1
+    );
+    c1
+}
+
+/// R28 with R22's reorg rule: a reorg deeper than the FINALIZE home takes
+/// the cancel's TRANSFER out too, and hsd names the stored lock coin the
+/// name's owner again (the listing's signed steps can buy it again). The
+/// Cancelled listing is Cancelling again, its mined output, count and
+/// FINALIZE draft link forgotten, its cancel txid kept; from there the
+/// after-lock job takes it on: the cancel mined again → awaiting its
+/// finalize, a mined purchase → Sold. While another listing of the name is
+/// open it stays Cancelled. A node error or a reply without `info` leaves
+/// it as it is.
+#[tokio::test]
+async fn cancelled_listing_whose_cancel_a_reorg_took_is_cancelling_again() {
+    let back_in_lock = |f: &Fx| {
+        node(
+            info((&f.lock_txid, f.lock_vout)),
+            vec![lock_coin(f, TIP - 20)],
+            Value::Null,
+        )
+    };
+    // The cancel mined again.
+    let f = fx(ListingState::Listed);
+    let c1 = cancelled_by_our_cancel(&f);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET cancel_finalize_draft_id = 'cfin',
+                 cancel_blocks_remaining = 0",
+            [],
+        )
+        .unwrap();
+    run(&f, &back_in_lock(&f)).await;
+    let l = listing(&f);
+    assert_eq!(
+        (
+            l.state,
+            l.cancel_txid.as_deref(),
+            l.cancel_vout,
+            l.cancel_blocks_remaining,
+            l.cancel_finalize_draft_id
+        ),
+        (
+            ListingState::Cancelling,
+            Some(c1.as_str()),
+            None,
+            None,
+            None
+        ),
+        "the lock coin the owner again"
+    );
+    run(
+        &f,
+        &node(
+            info_transfer((&c1, 0), TIP),
+            vec![transfer_out_of_lock(&f, &c1, &f.cancel, TIP)],
+            cancel_rest(&f, &c1, TIP, &f.cancel),
+        )
+        .with_blockchain_info(tip_at(TIP)),
+    )
+    .await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.cancel_txid.as_deref(), l.cancel_vout),
+        (
+            ListingState::CancelAwaitingFinalize,
+            Some(c1.as_str()),
+            Some(0)
+        ),
+        "the cancel mined again"
+    );
+
+    // A purchase of the lock coin mined instead.
+    let f = fx(ListingState::Listed);
+    cancelled_by_our_cancel(&f);
+    run(&f, &back_in_lock(&f)).await;
+    assert_eq!(listing(&f).state, ListingState::Cancelling);
+    let buy = txid("b1");
+    paid(&f, &buy, 2, TIP, false);
+    let chain = node(
+        info((&buy, 0)),
+        vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+        Value::Null,
+    )
+    .with_block_hash("ab".repeat(32))
+    .with_block(block_with(&purchase_rest(&f, &buy, TIP, &f.payment), TIP));
+    run(&f, &chain).await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::Sold, Some(buy.as_str())),
+        "bought instead"
+    );
+
+    // Another listing of the name open by now: it stays the open one.
+    let f = fx(ListingState::Listed);
+    cancelled_by_our_cancel(&f);
+    let mut newer = listing(&f);
+    newer.id = "l2".into();
+    newer.state = ListingState::Locking;
+    newer.lock_txid = None;
+    newer.lock_vout = None;
+    newer.cancel_draft_id = None;
+    queries::insert_shakedex_listing(&f.conn, &newer).unwrap();
+    run(&f, &back_in_lock(&f)).await;
+    assert_eq!(listing(&f).state, ListingState::Cancelled, "another open");
+
+    // A node error, or a reply that is not hsd's whole answer.
+    let f = fx(ListingState::Listed);
+    cancelled_by_our_cancel(&f);
+    let before = listing(&f);
+    let failing = back_in_lock(&f).with_name_info_err("node down");
+    run(&f, &failing).await;
+    let no_info = node(
+        json!({ "start": null }),
+        vec![lock_coin(&f, TIP - 20)],
+        Value::Null,
+    );
+    run(&f, &no_info).await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.updated_at.as_str()),
+        (ListingState::Cancelled, before.updated_at.as_str()),
+        "a read error or a reply without info"
+    );
 }
 
 /// R28: a reorg that puts the mined cancel's TRANSFER back in the

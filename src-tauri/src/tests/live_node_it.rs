@@ -7450,6 +7450,33 @@ async fn shakedex_cancel_mined_brings_the_name_home() {
     assert_eq!(info["info"]["transfer"], 0, "no transfer in progress");
 }
 
+/// Clears the invalid mark `invalidateblock` put on `block` when a live test
+/// panics before its own `reconsiderblock`, so a failed run leaves the
+/// shared regtest node without it. The panicking test's runtime may be
+/// unwinding, so the call runs on a thread of its own with a fresh runtime
+/// and client.
+struct ReconsiderOnPanic {
+    url: String,
+    key: String,
+    block: String,
+}
+
+impl Drop for ReconsiderOnPanic {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let (url, key, block) = (self.url.clone(), self.key.clone(), self.block.clone());
+        let _ = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("runtime");
+            if let Err(e) = rt.block_on(client(&url, &key).reconsider_block(&block)) {
+                eprintln!("reconsiderblock {block} after a panic: {e}");
+            }
+        })
+        .join();
+    }
+}
+
 /// R28 with R22's reorg rule on hsd: a listing cancelled and finalized home
 /// is Cancelled; a reorg then takes the FINALIZE's block out
 /// (`invalidateblock`, which empties the mempool, so the FINALIZE is in no
@@ -7459,7 +7486,12 @@ async fn shakedex_cancel_mined_brings_the_name_home() {
 /// offers the FINALIZE home again; built and mined, the listing is
 /// Cancelled again with the name at our cancel address. `reconsiderblock`
 /// then clears the invalid mark, the chain holding the new FINALIZE the
-/// longer one.
+/// longer one. A deeper reorg then takes the cancel's block out (and every
+/// block above it): hsd names the lock coin the owner again, and the next
+/// sync makes the listing Cancelling; the cancel sent again and mined, it
+/// awaits its finalize, and finalized home it is Cancelled once more. A
+/// panic after an `invalidateblock` still clears its mark
+/// ([`ReconsiderOnPanic`]).
 #[tokio::test]
 async fn shakedex_cancelled_listing_follows_a_reorg_of_its_finalize_home() {
     let Some((url, key)) =
@@ -7467,7 +7499,9 @@ async fn shakedex_cancelled_listing_follows_a_reorg_of_its_finalize_home() {
     else {
         return;
     };
-    let (app, cl, addr, name, id, _s) = listed_on_chain(&url, &key, "nhcxorg", "3").await;
+    let (app, cl, addr, name, id, s) = listed_on_chain(&url, &key, "nhcxorg", "3").await;
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
     let cancel = cancel_signed(&app, &id, 1).await;
     let bc = broadcast_tx_draft(app.state(), cancel.id.clone())
         .await
@@ -7506,6 +7540,11 @@ async fn shakedex_cancelled_listing_follows_a_reorg_of_its_finalize_home() {
     // The reorg: the FINALIZE's block taken out.
     let block = cl.get_block_hash(fin_height).await.expect("blockhash");
     cl.invalidate_block(&block).await.expect("invalidate");
+    let guard = ReconsiderOnPanic {
+        url: url.clone(),
+        key: key.clone(),
+        block: block.clone(),
+    };
     assert!(
         cl.get_tx_by_hash(&fin_txid)
             .await
@@ -7561,6 +7600,7 @@ async fn shakedex_cancelled_listing_follows_a_reorg_of_its_finalize_home() {
     // mined on it.
     cl.generate_to_address(1, &addr).await.expect("mine");
     cl.reconsider_block(&block).await.expect("reconsider");
+    drop(guard);
     assert_ne!(
         cl.get_block_hash(fin_height).await.expect("blockhash"),
         block,
@@ -7584,6 +7624,87 @@ async fn shakedex_cancelled_listing_follows_a_reorg_of_its_finalize_home() {
     assert_eq!(
         home.covenant.as_ref().expect("covenant").kind,
         crate::noncustodial::sync::COV_FINALIZE
+    );
+
+    // A deeper reorg: the cancel's block out, and every block above it.
+    let cancel_tx = cl.get_tx_by_hash(&bc.txid).await.expect("tx");
+    let cancel_height = cancel_tx["height"].as_i64().unwrap_or(-1);
+    assert!(cancel_height > 0, "the cancel is mined: {cancel_tx}");
+    let cancel_hex = cancel_tx["hex"].as_str().expect("hex").to_string();
+    let deep = cl.get_block_hash(cancel_height).await.expect("blockhash");
+    cl.invalidate_block(&deep).await.expect("invalidate");
+    let guard = ReconsiderOnPanic {
+        url: url.clone(),
+        key: key.clone(),
+        block: deep.clone(),
+    };
+    assert!(
+        cl.get_tx_by_hash(&bc.txid).await.expect("lookup").is_null(),
+        "the cancel is in no block and no mempool"
+    );
+    assert_eq!(
+        name_owner(&cl, &name).await,
+        (lock_txid.clone(), lock_vout),
+        "hsd names the lock coin the owner again"
+    );
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    let l = listing_row(&app, &id);
+    assert_eq!(
+        (
+            l.state,
+            l.cancel_txid.as_deref(),
+            l.cancel_vout,
+            l.cancel_finalize_draft_id.as_deref()
+        ),
+        (ListingState::Cancelling, Some(bc.txid.as_str()), None, None),
+        "the cancel is on its way again"
+    );
+
+    // The cancel sent again and mined: awaiting its finalize.
+    cl.send_raw_transaction(&cancel_hex)
+        .await
+        .expect("send the cancel again");
+    wait_until_node_has(&cl, &bc.txid).await;
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    let l = listing_row(&app, &id);
+    assert_eq!(
+        (l.state, l.cancel_txid.as_deref(), l.cancel_vout),
+        (
+            ListingState::CancelAwaitingFinalize,
+            Some(bc.txid.as_str()),
+            Some(0)
+        ),
+        "the cancel mined again"
+    );
+    assert_eq!(name_owner(&cl, &name).await, (bc.txid.clone(), 0));
+    cl.generate_to_address(u32::try_from(lockup - 1).unwrap(), &addr)
+        .await
+        .expect("mine the lockup");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_row(&app, &id).cancel_blocks_remaining, Some(0));
+    let third = crate::commands::shakedex::finalize_cancel(&app.state(), &id, Some(1))
+        .await
+        .expect("finalize a third time");
+    broadcast_only(&app, &third.id).await;
+    settle(&app, &cl, &addr, &third.id).await;
+    // The chain holding the cancel again is the longer one by now.
+    cl.reconsider_block(&deep).await.expect("reconsider");
+    drop(guard);
+    assert_ne!(
+        cl.get_block_hash(cancel_height).await.expect("blockhash"),
+        deep,
+        "the chain ends without the old cancel's block"
+    );
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Cancelled);
+    let third_txid = draft_status(&app, &third.id).txid.expect("sent");
+    assert_eq!(
+        name_owner(&cl, &name).await.0,
+        third_txid,
+        "the third FINALIZE owns the name"
     );
 }
 

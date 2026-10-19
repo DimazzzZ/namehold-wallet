@@ -2315,18 +2315,28 @@ async fn cancel_on_its_way_home(
 }
 
 /// R28 with R22's reorg rule, for a Cancelled listing within
-/// [`SOLD_RECHECK_DAYS`]: the name's owner, read from hsd, is the listing's
-/// cancel TRANSFER again (a reorg took the FINALIZE home out; hsd names a
-/// coin the owner only once its block is connected) → CancelAwaitingFinalize
-/// ([`queries::mark_listing_cancel_undone`]), so the FINALIZE home is
-/// offered again, its lockup counted in the same sync while that TRANSFER is
-/// a coin ([`cancel_transfer_held`]; with the FINALIZE back in the mempool
-/// hsd answers 404 for it, and [`cancel_on_its_way_home`] ends the listing
-/// again once that FINALIZE is mined). Any other owner (the FINALIZE home,
-/// or a coin the name moved on to), or no live name → unchanged and not
-/// written, so the listing leaves the after-lock set once the window
-/// passes. The verdict rests on the owner hsd names, never on a coin's
-/// absence. Sends nothing.
+/// [`SOLD_RECHECK_DAYS`], from the name's owner hsd names (a coin is the
+/// owner only once its block is connected):
+///
+/// - the listing's cancel TRANSFER (a reorg took the FINALIZE home out) →
+///   CancelAwaitingFinalize ([`queries::mark_listing_cancel_undone`]), so
+///   the FINALIZE home is offered again, its lockup counted in the same sync
+///   while that TRANSFER is a coin ([`cancel_transfer_held`]; with the
+///   FINALIZE back in the mempool hsd answers 404 for it, and
+///   [`cancel_on_its_way_home`] ends the listing again once that FINALIZE
+///   is mined);
+/// - the listing's stored lock coin (the reorg took the cancel's TRANSFER
+///   out too, so the listing's signed steps can buy the name again) →
+///   Cancelling ([`queries::mark_cancelled_listing_unmined`]); the
+///   after-lock job then follows it as any Cancelling listing: the cancel
+///   mined again → CancelAwaitingFinalize, a mined purchase → Sold, a dead
+///   cancel → Listed;
+/// - any other owner (the FINALIZE home, or a coin the name moved on to),
+///   or no live name → unchanged and not written, so the listing leaves the
+///   after-lock set once the window passes.
+///
+/// The verdict rests on the owner hsd names, never on a coin's absence.
+/// Sends nothing.
 async fn cancelled_home_undone(
     conn: &rusqlite::Connection,
     client: &dyn NodeRpc,
@@ -2339,7 +2349,11 @@ async fn cancelled_home_undone(
         return Ok(());
     };
     let owner = owner_of(info)?;
-    if !(owner.0.eq_ignore_ascii_case(cancel.0) && owner.1 == cancel.1) {
+    let is = |o: (&str, u32)| owner.0.eq_ignore_ascii_case(o.0) && owner.1 == o.1;
+    if !is(cancel) {
+        if stored_lock(l)?.is_some_and(is) {
+            queries::mark_cancelled_listing_unmined(conn, &l.id, cancel.0)?;
+        }
         return Ok(());
     }
     if queries::mark_listing_cancel_undone(conn, &l.id, cancel)? != 1 {

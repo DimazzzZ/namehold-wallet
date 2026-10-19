@@ -1718,6 +1718,9 @@ pub enum ListingWrite {
     /// [`mark_listing_cancel_undone`]: a reorg took the FINALIZE home out,
     /// the cancel's TRANSFER the name's owner again.
     CancelUndone,
+    /// [`mark_cancelled_listing_unmined`]: a reorg took the FINALIZE home and
+    /// the cancel's TRANSFER out, the lock coin the name's owner again.
+    CancelledUnmined,
     /// [`lower_listing_price`]: a cheaper step, the state unchanged.
     LowerPrice,
     /// [`refresh_listing_expiry`]: the listing file's `expiresAt` rewritten
@@ -1726,7 +1729,7 @@ pub enum ListingWrite {
 }
 
 impl ListingWrite {
-    pub const ALL: [ListingWrite; 28] = [
+    pub const ALL: [ListingWrite; 29] = [
         Self::Ready,
         Self::LockingAgain,
         Self::Finalize,
@@ -1753,6 +1756,7 @@ impl ListingWrite {
         Self::RevertCancelFinalize,
         Self::CancelDone,
         Self::CancelUndone,
+        Self::CancelledUnmined,
         Self::LowerPrice,
         Self::RefreshExpiry,
     ];
@@ -1775,7 +1779,8 @@ impl ListingWrite {
     /// - A cancel (Cancel ... CancelDone) follows R28: built from Listed or
     ///   Restored, mined from any state whose lock coin is ours to spend,
     ///   back to Cancelling on a reorg, Cancelled once the name is home,
-    ///   and back to CancelAwaitingFinalize when a reorg takes that home out;
+    ///   and back to CancelAwaitingFinalize when a reorg takes that home out
+    ///   (to Cancelling when it takes the cancel's TRANSFER out too);
     ///   Lower price rewrites a Listed listing's steps and file, its state
     ///   unchanged, and the `expiresAt` refresh likewise. A purchase mined
     ///   before our cancel is a sale all the same (Sell from Cancelling), and
@@ -1853,6 +1858,7 @@ impl ListingWrite {
             Self::RevertCancelFinalize => (&[S::CancelFinalizing], &[S::CancelAwaitingFinalize]),
             Self::CancelDone => (CANCEL_MINED, &[S::Cancelled]),
             Self::CancelUndone => (&[S::Cancelled], &[S::CancelAwaitingFinalize]),
+            Self::CancelledUnmined => (&[S::Cancelled], &[S::Cancelling]),
             Self::LowerPrice => (&[S::Listed], &[S::Listed]),
             Self::RefreshExpiry => (&[S::Listed], &[S::Listed]),
         }
@@ -3235,7 +3241,45 @@ pub fn mark_listing_cancel_unmined(
     id: &str,
     cancel_txid: &str,
 ) -> Result<usize, AppError> {
-    let w = ListingWrite::CancelUnmined;
+    cancel_unmined_write(conn, id, cancel_txid, ListingWrite::CancelUnmined, "")
+}
+
+/// R28, a reorg deeper than [`mark_listing_cancel_undone`]'s: the FINALIZE
+/// home a Cancelled listing ended on and the cancel's TRANSFER are both out
+/// of the chain, and hsd names the listing's stored lock coin the name's
+/// owner again (the listing's signed steps can buy it again). Cancelling,
+/// as [`mark_listing_cancel_unmined`] writes it (the mined output, the
+/// lockup count and the FINALIZE draft link forgotten, the market
+/// bookkeeping of an unsent cancel started over); from there the after-lock
+/// job follows the cancel and any purchase as for any Cancelling listing.
+/// Only for the cancel the listing stores, and only while no other listing
+/// of the name is open (`idx_shakedex_listings_open_name` allows one). The
+/// re-check window is the caller's ([`list_shakedex_listings_after_lock`]).
+/// Returns how many rows changed (0 or 1).
+pub fn mark_cancelled_listing_unmined(
+    conn: &rusqlite::Connection,
+    id: &str,
+    cancel_txid: &str,
+) -> Result<usize, AppError> {
+    let guard = format!(" AND {}", no_other_open_listing_sql());
+    cancel_unmined_write(
+        conn,
+        id,
+        cancel_txid,
+        ListingWrite::CancelledUnmined,
+        &guard,
+    )
+}
+
+/// The write of [`mark_listing_cancel_unmined`] for `w`'s sources, with
+/// `guard` (empty, or ` AND <condition>`) added to its `WHERE`.
+fn cancel_unmined_write(
+    conn: &rusqlite::Connection,
+    id: &str,
+    cancel_txid: &str,
+    w: ListingWrite,
+    guard: &str,
+) -> Result<usize, AppError> {
     // SQLite evaluates every SET expression over the row as it was, so each
     // CASE reads the old `market_status`.
     let told = format!(
@@ -3252,7 +3296,7 @@ pub fn mark_listing_cancel_unmined(
              market_error = CASE WHEN {told} THEN NULL ELSE market_error END,
              market_changed = CASE WHEN {told} AND market_accepted = 1 THEN 1
                                    ELSE market_changed END
-         WHERE id = ?1 AND {} AND cancel_txid = ?3",
+         WHERE id = ?1 AND {} AND cancel_txid = ?3{guard}",
         w.source_sql()
     );
     Ok(conn.execute(
