@@ -1,5 +1,12 @@
-use rusqlite::Connection;
+use std::collections::HashMap;
 use std::sync::Mutex;
+
+use rusqlite::{params, Connection};
+
+use crate::commands::secure_wallet::{gap_limit, provision_addresses};
+use crate::noncustodial::hd::{ExtendedPubKey, HARDENED_OFFSET};
+use crate::noncustodial::network::Network;
+use crate::tests::hsd_parity_tests::master_from_known_mnemonic;
 
 pub fn create_test_db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
@@ -40,6 +47,78 @@ pub fn set_profile_override(conn: &Connection, profile_id: &str, key: &str, valu
         "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)
          ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
         rusqlite::params![profile_id, key, value],
+    )
+    .unwrap();
+}
+
+/// A mnemonic profile `p1` on `network`, with the account 0 xpub of the test
+/// phrase and the receive and change windows a new wallet gets.
+pub fn mnemonic_profile_db(network: Network) -> (Connection, ExtendedPubKey) {
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrations::run(&conn).unwrap();
+    let account = master_from_known_mnemonic()
+        .derive_path(&[
+            HARDENED_OFFSET + 44,
+            HARDENED_OFFSET + network.coin_type(),
+            HARDENED_OFFSET,
+        ])
+        .unwrap();
+    let xpub = ExtendedPubKey::from_priv(&account);
+    let xpub_str = xpub.to_base58check(network);
+    let network_name = match network {
+        Network::Main => "mainnet",
+        Network::Regtest => "regtest",
+        other => panic!("no profile network name for {other:?}"),
+    };
+    conn.execute(
+        "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub)
+         VALUES ('p1', 'Seller', 'mnemonic_hot', ?1, ?2)",
+        params![network_name, xpub_str],
+    )
+    .unwrap();
+    provision_addresses(&conn, "p1", network, &xpub_str, gap_limit(&HashMap::new())).unwrap();
+    (conn, xpub)
+}
+
+/// Make `address` one of `profile_id`'s derived receive addresses, as sync
+/// would have, so a coin recorded there is counted and selectable. Keeps an
+/// address that is already derived as it is.
+pub fn own_address(conn: &Connection, profile_id: &str, address: &str) {
+    conn.execute(
+        "INSERT INTO derived_addresses
+            (wallet_profile_id, account_index, branch, child_index,
+             address, script_pubkey_hex, public_key_hex)
+         SELECT ?1, 0, 0,
+                (SELECT COALESCE(MAX(child_index) + 1, 0) FROM derived_addresses
+                 WHERE wallet_profile_id = ?1 AND account_index = 0 AND branch = 0),
+                ?2, '00', '00'
+         WHERE NOT EXISTS (SELECT 1 FROM derived_addresses
+                           WHERE wallet_profile_id = ?1 AND address = ?2)",
+        params![profile_id, address],
+    )
+    .unwrap();
+}
+
+/// An unspent liquid HNS coin of `p1` at `address`, vout 0, whose txid is
+/// `txid_byte` repeated.
+pub fn insert_liquid_coin(
+    conn: &Connection,
+    txid_byte: u8,
+    address: &str,
+    script_hex: &str,
+    value: u64,
+) {
+    conn.execute(
+        "INSERT INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+             value_doos, covenant_type, spend_class)
+         VALUES (?1, 0, 'p1', ?2, ?3, ?4, 0, 'liquid_hns')",
+        params![
+            hex::encode([txid_byte; 32]),
+            address,
+            script_hex,
+            value as i64
+        ],
     )
     .unwrap();
 }

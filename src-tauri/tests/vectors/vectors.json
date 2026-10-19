@@ -343,15 +343,55 @@
       {
         "network": "main",
         "name": "dexreviews",
+        "nameHashPrefix": 1433607229,
+        "index": 1433607229,
         "path": "m/44'/5353'/0'/2'/1433607229'",
+        "lockPub": "023809abd55689f5a5172aa75de58b6359a19d9c4326233f909c058ea6c3ed5d2c",
         "lockAddress": "hs1qkq6yytu0c4puw0xlrdwedylkk5a04yrgecgz9wgyu2sua3mzh4jqt74rdj"
       },
       {
         "network": "regtest",
         "name": "dexreviews",
+        "nameHashPrefix": 1433607229,
+        "index": 1433607229,
         "path": "m/44'/5355'/0'/2'/1433607229'",
+        "lockPub": "0316148018bd1be9577f7f3b3abaa1d133eecd7fd99d23c721e290c7def26b0743",
         "lockAddress": "rs1qr3mxw2n44nxqf43jqr69d42nmypn84jgzxtxeafpxn4nq58tylzsrz9ec5"
+      },
+      {
+        "network": "main",
+        "name": "namehold",
+        "nameHashPrefix": 2931327788,
+        "index": 783844140,
+        "path": "m/44'/5353'/0'/2'/783844140'",
+        "lockPub": "03e5dc6dff68d017e28a3e900913dea560e5fc0d881164043b66e5604af7fd1303",
+        "lockAddress": "hs1q3ng7kafcn49eevq9s0qjp7hkemuw72604jx66z8s77e78qkad4gsv8ef6e"
+      },
+      {
+        "network": "regtest",
+        "name": "namehold",
+        "nameHashPrefix": 2931327788,
+        "index": 783844140,
+        "path": "m/44'/5355'/0'/2'/783844140'",
+        "lockPub": "0377803b1319de1d5178ee88836c4d878d6c32e000946ad62b7a31773e8d42a461",
+        "lockAddress": "rs1qvkatmvhvf56f6xwhy0tptm8vtlhs8jmfysyha7qn04elnag282sqjlpvjr"
       }
     ]
+  },
+  "p2wshSpend": {
+    "privateKey": "1111111111111111111111111111111111111111111111111111111111111111",
+    "script": "21034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aaac",
+    "coin": {
+      "hash": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "index": 1,
+      "value": 500000
+    },
+    "recipient": "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8",
+    "fee": 10000,
+    "hashType": 1,
+    "sighash": "1352ebb62329aaaac976e50be794f52d90c9ce7162966e924a1a733198878768",
+    "signature": "17dc41daa3877867bd640d1e79bde91e88628ea469a8864c4bacfad9358ebdfa701438ffee36d63ddbf646cb8ce77605317af1ce0ca6f4ee1f80db58003e649601",
+    "signedHex": "00000000010102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2001000000ffffffff01107a0700000000000014f1593f4e1be74a76551bc94ee7f5fe1a06c61885000000000000024117dc41daa3877867bd640d1e79bde91e88628ea469a8864c4bacfad9358ebdfa701438ffee36d63ddbf646cb8ce77605317af1ce0ca6f4ee1f80db58003e6496012321034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aaac",
+    "txid": "d9c727c56f3287fc8d81de28b25359dbd30f36f2b61c50362ecb12a465dd37d9"
   }
 }

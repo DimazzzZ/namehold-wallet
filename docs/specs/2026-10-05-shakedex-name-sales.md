@@ -107,7 +107,7 @@ A mined purchase whose TRANSFER is spent on chain is never lost: only our FINALI
 | regtest | `m/44'/5355'/0'/2'/1433607229'` | `rs1qr3mxw2n44nxqf43jqr69d42nmypn84jgzxtxeafpxn4nq58tylzsrz9ec5` |
 
 *Enforced:* `noncustodial/shakedex/lock_key.rs` on `ExtendedPrivKey::derive_path`.
-*Pinned:* `shakedex_lock_key_tests::{golden_path, every_level_is_hardened, lock_key_is_not_derivable_from_the_account_xpub, coins_at_a_lock_address_are_not_spendable}`.
+*Pinned:* `shakedex_lock_key_tests::{lock_key_matches_the_r17_golden_vector, every_level_is_hardened, lock_key_is_not_derivable_from_the_account_xpub, coins_at_a_lock_address_are_not_spendable, lock_key_of_an_invalid_name_is_refused}`.
 
 **R18 — The lock is checked before the name enters it.** A wrong key or script would strand the name: FINALIZE into the lock needs no signature, but every way out does. Before broadcasting the day-0 TRANSFER, the wallet derives the lock key, builds the script and address, signs a test `0x84` over a template and verifies it. Before the FINALIZE into the lock, it re-derives and checks that the confirmed TRANSFER's covenant commits to SHA3-256 of `lock_script(derived pub)`. Either check failing refuses the step.
 *Enforced:* `noncustodial/shakedex/sell.rs::lock_self_check`, `commands/shakedex.rs::{shakedex_build_lock_draft, shakedex_finalize_and_sign}`.
@@ -121,7 +121,7 @@ A mined purchase whose TRANSFER is spent on chain is never lost: only our FINALI
 *Enforced:* `commands/shakedex.rs::shakedex_finalize_and_sign` via `prompt_secure`.
 *Pinned:* `shakedex_sell_tests::confirmation_lists_every_step`.
 
-**R21 — Proceeds go to a fresh address, reserved.** Each listing pays a receive address that is marked used when the listing is created, so the next listing gets another one and a restore's gap-limit scan still reaches it. The cancel destination is reserved the same way (a buyer's name destination already is, R13).
+**R21 — Proceeds go to a fresh address, reserved.** Each listing pays a receive address that is marked used when the listing is created, so the next listing gets another one; after a restore it is found only within the restore window of `address_gap_limit` addresses (window extension is a known gap, §5). The cancel destination is reserved the same way (a buyer's name destination already is, R13).
 *Enforced:* `noncustodial/derivation.rs::reserve_receive_address` (reserve on allocation).
 *Pinned:* `derivation_tests::reserved_addresses_are_not_reissued`, `shakedex_sell_tests::lock_reserves_payment_and_cancel_addresses`.
 
@@ -185,6 +185,7 @@ A mined purchase whose TRANSFER is spent on chain is never lost: only our FINALI
 - **Ledger, watch-only and extended-private-key profiles.** No buying or selling (R16, R29).
 - **Background jobs need a running process.** Republishing, stepping reverse auctions and finalize reminders run while the app or `namehold-syncd` runs; reminders run only in the app. The listing file keeps working regardless.
 - **Recovery of a lock is manual.** After a restore the wallet does not find its locks on its own: the seller restores each one by name (R32) or imports its saved listing file. Finding them automatically would mean deriving lock addresses from the names in the wallet's own address history (ADR 0004), but today's sync does not read address history on the node path and caps it on the explorer path, explorers exist only on mainnet, and a remote node without `--index-tx` cannot do it. That scan is deferred to the roadmap; this stage adds none. Restore by name does not adopt a name still Locking or a cancel awaiting its finalize (R32), so after a restore a name still Locking is left to the ordinary Cancel transfer, and the wallet offers no FINALIZE for a cancel that was awaiting its finalize.
+- **A restore does not extend its address window.** A restore provisions a fixed window of addresses (`address_gap_limit`) and does not extend it, so payment or cancel addresses past it are not seen until the window is raised.
 - **A restored lock has no listing details.** Price steps, schedule and payment address are off-chain. A Restored lock (R32) shows "Locked — listing details unknown: import its listing file, or cancel"; the saved listing file is the backup.
 - **One device per listing.** Devices or profiles sharing a seed derive the same lock keys but not the same listing state; their background jobs would fight over uploads, and one device's Lower price is invisible to the other.
 - **A node without a transaction index sees less.** The app's own hsd runs with `--index-tx`; a remote node may not. Without it hsd does not find a mined purchase, so the purchase is followed through its TRANSFER coin and the name's owner instead. A purchase lost while paying nothing and finalized since is shown as owned only once its own transaction is found, which needs the index: on such a node it stays lost, though the name arrives through normal sync.

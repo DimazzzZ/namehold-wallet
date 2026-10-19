@@ -29,8 +29,10 @@ pub const BRANCH_CHANGE: u32 = 1;
 
 /// Single source of truth for the "address is used" predicate.
 ///
-/// A derived address is "used" when either (a) a tracked UTXO or (b) a bid
-/// commitment references it under the same wallet profile. Both allocation
+/// A derived address is "used" when it is marked used (`derived_addresses.used`:
+/// sync saw coins there, or `reserve_receive_address` reserved it), or a tracked
+/// UTXO, a bid commitment or a Shakedex purchase destination references it under
+/// the same wallet profile. Both allocation
 /// (`next_unused_receive_address`) and the receive-list UI query
 /// (`db::queries::list_receive_addresses`) must apply the identical test, or
 /// the list would mark different addresses as used than the ones allocation
@@ -41,7 +43,8 @@ pub const BRANCH_CHANGE: u32 = 1;
 /// aliases the table as `d`. It contains no bind parameters, so inlining it
 /// via `format!()` does not shift the positional-index numbering of the
 /// surrounding query.
-pub(crate) const ADDRESS_USED_PREDICATE: &str = "(EXISTS (SELECT 1 FROM tracked_utxos u \
+pub(crate) const ADDRESS_USED_PREDICATE: &str = "(d.used = 1 \
+          OR EXISTS (SELECT 1 FROM tracked_utxos u \
                     WHERE u.wallet_profile_id = d.wallet_profile_id \
                       AND u.address = d.address) \
           OR EXISTS (SELECT 1 FROM bid_commitments b \
@@ -188,11 +191,13 @@ pub fn ensure_addresses(
 
 /// Allocate the NEXT UNUSED receive address for covenant outputs (OPEN/BID).
 ///
-/// "Used" means the derived receive address is referenced by any tracked UTXO
-/// (coins ever landed there per sync) or by any bid commitment (a bid draft was
-/// already built to it, even if not yet broadcast/synced — so back-to-back bids
-/// never share an address). The next index is `max(used) + 1` (0 on a fresh
-/// wallet), keeping the used range contiguous for gap-limit scanning.
+/// "Used" means the derived receive address is marked used (sync saw coins
+/// there, or it was reserved by `reserve_receive_address`), or is referenced by
+/// any tracked UTXO (coins ever landed there per sync), by any bid commitment
+/// (a bid draft was already built to it, even if not yet broadcast/synced — so
+/// back-to-back bids never share an address), or by any Shakedex purchase
+/// destination. The next index is `max(used) + 1` (0 on a fresh wallet),
+/// keeping the used range contiguous for gap-limit scanning.
 ///
 /// The allocated address is persisted to `derived_addresses`, so the sync scan
 /// (`get_profile_addresses`) and the coin lookups that JOIN on that table see
@@ -254,6 +259,45 @@ pub fn derive_next_for_profile(
         network,
         &xpub,
     )
+}
+
+/// Allocate the next unused receive address of a profile and mark it used at
+/// once (R21), so the next allocation returns another one. Listing payment
+/// and cancel destinations are reserved this way: nothing reaches them until a
+/// buyer pays or a cancel is mined, possibly days later. The address is the
+/// one right after the used range. It is persisted and marked used, so it is not
+/// reissued and sync of this profile queries it. After a restore it is found only
+/// while its index is inside the restore window of `address_gap_limit`
+/// addresses (the window is not extended).
+///
+/// Runs under a SAVEPOINT: atomic on its own, and usable inside a caller's
+/// transaction (a nested BEGIN would fail).
+pub fn reserve_receive_address(conn: &Connection, profile_id: &str) -> Result<String, AppError> {
+    conn.execute_batch("SAVEPOINT reserve_receive_address")?;
+    let reserved = derive_next_for_profile(conn, profile_id).and_then(|d| {
+        crate::noncustodial::sync::mark_address_used(conn, profile_id, &d.address, None)?;
+        Ok(d.address)
+    });
+    match reserved {
+        Ok(address) => {
+            conn.execute_batch("RELEASE reserve_receive_address")?;
+            Ok(address)
+        }
+        Err(e) => {
+            // The reservation's own error is what the caller needs. Rollback
+            // and release are separate statements so RELEASE runs even when
+            // the rollback fails (otherwise a non-nested call would leave the
+            // connection inside an open transaction); a rollback error is
+            // logged, not returned.
+            if let Err(rb) = conn.execute_batch("ROLLBACK TO reserve_receive_address") {
+                eprintln!("reserve_receive_address: rollback failed: {rb}");
+            }
+            if let Err(rl) = conn.execute_batch("RELEASE reserve_receive_address") {
+                eprintln!("reserve_receive_address: release failed: {rl}");
+            }
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]

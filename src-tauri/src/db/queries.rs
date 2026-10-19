@@ -1995,8 +1995,9 @@ pub struct ReceiveAddressRow {
     /// BIP44 child index within the receive branch (branch = 0).
     pub index: u32,
     pub address: String,
-    /// True when the address is referenced by any tracked UTXO or bid
-    /// commitment. Mirrors the "used" test in
+    /// True when the address is marked used (sync saw coins there, or it was
+    /// reserved) or is referenced by any tracked UTXO, bid commitment or
+    /// Shakedex purchase destination. Mirrors the "used" test in
     /// `derivation::next_unused_receive_address`, so what the list marks as
     /// used is exactly what address allocation skips over.
     pub used: bool,
@@ -2006,8 +2007,9 @@ pub struct ReceiveAddressRow {
 }
 
 /// List every derived RECEIVE-branch address for a profile, oldest index
-/// first, each tagged with whether it has been used (seen in a tracked UTXO
-/// or a bid commitment). Change-branch addresses are intentionally excluded —
+/// first, each tagged with whether it has been used (the `used` flag is set,
+/// or a tracked UTXO, a bid commitment or a Shakedex purchase destination
+/// points at it). Change-branch addresses are intentionally excluded —
 /// they are wallet-internal and never handed out.
 pub fn list_receive_addresses(
     conn: &rusqlite::Connection,
@@ -3724,6 +3726,7 @@ mod noncustodial_query_tests {
             params![txid, vout, value, cov, class],
         )
         .unwrap();
+        crate::tests::command_helpers::own_address(conn, "p1", "rs1qrecv");
     }
 
     #[test]

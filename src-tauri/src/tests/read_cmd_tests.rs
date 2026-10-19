@@ -78,6 +78,7 @@ fn add_liquid(conn: &rusqlite::Connection, profile: &str, txid: &str, value: i64
         params![txid, profile, value],
     )
     .unwrap();
+    crate::tests::command_helpers::own_address(conn, profile, "addr");
 }
 
 fn add_owned_name(conn: &rusqlite::Connection, profile: &str, name: &str, txid: &str) {
@@ -1794,7 +1795,6 @@ async fn read_balance_explorer_fails_falls_back_to_cache() {
     add_profile(&conn, "B2", "regtest");
     db::queries::set_active_profile(&conn, "B2").unwrap();
     db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
-    add_liquid(&conn, "B2", "cachedtx", 400_000);
     conn.execute(
         "INSERT INTO derived_addresses
             (wallet_profile_id, account_index, branch, child_index,
@@ -1803,6 +1803,7 @@ async fn read_balance_explorer_fails_falls_back_to_cache() {
         [],
     )
     .unwrap();
+    add_liquid(&conn, "B2", "cachedtx", 400_000);
 
     let app = app_with(conn);
     let val = read_balance(app.state(), Some("B2".into())).await.unwrap();
