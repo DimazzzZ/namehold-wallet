@@ -63,7 +63,7 @@ impl HnsFansClient {
     pub fn new(base_url: &str) -> Self {
         let base = base_url.trim_end_matches('/').to_string();
         Self {
-            http: Client::builder()
+            http: crate::http::client_builder()
                 .timeout(Duration::from_secs(30))
                 .build()
                 .expect("failed to build HTTP client"),

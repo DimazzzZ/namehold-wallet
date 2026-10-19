@@ -55,7 +55,8 @@ impl ExtendedPrivKey {
         let i = mac.finalize().into_bytes();
 
         let (il, ir) = i.split_at(32);
-        let secret = SecretKey::from_slice(il)
+        let il: [u8; 32] = il.try_into().expect("split_at(32) yields 32 bytes");
+        let secret = SecretKey::from_byte_array(il)
             .map_err(|e| AppError::Crypto(format!("invalid master key: {e}")))?;
         let mut chain_code = [0u8; 32];
         chain_code.copy_from_slice(ir);

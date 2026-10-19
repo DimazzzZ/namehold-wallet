@@ -166,7 +166,7 @@ impl NamebaseClient {
     /// cookie to an arbitrary server.
     pub fn with_base_url(raw_cookie: &str, base_url: &str) -> Result<Self, AppError> {
         validate_base_url(base_url)?;
-        let http = Client::builder()
+        let http = crate::http::client_builder()
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| AppError::Other(format!("Failed to create HTTP client: {}", e)))?;

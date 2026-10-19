@@ -64,7 +64,7 @@ struct SendBuildParams {
 
 fn random_id() -> String {
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 

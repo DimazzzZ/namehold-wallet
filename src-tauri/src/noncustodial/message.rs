@@ -53,7 +53,7 @@ pub fn sign_handshake_message(secret: &SecretKey, text: &str) -> String {
     let hash = blake2b256(&message_preimage(text));
     let secp = Secp256k1::new();
     let msg = Message::from_digest(hash);
-    let sig = secp.sign_ecdsa(&msg, secret);
+    let sig = secp.sign_ecdsa(msg, secret);
     let compact = sig.serialize_compact(); // 64 bytes, low-S normalized.
     BASE64.encode(compact)
 }
@@ -113,7 +113,7 @@ mod tests {
         let sig = secp256k1::ecdsa::Signature::from_compact(&sig_bytes).expect("valid compact sig");
         let hash = blake2b256(&message_preimage(text));
         let msg = Message::from_digest(hash);
-        secp.verify_ecdsa(&msg, &sig, &pubkey)
+        secp.verify_ecdsa(msg, &sig, &pubkey)
             .expect("signature verifies against derived pubkey");
     }
 

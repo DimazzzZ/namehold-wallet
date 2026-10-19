@@ -14,6 +14,7 @@ pub mod daemon;
 pub mod db;
 pub mod error;
 mod hsd;
+mod http;
 pub mod market;
 mod models;
 mod namebase;

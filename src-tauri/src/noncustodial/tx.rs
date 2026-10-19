@@ -293,7 +293,7 @@ impl Default for Transaction {
 /// low byte of the sighash type (hsd does `bw.writeU8(type)`).
 fn sign_sighash(key: &SecretKey, sighash: [u8; 32], hash_type: u32) -> [u8; 65] {
     let secp = Secp256k1::signing_only();
-    let sig = secp.sign_ecdsa(&Message::from_digest(sighash), key);
+    let sig = secp.sign_ecdsa(Message::from_digest(sighash), key);
     let mut out = [0u8; 65];
     out[..64].copy_from_slice(&sig.serialize_compact());
     out[64] = (hash_type & 0xff) as u8;
@@ -697,7 +697,7 @@ mod tests {
             serde_json::from_str(include_str!("../../tests/vectors/vectors.json")).unwrap();
         let p = &v["p2wshSpend"];
         let hx = |k: &serde_json::Value| hex::decode(k.as_str().unwrap()).unwrap();
-        let key = SecretKey::from_slice(&hx(&p["privateKey"])).unwrap();
+        let key = SecretKey::from_byte_array(hx(&p["privateKey"]).try_into().unwrap()).unwrap();
         let script = hx(&p["script"]);
         let value = p["coin"]["value"].as_u64().unwrap();
         let fee = p["fee"].as_u64().unwrap();
@@ -864,7 +864,7 @@ mod tests {
 
     // A deterministic key + its P2WPKH hash160, for signing tests.
     fn test_key() -> (SecretKey, [u8; 20]) {
-        let sk = SecretKey::from_slice(&[7u8; 32]).unwrap();
+        let sk = SecretKey::from_byte_array([7u8; 32]).unwrap();
         let secp = Secp256k1::new();
         let pk = PublicKey::from_secret_key(&secp, &sk).serialize();
         (sk, address::pubkey_to_hash160(&pk))

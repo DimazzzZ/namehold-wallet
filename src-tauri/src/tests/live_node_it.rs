@@ -4803,7 +4803,7 @@ fn market_fee_addr() -> String {
 
 impl OwnLock {
     async fn new(cli: &ShakedexCli, url: &str, api_key: &str) -> Self {
-        let key = secp256k1::SecretKey::from_slice(&[0x5d; 32]).unwrap();
+        let key = secp256k1::SecretKey::from_byte_array([0x5d; 32]).unwrap();
         let name = cli.register();
         let lock =
             crate::noncustodial::shakedex::script::lock_address(NET, &Self::pubkey(&key)).unwrap();
@@ -4852,10 +4852,7 @@ impl OwnLock {
                     lock_time_secs: lock_time,
                 };
                 let msg = secp256k1::Message::from_digest(step_sighash(&t).unwrap());
-                let mut sig = secp
-                    .sign_ecdsa(&msg, &self.key)
-                    .serialize_compact()
-                    .to_vec();
+                let mut sig = secp.sign_ecdsa(msg, &self.key).serialize_compact().to_vec();
                 sig.push(0x84);
                 serde_json::json!({
                     "price": price,
