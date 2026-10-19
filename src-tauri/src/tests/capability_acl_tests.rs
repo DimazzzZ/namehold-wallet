@@ -13,7 +13,6 @@ use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 fn main_window_call(cmd: &str, body: serde_json::Value) -> Result<serde_json::Value, String> {
     let app = mock_builder()
-        .plugin(tauri_plugin_fs::init())
         .build(crate::app_context())
         .expect("mock app with the real capabilities");
     let window = WebviewWindowBuilder::new(&app, "main", WebviewUrl::default())
@@ -43,7 +42,11 @@ fn main_window_may_call_a_granted_plugin_command() {
 }
 
 /// The bid backup holds secret nonces, so the main window must not be able to
-/// write files itself: it goes through `save_bid_backup`.
+/// write files itself: it goes through `save_bid_backup`. The app ships no fs
+/// plugin, so the command is refused as an unknown plugin. Granting an `fs:`
+/// permission in `capabilities/*.json` without adding the plugin back does not
+/// compile (tauri-build rejects an unknown permission), so no capability file
+/// can open this route by itself.
 #[test]
 fn main_window_has_no_fs_write_permission() {
     let target = std::env::temp_dir().join(format!("namehold_acl_{}.txt", std::process::id()));
