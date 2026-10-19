@@ -75,8 +75,10 @@ fn fs_permissions(capability_json: &str) -> Vec<String> {
 
 /// The bid backup holds secret nonces, so the main window must not write files
 /// itself: it goes through `save_bid_backup`. No capability grants an `fs:`
-/// permission, the manifest has no direct tauri-plugin-fs dependency and the
-/// app never registers the plugin. The refusal test above rests on the plugin
+/// permission (in a capability file or inline in a `tauri.conf*.json`), the
+/// manifest has no direct tauri-plugin-fs dependency, `package.json` has no
+/// `@tauri-apps/plugin-fs`, the app config has no `plugins.fs` and the app
+/// never registers the plugin. The refusal test above rests on the plugin
 /// being absent, so this is the guard against it coming back.
 #[test]
 fn no_fs_plugin_and_no_fs_permission() {
@@ -100,6 +102,58 @@ fn no_fs_plugin_and_no_fs_permission() {
     assert!(
         !lib.contains("tauri_plugin_fs"),
         "lib.rs registers the fs plugin"
+    );
+    // The webview side: the plugin's JS bindings would be the first half of
+    // bringing it back.
+    let package = std::fs::read_to_string(root.join("../package.json")).unwrap();
+    assert!(
+        !package.contains("@tauri-apps/plugin-fs"),
+        "package.json depends on @tauri-apps/plugin-fs"
+    );
+    // A capability can also be written inline in the app config
+    // (`app.security.capabilities`), and the plugin configured there.
+    let mut confs = 0;
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if file.starts_with("tauri.conf") && file.ends_with(".json") {
+            confs += 1;
+            let granted = inline_fs_grants(&std::fs::read_to_string(&path).unwrap());
+            assert!(granted.is_empty(), "{path:?} grants {granted:?}");
+        }
+    }
+    assert!(confs >= 1, "tauri.conf.json not found");
+}
+
+/// What an app config (`tauri.conf*.json`) grants of the fs plugin: the `fs:`
+/// permissions of every capability written inline in
+/// `app.security.capabilities` (an identifier string there names a file the
+/// loop above already reads), and a `plugins.fs` section, reported as
+/// `plugins.fs`.
+fn inline_fs_grants(conf_json: &str) -> Vec<String> {
+    let doc: serde_json::Value = serde_json::from_str(conf_json).expect("tauri config JSON");
+    let mut granted: Vec<String> = doc["app"]["security"]["capabilities"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c.is_object())
+        .flat_map(|c| fs_permissions(&c.to_string()))
+        .collect();
+    if doc["plugins"].get("fs").is_some() {
+        granted.push("plugins.fs".into());
+    }
+    granted
+}
+
+#[test]
+fn inline_fs_grant_check_sees_an_inline_capability_and_the_plugin_config() {
+    let conf = r#"{"app": {"security": {"capabilities": ["default",
+        {"identifier": "inline", "windows": ["main"], "permissions": ["core:default", "fs:default"]}]}},
+        "plugins": {"fs": {"requireLiteralLeadingDot": false}, "updater": {}}}"#;
+    assert_eq!(inline_fs_grants(conf), vec!["fs:default", "plugins.fs"]);
+    assert!(
+        inline_fs_grants(r#"{"app": {"security": {"csp": "x"}}, "plugins": {"updater": {}}}"#)
+            .is_empty()
     );
 }
 
