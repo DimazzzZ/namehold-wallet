@@ -232,6 +232,7 @@ mod tests {
                 sighash_type: 1,
                 sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
                 foreign_witness_hex: None,
+                lock_key_name: None,
             }],
             outputs: vec![PlanOutput {
                 value: 99_000_000,
@@ -374,6 +375,7 @@ mod tests {
                 sighash_type: 1,
                 sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
                 foreign_witness_hex: None,
+                lock_key_name: None,
             })
             .collect();
         let err = build_parse_blob(&plan, Network::Main, None, &[]).unwrap_err();
@@ -412,6 +414,7 @@ mod tests {
                 sighash_type: 1,
                 sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
                 foreign_witness_hex: None,
+                lock_key_name: None,
             }],
             outputs: vec![crate::noncustodial::actions::PlanOutput {
                 value: 99_000_000,
@@ -536,6 +539,7 @@ mod tests {
                 sighash_type: 1,
                 sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
                 foreign_witness_hex: None,
+                lock_key_name: None,
             }],
             outputs: vec![crate::noncustodial::actions::PlanOutput {
                 value: 99_000_000,

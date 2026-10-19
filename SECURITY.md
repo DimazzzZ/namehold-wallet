@@ -243,7 +243,7 @@ The Market lists names for sale through Shakedex, read from the LearnHNS Market 
 
 #### 3. Signing an input the wallet does not own
 
-**Mitigation:** The seller's lock coin is a foreign input carrying its own witness; the wallet signs only its own inputs. A Ledger signs every input as the wallet's own P2WPKH, so a plan with a foreign input, a custom sequence or a lock time is refused twice: when the draft is signed (`commands::tx`) and in the Ledger signer itself (`providers::ledger::signing`).
+**Mitigation:** The seller's lock coin is a foreign input carrying its own witness; the wallet signs only its own inputs. A Ledger signs every input as the wallet's own P2WPKH, so a plan with a foreign input, a custom sequence or a lock time is refused twice: when the draft is signed (`commands::tx`) and in the Ledger signer itself (`providers::ledger::signing`), which sees only the plan's shape. Draft signing refuses every Shakedex draft for a Ledger by its action as a class (`shakedex::is_shakedex_action`), because the FINALIZE into a lock is an ordinary plan the device signer cannot tell from any other; a plan with a lock-key or foreign input is refused by its shape. A lock coin of ours is spent only by a cancel, signed with the lock key, which the signer derives from the seed at that moment and never stores. The signer refuses an input that is both foreign and lock-key (`sign_plan_tx`), and refuses a lock-key input unless it is a `0x83` (`ANYONECANPAY|SINGLE`) input with a final sequence in a plan with lock time 0, from a receive-branch path at an unhardened index, whose output at the same index is a TRANSFER at that key's lock address with exactly 4 items, of this name (item 0 is the name hash), to a version-0 address (item 2 is `00`) whose hash (item 3) is our own receive address re-derived from the input's path (`noncustodial/shakedex/cancel.rs::check_lock_key_input`).
 
 #### 4. The daemon and purchases
 
@@ -265,7 +265,8 @@ The Market lists names for sale through Shakedex, read from the LearnHNS Market 
 | Audit log leaks secrets | Redacted to `***` on write; re-redacted on read | `settings.rs:40-41, 68-69` | `settings_cmd_tests` |
 | Market redirect or host swap | HTTPS LearnHNS host only, no redirects, override debug-only | `market/learnhns.rs` | `learnhns_tests` |
 | Tampered listing or price | Verified on the profile's node; price re-checked before broadcast | `noncustodial/shakedex/verify.rs` | `shakedex_verify_tests`, `shakedex_cmd_tests` |
-| Ledger signs a foreign input | Refused at draft signing and in the signer | `commands/tx.rs`, `providers/ledger/signing.rs` | `ledger_plan_guard_tests` |
+| Ledger signs a foreign input, a lock coin or a Shakedex draft | Draft signing refuses every Shakedex draft by action and a lock-key or foreign plan by shape; the device signer refuses foreign, lock-key and custom-sequence or lock-time plans by shape only, and cannot see the action | `commands/tx.rs`, `providers/ledger/signing.rs` | `ledger_plan_guard_tests` |
+| Lock key signs anything but a cancel | Signer accepts only a `0x83` input whose same-index output is a TRANSFER of the name at its lock address to our own version-0 receive address, and refuses an input that is both foreign and lock-key | `noncustodial/shakedex/cancel.rs` (`check_lock_key_input`), `noncustodial/actions.rs` (`sign_plan_tx`) | `actions::tests::sign_plan_refuses_a_lock_key_input_that_is_not_a_cancel` |
 | Daemon rebroadcasts a purchase | `SyncCaller::Daemon` never rebroadcasts | `commands/sync.rs`, `shakedex_jobs.rs` | `shakedex_purchase_state_tests::{daemon_sync_makes_no_send_call_where_the_apps_sync_does, daemon_never_rebroadcasts_and_leaves_it_to_the_app}` |
 
 ---

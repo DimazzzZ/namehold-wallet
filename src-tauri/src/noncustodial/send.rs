@@ -689,6 +689,7 @@ pub fn build_send_plan(
             sighash_type: 1, // SIGHASH_ALL
             sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
             foreign_witness_hex: None,
+            lock_key_name: None,
         });
     }
 
