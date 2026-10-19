@@ -5938,6 +5938,392 @@ async fn shakedex_lock_refused_near_expiry() {
     );
 }
 
+/// Run `hsw-rpc` against the regtest wallet (the CLI's buyer); its stdout.
+fn hsw_rpc(api_key: &str, args: &[&str]) -> String {
+    let out = std::process::Command::new("hsw-rpc")
+        .arg("--network=regtest")
+        .arg(format!("--api-key={api_key}"))
+        .args(args)
+        .output()
+        .expect("run hsw-rpc (scripts/regtest.sh --with-wallet)");
+    assert!(
+        out.status.success(),
+        "hsw-rpc {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout)
+        .expect("utf-8")
+        .trim()
+        .trim_matches('"')
+        .to_string()
+}
+
+/// Run both listing jobs on the app's database against the live node, as
+/// `run_sync_steps` does (connection swapped out, as in `abort_job`).
+async fn listing_jobs(app: &tauri::App<tauri::test::MockRuntime>, cl: &NodeRpcClient) {
+    abort_job(app, cl).await;
+    let conn = std::mem::replace(
+        &mut *app.state::<AppState>().db.lock().unwrap(),
+        rusqlite::Connection::open_in_memory().unwrap(),
+    );
+    let res = crate::shakedex_jobs::refresh_lock_finalize_with_client(&conn, cl, PROFILE).await;
+    *app.state::<AppState>().db.lock().unwrap() = conn;
+    res.expect("finalize job runs");
+}
+
+/// A fresh name locked on chain and its lockup mined out; the listing
+/// ReadyToFinalize by the job, not by hand. `(app, client, our address,
+/// name, listing id)`.
+async fn ready_to_finalize_on_chain(
+    url: &str,
+    key: &str,
+    prefix: &str,
+) -> (
+    tauri::App<tauri::test::MockRuntime>,
+    NodeRpcClient,
+    String,
+    String,
+    String,
+) {
+    let (app, cl, addr, name) = own_a_name(url, key, prefix).await;
+    lock_on_chain(&app, &cl, &addr, &name).await;
+    let id = open_listing(&app, &name).expect("listing").id;
+    // The lock TRANSFER is mined at the tip; the FINALIZE is valid once
+    // tip + 1 >= its height + lockup, i.e. after lockup - 1 more blocks.
+    cl.generate_to_address(NET.name_params().transfer_lockup - 2, &addr)
+        .await
+        .expect("mine");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(
+        listing_state(&app, &id),
+        ListingState::Locking,
+        "one block before the lockup ends"
+    );
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::ReadyToFinalize);
+    (app, cl, addr, name, id)
+}
+
+/// Finalize & sign `price` HNS at `per_byte`, the R20 prompt confirmed
+/// through the test queue; send the FINALIZE through the one broadcast path
+/// and mine it. The summary.
+async fn finalize_and_sign_on_chain(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    cl: &NodeRpcClient,
+    addr: &str,
+    id: &str,
+    price: &str,
+    per_byte: u64,
+) -> crate::commands::shakedex::ListingSummary {
+    unlock(app);
+    crate::commands::secure_prompt::push_test_answer(
+        crate::commands::secure_prompt::SecurePromptResult {
+            value: None,
+            confirmed: true,
+        },
+    );
+    let s = crate::commands::shakedex::finalize_and_sign_confirmed(
+        &app.state(),
+        app.handle(),
+        id,
+        &[crate::commands::shakedex::StepInput {
+            price: price.into(),
+        }],
+        Some(per_byte),
+    )
+    .await
+    .expect("finalize & sign");
+    assert_eq!(s.state, ListingState::Finalizing);
+    let draft = s.finalize_draft_id.clone().expect("the FINALIZE draft");
+    let bc = broadcast_tx_draft(app.state(), draft.clone())
+        .await
+        .expect("broadcast");
+    assert_eq!(bc.status, "broadcasted");
+    assert_eq!(
+        Some(bc.txid.clone()),
+        s.lock_txid,
+        "the lock coin is an output of the FINALIZE"
+    );
+    settle(app, cl, addr, &draft).await;
+    s
+}
+
+/// R30, selling half: Namehold locks a name, waits out the lockup, Finalize
+/// & signs a Buy Now; once its FINALIZE is mined the listing is Listed, and
+/// the shakedex CLI buys the exported listing file. On chain: the name's
+/// owner is the fill's TRANSFER out of our lock, committing to an address of
+/// the CLI's wallet, and the fill pays our payment address exactly the price.
+#[tokio::test]
+async fn shakedex_namehold_buy_now_is_bought_by_the_cli() {
+    let Some((url, key, cli)) = shakedex_env("shakedex_namehold_buy_now_is_bought_by_the_cli")
+    else {
+        return;
+    };
+    let (app, cl, addr, name, id) = ready_to_finalize_on_chain(&url, &key, "nhsell").await;
+    let s = finalize_and_sign_on_chain(&app, &cl, &addr, &id, "3", 1).await;
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+
+    // The FINALIZE on hsd: the name's owner is the lock coin, a FINALIZE at
+    // the lock address of the key derived here.
+    let lock = crate::noncustodial::shakedex::lock_key::derive_lock_key(
+        &master(),
+        NET,
+        test_acct(),
+        &name,
+    )
+    .unwrap();
+    assert_eq!(name_owner(&cl, &name).await, (lock_txid.clone(), lock_vout));
+    let coin = cl
+        .get_coin(&lock_txid, lock_vout)
+        .await
+        .expect("coin")
+        .expect("lock coin");
+    assert_eq!(coin.address.as_deref(), Some(lock.address.as_str()));
+    assert_eq!(
+        coin.covenant.as_ref().expect("covenant").kind,
+        crate::noncustodial::sync::COV_FINALIZE
+    );
+    assert!(coin.mined_height().unwrap().is_some(), "mined: {coin:?}");
+    // Listed by the listing jobs on the live node (the same functions
+    // run_sync_steps runs; that wiring is pinned by
+    // shakedex_sell_tests::sync_lists_the_listing_in_the_app_and_the_daemon).
+    assert_eq!(
+        listing_state(&app, &id),
+        ListingState::Finalizing,
+        "sent and mined, not yet looked at"
+    );
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+
+    let file = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        crate::commands::shakedex::export_listing_file_from_conn(&conn, PROFILE, &id)
+            .expect("export")
+    };
+    // The CLI's hsd wallet pays: give it coins first (a fresh chain has none
+    // in it), then let them mature.
+    let cli_addr = hsw_rpc(&key, &["getnewaddress"]);
+    cl.generate_to_address(4, &cli_addr)
+        .await
+        .expect("fund the CLI wallet");
+    let maturity = u32::try_from(NET.coinbase_maturity()).unwrap();
+    cl.generate_to_address(maturity, &addr)
+        .await
+        .expect("mature its coinbases");
+    cli.fill(&CliListing::new(file));
+
+    let (fill_txid, fill_vout) = name_owner(&cl, &name).await;
+    assert_ne!(fill_txid, lock_txid, "the name moved out of the lock");
+    let fill = cl.get_tx_by_hash(&fill_txid).await.expect("fill tx");
+    assert!(
+        fill["inputs"].as_array().expect("inputs").iter().any(|i| {
+            i["prevout"]["hash"].as_str() == Some(lock_txid.as_str())
+                && i["prevout"]["index"].as_u64() == Some(u64::from(lock_vout))
+        }),
+        "the fill spends our lock coin: {fill}"
+    );
+    let out = cl
+        .get_coin(&fill_txid, fill_vout)
+        .await
+        .expect("coin")
+        .expect("the fill's TRANSFER");
+    assert!(out.mined_height().unwrap().is_some(), "mined: {out:?}");
+    let cov = out.covenant.as_ref().expect("covenant");
+    assert_eq!(cov.kind, crate::noncustodial::sync::COV_TRANSFER);
+    assert_eq!(
+        out.address.as_deref(),
+        Some(lock.address.as_str()),
+        "the TRANSFER out of our lock stays at it until finalized"
+    );
+    assert_eq!(cov.items[2], "00", "witness version 0");
+    let hash: [u8; 20] = hex::decode(&cov.items[3])
+        .unwrap()
+        .try_into()
+        .expect("a 20-byte P2WPKH program");
+    let buyer = crate::noncustodial::address::encode_p2wpkh(NET, &hash).unwrap();
+    let info: serde_json::Value =
+        serde_json::from_str(&hsw_rpc(&key, &["getaddressinfo", &buyer])).expect("json");
+    assert_eq!(
+        info["ismine"], true,
+        "the TRANSFER commits to the CLI wallet: {buyer} {info}"
+    );
+    let pay = s.payment_address.clone().expect("payment address");
+    assert_eq!(
+        paid_to(&cl, &fill_txid, &pay).await,
+        3_000_000,
+        "our payment address got exactly the price"
+    );
+}
+
+/// R19 on hsd: a reorg takes the FINALIZE into the lock out of its block,
+/// and the listing follows it. hsd's `invalidateblock` empties the mempool
+/// (`reset`), so while the FINALIZE is nowhere the listing stays Listed (no
+/// verdict from a 404); handed back to the node, as a real reorg's mempool
+/// would hold it, it is a coin in the mempool and the listing is Finalizing;
+/// mined again, Listed. Every step is read from hsd before the jobs run.
+#[tokio::test]
+async fn shakedex_listing_follows_reorg_of_its_lock_finalize() {
+    let Some((url, key)) = shakedex_node_env("shakedex_listing_follows_reorg_of_its_lock_finalize")
+    else {
+        return;
+    };
+    let (app, cl, addr, _name, id) = ready_to_finalize_on_chain(&url, &key, "nhreorg").await;
+    let s = finalize_and_sign_on_chain(&app, &cl, &addr, &id, "3", 1).await;
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+    let lock_coin = |cl: NodeRpcClient| {
+        let txid = lock_txid.clone();
+        async move { cl.get_coin(&txid, lock_vout).await.expect("coin lookup") }
+    };
+    let mined_at = lock_coin(cl.clone())
+        .await
+        .expect("the lock coin")
+        .mined_height()
+        .unwrap()
+        .expect("mined");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+
+    let block = cl.get_block_hash(mined_at).await.expect("blockhash");
+    cl.invalidate_block(&block).await.expect("invalidate");
+    assert!(
+        lock_coin(cl.clone()).await.is_none(),
+        "invalidateblock leaves the FINALIZE nowhere"
+    );
+    listing_jobs(&app, &cl).await;
+    assert_eq!(
+        listing_state(&app, &id),
+        ListingState::Listed,
+        "a 404 alone is no verdict"
+    );
+
+    let fin = draft_status(&app, s.finalize_draft_id.as_deref().expect("draft"));
+    cl.send_raw_transaction(fin.signed_tx_hex.as_deref().expect("signed FINALIZE"))
+        .await
+        .expect("hand the FINALIZE back");
+    wait_until_node_has(&cl, &lock_txid).await;
+    let pending = lock_coin(cl.clone()).await.expect("the lock coin, unmined");
+    assert_eq!(pending.mined_height().unwrap(), None, "in the mempool");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Finalizing);
+
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    cl.reconsider_block(&block).await.expect("reconsider");
+    let again = lock_coin(cl.clone()).await.expect("the lock coin");
+    assert!(
+        again.mined_height().unwrap().is_some(),
+        "mined again: {again:?}"
+    );
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+}
+
+/// R19 coordinator (b) on hsd: another device with the same recovery phrase
+/// (here: a copy of this wallet's database, as a restore would give it)
+/// Finalize & signs the listing and its FINALIZE is mined. This device's
+/// listing, still ReadyToFinalize, becomes a Restored lock with that
+/// FINALIZE's lock outpoint, read from hsd's owner coin — never Aborted.
+#[tokio::test]
+async fn shakedex_finalize_from_another_device_is_a_restored_lock() {
+    let Some((url, key)) =
+        shakedex_node_env("shakedex_finalize_from_another_device_is_a_restored_lock")
+    else {
+        return;
+    };
+    let (app, cl, addr, name, id) = ready_to_finalize_on_chain(&url, &key, "nhother").await;
+    let copy = std::env::temp_dir().join(format!(
+        "namehold_live_other_device_{}_{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        conn.execute("VACUUM INTO ?1", [copy.to_str().unwrap()])
+            .expect("copy the database");
+    }
+    let other_conn = rusqlite::Connection::open(&copy).unwrap();
+    other_conn
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .unwrap();
+    let other = app_with(other_conn);
+    let s = finalize_and_sign_on_chain(&other, &cl, &addr, &id, "3", 1).await;
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+
+    // On hsd: the name's owner is that FINALIZE's lock coin, mined at the
+    // lock address of the key derived here.
+    let lock = crate::noncustodial::shakedex::lock_key::derive_lock_key(
+        &master(),
+        NET,
+        test_acct(),
+        &name,
+    )
+    .unwrap();
+    assert_eq!(name_owner(&cl, &name).await, (lock_txid.clone(), lock_vout));
+    let coin = cl
+        .get_coin(&lock_txid, lock_vout)
+        .await
+        .expect("coin")
+        .expect("lock coin");
+    assert_eq!(coin.address.as_deref(), Some(lock.address.as_str()));
+    assert_eq!(
+        coin.covenant.as_ref().expect("covenant").kind,
+        crate::noncustodial::sync::COV_FINALIZE
+    );
+    assert!(coin.mined_height().unwrap().is_some(), "mined: {coin:?}");
+
+    assert_eq!(listing_state(&app, &id), ListingState::ReadyToFinalize);
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    let l = open_listing(&app, &name).expect("still the open listing");
+    assert_eq!(l.id, id);
+    assert_eq!(l.state, ListingState::Restored);
+    assert_eq!(
+        (l.lock_txid.as_deref(), l.lock_vout),
+        (Some(lock_txid.as_str()), Some(i64::from(lock_vout)))
+    );
+    drop(other);
+    let _ = std::fs::remove_file(&copy);
+}
+
+/// R4 on hsd: the FINALIZE into the lock, built at 20 doos/vbyte (above the
+/// 5 doos/vbyte floor), pays the fee its summary shows at the rate hsd
+/// reports for it.
+#[tokio::test]
+async fn shakedex_lock_finalize_pays_its_fee_rate_on_vsize() {
+    let Some((url, key)) = shakedex_node_env("shakedex_lock_finalize_pays_its_fee_rate_on_vsize")
+    else {
+        return;
+    };
+    let per_byte = 20;
+    let (app, cl, addr, _name, id) = ready_to_finalize_on_chain(&url, &key, "nhrate").await;
+    let s = finalize_and_sign_on_chain(&app, &cl, &addr, &id, "3", per_byte).await;
+    let draft = draft_status(&app, s.finalize_draft_id.as_deref().unwrap());
+    let fee =
+        serde_json::from_str::<serde_json::Value>(&draft.summary_json).unwrap()["feeDoos"].clone();
+    let tx = cl
+        .get_tx_by_hash(draft.txid.as_deref().expect("sent"))
+        .await
+        .expect("tx");
+    assert!(tx["height"].as_i64().unwrap_or(-1) > 0, "mined: {tx}");
+    assert_eq!(tx["fee"], fee, "{tx}");
+    let rate = tx["rate"].as_u64().expect("rate");
+    let asked = per_byte * 1000;
+    assert!(
+        (asked..=asked * 102 / 100).contains(&rate),
+        "asked {asked} doos/kvB, hsd reports {rate}: {tx}"
+    );
+}
+
 /// #65 on a live node: a transaction pays the fee rate asked for on hsd's
 /// virtual size, not on its raw size. hsd's `GET /tx/:hash` reports the fee
 /// and the rate it works out on `getVirtualSize()`; the raw-size bug paid

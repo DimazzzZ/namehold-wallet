@@ -21,6 +21,7 @@ pub mod node_readiness;
 pub mod paid_swaps;
 pub mod read;
 pub mod read_pure;
+pub mod secure_confirm;
 pub mod secure_prompt;
 pub mod secure_wallet;
 pub mod settings;

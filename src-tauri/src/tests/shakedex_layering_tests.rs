@@ -18,11 +18,12 @@ const SOURCES: [(&str, &str); 3] = [
 ];
 
 /// The only command modules these sources may name: the shared draft
-/// context. Everything else under `commands` is a sibling, and the legacy
-/// shared layers (`sync`, `read`, `namebase`, `secure_prompt`) are siblings
-/// too — refusing the whole class keeps a new sibling from slipping past a
-/// list of known ones.
-const ALLOWED: [&str; 1] = ["draft_ctx"];
+/// context, and the secure window's confirm helper (`secure_confirm`, the
+/// one place that names `secure_prompt` for them). Everything else under
+/// `commands` is a sibling, and the legacy shared layers (`sync`, `read`,
+/// `namebase`, `secure_prompt`) are siblings too — refusing the whole class
+/// keeps a new sibling from slipping past a list of known ones.
+const ALLOWED: [&str; 2] = ["draft_ctx", "secure_confirm"];
 
 /// Code only: a mention in a comment is not an import, and the unit tests at
 /// the end of a file (`mod tests`, where `super` is the file itself) are not
@@ -82,6 +83,8 @@ fn sibling_check_catches_every_sibling_form() {
     }
     for line in [
         "use crate::commands::draft_ctx::{self, Ctx};",
+        "use crate::commands::secure_confirm;",
+        "crate::commands::secure_confirm::confirm_rows(app, t, m, d)",
         "draft_ctx::fee_rate(&p.ctx, fee_rate)",
         "use crate::noncustodial::shakedex::purchase;",
     ] {

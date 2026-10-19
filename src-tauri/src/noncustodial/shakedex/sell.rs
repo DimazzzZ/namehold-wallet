@@ -3,16 +3,21 @@
 //! Now lock time (R19) and the FINALIZE into the lock.
 
 use crate::error::AppError;
-use crate::noncustodial::actions::PlanResult;
+use crate::noncustodial::actions::{DraftPlan, PlanResult};
 use crate::noncustodial::covenants;
 use crate::noncustodial::names;
 use crate::noncustodial::network::{NameParams, Network};
-use crate::noncustodial::send::SpendableCoin;
+use crate::noncustodial::send::{SpendableCoin, DUST_THRESHOLD};
 use crate::noncustodial::shakedex::funding::{cov_out, fund, own_input};
 use crate::noncustodial::shakedex::lock_key::LockKey;
+use crate::noncustodial::shakedex::purchase::MAX_MONEY;
 use crate::noncustodial::shakedex::script;
-use crate::noncustodial::shakedex::template::{verify_step_signature, StepTemplate};
+use crate::noncustodial::shakedex::template::{
+    secs_until_valid, valid_from_mtp, verify_step_signature, StepTemplate,
+};
+use crate::noncustodial::sync::COV_FINALIZE;
 use crate::noncustodial::tx::{Covenant, OutputAddress};
+use crate::noncustodial::types::doos_to_hns_string;
 
 /// One lock-time unit: hsd encodes a time lock in 512-second steps.
 const LOCK_TIME_UNIT_SECS: u64 = 512;
@@ -56,8 +61,8 @@ pub fn lock_self_check(key: &LockKey, network: Network) -> Result<(), AppError> 
     Ok(())
 }
 
-/// R19: a Buy Now's lock time, taken from the MTP of the tip when the step is
-/// signed: one lock-time unit back, so its encoded value is below that MTP
+/// R19: a Buy Now's lock time, from the MTP the node reports at Finalize &
+/// sign (read just before its confirmation): one lock-time unit back, so its encoded value is below that MTP
 /// and the step is valid in the next block (`template::is_valid_at`).
 pub fn buy_now_lock_time(mtp: u64) -> u64 {
     mtp.saturating_sub(LOCK_TIME_UNIT_SECS)
@@ -99,8 +104,7 @@ pub fn near_expiry_warning(blocks_left: i64) -> String {
     )
 }
 
-/// R31's verdict on locking a name now, or (T3) on finalizing it into the
-/// lock.
+/// R31's verdict on locking a name now, or on finalizing it into the lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpiryNotice {
     Ok,
@@ -179,6 +183,36 @@ pub fn expires_before_the_lock(name: &str, expiry_end: i64) -> AppError {
     ))
 }
 
+/// R18/R19: whether the lock TRANSFER `(lock_transfer_txid, 0)` owns the
+/// name, from hsd's `getnameinfo`: `info.owner` is that outpoint and
+/// `info.revoked` is 0 (a REVOKE leaves `owner` at the coin it spent and
+/// sets `revoked`, hsd `chain.js`). Finalize & sign and the sync job ask it
+/// the same way.
+pub fn lock_transfer_owns_name(
+    owner_hash: &str,
+    owner_index: u64,
+    revoked: u64,
+    lock_transfer_txid: &str,
+) -> bool {
+    revoked == 0 && owner_index == 0 && owner_hash.eq_ignore_ascii_case(lock_transfer_txid)
+}
+
+/// The block of the name's TRANSFER, hsd's `info.transfer` in a
+/// `getnameinfo` reply's `info`. Finalize & sign and the sync job both take
+/// the lockup from this fact, not from the TRANSFER coin's height: it is the
+/// field hsd's FINALIZE rule reads (`chain.js`, `height < ns.transfer +
+/// transferLockup`), set when the block holding the TRANSFER is connected.
+/// `None` when the reply leaves it out, gives a number no block can have
+/// (above `i64::MAX`), or says 0, which in hsd means "no TRANSFER" (set on
+/// FINALIZE, UPDATE and REVOKE): with our TRANSFER the owner, not hsd's
+/// whole answer.
+pub fn transfer_height(info: &serde_json::Value) -> Option<i64> {
+    info.get("transfer")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|t| i64::try_from(t).ok())
+        .filter(|t| *t > 0)
+}
+
 /// `wallet_tx_drafts.action` of a draft finalizing our name into its lock.
 pub const LOCK_FINALIZE_ACTION: &str = "shakedex_lock_finalize";
 
@@ -247,6 +281,162 @@ pub fn build_lock_finalize_plan(i: &LockFinalizeInput) -> Result<PlanResult, App
     )
 }
 
+/// The lock coin a FINALIZE into the lock creates: `(index, value)` of the
+/// plan's one FINALIZE output paying `lock_address`. The price steps are
+/// signed over that output and the listing records its index; a plan with
+/// none, or more than one, is refused.
+pub fn lock_output(plan: &DraftPlan, lock_address: &str) -> Result<(u32, u64), AppError> {
+    let mut found = plan
+        .outputs
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.covenant_type == COV_FINALIZE && o.address == lock_address);
+    match (found.next(), found.next()) {
+        (Some((i, o)), None) => {
+            let i = u32::try_from(i)
+                .map_err(|_| AppError::Other("FINALIZE output index out of range".into()))?;
+            Ok((i, o.value))
+        }
+        _ => Err(AppError::Other(
+            "the FINALIZE plan does not pay exactly one FINALIZE into the lock".into(),
+        )),
+    }
+}
+
+/// R23: a listing file's `expiresAt` is the MTP at signing plus 365 days.
+pub const LISTING_LIFETIME_SECS: u64 = 365 * 86_400;
+
+/// R20: what each signed price step means, shown in the confirmation and
+/// kept on the FINALIZE draft.
+pub const STEP_SIGNATURE_PERMANENCE: &str = "Each signature lets anyone buy the name at its \
+     price until the listing is cancelled and the cancel is mined. A price can be lowered \
+     later, never raised.";
+
+/// R18 at Finalize & sign: the confirmed lock TRANSFER does not commit to
+/// the lock this wallet derives for the name.
+pub const LOCK_COMMITMENT_MISMATCH: &str = "the lock transfer does not commit to this \
+     wallet's lock for the name: nothing was finalized or signed";
+
+/// Finalize & sign is refused while the listing's Cancel transfer may still
+/// be mined: both spend the lock TRANSFER coin.
+pub const CANCEL_TRANSFER_PENDING: &str = "a Cancel transfer of this listing is pending and \
+     spends the same coin: Finalize & sign waits until it is dropped, failed or deleted";
+
+/// R19: the price a person typed, in HNS, as doos. Refused, with the reason:
+/// not a plain decimal, more than 6 decimals, 0, below the dust limit, above
+/// the money supply. Never rounds.
+pub fn parse_step_price(text: &str) -> Result<u64, AppError> {
+    let bad = |why: String| AppError::InvalidInput(format!("price {text:?}: {why}"));
+    let t = text.trim();
+    if t.is_empty() {
+        return Err(bad("enter a price in HNS".into()));
+    }
+    // No '.' is a whole number of HNS: no decimals, not an error.
+    let (whole, frac) = t.split_once('.').unwrap_or((t, ""));
+    let digits = |s: &str| s.chars().all(|c| c.is_ascii_digit());
+    if (whole.is_empty() && frac.is_empty()) || !digits(whole) || !digits(frac) {
+        return Err(bad("not a number of HNS".into()));
+    }
+    if frac.len() > 6 {
+        return Err(bad("HNS has at most 6 decimals".into()));
+    }
+    let supply = || bad("above the money supply".into());
+    let whole: u64 = if whole.is_empty() {
+        0
+    } else {
+        whole.parse().map_err(|_| supply())?
+    };
+    // `frac` is 0..=6 ASCII digits, so the padded string always parses.
+    let frac: u64 = format!("{frac:0<6}").parse().map_err(|_| supply())?;
+    let doos = whole
+        .checked_mul(1_000_000)
+        .and_then(|w| w.checked_add(frac))
+        .ok_or_else(supply)?;
+    if doos == 0 {
+        return Err(bad("a price must be above 0".into()));
+    }
+    if doos < DUST_THRESHOLD {
+        return Err(bad(format!(
+            "below the dust limit of {}",
+            doos_to_hns_string(DUST_THRESHOLD)
+        )));
+    }
+    if doos > MAX_MONEY {
+        return Err(supply());
+    }
+    Ok(doos)
+}
+
+/// One signed price step as `shakedex_listings.steps_json` stores it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredStep {
+    pub price: u64,
+    pub lock_time: u64,
+    /// 65 bytes, hex: the low-S signature and the 0x84 sighash byte.
+    pub signature: String,
+}
+
+/// What the Finalize & sign confirmation (R20) is built from.
+pub struct FinalizeAndSignRows<'a> {
+    pub name: &'a str,
+    pub finalize_fee: u64,
+    pub lock_address: &'a str,
+    pub payment_address: &'a str,
+    /// `(price, lock time)` of every step about to be signed.
+    pub steps: &'a [(u64, u64)],
+    /// The MTP the steps' validity is judged at (R3).
+    pub mtp: u64,
+}
+
+/// R20: the rows of the Finalize & sign confirmation, `{ "rows": [...] }`
+/// as the secure window renders a `confirm` request.
+pub fn finalize_and_sign_rows(r: &FinalizeAndSignRows) -> serde_json::Value {
+    let row = |label: String, value: String| serde_json::json!({ "label": label, "value": value });
+    let mut rows = vec![
+        row(
+            "Action".into(),
+            "Finalize into the lock and sign the price".into(),
+        ),
+        row("Name".into(), r.name.into()),
+        row(
+            "Network fee (finalize into the lock)".into(),
+            doos_to_hns_string(r.finalize_fee),
+        ),
+    ];
+    for (i, &(price, lock_time)) in r.steps.iter().enumerate() {
+        let when = if secs_until_valid(lock_time, r.mtp) == 0 {
+            "valid at once".to_string()
+        } else {
+            match i64::try_from(valid_from_mtp(lock_time))
+                .ok()
+                .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+            {
+                Some(t) => format!("valid from {}", t.format("%Y-%m-%d %H:%M UTC")),
+                // A lock time past what a date holds: say so rather than guess.
+                None => "valid from a time too far away to show".into(),
+            }
+        };
+        rows.push(row(
+            format!("Price step {}", i + 1),
+            format!("{}, {when}", doos_to_hns_string(price)),
+        ));
+    }
+    rows.push(row("Paid to".into(), r.payment_address.into()));
+    rows.push(row("Lock address".into(), r.lock_address.into()));
+    rows.push(row("Warning".into(), STEP_SIGNATURE_PERMANENCE.into()));
+    serde_json::json!({ "rows": rows })
+}
+
+/// R31's refusal at Finalize & sign: the name would expire within a day of
+/// its FINALIZE into the lock. Renewing needs the TRANSFER undone first.
+pub fn expires_before_finalize(name: &str, expiry_end: i64) -> AppError {
+    AppError::InvalidInput(format!(
+        "'{name}' expires at block {expiry_end}, too soon to finalize it into the lock: \
+         cancel the transfer (Cancel transfer) and renew the name first"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,7 +448,6 @@ mod tests {
     use crate::noncustodial::shakedex::template::{
         encode_lock_time, is_valid_at, low_s_signature, verify_step_signature,
     };
-    use crate::noncustodial::sync::COV_FINALIZE;
     use crate::noncustodial::tx::{sighash, Transaction};
 
     fn key(name: &str) -> LockKey {
@@ -409,5 +598,147 @@ mod tests {
         assert_eq!(res.fee, signed.vsize() * 7);
         let out: u64 = res.plan.outputs.iter().map(|o| o.value).sum();
         assert_eq!(res.input_total, out + res.fee);
+    }
+
+    /// The lock coin is the plan's one FINALIZE output to the lock address,
+    /// wherever it sits: its index and value are read from the plan.
+    #[test]
+    fn lock_output_is_the_plans_finalize_into_the_lock() {
+        let k = key("dexreviews");
+        let transfer = coin(0x31, 1_000_000, 7);
+        let funding = [coin(1, 2_000_000, 8)];
+        let res = build_lock_finalize_plan(&LockFinalizeInput {
+            network: Network::Main,
+            account: 0,
+            transfer: &transfer,
+            lock_pubkey: k.pubkey,
+            name: "dexreviews",
+            name_height: 120,
+            weak: false,
+            claimed: 0,
+            renewals: 0,
+            renewal_block: [0x77; 32],
+            funding: &funding,
+            change_address: CHANGE,
+            rate: 7,
+            fixed_fee: None,
+        })
+        .unwrap();
+        assert_eq!(lock_output(&res.plan, &k.address).unwrap(), (0, 1_000_000));
+        let mut swapped = res.plan.clone();
+        swapped.outputs.swap(0, 1);
+        assert_eq!(lock_output(&swapped, &k.address).unwrap(), (1, 1_000_000));
+        let other = key("othername");
+        assert!(
+            lock_output(&res.plan, &other.address).is_err(),
+            "another lock"
+        );
+        let mut none = res.plan.clone();
+        none.outputs[0].covenant_type = 0;
+        assert!(lock_output(&none, &k.address).is_err(), "no FINALIZE");
+        let mut two = res.plan.clone();
+        two.outputs.push(two.outputs[0].clone());
+        assert!(lock_output(&two, &k.address).is_err(), "two FINALIZEs");
+    }
+
+    /// R19: a price is HNS with at most 6 decimals, at least the dust limit
+    /// and at most the money supply; every refusal says why.
+    #[test]
+    fn step_price_boundaries() {
+        use crate::noncustodial::send::DUST_THRESHOLD;
+        use crate::noncustodial::shakedex::purchase::MAX_MONEY;
+        assert_eq!(parse_step_price("5").unwrap(), 5_000_000);
+        assert_eq!(parse_step_price(" 1.5 ").unwrap(), 1_500_000);
+        assert_eq!(parse_step_price(".5").unwrap(), 500_000);
+        assert_eq!(parse_step_price("1.").unwrap(), 1_000_000);
+        assert_eq!(parse_step_price("1.000000").unwrap(), 1_000_000);
+        assert_eq!(parse_step_price("0.001").unwrap(), DUST_THRESHOLD);
+        assert!(parse_step_price("0.000001")
+            .unwrap_err()
+            .to_string()
+            .contains("dust"));
+        assert!(parse_step_price("0.000999")
+            .unwrap_err()
+            .to_string()
+            .contains("dust"));
+        assert_eq!(parse_step_price("2040000000").unwrap(), MAX_MONEY);
+        for (text, why) in [
+            ("0", "above 0"),
+            ("0.000000", "above 0"),
+            ("2040000000.000001", "money supply"),
+            ("99999999999999999999", "money supply"),
+            ("1.0000001", "6 decimals"),
+            ("", "price in HNS"),
+            ("  ", "price in HNS"),
+            (".", "not a number"),
+            ("-1", "not a number"),
+            ("+1", "not a number"),
+            ("1e3", "not a number"),
+            ("1,5", "not a number"),
+            ("1.2.3", "not a number"),
+            ("abc", "not a number"),
+            // Not ASCII digits, though `char::is_numeric` takes them.
+            ("\u{661}", "not a number"),
+            ("1\u{b2}", "not a number"),
+        ] {
+            let e = parse_step_price(text).unwrap_err();
+            assert!(matches!(e, AppError::InvalidInput(_)), "{text:?}: {e:?}");
+            assert!(e.to_string().contains(why), "{text:?}: {e}");
+        }
+    }
+
+    /// R20: the fee of the FINALIZE, every step's price and when it becomes
+    /// valid, where the money goes, and the permanence of each signature.
+    #[test]
+    fn finalize_and_sign_rows_list_fee_steps_and_permanence() {
+        let mtp = 1_783_696_480;
+        let rows = finalize_and_sign_rows(&FinalizeAndSignRows {
+            name: "dexsale",
+            finalize_fee: 12_345,
+            lock_address: "rs1qlock",
+            payment_address: "rs1qpay",
+            steps: &[
+                (5_000_000, buy_now_lock_time(mtp)),
+                (4_000_000, mtp + 3_600),
+            ],
+            mtp,
+        });
+        let rows = rows["rows"].as_array().unwrap();
+        let get = |label: &str| -> Vec<String> {
+            rows.iter()
+                .filter(|r| r["label"] == label)
+                .map(|r| r["value"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(get("Name"), ["dexsale"]);
+        assert_eq!(
+            get("Network fee (finalize into the lock)"),
+            ["0.012345 HNS"]
+        );
+        assert_eq!(get("Price step 1"), ["5.000000 HNS, valid at once"]);
+        let later = &get("Price step 2")[0];
+        assert!(later.starts_with("4.000000 HNS, valid from "), "{later}");
+        assert!(later.ends_with(" UTC"), "{later}");
+        assert_eq!(get("Paid to"), ["rs1qpay"]);
+        assert_eq!(get("Lock address"), ["rs1qlock"]);
+        assert_eq!(get("Warning"), [STEP_SIGNATURE_PERMANENCE]);
+        assert!(STEP_SIGNATURE_PERMANENCE.contains("anyone"));
+        assert!(STEP_SIGNATURE_PERMANENCE.contains("cancel is mined"));
+    }
+
+    /// The stored step reads back as written (`steps_json`, read by T5/T6/T8).
+    #[test]
+    fn stored_step_round_trips_in_camel_case() {
+        let s = StoredStep {
+            price: 5,
+            lock_time: 7,
+            signature: "ab".into(),
+        };
+        let j = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            j,
+            serde_json::json!({ "price": 5, "lockTime": 7, "signature": "ab" })
+        );
+        assert_eq!(serde_json::from_value::<StoredStep>(j).unwrap(), s);
     }
 }

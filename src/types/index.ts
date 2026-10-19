@@ -878,6 +878,46 @@ export interface MarketPage {
   pageCount: number;
 }
 
+/** One signed price step of our listing (`sell::StoredStep`). */
+export interface ShakedexStoredStep {
+  price: number;
+  lockTime: number;
+  /** 65 bytes, hex: the low-S signature and the 0x84 sighash byte. */
+  signature: string;
+}
+
+/** One of our listings (`commands/shakedex.rs::ListingSummary`). */
+/** Every spelling of Rust's `ListingState` (`db::queries::ListingState::ALL`), camelCase as serde sends it. */
+export type ShakedexListingState =
+  | "locking"
+  | "readyToFinalize"
+  | "finalizing"
+  | "listed"
+  | "salePending"
+  | "sold"
+  | "cancelling"
+  | "cancelAwaitingFinalize"
+  | "cancelFinalizing"
+  | "cancelled"
+  | "aborted"
+  | "restored"
+  | "expired";
+
+export interface ShakedexListingSummary {
+  id: string;
+  name: string;
+  mode: "buyNow" | "reverseAuction";
+  /** Rust's `ListingState`, in camelCase. */
+  state: ShakedexListingState;
+  lockTxid: string | null;
+  lockVout: number | null;
+  paymentAddress: string | null;
+  steps: ShakedexStoredStep[];
+  expiresAt: number | null;
+  /** The signed FINALIZE into the lock; `broadcast_tx_draft` sends it. */
+  finalizeDraftId: string | null;
+}
+
 export type ImportSource =
   { kind: "file"; path: string } | { kind: "text"; json: string } | { kind: "link"; url: string };
 
