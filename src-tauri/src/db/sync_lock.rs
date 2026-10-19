@@ -32,7 +32,9 @@ impl LockOwnerType {
 /// Raised when a sync run's lock was taken over by another process.
 ///
 /// The heartbeat (`commands::sync::spawn_lock_heartbeat`) raises it when
-/// [`refresh_heartbeat`] answers `false`: the row is no longer ours. The run
+/// [`refresh_heartbeat`] answers `false`: the row is no longer ours. A market
+/// job raises it too when, before a listing, it reads a row of another
+/// process (`shakedex_jobs::market_lock_lost`). The run
 /// then stops before its next step, address-window round or write, and the
 /// market jobs before their next listing, so two processes do not go on
 /// syncing one profile. Clones share one flag.

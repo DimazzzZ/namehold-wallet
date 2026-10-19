@@ -93,7 +93,7 @@ When "Sync in background" is enabled (Settings → Connections, default ON):
 - hsd stays running after the app closes (not killed). The daemon keeps it alive
   so it can sync in the background.
 - The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market.
-- A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync and the daemon, using heartbeats (every 10 seconds) and stale-lock takeover (after 30 seconds) to prevent conflicts. The app's Sync takes the lock from a daemon run; a run whose lock is taken over sees it at its next heartbeat and stops before its next step.
+- A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync and the daemon, using heartbeats (every 10 seconds) and stale-lock takeover (after 30 seconds) to prevent conflicts. The app's Sync takes the lock from a daemon run; a run whose lock is taken over sees it at its next heartbeat (within 10 seconds) and stops at its next check; the LearnHNS Market jobs read the lock row before each listing, so they stop at once.
 - The daemon writes its PID to `~/.namehold/syncd.pid`.
 - **Crash recovery:** if the daemon dies, the app respawns it on startup (if the
   toggle is ON).

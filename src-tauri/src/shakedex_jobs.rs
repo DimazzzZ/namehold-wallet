@@ -3101,7 +3101,7 @@ pub async fn advance_reverse_auctions_with_client(
         return Ok(());
     };
     for l in auctions {
-        if market_lock_lost(lock, profile_id) {
+        if market_lock_lost(conn, lock, profile_id) {
             return Ok(());
         }
         if let Err(e) = advance_one(conn, node, market, &l, mtp, now).await {
@@ -3142,12 +3142,28 @@ async fn advance_one(
 }
 
 /// Whether a market job must stop before its next listing: another process
-/// took the profile's sync lock over (`lock`), and the market calls and the
-/// bookkeeping writes are now that process's to make. Checked per listing,
-/// not between one listing's calls: a listing whose exchange with the market
-/// has begun records its answer, so the bookkeeping matches what was sent.
-/// Logs the stop.
-fn market_lock_lost(lock: &LockLost, profile_id: &str) -> bool {
+/// took the profile's sync lock over, and the market calls and the
+/// bookkeeping writes are now that process's to make. Lost when the
+/// heartbeat said so (`lock`), or when the lock row, read here, names
+/// another process: the heartbeat runs every ten seconds, and a market call
+/// inside that window would be the double upload the lock exists to
+/// prevent. A row of another process raises `lock`, so the rest of the sync
+/// stops too. No row is not lost: nothing else claims the profile (and a
+/// job run outside a sync holds none). A row that cannot be read stops the
+/// job: no market call is made that the lock cannot be shown to allow.
+/// Checked per listing, not between one listing's calls: a listing whose
+/// exchange with the market has begun records its answer, so the
+/// bookkeeping matches what was sent. Logs the stop.
+fn market_lock_lost(conn: &rusqlite::Connection, lock: &LockLost, profile_id: &str) -> bool {
+    if !lock.is_lost() {
+        let theirs = match crate::db::sync_lock::get_lock_info(conn, profile_id) {
+            Ok(row) => row.is_some_and(|r| r.owner_pid != std::process::id()),
+            Err(_) => true,
+        };
+        if theirs {
+            lock.raise();
+        }
+    }
     let lost = lock.is_lost();
     if lost {
         eprintln!(
@@ -3208,7 +3224,7 @@ pub async fn publish_listings_with_client(
     // in two of these sets: their states differ).
     for l in queries::list_listings_to_report(conn, profile_id)? {
         if due(&l, now) {
-            if market_lock_lost(lock, profile_id) {
+            if market_lock_lost(conn, lock, profile_id) {
                 return Ok(());
             }
             if let Err(e) = report(conn, market, &l, now).await {
@@ -3218,7 +3234,7 @@ pub async fn publish_listings_with_client(
     }
     for l in queries::list_listings_to_announce(conn, profile_id)? {
         if due(&l, now) {
-            if market_lock_lost(lock, profile_id) {
+            if market_lock_lost(conn, lock, profile_id) {
                 return Ok(());
             }
             if let Err(e) = announce(conn, market, &l, now).await {
@@ -3237,7 +3253,7 @@ pub async fn publish_listings_with_client(
         // Cancelling one whose cancel is not sent yet.
         let listed = l.state == queries::ListingState::Listed;
         if first && listed && due(&l, now) {
-            if market_lock_lost(lock, profile_id) {
+            if market_lock_lost(conn, lock, profile_id) {
                 return Ok(());
             }
             if let Err(e) = upload_current(conn, node, market, &l, now, None).await {
@@ -3504,13 +3520,13 @@ pub async fn keep_listed_with_client(
                 if !due(&l, now) {
                     continue;
                 }
-                if market_lock_lost(lock, profile_id) {
+                if market_lock_lost(conn, lock, profile_id) {
                     return Ok(());
                 }
                 keep_listed(conn, node, market, &l, now).await
             }
             Some(S::Refused) if listed && due(&l, now) && stored_file_near_expiry(&l, now) => {
-                if market_lock_lost(lock, profile_id) {
+                if market_lock_lost(conn, lock, profile_id) {
                     return Ok(());
                 }
                 refresh_refused(conn, node, &l, now).await

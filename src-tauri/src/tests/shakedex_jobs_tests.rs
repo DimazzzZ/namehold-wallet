@@ -3684,12 +3684,105 @@ async fn reorg_reset_listing_reads_a_differing_copy_by_its_flag() {
     }
 }
 
-/// A market that must see no request at all.
-async fn no_market_call(s: &mut ServerGuard) -> [mockito::Mock; 2] {
-    [
-        s.mock("POST", Matcher::Any).expect(0).create_async().await,
-        s.mock("GET", Matcher::Any).expect(0).create_async().await,
-    ]
+/// The market check sites of the three jobs (`market_lock_lost`), one
+/// listing each would send otherwise.
+#[derive(Clone, Copy, Debug)]
+enum Job {
+    /// Publish: a mined sale reported.
+    Report,
+    /// Publish: the day-0 pending listing.
+    Announce,
+    /// Publish: the first upload of a Listed listing.
+    FirstUpload,
+    /// Advance: a reverse auction whose step moved.
+    Advance,
+    /// Keep listed: the hourly check of the market's copy.
+    Keep,
+    /// Keep listed: a Refused listing's expiry refresh (no market call, a
+    /// bookkeeping write).
+    RefreshRefused,
+}
+
+impl Job {
+    const ALL: [Job; 6] = [
+        Job::Report,
+        Job::Announce,
+        Job::FirstUpload,
+        Job::Advance,
+        Job::Keep,
+        Job::RefreshRefused,
+    ];
+
+    /// The method of the market request the job sends; `None` for one that
+    /// only writes its bookkeeping.
+    fn method(self) -> Option<&'static str> {
+        match self {
+            Job::Keep => Some("GET"),
+            Job::RefreshRefused => None,
+            _ => Some("POST"),
+        }
+    }
+
+    /// A listing the job acts on, and the wall clock and median time it
+    /// runs at.
+    async fn fixture(self) -> (Fx, i64, u64) {
+        match self {
+            Job::Report => {
+                let f = listed_on_market(MarketStatus::Listed);
+                f.conn
+                    .execute(
+                        "UPDATE shakedex_listings SET state = 'sold', sold_txid = ?1",
+                        [txid("b1")],
+                    )
+                    .unwrap();
+                (f, NOW, MTP)
+            }
+            Job::Announce => {
+                let f = fx(ListingState::Locking, true);
+                queries::update_tx_draft_status(
+                    &f.conn,
+                    "lockd",
+                    "broadcasted",
+                    None,
+                    Some(&txid("e1")),
+                )
+                .unwrap();
+                (f, NOW, MTP)
+            }
+            Job::FirstUpload => (fx(ListingState::Listed, true), NOW, MTP),
+            Job::Advance => {
+                let (f, _) = auction_on_market().await;
+                let (mtp, later) = moved();
+                (f, later, mtp)
+            }
+            Job::Keep => (listed_on_market(MarketStatus::Listed), NOW, MTP),
+            Job::RefreshRefused => {
+                let f = listed_on_market(MarketStatus::Refused);
+                f.conn
+                    .execute("UPDATE shakedex_listings SET market_retry_at = NULL", [])
+                    .unwrap();
+                set_expiry(&f, (NOW + 86_400) as u64);
+                (f, NOW, MTP)
+            }
+        }
+    }
+
+    async fn run(self, f: &Fx, s: &ServerGuard, now: i64, mtp: u64, lock: &LockLost) {
+        let n = node_at(f, TIP, mtp);
+        let m = client(s);
+        match self {
+            Job::Report | Job::Announce | Job::FirstUpload => {
+                publish_listings_with_client(&f.conn, &n, &m, PROFILE, now, lock).await
+            }
+            Job::Advance => {
+                advance_reverse_auctions_with_client(&f.conn, &n, &m, PROFILE, now, lock).await
+            }
+            Job::Keep | Job::RefreshRefused => {
+                keep_listed_with_client(&f.conn, &n, &m, PROFILE, now, lock).await
+            }
+        }
+        .unwrap();
+    }
 }
 
 /// The market bookkeeping of `f`'s listing.
@@ -3698,61 +3791,83 @@ fn bookkeeping(f: &Fx) -> (Option<MarketStatus>, Option<String>, Option<String>)
     (l.market_status, l.market_retry_at, l.market_sent_step)
 }
 
-/// A sync whose lock another process took over (`LockLost`, raised by the
-/// heartbeat) makes no market call and writes no market bookkeeping: each
-/// job stops before the listing it would otherwise send — publishing's
-/// first upload, the advance of a moved reverse auction, keep-listed's
-/// hourly check — and leaves it to the process that holds the lock.
+/// How a run's sync lock stands.
+#[derive(Clone, Copy, Debug)]
+enum Lock {
+    /// Ours (no row: the job runs outside a sync).
+    Held,
+    /// The heartbeat raised `LockLost`.
+    Raised,
+    /// Another process's row, the heartbeat not run yet.
+    OtherOwner,
+}
+
+/// One market job under `lock`: whether the market saw a request of the
+/// job's method, and whether its bookkeeping changed. The market answers
+/// every request with a 502 (no answer): a request is counted, not taken.
+async fn job_under(job: Job, lock: Lock) -> (bool, bool, LockLost) {
+    let (f, now, mtp) = job.fixture().await;
+    let flag = LockLost::default();
+    match lock {
+        Lock::Held => {}
+        Lock::Raised => flag.raise(),
+        Lock::OtherOwner => {
+            f.conn
+                .execute(
+                    "INSERT INTO sync_locks (profile_id, owner_pid, owner_type, acquired_at, heartbeat_at)
+                     VALUES (?1, 99999, 'app', 0, 0)",
+                    [PROFILE],
+                )
+                .unwrap();
+        }
+    }
+    let before = bookkeeping(&f);
+    let mut s = market().await;
+    // Counted by hand: mockito's `matched()` is "exactly one hit".
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let _seen = match job.method() {
+        Some(method) => {
+            let hits = hits.clone();
+            Some(
+                s.mock(method, Matcher::Any)
+                    .with_status(502)
+                    .with_body_from_request(move |_| {
+                        hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        b"<html>502 Bad Gateway</html>".to_vec()
+                    })
+                    .create_async()
+                    .await,
+            )
+        }
+        None => None,
+    };
+    job.run(&f, &s, now, mtp, &flag).await;
+    let called = hits.load(std::sync::atomic::Ordering::SeqCst) > 0;
+    (called, bookkeeping(&f) != before, flag)
+}
+
+/// A sync whose lock another process took over makes no market call and
+/// writes no market bookkeeping, at every check site of the three jobs:
+/// each stops before the listing it would otherwise send, and leaves it to
+/// the process that holds the lock. Lost is the heartbeat's flag, or the
+/// lock row naming another process before the heartbeat has seen it (which
+/// raises the flag, so the rest of the sync stops too). Each site's
+/// control, with the lock ours, does reach the market (or, for the expiry
+/// refresh, writes its bookkeeping).
 #[tokio::test]
 async fn market_jobs_stop_before_a_listing_once_the_sync_lock_is_lost() {
-    let lost = LockLost::default();
-    lost.raise();
-
-    // Publish: a Listed, published listing the market has not taken.
-    let f = fx(ListingState::Listed, true);
-    let before = bookkeeping(&f);
-    let mut s = market().await;
-    let quiet = no_market_call(&mut s).await;
-    let n = node(&f, TIP);
-    publish_listings_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &lost)
-        .await
-        .unwrap();
-    for m in &quiet {
-        m.assert_async().await;
+    for job in Job::ALL {
+        let (called, changed, flag) = job_under(job, Lock::Held).await;
+        assert!(
+            called || (job.method().is_none() && changed),
+            "{job:?}: the control acts"
+        );
+        assert!(!flag.is_lost(), "{job:?}");
+        for lock in [Lock::Raised, Lock::OtherOwner] {
+            let (called, changed, flag) = job_under(job, lock).await;
+            assert!(!called, "{job:?} {lock:?}: no market call");
+            assert!(!changed, "{job:?} {lock:?}: no bookkeeping written");
+            assert!(flag.is_lost(), "{job:?} {lock:?}: the sync stops");
+        }
     }
-    assert_eq!(bookkeeping(&f), before);
-
-    // Advance: a reverse auction whose step moved.
-    let (f, _) = auction_on_market().await;
-    let before = bookkeeping(&f);
-    let (mtp, later) = moved();
-    let mut s = market().await;
-    let quiet = no_market_call(&mut s).await;
-    advance_reverse_auctions_with_client(
-        &f.conn,
-        &node_at(&f, TIP, mtp),
-        &client(&s),
-        PROFILE,
-        later,
-        &lost,
-    )
-    .await
-    .unwrap();
-    for m in &quiet {
-        m.assert_async().await;
-    }
-    assert_eq!(bookkeeping(&f), before);
-
-    // Keep listed: a listing on the market whose hourly check is due.
-    let f = listed_on_market(MarketStatus::Listed);
-    let before = bookkeeping(&f);
-    let mut s = market().await;
-    let quiet = no_market_call(&mut s).await;
-    keep_listed_with_client(&f.conn, &node(&f, TIP), &client(&s), PROFILE, NOW, &lost)
-        .await
-        .unwrap();
-    for m in &quiet {
-        m.assert_async().await;
-    }
-    assert_eq!(bookkeeping(&f), before);
 }
