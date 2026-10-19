@@ -1349,6 +1349,145 @@ async fn live_sync_grows_the_address_window_past_a_spent_address() {
     assert_eq!(total, value);
 }
 
+/// The window growth finds names too, not only plain coins (F12). The first
+/// profile of a seed wins a name, registers it, and transfers it to its own
+/// receive address `gap+5` (TRANSFER, then FINALIZE once the lockup is over),
+/// so the name's owner coin sits past a restore's window `[0, gap)`; a coin
+/// is mined to receive `gap-1`. A second profile of the seed, holding that
+/// window, runs one node sync and the node's name discovery (the node-backed
+/// path `run_sync_steps` takes), and `read_names` then lists the name, with
+/// the owner coin hsd names tracked at `gap+5`.
+#[tokio::test]
+async fn live_sync_grows_the_address_window_to_a_name_for_a_second_profile() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skipping live_sync_grows_the_address_window_to_a_name_for_a_second_profile");
+        return;
+    };
+    let cl = client(&url, &key);
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let acct = fresh_acct(tip as i64);
+    let gap = crate::commands::secure_wallet::gap_limit(&std::collections::HashMap::new());
+    let at = |index: u32| hd::derive_address(NET, &seed(), acct, 0, index).unwrap().2;
+    let target = at(gap + 5);
+
+    // The first profile wins and registers the name at its low addresses
+    // (the fixture's leaves; bids derive their own fresh ones).
+    let first = app_with(seeded_conn_acct(&url, &key, acct));
+    let addr = leaf00_at(acct).0;
+    fund(&cl, &addr, 5).await;
+    sync_wallet_state(first.state(), None).await.expect("sync");
+    let name = format!("window{tip}");
+    acquire_name(&first, &cl, &addr, &name).await;
+
+    // ... and moves it to receive `gap+5`, past a restore's window.
+    use crate::commands::names::{build_finalize_draft, build_transfer_draft};
+    let transfer = build_transfer_draft(first.state(), name.clone(), target.clone(), Some(1))
+        .await
+        .expect("build transfer");
+    execute(&first, &cl, &addr, transfer.id).await;
+    sync_wallet_state(first.state(), None).await.expect("sync");
+    let transfer_height = name_info_height(&cl, &name, "transfer").await;
+    let now = cl.get_blockchain_info().await.expect("info").blocks;
+    let left = NET
+        .name_params()
+        .blocks_until_finalize(transfer_height, now);
+    if left > 0 {
+        fund(&cl, &addr, left as u32).await;
+    }
+    sync_wallet_state(first.state(), None).await.expect("sync");
+    let finalize = build_finalize_draft(first.state(), name.clone(), Some(1))
+        .await
+        .expect("build finalize");
+    execute(&first, &cl, &addr, finalize.id).await;
+    assert_eq!(
+        owner_coin_address(&cl, &name).await.as_deref(),
+        Some(target.as_str()),
+        "on the node, the name's owner coin is at receive {}",
+        gap + 5
+    );
+    fund(&cl, &at(gap - 1), 1).await;
+    let owner = name_owner(&cl, &name).await;
+
+    // The second profile: a restore's window, one node sync, node discovery.
+    let db_path = std::env::temp_dir().join(format!(
+        "namehold_live_window_name_{}_{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    seed_profile_into(&conn, &url, &key, acct);
+    crate::commands::secure_wallet::provision_addresses(
+        &conn,
+        PROFILE,
+        NET,
+        &account_xpub_at(acct),
+        gap,
+    )
+    .expect("the restore's address window");
+    let in_window: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM derived_addresses WHERE wallet_profile_id = ?1 AND address = ?2)",
+            params![PROFILE, target],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        !in_window,
+        "receive {} is past the restore's window",
+        gap + 5
+    );
+    drop(conn);
+    let path = db_path.to_str().unwrap();
+    assert!(
+        crate::commands::sync::sync_node_step(
+            path,
+            PROFILE,
+            &crate::db::sync_lock::LockLost::default()
+        )
+        .await
+    );
+    crate::commands::sync::node_discover_step(path, PROFILE).await;
+
+    let second = app_with(rusqlite::Connection::open(&db_path).unwrap());
+    let names = crate::commands::read::read_names(second.state(), Some(PROFILE.into()))
+        .await
+        .expect("read names");
+    let tracked_owner: Option<(String, u32)> = {
+        let state = second.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.query_row(
+            "SELECT txid, vout FROM tracked_utxos
+             WHERE wallet_profile_id = ?1 AND address = ?2 AND spent_by_txid IS NULL",
+            params![PROFILE, target],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()
+    };
+    drop(second);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    assert!(
+        names
+            .as_array()
+            .expect("a list")
+            .iter()
+            .any(|n| n.get("name").and_then(|v| v.as_str()) == Some(name.as_str())),
+        "the second profile lists {name}: {names}"
+    );
+    assert_eq!(
+        tracked_owner,
+        Some(owner),
+        "the owner coin hsd names is tracked at receive {}",
+        gap + 5
+    );
+}
+
 /// Assert a `Result` is `Err` and its message matches `needle` (case-insensitive
 /// substring). Used across the many negative-path tests to keep the assertion
 /// intent obvious in one line without a bespoke matcher per error variant.
