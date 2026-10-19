@@ -319,3 +319,109 @@ async fn redeem_guard_with_no_coins_asks_nothing() {
         .is_empty());
     assert!(node.calls().is_empty());
 }
+
+// --- REDEEM: the window hsd takes one in -------------------------------------
+
+use crate::commands::draft_ctx::{ensure_redeem_window_open, redeem_window, RedeemWindow};
+
+/// [`regtest_name_info`] after the owner revoked the name in block 9850:
+/// `getnameinfo` reports it REVOKED, with the stats hsd writes for that state
+/// (`namestate.js` `toStats`: the revoke period ends `auctionMaturity` blocks
+/// after the revoke, regtest 65), at a tip `blocks_until_reopen` blocks
+/// before that end.
+fn revoked_name_info(blocks_until_reopen: i64) -> Value {
+    let mut reply = regtest_name_info();
+    let info = reply["info"].as_object_mut().unwrap();
+    info.insert("state".into(), json!("REVOKED"));
+    info.insert("revoked".into(), json!(9850));
+    info.insert("transfer".into(), json!(0));
+    info.insert(
+        "stats".into(),
+        json!({
+            "revokePeriodStart": 9850,
+            "revokePeriodEnd": 9915,
+            "blocksUntilReopen": blocks_until_reopen,
+            "hoursUntilReopen": blocks_until_reopen as f64 / 6.0,
+        }),
+    );
+    reply
+}
+
+/// [`regtest_name_info`] at a tip `blocks_until_expire` blocks before its
+/// renewal window ends.
+fn closed_name_info(blocks_until_expire: i64) -> Value {
+    let mut reply = regtest_name_info();
+    reply["info"]["stats"]["blocksUntilExpire"] = json!(blocks_until_expire);
+    reply
+}
+
+/// hsd lets a losing bidder redeem "even in a revoked state" (`chain.js`,
+/// REDEEM: only `state < CLOSED` is `bad-redeem-state`, and REVOKED sorts
+/// after CLOSED), until the name expires. A transaction is judged at
+/// `tip + 1`, and the name expires there once `blocksUntilReopen` (REVOKED)
+/// or `blocksUntilExpire` (CLOSED) is down to 1: `maybeExpire` then resets
+/// the name to a new auction height, and the REDEEM no longer matches it.
+#[test]
+fn the_redeem_window_is_read_off_the_state_and_its_stats() {
+    let window = |reply: Value| {
+        redeem_window(
+            reply["info"]["state"].as_str().unwrap(),
+            reply["info"].get("stats"),
+        )
+    };
+    assert_eq!(window(revoked_name_info(30)), RedeemWindow::Open);
+    assert_eq!(window(revoked_name_info(2)), RedeemWindow::Open);
+    assert_eq!(window(revoked_name_info(1)), RedeemWindow::ExpiresNextBlock);
+    assert_eq!(window(closed_name_info(2)), RedeemWindow::Open);
+    assert_eq!(window(closed_name_info(1)), RedeemWindow::ExpiresNextBlock);
+    for state in ["OPENING", "BIDDING", "REVEAL"] {
+        assert_eq!(
+            redeem_window(state, None),
+            RedeemWindow::NotClosed,
+            "{state}"
+        );
+    }
+    let mut no_stats = revoked_name_info(30);
+    no_stats["info"].as_object_mut().unwrap().remove("stats");
+    assert_eq!(window(no_stats), RedeemWindow::Unknown);
+}
+
+/// The builder asks the node the same question: a REDEEM of a revoked name is
+/// built, one the node would refuse in the next block is not, and a reply
+/// that does not say when the name expires gives no verdict.
+#[tokio::test]
+async fn the_redeem_guard_takes_a_revoked_name_until_it_expires_with_the_next_block() {
+    ensure_redeem_window_open(&node_at(9885, revoked_name_info(30)), "shkreg2205014174")
+        .await
+        .expect("a revoked name is redeemable");
+    ensure_redeem_window_open(&node_at(9913, revoked_name_info(2)), "shkreg2205014174")
+        .await
+        .expect("still redeemable in the next block");
+    for reply in [revoked_name_info(1), closed_name_info(1)] {
+        let err = ensure_redeem_window_open(&node_at(9914, reply), "shkreg2205014174")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, AppError::InvalidInput(m) if m.contains("next block")),
+            "{err:?}"
+        );
+    }
+    let mut bidding = regtest_name_info();
+    bidding["info"]["state"] = json!("BIDDING");
+    let err = ensure_redeem_window_open(&node_at(9705, bidding), "x")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::InvalidInput(m) if m.contains("not closed")),
+        "{err:?}"
+    );
+    let mut no_stats = revoked_name_info(30);
+    no_stats["info"].as_object_mut().unwrap().remove("stats");
+    let err = ensure_redeem_window_open(&node_at(9885, no_stats), "x")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::Rpc(m) if m.contains("expires")),
+        "{err:?}"
+    );
+}

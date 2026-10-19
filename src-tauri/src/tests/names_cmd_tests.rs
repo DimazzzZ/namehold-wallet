@@ -1104,7 +1104,10 @@ pub(crate) async fn mock_names_rpc(
 /// `NameState.getJSON` shape (`lib/covenants/namestate.js`): a registered name
 /// last renewed at 120 and transferred at 900, both far enough behind the
 /// mocked tip (1000) for a RENEW or FINALIZE to be accepted, whose owner coin
-/// is none a test seeds — so a reveal coin a test seeds is a losing one.
+/// is none a test seeds — so a reveal coin a test seeds is a losing one. Its
+/// `stats` are the ones hsd's `toStats` writes for that CLOSED name at the
+/// mocked tip (regtest: a 2500-block renewal window, a 10-block transfer
+/// lockup), which the redeem builders read the name's expiry from.
 pub(crate) fn names_rpc_info() -> serde_json::Value {
     serde_json::json!({
         "name": "alpha",
@@ -1123,7 +1126,16 @@ pub(crate) fn names_rpc_info() -> serde_json::Value {
         "registered": true,
         "expired": false,
         "weak": false,
-        "stats": null
+        "stats": {
+            "renewalPeriodStart": 120,
+            "renewalPeriodEnd": 2620,
+            "blocksUntilExpire": 1620,
+            "daysUntilExpire": 11.25,
+            "transferLockupStart": 900,
+            "transferLockupEnd": 910,
+            "blocksUntilValidFinalize": -90,
+            "hoursUntilValidFinalize": -15
+        }
     })
 }
 

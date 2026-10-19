@@ -393,11 +393,13 @@ fn reserved_reveal_txids(conn: &rusqlite::Connection) -> Vec<String> {
 }
 
 /// A name auctioned again after it expired: the wallet still holds a reveal
-/// of the earlier auction beside a losing reveal of this one. hsd refuses a
-/// REDEEM whose reveal belongs to another auction (`chain.js`,
-/// `bad-redeem-nonlocal`), and one refused input takes the whole
-/// transaction down, the redeemable reveal with it. The redeem spends this
-/// auction's reveal only.
+/// of the earlier auction beside a losing reveal of this one. The builder
+/// writes the name's current height into every REDEEM, and hsd refuses one
+/// whose height is not its reveal's as `bad-txns-covenants` (`rules.js`,
+/// "Heights must match"); one carrying the reveal's own height would be
+/// `bad-redeem-nonlocal` (`chain.js`). Either way one refused input takes
+/// the whole transaction down, the redeemable reveal with it. The redeem
+/// spends this auction's reveal only.
 #[test]
 fn build_redeem_draft_leaves_out_a_reveal_of_an_earlier_auction() {
     let (conn, ctx, coin) = setup(2_000_000, 10_000_000);

@@ -1726,10 +1726,11 @@ fn reveal_covenant_of_auction(name_hash_hex: &str, auction_start: u32) -> String
 }
 
 /// A name auctioned again after it expired keeps the earlier auction's
-/// unredeemed reveal in the wallet. hsd accepts a REDEEM only while the
-/// name is on the reveal's own auction (`chain.js`, `bad-redeem-nonlocal`;
-/// `rules.js` makes the REDEEM carry the reveal's height), and the name's
-/// height only moves forward, so that reveal can never be redeemed. It is
+/// unredeemed reveal in the wallet. A REDEEM must carry its reveal's height
+/// (`rules.js` "Heights must match", else `bad-txns-covenants`) and hsd
+/// accepts it only while that is the name's height (`chain.js`,
+/// `bad-redeem-nonlocal`), and the name's height only moves forward, so that
+/// reveal can never be redeemed. It is
 /// not counted as redeemable in the new auction, and it is reported like a
 /// stranded lockup, with its value.
 #[test]

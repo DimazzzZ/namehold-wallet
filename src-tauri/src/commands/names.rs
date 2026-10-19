@@ -25,8 +25,9 @@ use crate::noncustodial::{address, bids, covenants, names, resource};
 use crate::AppState;
 
 use super::draft_ctx::{
-    draft_summary, ensure_finalize_matured, ensure_renew_not_premature, exclude_owner_reveal,
-    persist_in_tx, DraftLabel,
+    draft_summary, ensure_finalize_matured, ensure_redeem_window_open, ensure_renew_not_premature,
+    exclude_owner_reveal, persist_in_tx, redeem_window, DraftLabel, RedeemWindow,
+    REDEEM_EXPIRES_NEXT_BLOCK,
 };
 // Re-exported: the `*_inner` builders take these, and their tests name them
 // through this module.
@@ -1103,10 +1104,17 @@ pub(crate) fn build_name_action_capabilities(
     // Owning the name does NOT disqualify a redeem: a wallet that outbid itself
     // wins with one bid and loses with the rest, and those lockups are its own
     // to reclaim. What matters is holding a reveal coin that is not the owner.
+    // A revoked name is redeemable too, until it expires; and neither is in
+    // the block it expires in ([`redeem_window`]). Without the node's stats
+    // (offline) the window is not known, and Redeem is not refused on a guess.
+    let window = redeem_window(&phase, stats);
     let can_redeem = NameActionCapability {
-        allowed: phase == "CLOSED" && action_ctx.redeemable_reveal_count > 0,
-        reason: if phase != "CLOSED" {
+        allowed: matches!(window, RedeemWindow::Open | RedeemWindow::Unknown)
+            && action_ctx.redeemable_reveal_count > 0,
+        reason: if window == RedeemWindow::NotClosed {
             Some(format!("auction not yet closed (phase: '{phase}')"))
+        } else if window == RedeemWindow::ExpiresNextBlock {
+            Some(REDEEM_EXPIRES_NEXT_BLOCK.into())
         } else if action_ctx.has_reveal_coin {
             Some("your only reveal here won the auction (nothing to redeem)".into())
         } else {
@@ -1374,7 +1382,8 @@ pub(crate) fn build_name_action_capabilities(
     // holding your own losing reveals — the ordinary outcome of placing
     // several bids, and the whole reason multi-bid exists. Telling that user
     // "Your bid lost" on a name they just registered is simply false.
-    if matches!(task_state, AuctionTaskState::LostNeedsRedeem) && owns_name {
+    // Not on a revoked name: nobody owns that one any more.
+    if matches!(task_state, AuctionTaskState::LostNeedsRedeem) && owns_name && phase == "CLOSED" {
         next_action_reason = Some(
             "You own this name. These are your own losing bids on it — redeem them to reclaim the lockup."
                 .into(),
@@ -1886,7 +1895,16 @@ pub(crate) fn derive_auction_task_state(
         }
         // No `"TRANSFER"` arm: hsd has no such state. A transfer is handled
         // inside CLOSED above, where the node actually reports it.
-        "REVOKED" => AuctionTaskState::UnavailableOther,
+        // A revoked name is nobody's to manage, but the auction's losers may
+        // still redeem (`chain.js` REDEEM: "even in a revoked state") until it
+        // expires `auctionMaturity` blocks after the revoke.
+        "REVOKED" => {
+            if ctx.redeemable_reveal_count > 0 {
+                AuctionTaskState::LostNeedsRedeem
+            } else {
+                AuctionTaskState::UnavailableOther
+            }
+        }
         _ => {
             if owns_name {
                 AuctionTaskState::OwnedNoUrgentAction
@@ -2599,12 +2617,17 @@ pub async fn build_redeem_draft(
     let ctx = load_ctx(&state)?;
     let client = ctx.node.clone();
     let ns = fetch_name_state(&client, &name).await?;
+    // CLOSED or REVOKED, and not expiring with the block this would be mined
+    // in: the same window the Redeem button is offered by.
+    ensure_redeem_window_open(&client, &name).await?;
 
-    // EVERY losing reveal the wallet still holds for this name. A wallet can
-    // outbid itself, so one auction can leave it several — each on its own
-    // rotated address, which is why this looks the coins up by name hash
-    // instead of through one commitment's address. Taking only the newest
-    // commitment's coin redeemed one and left the rest unreclaimable.
+    // Every losing reveal of the name's current auction the wallet still
+    // holds: this looks up every reveal of the name, and the inner leaves out
+    // an earlier auction's ([`reveal_of_this_auction`]). A wallet can outbid
+    // itself, so one auction can leave it several — each on its own rotated
+    // address, which is why this looks the coins up by name hash instead of
+    // through one commitment's address. Taking only the newest commitment's
+    // coin redeemed one and left the rest unreclaimable.
     let coins = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let nh_hex = hex::encode(names::hash_name(&name)?);
@@ -3553,9 +3576,11 @@ pub async fn build_batch_redeem_draft(
     for name in &names {
         let nh = names::hash_name(name)?;
         let ns = fetch_name_state(&client, name).await?;
+        ensure_redeem_window_open(&client, name).await?;
         // Every reveal the wallet holds for the name, as the single redeem
-        // takes them: a wallet that outbid itself has several, each on its own
-        // address, so the newest commitment's address finds only one of them.
+        // takes them (the inner keeps the current auction's): a wallet that
+        // outbid itself has several, each on its own address, so the newest
+        // commitment's address finds only one of them.
         let (bid, coins) = {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
             let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, name)?
@@ -3590,10 +3615,11 @@ pub async fn build_batch_redeem_draft(
 /// `State<AppState>`. The caller must hold the DB mutex for the full duration.
 ///
 /// `per_name` is `(name, name_hash, bid_commitment, reveal_coin,
-/// on_chain_state)` for every losing reveal coin in the batch — several rows
-/// for a name the wallet outbid itself on. The wrapper's per-name RPC + DB
-/// prefetch resolves all of these; the inner builds the REDEEM covenant
-/// outputs and persists the batch draft.
+/// on_chain_state)` for every reveal coin of a batch name that is not its
+/// owner — several rows for a name the wallet outbid itself on, and any of an
+/// earlier auction, which the inner leaves out. The wrapper's per-name RPC +
+/// DB prefetch resolves all of these; the inner builds the REDEEM covenant
+/// outputs for the current auction's reveals and persists the batch draft.
 pub(crate) fn build_batch_redeem_draft_inner(
     conn: &rusqlite::Connection,
     ctx: &Ctx,

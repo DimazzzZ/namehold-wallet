@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -891,6 +891,49 @@ describe("NameActionsModal — guided acquisition flow", () => {
     expect(screen.queryByText(/^Owned$/)).not.toBeInTheDocument();
     expect(screen.queryByText(/already registered/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Redeem$/i })).not.toBeInTheDocument();
+  });
+
+  it("offers Redeem on a revoked name holding a losing reveal of ours", async () => {
+    // hsd lets an auction's losers redeem "even in a revoked state" until the
+    // revoked name expires, so a rival's revoke must not hide the button.
+    const reason = "Your bid lost. Redeem your reveal coin to reclaim the funds.";
+    invokeMock.mockImplementation(
+      routeModal(
+        {
+          name: "revokedname",
+          state: "REVOKED",
+          height: 100,
+          renewal: 140,
+          owner: { hash: "ab".repeat(32), index: 0 },
+          registered: true,
+          value: 800_000,
+          highest: 800_000,
+          stats: { revokePeriodStart: 150, revokePeriodEnd: 215, blocksUntilReopen: 30 },
+        },
+        {
+          capabilities: makeCapabilities({
+            name: "revokedname",
+            phase: "REVOKED",
+            taskState: "lostNeedsRedeem",
+            ownsName: false,
+            hasRevealCoin: true,
+            redeemableRevealCount: 1,
+            redeemableValueDoos: 300_000,
+            canRedeem: { allowed: true, reason: null },
+            nextActionKey: "REDEEM",
+            nextActionLabel: "Redeem Lockup",
+            nextActionReason: reason,
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="revokedname" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    const panel = await screen.findByTestId("guided-redeem");
+    expect(panel).toHaveTextContent(reason);
+    expect(within(panel).getByRole("button", { name: /^Redeem$/i })).toBeEnabled();
   });
 
   it("auto-expands the management section for an owned name without clicking the toggle", async () => {

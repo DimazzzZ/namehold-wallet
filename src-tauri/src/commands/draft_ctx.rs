@@ -455,6 +455,71 @@ pub(crate) async fn ensure_finalize_matured(
     Ok(())
 }
 
+/// What hsd would answer to a REDEEM of a name mined in the next block, read
+/// off the name's `getnameinfo.info` (`state`, `stats`) at the node's tip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RedeemWindow {
+    /// The auction has not closed: hsd refuses a REDEEM before CLOSED
+    /// (`chain.js`, `bad-redeem-state`).
+    NotClosed,
+    /// CLOSED, or REVOKED (hsd lets an auction's losers get their money out
+    /// "even in a revoked state", `chain.js` REDEEM), with the name still
+    /// unexpired in the next block.
+    Open,
+    /// The name expires in the next block, where the transaction is judged
+    /// (the mempool and the block both verify at `tip + 1`). `maybeExpire`
+    /// then resets it to a new auction height, which no REDEEM of this
+    /// auction matches.
+    ExpiresNextBlock,
+    /// The reply does not say when the name expires.
+    Unknown,
+}
+
+/// [`RedeemWindow`] of a name in hsd `state`, from its `stats`. The blocks
+/// hsd counts are `end - tip`, and the name is expired at a height `>= end`
+/// (`namestate.js` `isExpired`: `renewal + renewalWindow` for a CLOSED name,
+/// `revoked + auctionMaturity` for a REVOKED one), so a transaction at
+/// `tip + 1` is taken only while two blocks or more are left.
+pub(crate) fn redeem_window(state: &str, stats: Option<&serde_json::Value>) -> RedeemWindow {
+    let key = match state {
+        "CLOSED" => "blocksUntilExpire",
+        "REVOKED" => "blocksUntilReopen",
+        _ => return RedeemWindow::NotClosed,
+    };
+    match stats.and_then(|s| s.get(key)).and_then(|b| b.as_i64()) {
+        Some(blocks) if blocks <= 1 => RedeemWindow::ExpiresNextBlock,
+        Some(_) => RedeemWindow::Open,
+        None => RedeemWindow::Unknown,
+    }
+}
+
+/// Why a REDEEM is not offered once the name expires with the next block.
+pub(crate) const REDEEM_EXPIRES_NEXT_BLOCK: &str =
+    "the name expires with the next block, and hsd takes no redeem of it from then on";
+
+/// Refuses a REDEEM of `name` that hsd would reject in the next block: before
+/// the auction closed, or once the name expires there ([`redeem_window`]). A
+/// reply that does not say when the name expires gives no verdict.
+pub(crate) async fn ensure_redeem_window_open(
+    client: &dyn NodeRpc,
+    name: &str,
+) -> Result<(), AppError> {
+    let info = node_name_info(client, name).await?;
+    let state = info.get("state").and_then(|s| s.as_str()).unwrap_or("");
+    match redeem_window(state, info.get("stats")) {
+        RedeemWindow::Open => Ok(()),
+        RedeemWindow::NotClosed => Err(AppError::InvalidInput(format!(
+            "the auction of '{name}' has not closed (state '{state}'): nothing to redeem yet"
+        ))),
+        RedeemWindow::ExpiresNextBlock => Err(AppError::InvalidInput(format!(
+            "'{name}': {REDEEM_EXPIRES_NEXT_BLOCK}"
+        ))),
+        RedeemWindow::Unknown => Err(AppError::Rpc(format!(
+            "node did not report when '{name}' expires"
+        ))),
+    }
+}
+
 /// The name's owner coin in a `getnameinfo.info` reply, read once for the
 /// redeem builder ([`exclude_owner_reveal`]), the Redeem button
 /// (`NameActionContext::with_node_owner`) and the Shakedex jobs: see

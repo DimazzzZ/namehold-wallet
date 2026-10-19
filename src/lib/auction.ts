@@ -171,6 +171,20 @@ export const AUCTION_PHASE_GUIDE: Record<AuctionPhase, AuctionPhaseGuide | null>
   OTHER: null,
 };
 
+/**
+ * The guided step of a REVOKED name that still holds a losing reveal of ours.
+ * A revoked name has no acquisition guidance, but hsd lets an auction's losers
+ * redeem "even in a revoked state" until the name expires (`chain.js`,
+ * REDEEM), and the backend reports `lostNeedsRedeem` for it.
+ */
+export const REVOKED_REDEEM_GUIDE: AuctionPhaseGuide = {
+  title: "Redeem Your Lockup",
+  description:
+    "The winner revoked this name. Your losing bid can still be redeemed until the name expires.",
+  action: "Redeem",
+  actionHint: "Reclaims the lockup of every losing bid of yours on this name.",
+};
+
 /** The guidance payload returned by [`auctionGuidance`]. */
 export interface AuctionGuidance {
   phase: AuctionPhase;

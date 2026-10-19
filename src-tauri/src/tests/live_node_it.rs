@@ -4779,9 +4779,11 @@ async fn live_reopened_name_scopes_its_bids_and_strands_the_old_lockup() {
 /// redeem in the next auction of the name. A rival wins the first auction,
 /// registers and revokes the name; once the revoke matures the name expires
 /// and this wallet opens it again, outbids itself and redeems. hsd accepts a
-/// REDEEM only while the name is on the reveal's own auction
-/// (`bad-redeem-nonlocal`), so a redeem that took the first auction's reveal
-/// too would be refused, the redeemable reveal with it. The node mines the
+/// REDEEM only while the name is on the reveal's own auction: the builder
+/// writes the name's height into the REDEEM, which a reveal of the first
+/// auction does not match (`rules.js` "Heights must match",
+/// `bad-txns-covenants`), so a redeem that took that reveal too would be
+/// refused, the redeemable reveal with it. The node mines the
 /// redeem of the current loser and still holds the first auction's reveal,
 /// which the wallet names as stranded.
 #[tokio::test]
@@ -4951,6 +4953,167 @@ async fn live_redeem_leaves_out_a_reveal_of_an_earlier_auction() {
     expect_err(
         build_redeem_draft(app.state(), name.clone(), Some(1)).await,
         "earlier auction",
+    );
+}
+
+/// A rival's revoke does not take an auction's losers' money with it: hsd
+/// lets them redeem "even in a revoked state" (`chain.js`, REDEEM) until the
+/// revoked name expires, `auctionMaturity` blocks after the revoke. Two
+/// wallets lose to a rival that registers and revokes the name. While it is
+/// REVOKED, this wallet is offered Redeem and the node mines it, spending
+/// its losing reveal. The other loser waits: with two blocks of the revoke
+/// period left it is offered Redeem, with one left (the name expires in the
+/// block a redeem would be mined in) it is refused, button and builder alike,
+/// though the node still holds its reveal.
+#[tokio::test]
+async fn live_redeem_is_offered_and_mined_while_the_name_is_revoked() {
+    let Some((url, key)) = it_env() else {
+        eprintln!(
+            "skip live_redeem_is_offered_and_mined_while_the_name_is_revoked: set HNS_IT_NODE_URL"
+        );
+        return;
+    };
+    let cl = client(&url, &key);
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let acct = fresh_acct(tip);
+    let app = app_with(seeded_conn_acct(&url, &key, acct));
+    let (addr, _, _) = leaf00_at(acct);
+    // The rival is not synced after its REVOKE (see
+    // `live_redeem_leaves_out_a_reveal_of_an_earlier_auction`).
+    let (rival, rival_addr) = rival_wallet(&url, &key);
+    let (late, late_addr) = rival_wallet(&url, &key);
+    fund(&cl, &addr, 101).await;
+    for a in [&rival_addr, &late_addr] {
+        cl.generate_to_address(5, a).await.expect("fund");
+    }
+    for w in [&app, &rival, &late] {
+        sync_wallet_state(w.state(), None).await.expect("sync");
+    }
+    let name = format!("revred{tip}");
+
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
+    execute(&app, &cl, &addr, open.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+    const OURS: i64 = 300_000;
+    const LATE: i64 = 400_000;
+    for (w, value) in [(&app, OURS), (&late, LATE), (&rival, 800_000)] {
+        sync_wallet_state(w.state(), None).await.expect("sync");
+        let bid = build_bid_draft(w.state(), name.clone(), value, 2 * value, Some(1))
+            .await
+            .unwrap_or_else(|e| panic!("build bid {value}: {e:?}"));
+        execute(w, &cl, &addr, bid.id).await;
+    }
+    assert!(mine_until(&cl, &name, "REVEAL", &addr, 30).await);
+    let mut reveals = Vec::new();
+    for w in [&app, &late, &rival] {
+        sync_wallet_state(w.state(), None).await.expect("sync");
+        let reveal = build_reveal_draft(w.state(), name.clone(), Some(1))
+            .await
+            .expect("build reveal");
+        execute(w, &cl, &addr, reveal.id.clone()).await;
+        let txid = draft_status(w, &reveal.id).txid.expect("reveal txid");
+        reveals.push(covenant_outpoints(&cl, &txid, COV_TYPE_REVEAL).await);
+    }
+    assert!(mine_until(&cl, &name, "CLOSED", &addr, 40).await);
+    let (ours, theirs) = (reveals[0].clone(), reveals[1].clone());
+    assert_eq!((ours.len(), theirs.len()), (1, 1), "{reveals:?}");
+
+    // The rival registers and revokes.
+    track_name(&rival, &name);
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let reg = build_register_draft(rival.state(), name.clone(), None, Some(1))
+        .await
+        .expect("build rival register");
+    execute(&rival, &cl, &addr, reg.id).await;
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let revoke = crate::commands::names::build_revoke_draft(rival.state(), name.clone(), Some(1))
+        .await
+        .expect("build rival revoke");
+    execute(&rival, &cl, &addr, revoke.id).await;
+    assert_eq!(node_state(&cl, &name).await.as_deref(), Some("REVOKED"));
+
+    // While REVOKED: Redeem is offered, and the node mines it.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let caps = crate::commands::names::get_name_action_capabilities(
+        app.state(),
+        name.clone(),
+        Some(PROFILE.into()),
+    )
+    .await
+    .expect("caps");
+    assert_eq!(caps.phase, "REVOKED");
+    assert!(caps.can_redeem.allowed, "{:?}", caps.can_redeem.reason);
+    assert_eq!(
+        caps.task_state,
+        crate::commands::names::AuctionTaskState::LostNeedsRedeem
+    );
+    assert_eq!(caps.redeemable_reveal_count, 1);
+    assert_eq!(caps.redeemable_value_doos, OURS);
+    let redeem = build_redeem_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("a revoked name is redeemable");
+    execute(&app, &cl, &addr, redeem.id.clone()).await;
+    let redeem_txid = draft_status(&app, &redeem.id).txid.expect("redeem txid");
+    assert_spends_reveals(&cl, &redeem_txid, &ours).await;
+    assert_eq!(node_state(&cl, &name).await.as_deref(), Some("REVOKED"));
+
+    // The other loser, at the end of the revoke period.
+    let blocks_left = |reply: serde_json::Value| {
+        reply["info"]["stats"]["blocksUntilReopen"]
+            .as_i64()
+            .unwrap_or_else(|| panic!("no blocksUntilReopen: {reply}"))
+    };
+    let left = blocks_left(cl.get_name_info(&name).await.expect("name info"));
+    assert!(left > 2, "the revoke period is not over yet: {left}");
+    cl.generate_to_address((left - 2) as u32, &addr)
+        .await
+        .expect("mine to two blocks left");
+    assert_eq!(
+        blocks_left(cl.get_name_info(&name).await.expect("name info")),
+        2
+    );
+    sync_wallet_state(late.state(), None).await.expect("sync");
+    let late_caps = || async {
+        crate::commands::names::get_name_action_capabilities(
+            late.state(),
+            name.clone(),
+            Some(PROFILE.into()),
+        )
+        .await
+        .expect("caps")
+    };
+    let caps = late_caps().await;
+    assert!(caps.can_redeem.allowed, "{:?}", caps.can_redeem.reason);
+    cl.generate_to_address(1, &addr).await.expect("mine 1");
+    assert_eq!(
+        blocks_left(cl.get_name_info(&name).await.expect("name info")),
+        1
+    );
+    let caps = late_caps().await;
+    assert!(!caps.can_redeem.allowed);
+    assert!(
+        caps.can_redeem
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("next block"),
+        "{:?}",
+        caps.can_redeem.reason
+    );
+    expect_err(
+        build_redeem_draft(late.state(), name.clone(), Some(1)).await,
+        "next block",
+    );
+    let (hash, index) = &theirs[0];
+    assert!(
+        cl.get_coin(hash, *index).await.expect("coin").is_some(),
+        "the late loser's reveal is still the node's coin: refused for the window alone"
     );
 }
 

@@ -46,6 +46,7 @@ import {
   nextTransition,
   formatCountdown,
   AUCTION_PHASE_GUIDE,
+  REVOKED_REDEEM_GUIDE,
   taskSummaryFromCapabilities,
   pendingBroadcastBadge,
   redeemExplainer,
@@ -171,7 +172,13 @@ export function NameActionsModal({
 
   const badge = auctionPhase(info?.state);
   const countdown = nextTransition(info?.state, info?.stats);
-  const guide = AUCTION_PHASE_GUIDE[badge.phase];
+  // A revoked name has no guided step of its own, except a losing reveal of
+  // ours to redeem before it expires.
+  const guide =
+    AUCTION_PHASE_GUIDE[badge.phase] ??
+    (badge.phase === "REVOKED" && caps?.taskState === "lostNeedsRedeem"
+      ? REVOKED_REDEEM_GUIDE
+      : null);
   const summary = taskSummaryFromCapabilities(caps);
   // Loading gate for the phase badge: the yellow `badge.label` fallback is the
   // raw on-chain phase (e.g. "Bidding"), which contradicts the table's

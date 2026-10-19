@@ -244,9 +244,11 @@ fn with_auction_start(coin: NameCoin, name: &str, auction_start: u32) -> NameCoi
 }
 
 /// A name auctioned again after it expired keeps the earlier auction's
-/// reveal in the wallet. hsd refuses a REDEEM of it (`chain.js`,
-/// `bad-redeem-nonlocal`) and with it the whole batch, so the batch spends
-/// each name's reveals of its current auction only.
+/// reveal in the wallet. The builder writes the name's current height into
+/// the REDEEM, which hsd refuses for that reveal as `bad-txns-covenants`
+/// (`rules.js`, "Heights must match"; with the reveal's own height it would
+/// be `bad-redeem-nonlocal`, `chain.js`), and with it the whole batch, so the
+/// batch spends each name's reveals of its current auction only.
 #[test]
 fn batch_redeem_leaves_out_a_reveal_of_an_earlier_auction() {
     let (conn, ctx, mut per_name) = setup(&["alpha", "bravo"]);
