@@ -55,7 +55,7 @@ Expected:
 - A seller's cancel, a FINALIZE home and a buyer's FINALIZE: Amount 0, with the `⤷` line.
 - `Finalize into lock` of a name with value: record the Amount shown (one run saw minus the name's value, the coin leaving the wallet's own addresses for the lock); a zero-value name shows 0 with `⤷ 0.000000`.
 - Plain sends and receives unchanged from what an earlier run recorded.
-- The seller's sale rows: record what you see; an unsigned amount there is a known issue.
+- The seller's sale rows: a green `+` the price received (direction received), never a gray unsigned amount.
 - The Wallet totals unchanged by a rebuild alone (history rows do not feed the balance); any difference not explained by new blocks is ❌.
 - Passes if no purchase or cancel row counts the name's value as money spent.
 

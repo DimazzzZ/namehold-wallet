@@ -116,6 +116,13 @@ pub enum AuctionTaskState {
     WonNeedsRegister,
     #[serde(rename = "lostNeedsRedeem")]
     LostNeedsRedeem,
+    /// The auction closed with a bid of ours never revealed: its BID coin is
+    /// still unspent, and hsd lets a BID go only to a REVEAL, which the
+    /// REVEAL phase alone accepts (`rules.js` verifyCovenants, `chain.js`
+    /// `bad-reveal-state`). Nothing can move that lockup any more, and no
+    /// REDEEM exists for it: it is lost.
+    #[serde(rename = "lostUnrevealed")]
+    LostUnrevealed,
     #[serde(rename = "transferPendingFinalize")]
     TransferPendingFinalize,
     #[serde(rename = "ownedNoUrgentAction")]
@@ -573,6 +580,12 @@ pub(crate) fn find_name_action_context(
         listing_state,
     })
 }
+
+/// Reason surfaced on spend-capable actions when the synced node names a
+/// reveal of ours as the owner but the wallet does not track the name yet, so
+/// it holds no owner coin of its own to build from.
+const OWNER_REVEAL_NOT_TRACKED_REASON: &str =
+    "you won this name, but the wallet does not track it yet — Refresh to sync it, then manage";
 
 /// Reason surfaced on spend-capable actions when a name is owned per explorer
 /// evidence but its owner coin has not been synced from a node yet. Nothing may
@@ -1074,9 +1087,16 @@ pub(crate) fn build_name_action_capabilities(
         can_renew,
         can_revoke,
     ) = if spend_locked {
+        // A win the node reports while the wallet does not track the name yet:
+        // the node is connected, so what is missing is the wallet's own record.
+        let reason = if action_ctx.owner_reveal_by_node {
+            OWNER_REVEAL_NOT_TRACKED_REASON
+        } else {
+            OWNER_COIN_NOT_SYNCED_REASON
+        };
         let locked = || NameActionCapability {
             allowed: false,
-            reason: Some(OWNER_COIN_NOT_SYNCED_REASON.to_string()),
+            reason: Some(reason.to_string()),
         };
         (
             locked(),
@@ -1511,8 +1531,14 @@ pub(crate) fn derive_auction_task_state(
                 // locally (node-unreachable path): treat as owned — and still
                 // raise the renewal alarm when the expiry data says so, since
                 // staying silent here is exactly how a name gets lost.
+                // The same holds for a name won by a reveal of ours the node
+                // names as owner before the name is tracked: losing reveals
+                // beside it are still ours to redeem, and "no urgent action"
+                // is how such money stayed put.
                 if expiring_soon {
                     AuctionTaskState::ExpiringSoon
+                } else if ctx.redeemable_reveal_count > 0 {
+                    AuctionTaskState::LostNeedsRedeem
                 } else {
                     AuctionTaskState::OwnedNoUrgentAction
                 }
@@ -1520,6 +1546,11 @@ pub(crate) fn derive_auction_task_state(
                 // Only a reveal that is not the owner coin lost: a reveal the
                 // node names as the owner won, and is not offered for redeem.
                 AuctionTaskState::LostNeedsRedeem
+            } else if ctx.has_bid_commitment && ctx.has_bid_coin {
+                // A bid of this auction never revealed: its BID coin is still
+                // unspent after the reveal window, and can never be revealed
+                // or redeemed.
+                AuctionTaskState::LostUnrevealed
             } else {
                 AuctionTaskState::OwnedNoUrgentAction
             }
@@ -1567,6 +1598,9 @@ pub(crate) fn next_action_for_task(
         }
         AuctionTaskState::LostNeedsRedeem => {
             (Some("REDEEM".into()), Some("Redeem Lockup".into()), Some("Your bid lost. Redeem your reveal coin to reclaim the funds.".into()))
+        }
+        AuctionTaskState::LostUnrevealed => {
+            (None, Some("Lost — not revealed".into()), Some("You did not reveal this bid in time; its lockup is lost and cannot be redeemed.".into()))
         }
         AuctionTaskState::TransferPendingFinalize => {
             (Some("FINALIZE".into()), Some("Finalize Transfer".into()), Some("This name is being transferred. Finalize to complete the transfer.".into()))

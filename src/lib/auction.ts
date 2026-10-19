@@ -232,6 +232,8 @@ export function taskStateLabel(state: AuctionTaskState): string {
       return "Won — Register Now";
     case "lostNeedsRedeem":
       return "Lost — Redeem Now";
+    case "lostUnrevealed":
+      return "Lost — Not Revealed";
     case "transferPendingFinalize":
       return "Transfer — Finalize";
     case "ownedNoUrgentAction":
@@ -268,6 +270,8 @@ export function taskStateBadgeVariant(
       return "success";
     case "lostNeedsRedeem":
       return "error";
+    case "lostUnrevealed":
+      return "error";
     case "transferPendingFinalize":
       return "info";
     case "ownedNoUrgentAction":
@@ -296,6 +300,8 @@ export function taskStateUrgency(state: AuctionTaskState): string | null {
       return "You won the auction! Register to finalize ownership and set DNS.";
     case "lostNeedsRedeem":
       return "Your bid lost. Redeem your reveal coin to reclaim the funds.";
+    case "lostUnrevealed":
+      return "You did not reveal this bid in time; its lockup is lost and cannot be redeemed.";
     case "transferPendingFinalize":
       return "This name is being transferred. Finalize to complete.";
     case "expiringSoon":

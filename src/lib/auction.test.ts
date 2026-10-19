@@ -133,6 +133,21 @@ describe("task-state helpers: expiringSoon (Task 3 / C3)", () => {
   });
 });
 
+describe("lostUnrevealed — a bid never revealed", () => {
+  // The auction closed with this wallet's BID coin unspent: hsd lets a BID go
+  // only to a REVEAL, so the lockup is lost. It used to fall to "Owned".
+  it("reads as a loss, in red, with the reason", () => {
+    expect(taskStateLabel("lostUnrevealed")).toBe("Lost — Not Revealed");
+    expect(taskStateBadgeVariant("lostUnrevealed")).toBe("error");
+    expect(taskStateUrgency("lostUnrevealed")).toMatch(/lockup is lost/);
+    const s = taskSummaryFromCapabilities(
+      makeCapabilities({ phase: "CLOSED", taskState: "lostUnrevealed", ownsName: false }),
+    );
+    expect(s?.label).toBe("Lost — Not Revealed");
+    expect(s?.variant).toBe("error");
+  });
+});
+
 describe("hnsToDollarydoos / doosToHns", () => {
   it("converts HNS to doos (integer)", () => {
     expect(hnsToDollarydoos(1)).toBe(1_000_000);

@@ -2079,6 +2079,61 @@ async fn capabilities_untracked_winner_only_reveal_offers_no_redeem() {
         names::AuctionTaskState::LostNeedsRedeem,
         "a won auction is not a lost one"
     );
+    // The node is connected: what Register waits for is the wallet tracking
+    // the name, and the refusal says so.
+    assert!(caps.owns_name);
+    assert!(!caps.can_register.allowed);
+    assert_eq!(
+        caps.can_register.reason.as_deref(),
+        Some("you won this name, but the wallet does not track it yet — Refresh to sync it, then manage")
+    );
+}
+
+/// Won with one reveal and lost with another, on a name never tracked: the
+/// node names one reveal as the owner, so the name is ours and the other
+/// reveal is redeemable — the state must say so rather than "no urgent
+/// action", which is how such a lockup stayed put.
+#[tokio::test]
+async fn capabilities_untracked_win_with_a_losing_reveal_offers_redeem() {
+    let won = "dd".repeat(32);
+    let lost = "ee".repeat(32);
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_closed_with_owner(&mut server, "twobids", &won, 0).await;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "twobids",
+            &won,
+            crate::noncustodial::sync::COV_REVEAL,
+        );
+        let addr = first_derived_address(&conn, &id);
+        let cov = covenant_json_for("twobids", crate::noncustodial::sync::COV_REVEAL, "REVEAL");
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &lost,
+            &addr,
+            crate::noncustodial::sync::COV_REVEAL,
+            700,
+            Some(&cov),
+        );
+        id
+    };
+    let app = mock_app_with(state);
+    let caps = names::get_name_action_capabilities(app.state(), "twobids".into(), Some(profile_id))
+        .await
+        .expect("capabilities should resolve");
+
+    assert!(caps.owns_name, "the node's owner coin is ours");
+    assert!(caps.can_redeem.allowed, "{:?}", caps.can_redeem);
+    assert_eq!(caps.redeemable_reveal_count, 1);
+    assert_eq!(caps.redeemable_value_doos, 700);
+    assert_eq!(caps.task_state, names::AuctionTaskState::LostNeedsRedeem);
 }
 
 /// The same untracked name, but the node names another bidder's reveal as

@@ -286,8 +286,9 @@ Steps:
 
 Expected:
 
+- Owned Names and the Market page refresh as soon as the dialog shows the failure, without waiting for the next poll.
 - The broadcast reports "The node did not take the transaction. hsd does not say why; often its coins are already spent elsewhere. You can try again; the coins stay held until the node is checked again." (or another broadcast error: quote it); the dialog may then also show `Could not price this purchase` with "this listing is already sold or cancelled" and `Buy` disabled.
-- After Sync: Activity shows the purchase with the badge `Lost` and under it "someone else bought the name first, or the seller cancelled the listing — nothing was paid"; Owned Names has no row for X3; the spendable balance is back to the noted value. A stale Owned Names row until the next poll is a known issue.
+- After Sync: Activity shows the purchase with the badge `Lost` and under it "someone else bought the name first, or the seller cancelled the listing — nothing was paid"; Owned Names has no row for X3; the spendable balance is back to the noted value.
 - `info <X3>` shows the owner as the CLI fill's TRANSFER.
 - Passes if nothing was paid and the coins are spendable again; record how many syncs or blocks the verdict took.
 
@@ -378,7 +379,7 @@ Steps:
 Expected:
 
 - Either nothing remains (the draft was discarded at quit), or Activity shows a `Buy` draft with `Sign & broadcast` and `Discard` (say which). Owned Names showing `Unconfirmed purchase` for a purchase that was never sent is a finding only if it persists after a Sync.
-- After `Discard` (and its confirm "Discard this draft? Any coins it reserved will be freed. This cannot be undone.", if it appears) the draft and any purchase row go, toast "Draft discarded", and the balance is unchanged.
+- After `Discard` (and its confirm "Discard this draft? Any coins it reserved will be freed. This cannot be undone.", if it appears) the draft and any purchase row go, toast "Draft discarded", Owned Names drops the `Unconfirmed purchase` row at once (no Sync needed), and the balance is unchanged.
 - Passes if no unsent purchase survives a discard and no coins stay reserved.
 
 - **Blocks mined:** 0

@@ -227,9 +227,9 @@ A bid that is never revealed loses its whole lockup: it cannot be redeemed. In h
 
 | Step | Action | Expected Result |
 |------|--------|----------------|
-| 1 | Open a name and bid | BID tx broadcasted |
-| 2 | Mine through REVEAL phase without revealing | Phase transitions to CLOSED |
-| 3 | Check the name's capabilities | Task state is `ownedNoUrgentAction`, the CLOSED fallback for a wallet holding neither a reveal coin nor the owner coin — not `lostNeedsRedeem`; `canRedeem` is `false` with "no unspent reveal coin to redeem" |
+| 1 | Open a name and bid; have another wallet bid and reveal (with no reveal at all the auction lapses and the name reads available again) | BID txs broadcasted |
+| 2 | Mine through REVEAL phase without revealing yours | Phase transitions to CLOSED |
+| 3 | Check the name's capabilities | Task state is `lostUnrevealed` ("Lost — Not Revealed"), not `lostNeedsRedeem` or `ownedNoUrgentAction`; `canRedeem` is `false` with "no unspent reveal coin to redeem" |
 | 4 | Check the bid's coin on the node | The BID output is still unspent and no transaction the wallet can build spends it: the lockup is lost |
 
 ### Backend Capability Verification
@@ -239,7 +239,7 @@ Run the following command to validate the capability model:
 cd src-tauri && cargo test -- auction_capabilities
 ```
 
-Expected: 48 tests pass covering all task-state derivations and next-action mappings.
+Expected: 49 tests pass covering all task-state derivations and next-action mappings.
 
 ### Full Backend Test Suite
 

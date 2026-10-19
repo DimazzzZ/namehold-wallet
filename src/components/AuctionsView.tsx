@@ -48,6 +48,9 @@ const ACTIVE_POSITION_TASK_STATES = new Set<AuctionTaskState>([
   "revealDoneWaitingForClose",
   "wonNeedsRegister",
   "lostNeedsRedeem",
+  // A bid never revealed: nothing to do, but the lockup is gone and the row
+  // is where the user looks for the auction's outcome.
+  "lostUnrevealed",
 ]);
 
 /**

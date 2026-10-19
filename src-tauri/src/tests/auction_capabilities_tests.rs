@@ -349,8 +349,34 @@ fn closed_with_reveal_coin_yields_lost_needs_redeem() {
 
 #[test]
 fn closed_without_owner_or_reveal_yields_owned_no_urgent_action() {
+    // No bid of ours at all (no commitment, no BID coin, no reveal): the
+    // CLOSED fallback. A bid of ours left unrevealed is not this case, see
+    // `closed_with_unrevealed_bid_yields_lost_unrevealed`.
     let state = state_no_owner("CLOSED", false, false, false, false);
     assert_eq!(state, AuctionTaskState::OwnedNoUrgentAction);
+}
+
+#[test]
+fn closed_with_unrevealed_bid_yields_lost_unrevealed() {
+    // This auction's commitment with its BID coin still unspent after the
+    // reveal window: never revealed, the lockup is lost, not "Owned".
+    let state = state_no_owner("CLOSED", false, true, true, false);
+    assert_eq!(state, AuctionTaskState::LostUnrevealed);
+    // A losing reveal beside it is still the thing to act on.
+    let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            has_reveal_coin: true,
+            redeemable_reveal_count: 1,
+            ..Default::default()
+        },
+        "CLOSED",
+        false,
+        None,
+        Network::Main,
+    );
+    assert_eq!(state, AuctionTaskState::LostNeedsRedeem);
 }
 
 #[test]

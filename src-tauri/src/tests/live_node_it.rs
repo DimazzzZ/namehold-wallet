@@ -555,6 +555,97 @@ async fn live_auction_open_bid_reveal_redeem() {
     assert_eq!(name_owner(&cl, &name).await.0, rival_reveal_txid);
 }
 
+/// A bid this wallet never revealed, in an auction a rival won: once CLOSED
+/// the BID coin is still unspent on the node, and hsd lets a BID go only to a
+/// REVEAL, which the REVEAL phase alone accepts. The lockup is lost; the
+/// state says so (`lostUnrevealed`), not "Owned", and no Redeem is offered.
+#[tokio::test]
+async fn live_unrevealed_bid_reads_lost_unrevealed() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_unrevealed_bid_reads_lost_unrevealed: set HNS_IT_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    let (rival, rival_addr) = rival_wallet(&url, &key);
+    cl.generate_to_address(101, &addr).await.expect("fund");
+    cl.generate_to_address(5, &rival_addr)
+        .await
+        .expect("fund rival");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("unrev{tip}");
+
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
+    execute(&app, &cl, &addr, open.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let bid = build_bid_draft(app.state(), name.clone(), 500_000, 1_000_000, Some(1))
+        .await
+        .expect("build bid");
+    execute(&app, &cl, &addr, bid.id.clone()).await;
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let rival_bid = build_bid_draft(rival.state(), name.clone(), 800_000, 1_600_000, Some(1))
+        .await
+        .expect("build rival bid");
+    execute(&rival, &cl, &addr, rival_bid.id).await;
+    assert!(mine_until(&cl, &name, "REVEAL", &addr, 30).await);
+
+    // Only the rival reveals; ours is left as it is.
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let rival_reveal = build_reveal_draft(rival.state(), name.clone(), Some(1))
+        .await
+        .expect("build rival reveal");
+    execute(&rival, &cl, &addr, rival_reveal.id.clone()).await;
+    assert!(
+        mine_until(&cl, &name, "CLOSED", &addr, 40).await,
+        "name {name} did not reach CLOSED; state={:?}",
+        node_state(&cl, &name).await
+    );
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // On the node: the rival owns the name and our BID output is unspent.
+    let rival_reveal_txid = draft_status(&rival, &rival_reveal.id)
+        .txid
+        .expect("rival reveal txid");
+    assert_eq!(name_owner(&cl, &name).await.0, rival_reveal_txid);
+    let bid_txid = draft_status(&app, &bid.id).txid.expect("bid txid");
+    let ours = covenant_outpoints(&cl, &bid_txid, COV_TYPE_BID).await;
+    assert_eq!(ours.len(), 1, "one BID output: {ours:?}");
+    let (h, i) = &ours[0];
+    assert!(
+        cl.get_coin(h, *i).await.expect("coin").is_some(),
+        "the unrevealed BID coin is still unspent"
+    );
+
+    let caps = crate::commands::names::get_name_action_capabilities(
+        app.state(),
+        name.clone(),
+        Some(PROFILE.into()),
+    )
+    .await
+    .expect("capabilities");
+    assert_eq!(caps.phase, "CLOSED", "read from the node: {caps:?}");
+    assert_eq!(
+        caps.task_state,
+        crate::commands::names::AuctionTaskState::LostUnrevealed,
+        "{caps:?}"
+    );
+    assert!(!caps.owns_name);
+    assert!(!caps.can_redeem.allowed, "{:?}", caps.can_redeem);
+}
+
 /// The guard behind REDEEM on a real node: a lone bidder's reveal won, and
 /// until REGISTER spends it it is the name's owner coin, which hsd refuses to
 /// redeem (`bad-redeem-owner`). The name is never tracked, so the wallet has
@@ -1275,6 +1366,7 @@ fn expect_err<T: std::fmt::Debug>(res: Result<T, crate::error::AppError>, needle
 }
 
 /// hsd covenant type codes (`lib/covenants/rules.js` `types`).
+const COV_TYPE_BID: u64 = 3;
 const COV_TYPE_REVEAL: u64 = 4;
 const COV_TYPE_REDEEM: u64 = 5;
 

@@ -263,14 +263,11 @@ pub fn classify_tx(tx: &serde_json::Value, our_addrs: &HashSet<String>) -> Optio
         };
         // Without an input of ours, anything paid to us is income, wherever
         // the covenant output sits: the buyer's Shakedex fill leaves its
-        // TRANSFER at the lock address and pays the price to the seller.
-        let dir = if spends_ours {
-            "send"
-        } else if name_cov_addr_is_ours || received_by_us > 0 {
-            "receive"
-        } else {
-            "internal"
-        };
+        // TRANSFER at the lock address and pays the price to the seller. The
+        // touches-our-wallet gate above already dropped a tx that neither
+        // spends ours, pays us, nor puts the covenant at our address, so no
+        // third answer is left here.
+        let dir = if spends_ours { "send" } else { "receive" };
         // TRANSFER's destination is the new owner (external address on the
         // covenant output). Note: the covenant output itself carries no HNS
         // out of the wallet from the *value* perspective (it holds the name's

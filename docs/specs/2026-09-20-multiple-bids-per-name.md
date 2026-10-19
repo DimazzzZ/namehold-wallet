@@ -144,6 +144,10 @@ never revisits a block it has passed.
 `names_action_context_tests::find_name_action_context_does_not_strand_a_spent_bid`,
 `name-acquisition.test.tsx :: names the lockup stranded in an earlier auction of the same name`.
 
+**R10a — A bid of this auction left unrevealed reads as lost.** Once the auction is CLOSED, a commitment of this auction whose BID coin is still unspent was never revealed; hsd lets a BID go only to a REVEAL, which the REVEAL phase alone accepts, so the lockup is lost. The task state is `lostUnrevealed` ("Lost — Not Revealed", in red, no action), not the CLOSED fallback "Owned", and no Redeem is offered. A redeemable losing reveal beside it keeps `lostNeedsRedeem`.
+*Enforced:* `commands/names.rs::derive_auction_task_state` (CLOSED arm).
+*Pinned:* `auction_capabilities_tests::closed_with_unrevealed_bid_yields_lost_unrevealed`, `auction.test.ts :: lostUnrevealed — a bid never revealed`, `live_node_it::live_unrevealed_bid_reads_lost_unrevealed`.
+
 ### Gates
 
 **R11 — Owning a name is not yet the right to spend it.** Update, Transfer,

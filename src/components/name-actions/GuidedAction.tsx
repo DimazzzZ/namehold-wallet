@@ -463,6 +463,16 @@ export function GuidedAction({
             </div>
           );
         }
+        // A bid of ours never revealed: no action exists, and saying nothing
+        // (or "registered by another wallet") hides that the lockup is gone.
+        if (caps?.taskState === "lostUnrevealed") {
+          return (
+            <div className="text-sm text-red-800" data-testid="lost-unrevealed">
+              {caps.nextActionReason ??
+                "You did not reveal this bid in time; its lockup is lost and cannot be redeemed."}
+            </div>
+          );
+        }
         // Owned registered name — no auction urgency, just manage.
         if (caps?.ownsName) {
           // Explorer-confirmed ownership but no local node-synced owner coin:
