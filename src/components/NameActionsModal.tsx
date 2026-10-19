@@ -1,3 +1,4 @@
+import { isSignerUnlockedFor } from "../lib/signer";
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -148,7 +149,7 @@ export function NameActionsModal({
   // Ledger wallets don't use the local signer session — the device signs on
   // demand. Treat them as "unlocked" so exec.run() skips the unlock step and
   // goes straight to sign (which dispatches to the device).
-  const unlocked = isLedger ? true : (signer?.unlocked ?? false);
+  const unlocked = isLedger ? true : isSignerUnlockedFor(signer, profile?.id);
   const canWrite = writeCap?.canWrite ?? false;
   const lock = !!busy || !canWrite;
 

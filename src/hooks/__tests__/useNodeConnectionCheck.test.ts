@@ -48,12 +48,27 @@ describe("useNodeConnectionCheck", () => {
     });
     expect(invokeMock).toHaveBeenCalledWith("check_node_connection", {
       url: "https://n.example.com:12037",
-      api_key: undefined,
+      apiKey: undefined,
     });
     expect(result.current.ok).toBe(true);
     expect(result.current.result).toEqual(reachable);
     expect(result.current.error).toBeNull();
     expect(result.current.testing).toBe(false);
+  });
+
+  it("passes the typed API key and expected network under their camelCase command argument names", async () => {
+    invokeMock.mockResolvedValueOnce(reachable);
+    const { result } = renderHook(() => useNodeConnectionCheck());
+    await act(async () => {
+      await result.current.run("https://n.example.com:12037", "typed-key", "regtest");
+    });
+    const args = invokeMock.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(Object.keys(args).sort()).toEqual(["apiKey", "expectedNetwork", "url"]);
+    expect(args).toEqual({
+      url: "https://n.example.com:12037",
+      apiKey: "typed-key",
+      expectedNetwork: "regtest",
+    });
   });
 
   it("surfaces the node's reason when unreachable", async () => {

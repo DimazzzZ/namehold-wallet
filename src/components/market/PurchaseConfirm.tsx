@@ -1,3 +1,4 @@
+import { isSignerUnlockedFor } from "../../lib/signer";
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog } from "../ui/Dialog";
@@ -92,7 +93,7 @@ export function PurchaseConfirm({ open, row, fromMarket, onClose }: PurchaseConf
       return;
     }
     try {
-      await exec.run(draftId, profile.id, signer?.unlocked ?? false);
+      await exec.run(draftId, profile.id, isSignerUnlockedFor(signer, profile.id));
       showToast("Purchase sent — it appears under your names as an unconfirmed purchase");
       qc.invalidateQueries({ queryKey: ["read"] });
       qc.invalidateQueries({ queryKey: ["shakedex"] });

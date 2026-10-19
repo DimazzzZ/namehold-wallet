@@ -20,7 +20,7 @@ export function useBatchWithAssets(id: number) {
 export function useCreateBatch() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (args: { name: string; description?: string; asset_ids: number[] }) =>
+    mutationFn: (args: { name: string; description?: string; assetIds: number[] }) =>
       invoke<number>("create_batch", args as Record<string, unknown>),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["batches"] }),
   });
@@ -46,7 +46,7 @@ export function useDeleteBatch() {
 export function useAddToBatch() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (args: { batch_id: number; asset_ids: number[] }) =>
+    mutationFn: (args: { batchId: number; assetIds: number[] }) =>
       invoke("add_to_batch", args as Record<string, unknown>),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["batches"] }),
   });
@@ -55,7 +55,7 @@ export function useAddToBatch() {
 export function useRemoveFromBatch() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (args: { batch_id: number; asset_ids: number[] }) =>
+    mutationFn: (args: { batchId: number; assetIds: number[] }) =>
       invoke("remove_from_batch", args as Record<string, unknown>),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["batches"] }),
   });

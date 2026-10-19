@@ -49,6 +49,8 @@ type Overrides = {
   profile?: Partial<typeof baseProfile>;
   profiles?: unknown[];
   unlocked?: boolean;
+  /** Profile the unlocked signer belongs to; defaults to the active one. */
+  signerProfileId?: string;
   canWrite?: boolean;
   draft?: unknown;
   spendableDoos?: number;
@@ -71,7 +73,7 @@ function routeInvoke(o: Overrides = {}) {
         return Promise.resolve(o.profiles ?? [profile]);
       case "get_signer_session":
         return Promise.resolve({
-          walletProfileId: unlocked ? profile.id : null,
+          walletProfileId: unlocked ? (o.signerProfileId ?? profile.id) : null,
           unlocked,
           unlockedUntilEpochMs: unlocked ? Date.now() + 60000 : 0,
         });
@@ -179,6 +181,17 @@ beforeEach(() => {
 });
 
 describe("WalletView (non-custodial)", () => {
+  it("shows the signer locked when the unlocked session belongs to another profile", async () => {
+    invokeMock.mockImplementation(
+      routeInvoke({ unlocked: true, signerProfileId: "other", canWrite: true }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    expect(screen.getByText(/Signer locked/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Signer unlocked/i)).not.toBeInTheDocument();
+  });
+
   it("shows a locked signer and an Unlock control, with NO secret inputs in the DOM", async () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: false, canWrite: false }));
     const { container } = render(<WalletView />, { wrapper: wrapper() });

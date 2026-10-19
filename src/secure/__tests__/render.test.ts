@@ -102,3 +102,27 @@ describe("secure render — extraction smoke test", () => {
     expect(submit).toHaveBeenCalledWith({ value: "hunter2", confirmed: true });
   });
 });
+
+describe("secure render — import mode input kind", () => {
+  const base = { mode: "import" as const, title: "Import", message: "Enter it." };
+
+  it("asks for a recovery phrase by default", () => {
+    const root = mount();
+    render(root, base, () => {});
+    expect(root.querySelector("textarea")?.placeholder).toBe(
+      "Enter your 12 or 24 word recovery phrase",
+    );
+    buttonByText(root, "Import").click();
+    expect(root.querySelector(".err")?.textContent).toBe("Recovery phrase is required.");
+  });
+
+  it("shows an xpub placeholder and error for the account xpub import", () => {
+    const root = mount();
+    const submit = vi.fn<(r: PromptResult) => void>();
+    render(root, { ...base, input: "xpub" }, submit);
+    expect(root.querySelector("textarea")?.placeholder).toBe("Enter the account xpub");
+    buttonByText(root, "Import").click();
+    expect(submit).not.toHaveBeenCalled();
+    expect(root.querySelector(".err")?.textContent).toBe("Account xpub is required.");
+  });
+});

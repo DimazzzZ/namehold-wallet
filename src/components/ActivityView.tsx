@@ -1,3 +1,4 @@
+import { isSignerUnlockedFor } from "../lib/signer";
 import { explorerCoversNetwork } from "../lib/openExternal";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -451,7 +452,7 @@ export function ActivityRow({
   const showToast = useUiStore((s) => s.showToast);
   const [actionBusy, setActionBusy] = useState(false);
 
-  const unlocked = signer?.unlocked ?? false;
+  const unlocked = isSignerUnlockedFor(signer, profileId);
   const draftActions = draftActionsForStatus(row.status);
   const canAct = enableDraftActions && row.draftId != null;
 

@@ -1,3 +1,4 @@
+import { isSignerUnlockedFor } from "../lib/signer";
 import { Button } from "./ui/Button";
 import { useActiveProfile, useSignerSession, useUnlockSigner } from "../queries/wallet";
 import { useUiStore } from "../stores/ui";
@@ -30,7 +31,7 @@ export function UnlockButton({
   const showToast = useUiStore((s) => s.showToast);
 
   // Nothing to unlock, or already unlocked → render nothing.
-  if (!profile || signer?.unlocked) return null;
+  if (!profile || isSignerUnlockedFor(signer, profile.id)) return null;
 
   const handleUnlock = async () => {
     try {

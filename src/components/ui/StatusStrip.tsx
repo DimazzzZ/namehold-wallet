@@ -1,3 +1,4 @@
+import { isSignerUnlockedFor } from "../../lib/signer";
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
@@ -74,7 +75,7 @@ export function StatusStrip({ className }: { className?: string }) {
     });
 
     if (profile && !profile.watchOnly) {
-      const unlocked = signer?.unlocked ?? false;
+      const unlocked = isSignerUnlockedFor(signer, profile.id);
       result.push({
         key: "signer",
         label: "Signer",

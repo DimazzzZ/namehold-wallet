@@ -277,6 +277,41 @@ async fn test_set_active_wallet_profile() {
     assert_eq!(summary.id, "wp1");
 }
 
+/// Activating a profile (create, every import kind, Ledger) must drop an
+/// unlocked signer that belongs to ANOTHER profile, or the UI shows "Unlocked"
+/// while every use of the key is refused.
+#[test]
+fn test_activate_profile_drops_another_profiles_signer() {
+    let state = create_full_test_state();
+    seed_unlocked_signer(&state, "old");
+    secure_wallet::activate_profile(&state, "new").unwrap();
+    assert!(state.signer.lock().unwrap().is_none());
+    let conn = state.db.lock().unwrap();
+    assert_eq!(
+        crate::db::queries::get_active_profile_id(&conn).unwrap(),
+        "new"
+    );
+}
+
+#[test]
+fn test_activate_profile_keeps_its_own_signer() {
+    let state = create_full_test_state();
+    seed_unlocked_signer(&state, "same");
+    secure_wallet::activate_profile(&state, "same").unwrap();
+    let slot = state.signer.lock().unwrap();
+    assert_eq!(slot.as_ref().unwrap().wallet_profile_id(), "same");
+}
+
+#[test]
+fn test_import_prompts_name_their_input_kind() {
+    let xpub = serde_json::to_value(secure_wallet::xpub_import_request()).unwrap();
+    assert_eq!(xpub["mode"], "import");
+    assert_eq!(xpub["input"], "xpub");
+    let phrase = serde_json::to_value(secure_wallet::phrase_import_request()).unwrap();
+    assert_eq!(phrase["mode"], "import");
+    assert_eq!(phrase["input"], "recovery_phrase");
+}
+
 #[tokio::test]
 async fn test_set_active_wallet_profile_not_found() {
     let state = create_full_test_state();

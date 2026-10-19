@@ -59,7 +59,7 @@ describe("Settings — Test connection", () => {
     );
     expect(invokeMock).toHaveBeenCalledWith("check_node_connection", {
       url: "https://node.example.com:12037",
-      api_key: undefined,
+      apiKey: undefined,
     });
   });
 

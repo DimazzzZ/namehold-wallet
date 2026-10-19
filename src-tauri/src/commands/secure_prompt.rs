@@ -59,6 +59,11 @@ pub struct SecurePromptRequest {
     /// For `reveal`: the mnemonic to display. `None` otherwise.
     /// See the struct-level doc-comment for the IPC-transience caveat.
     pub payload: Option<String>,
+    /// For `import`: what the user is asked to type, `recovery_phrase` or
+    /// `xpub`; the window picks its placeholder and empty-entry error from it.
+    /// `None` means a recovery phrase.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
     /// Structured details rendered by the window for read-only display.
     /// Used by `confirm` mode to show tx summary rows (label + value pairs).
     /// `None` for other modes.

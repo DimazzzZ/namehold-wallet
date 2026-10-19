@@ -143,6 +143,53 @@ pub(crate) fn resolve_secret_key(entered: &str) -> (String, &'static str) {
     }
 }
 
+/// Make `id` the active wallet profile and drop a signer session that belongs
+/// to another profile, so stale key material never lingers under a different
+/// wallet (the UI would show "Unlocked" while every use of the key is refused).
+/// The one activation path: create, every import kind, Ledger and the profile
+/// switcher all go through it. The caller must not hold the database lock.
+pub(crate) fn activate_profile(state: &AppState, id: &str) -> Result<(), AppError> {
+    {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::set_active_profile(&conn, id)?;
+    }
+    let mut slot = state
+        .signer
+        .lock()
+        .map_err(|e| AppError::Lock(e.to_string()))?;
+    if slot
+        .as_ref()
+        .map(|s| s.wallet_profile_id() != id)
+        .unwrap_or(false)
+    {
+        *slot = None;
+    }
+    Ok(())
+}
+
+/// The secure prompt that asks for a recovery phrase to import.
+pub(crate) fn phrase_import_request() -> SecurePromptRequest {
+    SecurePromptRequest {
+        mode: "import".to_string(),
+        title: "Import recovery phrase".to_string(),
+        message: "Enter your 12 or 24 word recovery phrase.".to_string(),
+        input: Some("recovery_phrase".to_string()),
+        ..Default::default()
+    }
+}
+
+/// The secure prompt that asks for an account xpub to import. It names the
+/// input kind so the window shows an xpub hint and error, not the phrase ones.
+pub(crate) fn xpub_import_request() -> SecurePromptRequest {
+    SecurePromptRequest {
+        mode: "import".to_string(),
+        title: "Import account xpub".to_string(),
+        message: "Enter the account-level extended public key (xpub).".to_string(),
+        input: Some("xpub".to_string()),
+        ..Default::default()
+    }
+}
+
 /// Prompt the user for a passphrase via the secure window. `new` shows a confirm
 /// field and ALLOWS an empty value (opt out of a passphrase); the unlock prompt
 /// (`new = false`) requires a non-empty value. Errors only on cancel.
@@ -248,8 +295,8 @@ pub async fn secure_create_wallet(
         let receive_addr = provision_addresses(&conn, &id, net, &account_xpub, gap)?;
         db::queries::update_profile_receive(&conn, &id, &receive_addr, gap as i64)?;
         db::queries::update_profile_change_depth(&conn, &id, gap as i64)?;
-        db::queries::set_active_profile(&conn, &id)?;
     }
+    activate_profile(&app.state::<AppState>(), &id)?;
 
     // 5. Reveal for backup (display only), then wipe the plaintext.
     let _ = reveal_mnemonic(&app, &phrase).await;
@@ -276,17 +323,7 @@ pub async fn secure_import_wallet(
     match kind.as_str() {
         "mnemonic_hot" => {
             // Enter the recovery phrase in the secure window.
-            let res = prompt_secure(
-                &app,
-                SecurePromptRequest {
-                    mode: "import".to_string(),
-                    title: "Import recovery phrase".to_string(),
-                    message: "Enter your 12 or 24 word recovery phrase.".to_string(),
-                    payload: None,
-                    ..Default::default()
-                },
-            )
-            .await?;
+            let res = prompt_secure(&app, phrase_import_request()).await?;
             let mut phrase = match res.value {
                 Some(v) if res.confirmed && !v.is_empty() => v,
                 _ => return Err(AppError::InvalidInput("import cancelled".to_string())),
@@ -323,22 +360,13 @@ pub async fn secure_import_wallet(
             let receive_addr = provision_addresses(&conn, &id, net, &account_xpub, gap)?;
             db::queries::update_profile_receive(&conn, &id, &receive_addr, gap as i64)?;
             db::queries::update_profile_change_depth(&conn, &id, gap as i64)?;
-            db::queries::set_active_profile(&conn, &id)?;
+            drop(conn);
+            activate_profile(&state, &id)?;
         }
         "watch_only_xpub" => {
             // The xpub is public; still entered via the secure surface for a
             // consistent UX, but no passphrase / secret is stored.
-            let res = prompt_secure(
-                &app,
-                SecurePromptRequest {
-                    mode: "import".to_string(),
-                    title: "Import account xpub".to_string(),
-                    message: "Enter the account-level extended public key (xpub).".to_string(),
-                    payload: None,
-                    ..Default::default()
-                },
-            )
-            .await?;
+            let res = prompt_secure(&app, xpub_import_request()).await?;
             let xpub = match res.value {
                 Some(v) if res.confirmed && !v.is_empty() => v.trim().to_string(),
                 _ => return Err(AppError::InvalidInput("import cancelled".to_string())),
@@ -361,7 +389,8 @@ pub async fn secure_import_wallet(
             let receive_addr = provision_addresses(&conn, &id, net, &xpub, gap)?;
             db::queries::update_profile_receive(&conn, &id, &receive_addr, gap as i64)?;
             db::queries::update_profile_change_depth(&conn, &id, gap as i64)?;
-            db::queries::set_active_profile(&conn, &id)?;
+            drop(conn);
+            activate_profile(&state, &id)?;
         }
         other => {
             return Err(AppError::InvalidInput(format!(
@@ -430,7 +459,8 @@ pub async fn import_ledger_profile(
     let receive_addr = provision_addresses(&conn, &id, net, &account_xpub, gap)?;
     db::queries::update_profile_receive(&conn, &id, &receive_addr, gap as i64)?;
     db::queries::update_profile_change_depth(&conn, &id, gap as i64)?;
-    db::queries::set_active_profile(&conn, &id)?;
+    drop(conn);
+    activate_profile(&state, &id)?;
 
     load_profile(&app, &id)
 }
@@ -586,21 +616,8 @@ pub async fn set_active_wallet_profile(
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let profile = db::queries::get_wallet_profile(&conn, &wallet_profile_id)?
         .ok_or_else(|| AppError::NotFound(format!("wallet profile {wallet_profile_id}")))?;
-    db::queries::set_active_profile(&conn, &wallet_profile_id)?;
     drop(conn);
-
-    let mut slot = state
-        .signer
-        .lock()
-        .map_err(|e| AppError::Lock(e.to_string()))?;
-    if slot
-        .as_ref()
-        .map(|s| s.wallet_profile_id() != wallet_profile_id)
-        .unwrap_or(false)
-    {
-        *slot = None;
-    }
-    drop(slot);
+    activate_profile(&state, &wallet_profile_id)?;
 
     Ok(WalletProfileSummary {
         active: true,

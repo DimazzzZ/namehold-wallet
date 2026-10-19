@@ -4,10 +4,10 @@ import type { Asset, ImportResult } from "../types";
 
 interface ListAssetsParams {
   status?: string;
-  is_staked?: boolean;
+  isStaked?: boolean;
   search?: string;
-  sort_by?: string;
-  sort_dir?: "asc" | "desc";
+  sortBy?: string;
+  sortDir?: "asc" | "desc";
 }
 
 export function useAssets(params: ListAssetsParams = {}) {
@@ -34,9 +34,9 @@ export function useUpdateAsset() {
       category?: string;
       tags?: string;
       notes?: string;
-      hns_received?: number;
-      transfer_tx_hash?: string;
-      finalize_tx_hash?: string;
+      hnsReceived?: number;
+      transferTxHash?: string;
+      finalizeTxHash?: string;
     }) => invoke("update_asset", args as Record<string, unknown>),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["assets"] }),
   });
@@ -81,7 +81,7 @@ export function useImportCsv() {
 
 export function useExportCsv() {
   return useMutation({
-    mutationFn: (args: { path: string; status?: string; is_staked?: boolean; search?: string }) =>
+    mutationFn: (args: { path: string; status?: string; isStaked?: boolean; search?: string }) =>
       invoke<number>("export_csv", args as Record<string, unknown>),
   });
 }
