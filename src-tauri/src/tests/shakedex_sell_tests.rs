@@ -832,7 +832,7 @@ fn job_listing_sets_are_disjoint() {
     );
 }
 
-/// The after-lock source lists exactly its eight states of a profile, in
+/// The after-lock source lists exactly its nine states of a profile, in
 /// creation order.
 #[test]
 fn after_lock_listings_are_listed() {
@@ -857,7 +857,7 @@ fn after_lock_listings_are_listed() {
         .into_iter()
         .map(|l| l.id)
         .collect();
-    assert_eq!(ids, ["l1", "l2", "l3", "l4", "l5", "l8", "l9", "la"]);
+    assert_eq!(ids, ["l1", "l2", "l3", "l4", "l5", "l8", "l9", "la", "lb"]);
     assert!(
         queries::list_shakedex_listings_after_lock(&conn, "other", 7)
             .unwrap()
@@ -7766,8 +7766,10 @@ async fn purchase_beats_cancel() {
 /// Review Focus 1 (R28, ADR 0004): re-listing a name after a cancel reuses
 /// its lock key and lock address, and the new listing tracks only its own
 /// lock outpoint. The old listing (Cancelled, lock coin f1) is terminal, so
-/// the name can be locked again and no job reads it; a mined TRANSFER to an
-/// address of ours out of the OLD lock coin is not the new listing's
+/// the name can be locked again; the after-lock job reads it within the
+/// re-check window only for a reorg of its FINALIZE home (the name's owner
+/// its own cancel c1 again), which the owner here is not. A mined TRANSFER
+/// to an address of ours out of the OLD lock coin is not the new listing's
 /// cancel, one out of the new lock coin is; the old listing never moves,
 /// and none of its cancel, steps or file attach to the new one.
 #[tokio::test]
@@ -7817,12 +7819,17 @@ async fn relist_after_cancel_tracks_only_the_new_lock_coin() {
             .as_deref(),
         Some("new")
     );
-    let after: Vec<String> = queries::list_shakedex_listings_after_lock(&conn, PROFILE, 7)
+    let mut after: Vec<String> = queries::list_shakedex_listings_after_lock(&conn, PROFILE, 7)
         .unwrap()
         .into_iter()
         .map(|l| l.id)
         .collect();
-    assert_eq!(after, ["new"], "the old listing is in no job's set");
+    after.sort_unstable();
+    assert_eq!(
+        after,
+        ["new", "old"],
+        "the old listing is re-checked within the window"
+    );
 
     // The owner a mined TRANSFER at our lock to our (new) cancel address,
     // its transaction spending `spends`.

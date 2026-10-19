@@ -1598,11 +1598,12 @@ impl ListingState {
     /// The states the after-lock job reads ([`list_shakedex_listings_after_lock`]):
     /// the FINALIZE into the lock built or mined (Finalizing, Listed), a
     /// purchase of the lock coin in the mempool (SalePending), a Restored
-    /// lock, Sold within the re-check window, which a reorg may undo, and a
+    /// lock, Sold within the re-check window, which a reorg may undo, a
     /// cancel on its way (Cancelling, CancelAwaitingFinalize,
-    /// CancelFinalizing), which a purchase may still beat or a reorg undo.
-    /// Disjoint from [`Self::BEFORE_LOCK_JOB`].
-    pub const AFTER_LOCK_JOB: [ListingState; 8] = [
+    /// CancelFinalizing), which a purchase may still beat or a reorg undo,
+    /// and Cancelled within the re-check window, whose FINALIZE home a reorg
+    /// may take out. Disjoint from [`Self::BEFORE_LOCK_JOB`].
+    pub const AFTER_LOCK_JOB: [ListingState; 9] = [
         Self::Finalizing,
         Self::Listed,
         Self::SalePending,
@@ -1611,7 +1612,12 @@ impl ListingState {
         Self::Cancelling,
         Self::CancelAwaitingFinalize,
         Self::CancelFinalizing,
+        Self::Cancelled,
     ];
+
+    /// The terminal states of [`Self::AFTER_LOCK_JOB`]: read only within the
+    /// re-check window ([`list_shakedex_listings_after_lock`]).
+    pub const AFTER_LOCK_RECHECKED: [ListingState; 2] = [Self::Sold, Self::Cancelled];
 
     /// The states of a listing whose cancel TRANSFER is mined (R28): its
     /// FINALIZE home is awaited or built.
@@ -1709,6 +1715,9 @@ pub enum ListingWrite {
     RevertCancelFinalize,
     /// [`mark_listing_cancelled`]: the name is home.
     CancelDone,
+    /// [`mark_listing_cancel_undone`]: a reorg took the FINALIZE home out,
+    /// the cancel's TRANSFER the name's owner again.
+    CancelUndone,
     /// [`lower_listing_price`]: a cheaper step, the state unchanged.
     LowerPrice,
     /// [`refresh_listing_expiry`]: the listing file's `expiresAt` rewritten
@@ -1717,7 +1726,7 @@ pub enum ListingWrite {
 }
 
 impl ListingWrite {
-    pub const ALL: [ListingWrite; 27] = [
+    pub const ALL: [ListingWrite; 28] = [
         Self::Ready,
         Self::LockingAgain,
         Self::Finalize,
@@ -1743,6 +1752,7 @@ impl ListingWrite {
         Self::FinalizeCancel,
         Self::RevertCancelFinalize,
         Self::CancelDone,
+        Self::CancelUndone,
         Self::LowerPrice,
         Self::RefreshExpiry,
     ];
@@ -1764,7 +1774,8 @@ impl ListingWrite {
     ///   first.
     /// - A cancel (Cancel ... CancelDone) follows R28: built from Listed or
     ///   Restored, mined from any state whose lock coin is ours to spend,
-    ///   back to Cancelling on a reorg, Cancelled once the name is home;
+    ///   back to Cancelling on a reorg, Cancelled once the name is home,
+    ///   and back to CancelAwaitingFinalize when a reorg takes that home out;
     ///   Lower price rewrites a Listed listing's steps and file, its state
     ///   unchanged, and the `expiresAt` refresh likewise. A purchase mined
     ///   before our cancel is a sale all the same (Sell from Cancelling), and
@@ -1841,6 +1852,7 @@ impl ListingWrite {
             Self::FinalizeCancel => (&[S::CancelAwaitingFinalize], &[S::CancelFinalizing]),
             Self::RevertCancelFinalize => (&[S::CancelFinalizing], &[S::CancelAwaitingFinalize]),
             Self::CancelDone => (CANCEL_MINED, &[S::Cancelled]),
+            Self::CancelUndone => (&[S::Cancelled], &[S::CancelAwaitingFinalize]),
             Self::LowerPrice => (&[S::Listed], &[S::Listed]),
             Self::RefreshExpiry => (&[S::Listed], &[S::Listed]),
         }
@@ -2832,33 +2844,31 @@ pub fn adopt_lock_finalized_elsewhere(
     )?)
 }
 
-/// The listings the after-lock job reads (R19, R22):
-/// [`ListingState::AFTER_LOCK_JOB`], Sold only within the last
-/// `sold_recheck_days` (a reorg can still take the purchase away).
+/// The listings the after-lock job reads (R19, R22, R28):
+/// [`ListingState::AFTER_LOCK_JOB`], Sold and Cancelled
+/// ([`ListingState::AFTER_LOCK_RECHECKED`]) only within the last
+/// `recheck_days` (a reorg can still take the purchase, or the FINALIZE
+/// home, away).
 pub fn list_shakedex_listings_after_lock(
     conn: &rusqlite::Connection,
     profile_id: &str,
-    sold_recheck_days: u32,
+    recheck_days: u32,
 ) -> Result<Vec<ShakedexListing>, AppError> {
-    let open = sql_list(
-        ListingState::AFTER_LOCK_JOB
-            .iter()
-            .filter(|s| **s != ListingState::Sold)
-            .map(|s| s.as_str()),
-    );
+    let (ended, open): (Vec<ListingState>, Vec<ListingState>) = ListingState::AFTER_LOCK_JOB
+        .into_iter()
+        .partition(|s| ListingState::AFTER_LOCK_RECHECKED.contains(s));
+    let open = sql_list(open.iter().map(|s| s.as_str()));
+    let ended = sql_list(ended.iter().map(|s| s.as_str()));
     let sql = format!(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
          WHERE wallet_profile_id = ?1
-           AND (state IN {open} OR (state = ?2 AND updated_at >= datetime('now', ?3)))
+           AND (state IN {open}
+                OR (state IN {ended} AND updated_at >= datetime('now', ?2)))
          ORDER BY created_at, id"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
-        params![
-            profile_id,
-            ListingState::Sold,
-            format!("-{sold_recheck_days} days")
-        ],
+        params![profile_id, format!("-{recheck_days} days")],
         row_to_shakedex_listing,
     )?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -3324,6 +3334,36 @@ pub fn mark_listing_cancelled(
          SET state = ?2, cancel_blocks_remaining = NULL, updated_at = datetime('now')
          WHERE id = ?1 AND {} AND cancel_txid = ?3 AND cancel_vout = ?4",
         w.source_sql()
+    );
+    Ok(conn.execute(
+        &sql,
+        params![id, w.target(), listing_txid(cancel.0), i64::from(cancel.1)],
+    )?)
+}
+
+/// R28, a reorg: the FINALIZE home a Cancelled listing ended on is out of
+/// the chain, and hsd names its cancel TRANSFER `cancel` the name's owner
+/// again. CancelAwaitingFinalize, so the FINALIZE home is offered again;
+/// the lockup count and the FINALIZE draft link are forgotten (the job
+/// counts the lockup again; a draft that was sent is left to the draft
+/// tracker). Only for the listing's own mined cancel, and only while no
+/// other listing of the name is open (`idx_shakedex_listings_open_name`
+/// allows one). The re-check window is not applied here: the caller got the
+/// row from [`list_shakedex_listings_after_lock`], which applies it. Returns
+/// how many rows changed (0 or 1).
+pub fn mark_listing_cancel_undone(
+    conn: &rusqlite::Connection,
+    id: &str,
+    cancel: (&str, u32),
+) -> Result<usize, AppError> {
+    let w = ListingWrite::CancelUndone;
+    let sql = format!(
+        "UPDATE shakedex_listings
+         SET state = ?2, cancel_blocks_remaining = NULL, cancel_finalize_draft_id = NULL,
+             updated_at = datetime('now')
+         WHERE id = ?1 AND {} AND cancel_txid = ?3 AND cancel_vout = ?4 AND {}",
+        w.source_sql(),
+        no_other_open_listing_sql()
     );
     Ok(conn.execute(
         &sql,

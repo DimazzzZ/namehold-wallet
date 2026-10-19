@@ -116,7 +116,8 @@ pub(crate) const SEND_GRACE_SECS: i64 = 600;
 pub const REVIVE_WINDOW_DAYS: u32 = 7;
 
 /// How long a Sold listing is looked at again for a reorg that takes its
-/// purchase out of the chain, the same window as a lost purchase's revival.
+/// purchase out of the chain, and a Cancelled one for a reorg that takes its
+/// FINALIZE home out, the same window as a lost purchase's revival.
 pub const SOLD_RECHECK_DAYS: u32 = REVIVE_WINDOW_DAYS;
 
 /// hsd's own JSON-RPC error to the broadcast. hsd 8.0.0 answers
@@ -1424,9 +1425,9 @@ pub async fn refresh_listings_with_client(
 }
 
 /// The after-lock job of [`refresh_listings_with_client`] (R19, R22, R28),
-/// for one listing of [`queries::ListingState::AFTER_LOCK_JOB`] (a Sold one
-/// within [`SOLD_RECHECK_DAYS`]), from hsd's `GET /coin` of its lock outpoint
-/// `(lock_txid, lock_vout)`:
+/// for one listing of [`queries::ListingState::AFTER_LOCK_JOB`] (a Sold or
+/// Cancelled one within [`SOLD_RECHECK_DAYS`]), from hsd's `GET /coin` of
+/// its lock outpoint `(lock_txid, lock_vout)`:
 ///
 /// - a FINALIZE of the name at the listing's lock address mined in a block → a
 ///   Finalizing listing Listed; in the mempool (`height: -1`) → a Listed one
@@ -1480,7 +1481,8 @@ pub async fn refresh_listings_with_client(
 /// ([`queries::ListingState::CANCEL_MINED`]) is followed from that TRANSFER
 /// instead ([`cancel_on_its_way_home`]); one this sync has just made
 /// CancelAwaitingFinalize gets its lockup count at once while that TRANSFER
-/// is a coin ([`cancel_transfer_held`]).
+/// is a coin ([`cancel_transfer_held`]). A Cancelled listing is read only
+/// for a reorg that took its FINALIZE home out ([`cancelled_home_undone`]).
 ///
 /// Sends nothing. An error leaves the listing for the next sync (the caller
 /// logs it).
@@ -1492,6 +1494,9 @@ async fn refresh_after_lock(
 ) -> Result<(), AppError> {
     if queries::ListingState::CANCEL_MINED.contains(&l.state) {
         return cancel_on_its_way_home(conn, client, network, l).await;
+    }
+    if l.state == queries::ListingState::Cancelled {
+        return cancelled_home_undone(conn, client, network, l).await;
     }
     let Some((lock_txid, lock_vout)) = stored_lock(l)? else {
         return Ok(());
@@ -2307,6 +2312,46 @@ async fn cancel_on_its_way_home(
         return Ok(());
     };
     cancel_replaced(conn, client, network, l, &owner, lock, cancel).await
+}
+
+/// R28 with R22's reorg rule, for a Cancelled listing within
+/// [`SOLD_RECHECK_DAYS`]: the name's owner, read from hsd, is the listing's
+/// cancel TRANSFER again (a reorg took the FINALIZE home out; hsd names a
+/// coin the owner only once its block is connected) → CancelAwaitingFinalize
+/// ([`queries::mark_listing_cancel_undone`]), so the FINALIZE home is
+/// offered again, its lockup counted in the same sync while that TRANSFER is
+/// a coin ([`cancel_transfer_held`]; with the FINALIZE back in the mempool
+/// hsd answers 404 for it, and [`cancel_on_its_way_home`] ends the listing
+/// again once that FINALIZE is mined). Any other owner (the FINALIZE home,
+/// or a coin the name moved on to), or no live name → unchanged and not
+/// written, so the listing leaves the after-lock set once the window
+/// passes. The verdict rests on the owner hsd names, never on a coin's
+/// absence. Sends nothing.
+async fn cancelled_home_undone(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    network: Network,
+    l: &queries::ShakedexListing,
+) -> Result<(), AppError> {
+    let cancel = stored_cancel(l)?;
+    let reply = client.get_name_info(&l.name).await?;
+    let Some(info) = name_info(&reply)? else {
+        return Ok(());
+    };
+    let owner = owner_of(info)?;
+    if !(owner.0.eq_ignore_ascii_case(cancel.0) && owner.1 == cancel.1) {
+        return Ok(());
+    }
+    if queries::mark_listing_cancel_undone(conn, &l.id, cancel)? != 1 {
+        return Ok(());
+    }
+    let Some(now) = queries::get_shakedex_listing(conn, &l.id)? else {
+        return Ok(());
+    };
+    match client.get_coin(cancel.0, cancel.1).await? {
+        Some(coin) => cancel_transfer_held(conn, client, network, &now, cancel, &coin).await,
+        None => Ok(()),
+    }
 }
 
 /// R28, the first rule of [`cancel_on_its_way_home`]: the mined cancel

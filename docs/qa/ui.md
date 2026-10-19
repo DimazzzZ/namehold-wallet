@@ -83,7 +83,6 @@ These are recorded and parked. Note what you see if a case runs into one, but fi
 - The xpub import field shows the recovery-phrase placeholder.
 - After a purchase's failed send, or its draft discarded in Activity, Owned Names stays stale until the next poll.
 - Buying your own listing (from any profile of the same phrase) is not refused.
-- A Cancelled listing is not re-checked after a reorg takes its FINALIZE home out.
 - A name in the Cancelling state shows "Shakedex_cancel is broadcast and waiting to be mined. Nothing changes on-chain until it lands in a block." in its name actions instead of disabled owner buttons.
 - A Buy Now lowered after a block has moved the median time (its two steps then carry different lock times) imports in another profile as `Reverse auction`.
 - The seller's sale row in Activity shows an unsigned amount.

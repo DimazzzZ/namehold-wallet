@@ -7450,6 +7450,143 @@ async fn shakedex_cancel_mined_brings_the_name_home() {
     assert_eq!(info["info"]["transfer"], 0, "no transfer in progress");
 }
 
+/// R28 with R22's reorg rule on hsd: a listing cancelled and finalized home
+/// is Cancelled; a reorg then takes the FINALIZE's block out
+/// (`invalidateblock`, which empties the mempool, so the FINALIZE is in no
+/// block and no mempool) while the cancel's TRANSFER stays mined, and hsd
+/// names that TRANSFER the name's owner again. The next sync makes the
+/// listing CancelAwaitingFinalize, its lockup counted (over), so the app
+/// offers the FINALIZE home again; built and mined, the listing is
+/// Cancelled again with the name at our cancel address. `reconsiderblock`
+/// then clears the invalid mark, the chain holding the new FINALIZE the
+/// longer one.
+#[tokio::test]
+async fn shakedex_cancelled_listing_follows_a_reorg_of_its_finalize_home() {
+    let Some((url, key)) =
+        shakedex_node_env("shakedex_cancelled_listing_follows_a_reorg_of_its_finalize_home")
+    else {
+        return;
+    };
+    let (app, cl, addr, name, id, _s) = listed_on_chain(&url, &key, "nhcxorg", "3").await;
+    let cancel = cancel_signed(&app, &id, 1).await;
+    let bc = broadcast_tx_draft(app.state(), cancel.id.clone())
+        .await
+        .expect("broadcast");
+    assert_eq!(bc.status, "broadcasted");
+    settle(&app, &cl, &addr, &cancel.id).await;
+    listing_jobs(&app, &cl).await;
+    assert_eq!(
+        listing_state(&app, &id),
+        ListingState::CancelAwaitingFinalize
+    );
+    let lockup = i64::from(NET.name_params().transfer_lockup);
+    cl.generate_to_address(u32::try_from(lockup - 1).unwrap(), &addr)
+        .await
+        .expect("mine the lockup");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_row(&app, &id).cancel_blocks_remaining, Some(0));
+    let fin = crate::commands::shakedex::finalize_cancel(&app.state(), &id, Some(1))
+        .await
+        .expect("finalize");
+    broadcast_only(&app, &fin.id).await;
+    settle(&app, &cl, &addr, &fin.id).await;
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Cancelled);
+    let fin_txid = draft_status(&app, &fin.id).txid.expect("sent");
+    assert_eq!(
+        name_owner(&cl, &name).await,
+        (fin_txid.clone(), 0),
+        "our FINALIZE owns the name"
+    );
+    let fin_height = cl.get_tx_by_hash(&fin_txid).await.expect("tx")["height"]
+        .as_i64()
+        .unwrap_or(-1);
+    assert!(fin_height > 0, "the FINALIZE is mined");
+
+    // The reorg: the FINALIZE's block taken out.
+    let block = cl.get_block_hash(fin_height).await.expect("blockhash");
+    cl.invalidate_block(&block).await.expect("invalidate");
+    assert!(
+        cl.get_tx_by_hash(&fin_txid)
+            .await
+            .expect("lookup")
+            .is_null(),
+        "the FINALIZE is in no block and no mempool"
+    );
+    let ctx = cl.get_tx_by_hash(&bc.txid).await.expect("lookup");
+    assert!(
+        ctx["height"].as_i64().unwrap_or(-1) > 0,
+        "the cancel's TRANSFER stays mined: {ctx}"
+    );
+    assert_eq!(
+        name_owner(&cl, &name).await,
+        (bc.txid.clone(), 0),
+        "hsd names the cancel's TRANSFER the owner again"
+    );
+    assert!(
+        cl.get_coin(&bc.txid, 0).await.expect("coin").is_some(),
+        "the cancel's TRANSFER is a coin again"
+    );
+
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    let l = listing_row(&app, &id);
+    assert_eq!(
+        (
+            l.state,
+            l.cancel_txid.as_deref(),
+            l.cancel_vout,
+            l.cancel_finalize_draft_id.as_deref(),
+            l.cancel_blocks_remaining
+        ),
+        (
+            ListingState::CancelAwaitingFinalize,
+            Some(bc.txid.as_str()),
+            Some(0),
+            None,
+            Some(0)
+        ),
+        "the FINALIZE home is offered again"
+    );
+
+    // The FINALIZE home built again from the app, sent and mined.
+    let again = crate::commands::shakedex::finalize_cancel(&app.state(), &id, Some(1))
+        .await
+        .expect("finalize again");
+    assert_eq!(listing_state(&app, &id), ListingState::CancelFinalizing);
+    broadcast_only(&app, &again.id).await;
+    settle(&app, &cl, &addr, &again.id).await;
+    // Only clears the invalid mark (`chain.removeInvalid`, no reorg); the
+    // chain holding the new FINALIZE is longer once one more block is
+    // mined on it.
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    cl.reconsider_block(&block).await.expect("reconsider");
+    assert_ne!(
+        cl.get_block_hash(fin_height).await.expect("blockhash"),
+        block,
+        "the chain ends without the old FINALIZE's block"
+    );
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Cancelled);
+    let again_txid = draft_status(&app, &again.id).txid.expect("sent");
+    let (otx, ovout) = name_owner(&cl, &name).await;
+    assert_eq!(otx, again_txid, "the new FINALIZE owns the name");
+    let home = cl
+        .get_coin(&otx, ovout)
+        .await
+        .expect("coin")
+        .expect("the owner coin");
+    assert_eq!(
+        home.address.as_deref(),
+        l.cancel_address.as_deref(),
+        "home at our cancel address"
+    );
+    assert_eq!(
+        home.covenant.as_ref().expect("covenant").kind,
+        crate::noncustodial::sync::COV_FINALIZE
+    );
+}
+
 /// R28 on hsd, the shakedex CLI the buyer: our cancel is signed while the
 /// listing is Listed, but the CLI's purchase reaches the node's mempool
 /// first. The node does not take our cancel (the broadcast says so, and

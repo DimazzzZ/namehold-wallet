@@ -231,6 +231,7 @@ fn apply(f: &Fx, w: ListingWrite, to: ListingState) -> Result<usize, crate::erro
             queries::revert_listing_cancel_finalize(c, id, "cfin")
         }
         ListingWrite::CancelDone => queries::mark_listing_cancelled(c, id, (&txid("c1"), 0)),
+        ListingWrite::CancelUndone => queries::mark_listing_cancel_undone(c, id, (&txid("c1"), 0)),
         ListingWrite::LowerPrice => queries::lower_listing_price(
             c,
             id,
@@ -308,6 +309,12 @@ fn each_listing_write_moves_exactly_its_transitions() {
         (
             ListingWrite::RevertCancelFinalize,
             S::CancelFinalizing,
+            S::CancelAwaitingFinalize,
+        ),
+        // A reorg took the FINALIZE home out (R28).
+        (
+            ListingWrite::CancelUndone,
+            S::Cancelled,
             S::CancelAwaitingFinalize,
         ),
         (ListingWrite::LowerPrice, S::Listed, S::Listed),
@@ -640,6 +647,59 @@ fn cancel_writes_take_only_their_own_coin() {
     );
     let l = listing(&f);
     assert_eq!((l.state, l.cancel_blocks_remaining), (S::Cancelled, None));
+    // CancelUndone: the listing's own mined cancel output, and only while
+    // no other listing of the name is open; the FINALIZE draft link and the
+    // count are forgotten.
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET cancel_finalize_draft_id = 'cfin',
+                 cancel_blocks_remaining = 2",
+            [],
+        )
+        .unwrap();
+    for other in [(txid("c9"), 0), (txid("c1"), 1)] {
+        assert_eq!(
+            queries::mark_listing_cancel_undone(&f.conn, &f.id, (&other.0, other.1)).unwrap(),
+            0,
+            "{other:?}"
+        );
+    }
+    let mut newer = listing(&f);
+    newer.id = "l2".into();
+    newer.state = S::Locking;
+    newer.lock_txid = None;
+    newer.lock_vout = None;
+    queries::insert_shakedex_listing(&f.conn, &newer).unwrap();
+    assert_eq!(
+        queries::mark_listing_cancel_undone(&f.conn, &f.id, (&txid("c1"), 0)).unwrap(),
+        0,
+        "another listing of the name is open"
+    );
+    assert_eq!(listing(&f).state, S::Cancelled);
+    f.conn
+        .execute("DELETE FROM shakedex_listings WHERE id = 'l2'", [])
+        .unwrap();
+    assert_eq!(
+        queries::mark_listing_cancel_undone(&f.conn, &f.id, (&txid("c1"), 0)).unwrap(),
+        1
+    );
+    let l = listing(&f);
+    assert_eq!(
+        (
+            l.state,
+            l.cancel_txid,
+            l.cancel_vout,
+            l.cancel_blocks_remaining,
+            l.cancel_finalize_draft_id
+        ),
+        (
+            S::CancelAwaitingFinalize,
+            Some(txid("c1")),
+            Some(0),
+            None,
+            None
+        )
+    );
 
     // A Sold listing whose purchase a reorg replaced with a mined cancel of
     // ours, and a Finalizing one a cancel was mined over: only for the
@@ -3006,6 +3066,157 @@ async fn cancel_finalized_home_is_cancelled() {
     let l = listing(&f);
     assert_eq!(l.state, ListingState::Cancelled, "the next sync ends it");
     assert_eq!(l.cancel_finalize_draft_id, None, "no FINALIZE of ours");
+}
+
+/// The fixture's cancel `c1…:0` mined and finalized home: Cancelled.
+fn cancelled_at(f: &Fx) -> (String, u32) {
+    let c = cancel_mined_at(f);
+    assert_eq!(
+        queries::mark_listing_cancelled(&f.conn, &f.id, (&c.0, c.1)).unwrap(),
+        1
+    );
+    c
+}
+
+/// R28 with R22's reorg rule: a Cancelled listing is read again within
+/// [`crate::shakedex_jobs::SOLD_RECHECK_DAYS`]. When the name's owner is the
+/// cancel's TRANSFER again (a reorg took the FINALIZE home out), the listing
+/// awaits its finalize again, its cancel kept, its FINALIZE draft link
+/// forgotten, and its lockup counted in the same sync while that TRANSFER is
+/// a mined coin; with the FINALIZE back in the mempool (the TRANSFER hsd's
+/// 404) it awaits it uncounted, and is Cancelled again once that FINALIZE
+/// is mined. A FINALIZE home that still stands, another owner, or no live
+/// name leaves it Cancelled and unwritten, so it leaves the after-lock set
+/// once the window passes; past it nothing is read.
+#[tokio::test]
+async fn cancelled_listing_awaits_its_finalize_again_after_a_reorg() {
+    let lockup = i64::from(NET.name_params().transfer_lockup);
+    let d1 = txid("d1");
+    let at = TIP - 30;
+    for finalizing in [false, true] {
+        let f = fx(ListingState::Listed);
+        let c = cancel_mined_at(&f);
+        if finalizing {
+            cancel_finalizing(&f, &c);
+        }
+        assert_eq!(
+            queries::mark_listing_cancelled(&f.conn, &f.id, (&c.0, c.1)).unwrap(),
+            1
+        );
+        let rpc = node(
+            info_transfer((&c.0, 0), at),
+            vec![transfer_out_of_lock(&f, &c.0, &f.cancel, at)],
+            Value::Null,
+        )
+        .with_blockchain_info(tip_at(at + lockup - 2));
+        run(&f, &rpc).await;
+        let l = listing(&f);
+        assert_eq!(
+            (
+                l.state,
+                l.cancel_txid.as_deref(),
+                l.cancel_vout,
+                l.cancel_finalize_draft_id,
+                l.cancel_blocks_remaining
+            ),
+            (
+                ListingState::CancelAwaitingFinalize,
+                Some(c.0.as_str()),
+                Some(0),
+                None,
+                Some(1)
+            ),
+            "from CancelFinalizing: {finalizing}"
+        );
+    }
+
+    // The FINALIZE home back in the mempool: the owner is still the
+    // cancel's TRANSFER, which hsd answers 404 for.
+    let home_coin = |to: &str| {
+        coin(
+            &d1,
+            0,
+            to,
+            COV_FINALIZE,
+            vec![name_hash(), height_item(NAME_HEIGHT)],
+            TIP,
+        )
+    };
+    let f = fx(ListingState::Listed);
+    let c = cancelled_at(&f);
+    run(&f, &node(info((&c.0, 0)), vec![], Value::Null)).await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.cancel_blocks_remaining),
+        (ListingState::CancelAwaitingFinalize, None),
+        "FINALIZE in the mempool"
+    );
+    // Mined again: Cancelled again.
+    let home = node(
+        info((&d1, 0)),
+        vec![home_coin(&f.cancel)],
+        home_rest(&d1, (&c.0, 0), &f.cancel, TIP),
+    );
+    run(&f, &home).await;
+    assert_eq!(listing(&f).state, ListingState::Cancelled, "mined again");
+
+    // The FINALIZE home still stands: read, not written.
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET updated_at = datetime('now', '-6 days')",
+            [],
+        )
+        .unwrap();
+    let before = listing(&f).updated_at;
+    let names_read = |rpc: &MockNodeRpc| rpc.count_matching(|c| matches!(c, RpcCall::NameInfo(_)));
+    let home = node(
+        info((&d1, 0)),
+        vec![home_coin(&f.cancel)],
+        home_rest(&d1, (&c.0, 0), &f.cancel, TIP),
+    );
+    run(&f, &home).await;
+    assert!(names_read(&home) > 0, "a Cancelled listing is read");
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.updated_at.as_str()),
+        (ListingState::Cancelled, before.as_str()),
+        "home still stands"
+    );
+    // Another owner (the name moved on from home) or no live name.
+    for (case, reply) in [
+        ("moved on", info((&txid("d9"), 0))),
+        ("no live name", json!({ "info": null, "start": null })),
+    ] {
+        let rpc = node(
+            reply,
+            vec![transfer_out_of_lock(&f, &c.0, &f.cancel, at)],
+            Value::Null,
+        )
+        .with_blockchain_info(tip_at(TIP));
+        run(&f, &rpc).await;
+        let l = listing(&f);
+        assert_eq!(
+            (l.state, l.updated_at.as_str()),
+            (ListingState::Cancelled, before.as_str()),
+            "{case}"
+        );
+    }
+    // Past the window nothing is read, whatever hsd would say.
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET updated_at = datetime('now', '-8 days')",
+            [],
+        )
+        .unwrap();
+    let rpc = node(
+        info((&c.0, 0)),
+        vec![transfer_out_of_lock(&f, &c.0, &f.cancel, at)],
+        Value::Null,
+    )
+    .with_blockchain_info(tip_at(TIP));
+    run(&f, &rpc).await;
+    assert_eq!(names_read(&rpc), 0, "past the window");
+    assert_eq!(listing(&f).state, ListingState::Cancelled);
 }
 
 /// R28: a reorg that puts the mined cancel's TRANSFER back in the
