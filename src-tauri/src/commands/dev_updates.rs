@@ -44,7 +44,7 @@ pub struct DevReleaseMeta {
 pub async fn fetch_latest_release_meta() -> Result<DevReleaseMeta, AppError> {
     // GitHub requires a User-Agent, otherwise it returns 403. The `Accept`
     // header pins us to the v3 JSON shape we deserialize below.
-    let client = reqwest::Client::builder()
+    let client = crate::http::client_builder()
         .user_agent("namehold-wallet-dev")
         .build()?;
 

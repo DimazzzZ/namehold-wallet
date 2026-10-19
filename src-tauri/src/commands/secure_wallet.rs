@@ -37,7 +37,7 @@ use crate::AppState;
 /// 16-byte random hex id for profiles.
 pub(crate) fn random_id() -> String {
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 
@@ -216,7 +216,7 @@ pub async fn secure_create_wallet(
 
     // 2. Generate a 12-word mnemonic from fresh entropy.
     let mut entropy = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut entropy);
+    rand::rng().fill_bytes(&mut entropy);
     let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
         .map_err(|e| AppError::Crypto(format!("mnemonic generation: {e}")))?;
     entropy.zeroize();

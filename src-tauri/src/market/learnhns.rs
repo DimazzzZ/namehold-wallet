@@ -156,7 +156,7 @@ impl LearnHnsClient {
         validate_base_url(base_url)?;
         // No redirects: every request goes to the market host itself, and a
         // redirect could point anywhere (R5 fetches no arbitrary URLs).
-        let http = Client::builder()
+        let http = crate::http::client_builder()
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none())
             .build()

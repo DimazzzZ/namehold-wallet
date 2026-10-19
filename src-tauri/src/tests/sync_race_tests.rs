@@ -874,7 +874,7 @@ mod coverage_tests {
                         (wallet_profile_id, account_index, branch, child_index,
                          address, script_pubkey_hex, public_key_hex)
                      VALUES (?1, 0, ?2, ?3, ?4, '0014aa', '02aa')",
-                    rusqlite::params![PROFILE_A, 0, i, addr],
+                    rusqlite::params![PROFILE_A, 0, i as i64, addr],
                 )
                 .unwrap();
             }

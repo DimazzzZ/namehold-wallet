@@ -22,7 +22,7 @@ use crate::AppState;
 
 pub(crate) fn random_id() -> String {
     let mut b = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut b);
+    rand::rng().fill_bytes(&mut b);
     hex::encode(b)
 }
 

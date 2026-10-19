@@ -273,7 +273,7 @@ pub(crate) fn regtest_listing_with(lock_value: u64, steps: &[(u64, u64)]) -> Reg
     let net = Network::Regtest;
     let name = "regname";
     let secp = Secp256k1::new();
-    let sk = SecretKey::from_slice(&[0x11; 32]).unwrap();
+    let sk = SecretKey::from_byte_array([0x11; 32]).unwrap();
     let pubkey = PublicKey::from_secret_key(&secp, &sk).serialize();
     let lock_txid = [0xab; 32];
     let payment = address::encode_p2wpkh(net, &[9; 20]).unwrap();
@@ -289,7 +289,7 @@ pub(crate) fn regtest_listing_with(lock_value: u64, steps: &[(u64, u64)]) -> Reg
                 lock_time_secs: lock_time,
             };
             let msg = Message::from_digest(step_sighash(&t).unwrap());
-            let mut sig = secp.sign_ecdsa(&msg, &sk).serialize_compact().to_vec();
+            let mut sig = secp.sign_ecdsa(msg, &sk).serialize_compact().to_vec();
             sig.push(0x84);
             json!({ "price": price, "lockTime": lock_time, "signature": hex::encode(sig), "fee": 0 })
         })

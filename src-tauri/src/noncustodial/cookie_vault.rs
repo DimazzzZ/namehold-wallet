@@ -101,7 +101,7 @@ fn resolve_dek_from_backend<B: KeyringBackend + ?Sized>(backend: &B) -> Result<V
         None => {
             // First run: generate a random DEK and store it.
             let mut dek = vec![0u8; DEK_LEN];
-            rand::thread_rng().fill_bytes(&mut dek);
+            rand::rng().fill_bytes(&mut dek);
             let dek_b64 = BASE64.encode(&dek);
             backend.set_password(&dek_b64)?;
             Ok(dek)
@@ -224,7 +224,7 @@ fn encrypt_with_dek(plaintext: &[u8], dek: &[u8]) -> Result<String, AppError> {
     }
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
 
     let key = Key::<Aes256Gcm>::from_slice(dek);
     let cipher = Aes256Gcm::new(key);

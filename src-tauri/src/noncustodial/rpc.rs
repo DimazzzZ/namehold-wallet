@@ -355,7 +355,7 @@ impl NodeRpcClient {
             // Fallback for callers that ignore the guard: keep the invalid URL
             // but blank the api-key so it can never be sent in the clear. The
             // subsequent RPC call will fail loudly at request time.
-            http: Client::builder()
+            http: crate::http::client_builder()
                 .timeout(Duration::from_secs(30))
                 .build()
                 .expect("failed to build HTTP client"),
@@ -371,7 +371,7 @@ impl NodeRpcClient {
     pub fn try_new(node_url: &str, api_key: &str, source: ChainSource) -> Result<Self, AppError> {
         guard_transport(node_url, api_key)?;
         Ok(Self {
-            http: Client::builder()
+            http: crate::http::client_builder()
                 .timeout(Duration::from_secs(30))
                 .build()
                 .expect("failed to build HTTP client"),

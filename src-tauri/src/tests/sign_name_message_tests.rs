@@ -185,7 +185,7 @@ async fn signs_and_returns_signature_pubkey_address_for_the_owning_key() {
     let hash =
         crate::noncustodial::tx::blake2b256(&crate::noncustodial::message::message_preimage(MSG));
     let msg = secp256k1::Message::from_digest(hash);
-    secp.verify_ecdsa(&msg, &sig, &pubkey)
+    secp.verify_ecdsa(msg, &sig, &pubkey)
         .expect("signature verifies");
 
     let (expected_addr, _, expected_pubkey_hex) = leaf00(MNEMONIC_A);

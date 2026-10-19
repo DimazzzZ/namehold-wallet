@@ -163,9 +163,9 @@ pub fn encrypt(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, AppError> 
     }
 
     let mut salt = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
 
     let mut key_bytes = derive_key(passphrase.as_bytes(), &salt, V2_MEM_KIB, V2_ITERS, V2_LANES)?;
     let key = Key::<Aes256Gcm>::from_slice(&key_bytes);

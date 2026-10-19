@@ -117,7 +117,7 @@ pub fn verify_step_signature(t: &StepTemplate, sig65: &[u8; 65]) -> Result<(), A
     let pubkey = PublicKey::from_slice(t.lock_pubkey)
         .map_err(|_| AppError::InvalidInput("listing public key is invalid".into()))?;
     let msg = Message::from_digest(step_sighash(t)?);
-    secp.verify_ecdsa(&msg, &sig, &pubkey)
+    secp.verify_ecdsa(msg, &sig, &pubkey)
         .map_err(|_| AppError::InvalidInput("price step signature does not verify".into()))
 }
 

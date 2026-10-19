@@ -1573,7 +1573,7 @@ mod tests {
             .unwrap();
         secp256k1::Secp256k1::verification_only()
             .verify_ecdsa(
-                &secp256k1::Message::from_digest(digest),
+                secp256k1::Message::from_digest(digest),
                 &secp256k1::ecdsa::Signature::from_compact(&sig[..64]).unwrap(),
                 &secp256k1::PublicKey::from_slice(&key.pubkey).unwrap(),
             )
