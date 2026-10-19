@@ -68,12 +68,27 @@ fn read_settings(app: &AppHandle) -> Result<std::collections::HashMap<String, St
     db::queries::get_settings(&conn)
 }
 
+/// The largest `address_gap_limit` honoured; a larger value is clamped.
+/// The setting is written by the renderer (SECURITY.md §1) and every node
+/// sync derives `gap` addresses per branch past the highest used one and
+/// asks the node about each (`GET /tx/address`), so an unbounded value
+/// would derive billions of keys and flood the node. 1000 is fifty times
+/// the BIP44 default and as far as `OWN_FILE_RECEIVE_SEARCH_LIMIT` looks.
+pub(crate) const MAX_GAP_LIMIT: u32 = 1000;
+
+/// The BIP44 default gap.
+const DEFAULT_GAP_LIMIT: u32 = 20;
+
+/// `address_gap_limit`, in `1..=MAX_GAP_LIMIT`.
 pub(crate) fn gap_limit(settings: &std::collections::HashMap<String, String>) -> u32 {
     settings
         .get("address_gap_limit")
         .and_then(|s| s.parse::<u32>().ok())
         .filter(|n| *n > 0)
-        .unwrap_or(20)
+        // Why: absent, zero or not a number is no gap the user chose; the
+        // default is what a fresh install provisions with.
+        .unwrap_or(DEFAULT_GAP_LIMIT)
+        .min(MAX_GAP_LIMIT)
 }
 
 pub(crate) use crate::noncustodial::session::session_ttl_ms;

@@ -176,6 +176,39 @@ fn test_gap_limit_negative_falls_back() {
     assert_eq!(secure_wallet::gap_limit(&settings), 20);
 }
 
+/// F2: the setting is renderer-writable and every node sync derives and asks
+/// the node about `gap` addresses per branch, so a huge value is clamped to
+/// the cap; the cap itself is kept.
+#[test]
+fn test_gap_limit_is_capped() {
+    let cap = secure_wallet::MAX_GAP_LIMIT;
+    for (raw, want) in [
+        (cap.to_string(), cap),
+        ((cap + 1).to_string(), cap),
+        (u32::MAX.to_string(), cap),
+        ("1".to_string(), 1),
+        // Past u32: not a number this setting can hold, the default.
+        ("99999999999".to_string(), 20),
+        (" 50".to_string(), 20),
+        ("1e3".to_string(), 20),
+    ] {
+        let mut settings = std::collections::HashMap::new();
+        settings.insert("address_gap_limit".into(), raw.clone());
+        assert_eq!(secure_wallet::gap_limit(&settings), want, "{raw:?}");
+    }
+}
+
+/// Settings refuses a gap limit past the backend's cap, with the same number.
+#[test]
+fn test_gap_limit_cap_matches_the_settings_field() {
+    const UI: &str = include_str!("../../../src/lib/settingsDefaults.ts");
+    let decl = format!(
+        "export const MAX_ADDRESS_GAP_LIMIT = {};",
+        secure_wallet::MAX_GAP_LIMIT
+    );
+    assert!(UI.contains(&decl), "settingsDefaults.ts lacks `{decl}`");
+}
+
 // --- session_ttl_ms tests ---
 
 #[test]

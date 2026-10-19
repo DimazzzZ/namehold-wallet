@@ -26,6 +26,7 @@ import { useUiStore } from "../stores/ui";
 import { UpdatesSettings } from "./UpdatesSettings";
 import { useAppUpdate } from "../hooks/useAppUpdate";
 import { MIN_FEE_RATE_DOOS_PER_KVB, parseDoosPerKvb } from "../lib/feeRate";
+import { MAX_ADDRESS_GAP_LIMIT } from "../lib/settingsDefaults";
 import {
   enable as enableAutostart,
   disable as disableAutostart,
@@ -152,6 +153,16 @@ export function Settings() {
   const feeRateError =
     feeRateRaw && parseDoosPerKvb(feeRateRaw) === null
       ? "Fee rate must be a whole number of doos/kvB"
+      : null;
+
+  // The gap limit is optional (empty = the default, 20). The backend uses a
+  // whole number in 1..=MAX_ADDRESS_GAP_LIMIT and clamps a larger one, so
+  // the field refuses anything else rather than save a value not used as typed.
+  const gapRaw = (form.address_gap_limit ?? "").trim();
+  const gapLimitError =
+    gapRaw &&
+    !(/^\d+$/.test(gapRaw) && Number(gapRaw) >= 1 && Number(gapRaw) <= MAX_ADDRESS_GAP_LIMIT)
+      ? `Address gap limit must be a whole number from 1 to ${MAX_ADDRESS_GAP_LIMIT}`
       : null;
 
   // Pick the hsd data directory with the native folder browser (Finder).
@@ -620,12 +631,24 @@ export function Settings() {
           Advanced
         </summary>
         <div className="px-4 pb-4 space-y-3">
-          <Input
-            label="Address gap limit"
-            value={form.address_gap_limit ?? ""}
-            onChange={(e) => updateField("address_gap_limit", e.target.value)}
-            placeholder="20"
-          />
+          <div>
+            <Input
+              label="Address gap limit"
+              value={form.address_gap_limit ?? ""}
+              onChange={(e) => updateField("address_gap_limit", e.target.value)}
+              placeholder="20"
+              inputMode="numeric"
+              data-testid="settings-gap-limit"
+            />
+            {gapLimitError ? (
+              <div className="text-xs text-red-600 mt-1">{gapLimitError}</div>
+            ) : (
+              <div className="text-xs text-gray-500 mt-1">
+                Unused addresses each sync looks ahead for, per branch: 1 to {MAX_ADDRESS_GAP_LIMIT}
+                .
+              </div>
+            )}
+          </div>
           <Input
             label="Signer session timeout (seconds)"
             value={form.signer_session_timeout_seconds ?? ""}
@@ -657,7 +680,13 @@ export function Settings() {
         <StickyFooter>
           <Button
             onClick={handleSave}
-            disabled={saving || !!explorerUrlError || !!feeRateError || nodeNetworkMismatch}
+            disabled={
+              saving ||
+              !!explorerUrlError ||
+              !!feeRateError ||
+              !!gapLimitError ||
+              nodeNetworkMismatch
+            }
             data-testid="settings-save"
           >
             {saving ? "Saving…" : "Save settings"}
