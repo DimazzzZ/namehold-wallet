@@ -646,6 +646,78 @@ async fn live_unrevealed_bid_reads_lost_unrevealed() {
     assert!(!caps.can_redeem.allowed, "{:?}", caps.can_redeem);
 }
 
+/// A lone bid this wallet never revealed: nobody revealed, so hsd expires the
+/// name as soon as it closes and `getnameinfo` answers `info: null`. The BID
+/// coin is still unspent on the node and can never move (a BID goes only to
+/// a REVEAL, and the name has no auction left to reveal in). The lockup is
+/// reported as stranded, with its amount, beside "Available to Open".
+#[tokio::test]
+async fn live_bid_of_an_auction_nobody_revealed_is_a_stranded_lockup() {
+    let Some((url, key)) = it_env() else {
+        eprintln!(
+            "skip live_bid_of_an_auction_nobody_revealed_is_a_stranded_lockup: set HNS_IT_NODE_URL"
+        );
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    cl.generate_to_address(101, &addr).await.expect("fund");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("norev{tip}");
+
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
+    execute(&app, &cl, &addr, open.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let bid = build_bid_draft(app.state(), name.clone(), 500_000, 1_000_000, Some(1))
+        .await
+        .expect("build bid");
+    execute(&app, &cl, &addr, bid.id.clone()).await;
+    assert!(mine_until(&cl, &name, "REVEAL", &addr, 30).await);
+    // Nobody reveals: past the reveal window the name expires.
+    assert!(
+        mine_until_auction_lapses(&cl, &name, &addr, 40).await,
+        "name {name} did not lapse; state={:?}",
+        node_state(&cl, &name).await
+    );
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // On the node: no name state, and our BID output unspent.
+    let info = cl.get_name_info(&name).await.expect("getnameinfo");
+    assert!(
+        info.get("info").is_some_and(|i| i.is_null()),
+        "getnameinfo.info is null for the expired name: {info}"
+    );
+    let bid_txid = draft_status(&app, &bid.id).txid.expect("bid txid");
+    let ours = covenant_outpoints(&cl, &bid_txid, COV_TYPE_BID).await;
+    assert_eq!(ours.len(), 1, "one BID output: {ours:?}");
+    let (h, i) = &ours[0];
+    let coin = cl
+        .get_coin(h, *i)
+        .await
+        .expect("coin")
+        .expect("the unrevealed BID coin is still unspent");
+    assert_eq!(coin.value, 1_000_000, "the BID coin holds the lockup");
+
+    let caps = crate::commands::names::get_name_action_capabilities(
+        app.state(),
+        name.clone(),
+        Some(PROFILE.into()),
+    )
+    .await
+    .expect("capabilities");
+    assert_eq!(caps.phase, "AVAILABLE", "read from the node: {caps:?}");
+    assert_eq!(caps.stranded_bid_count, 1, "{caps:?}");
+    assert_eq!(caps.stranded_lockup_doos, 1_000_000, "{caps:?}");
+    assert!(!caps.can_reveal.allowed, "{:?}", caps.can_reveal);
+    assert!(!caps.can_redeem.allowed, "{:?}", caps.can_redeem);
+}
+
 /// The guard behind REDEEM on a real node: a lone bidder's reveal won, and
 /// until REGISTER spends it it is the name's owner coin, which hsd refuses to
 /// redeem (`bad-redeem-owner`). The name is never tracked, so the wallet has

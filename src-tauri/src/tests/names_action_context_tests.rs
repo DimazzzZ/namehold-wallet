@@ -11,7 +11,7 @@
 //! - Pending drafts
 //! - Pending OPEN coins
 
-use crate::commands::names::find_name_action_context;
+use crate::commands::names::{find_name_action_context, AuctionScope};
 use crate::db;
 use crate::noncustodial::sync::{self, COV_REVEAL};
 
@@ -162,7 +162,7 @@ fn find_name_action_context_no_evidence() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert!(!ctx.has_bid_commitment);
     assert!(!ctx.has_bid_coin);
     assert!(!ctx.has_reveal_coin);
@@ -187,7 +187,7 @@ fn find_name_action_context_with_bid_commitment_no_coin() {
     let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     seed_bid_commitment(&conn, NAME, name_hash_hex, ADDRESS);
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert!(ctx.has_bid_commitment);
     assert!(!ctx.has_bid_coin); // No coin synced yet
     assert!(!ctx.has_reveal_coin);
@@ -223,7 +223,7 @@ fn find_name_action_context_with_bid_coin() {
         Some(&covenant_json),
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert!(ctx.has_bid_commitment);
     assert!(ctx.has_bid_coin);
     assert!(!ctx.has_reveal_coin); // No reveal coin yet
@@ -274,7 +274,7 @@ fn find_name_action_context_with_reveal_coin() {
         Some(&reveal_covenant),
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert!(ctx.has_bid_commitment);
     assert!(ctx.has_bid_coin);
     assert!(ctx.has_reveal_coin);
@@ -323,7 +323,7 @@ fn find_name_action_context_with_owner_coin() {
         Some(12345),
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert!(ctx.has_owner_coin);
     assert_eq!(ctx.owner_covenant_type, Some(6));
     assert_eq!(ctx.name_height, Some(12345)); // height from tracked_name_states
@@ -338,7 +338,7 @@ fn find_name_action_context_with_pending_open_draft() {
 
     seed_draft(&conn, "draft_open_1", "open", NAME);
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert!(ctx.has_pending_open);
 }
 
@@ -353,7 +353,7 @@ fn find_name_action_context_with_unconfirmed_open_coin() {
     let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_OPEN);
     seed_tracked_utxo_at_height(&conn, "aa", ADDRESS, sync::COV_OPEN as i64, &cov, Some(-1));
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert!(
         ctx.has_pending_open,
         "a mempool OPEN coin is an open still in flight"
@@ -378,7 +378,7 @@ fn find_name_action_context_ignores_a_confirmed_open_coin() {
     let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_OPEN);
     seed_tracked_utxo_at_height(&conn, "bb", ADDRESS, sync::COV_OPEN as i64, &cov, Some(111));
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert!(
         !ctx.has_pending_open,
         "an OPEN coin confirmed at height 111 is history, not a pending open"
@@ -415,7 +415,7 @@ fn find_name_action_context_counts_only_this_auctions_bids() {
     .unwrap();
     db::queries::set_auction_heights(&conn, PROFILE, "blind2", 779, 800).unwrap();
 
-    let live = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    let live = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert_eq!(
         live.existing_bid_count, 1,
         "only the bid placed in this auction"
@@ -424,12 +424,12 @@ fn find_name_action_context_counts_only_this_auctions_bids() {
     assert_eq!(live.lockup_value_doos, Some(189_000_000));
 
     // The lapsed auction still sees its own bid — nothing was destroyed.
-    let lapsed = find_name_action_context(&conn, PROFILE, NAME, Some(111)).unwrap();
+    let lapsed = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(111)).unwrap();
     assert_eq!(lapsed.existing_bid_count, 1);
     assert_eq!(lapsed.bid_value_doos, Some(1_000_000));
 
     // Unknown auction (no node, no cached state) filters nothing.
-    let unknown = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let unknown = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert_eq!(unknown.existing_bid_count, 2);
 }
 
@@ -459,13 +459,13 @@ fn find_name_action_context_reports_a_stranded_bid_from_a_lapsed_auction() {
         Some(&cov),
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert_eq!(ctx.existing_bid_count, 0, "not a bid in THIS auction");
     assert_eq!(ctx.stranded_bid_count, 1);
     assert_eq!(ctx.stranded_lockup_doos, 2_000_000);
 
     // Viewed from its own auction it is an ordinary bid, not stranded.
-    let own = find_name_action_context(&conn, PROFILE, NAME, Some(111)).unwrap();
+    let own = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(111)).unwrap();
     assert_eq!(own.existing_bid_count, 1);
     assert_eq!(own.stranded_bid_count, 0);
 }
@@ -506,7 +506,7 @@ fn find_name_action_context_does_not_count_a_stranded_coin_as_revealable() {
     .unwrap();
     db::queries::set_auction_heights(&conn, PROFILE, "blind2", 779, 800).unwrap();
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert_eq!(ctx.existing_bid_count, 1, "one bid belongs to this auction");
     assert_eq!(
         ctx.stranded_bid_count, 1,
@@ -546,7 +546,7 @@ fn find_name_action_context_totals_what_a_redeem_would_reclaim() {
         Some(&cov),
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert_eq!(ctx.redeemable_reveal_count, 2);
     assert_eq!(
         ctx.redeemable_value_doos, 200_000,
@@ -599,7 +599,7 @@ fn find_name_action_context_knows_the_owner_coin_is_only_spent_in_flight() {
     );
 
     // Nothing of ours in flight: the coin really is gone.
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert!(!ctx.has_owner_coin);
     assert!(!ctx.owner_spend_in_flight);
 
@@ -614,7 +614,7 @@ fn find_name_action_context_knows_the_owner_coin_is_only_spent_in_flight() {
         Some("redtx"),
     )
     .unwrap();
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert!(
         !ctx.owner_spend_in_flight,
         "a redeem does not spend the owner coin"
@@ -630,7 +630,7 @@ fn find_name_action_context_knows_the_owner_coin_is_only_spent_in_flight() {
         Some("regtx"),
     )
     .unwrap();
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert!(
         !ctx.has_owner_coin,
         "still unspendable — that part was right"
@@ -685,7 +685,7 @@ fn find_name_action_context_recognises_a_batched_owner_spend() {
         Some("bttx"),
     )
     .unwrap();
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert!(
         ctx.owner_spend_in_flight,
         "a batched transfer spends the owner coin just as a single one does"
@@ -728,7 +728,7 @@ fn find_name_action_context_recognises_a_batched_owner_spend() {
         Some("brtx"),
     )
     .unwrap();
-    let ctx2 = find_name_action_context(&conn2, PROFILE, NAME, Some(779)).unwrap();
+    let ctx2 = find_name_action_context(&conn2, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert!(!ctx2.owner_spend_in_flight);
 }
 
@@ -743,7 +743,7 @@ fn find_name_action_context_does_not_strand_a_spent_bid() {
     db::queries::set_auction_heights(&conn, PROFILE, "blind", 111, 132).unwrap();
     // No BID coin seeded at all — it was spent by the reveal.
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert_eq!(ctx.stranded_bid_count, 0);
     assert_eq!(ctx.stranded_lockup_doos, 0);
 }
@@ -758,7 +758,7 @@ fn find_name_action_context_keeps_a_commitment_with_no_known_auction() {
     let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     seed_bid_commitment(&conn, NAME, &nh_hex, ADDRESS); // no set_auction_heights
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert_eq!(ctx.existing_bid_count, 1);
 }
 
@@ -792,7 +792,7 @@ fn find_name_action_context_multiple_bids() {
     )
     .unwrap();
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert_eq!(ctx.existing_bid_count, 2);
 }
 
@@ -829,7 +829,7 @@ fn find_name_action_context_with_reveal_txid() {
     )
     .unwrap();
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert_eq!(ctx.reveal_txid.as_deref(), Some("reveal_tx_123"));
 }
 
@@ -884,7 +884,7 @@ fn find_name_action_context_reveal_draft_status() {
     )
     .unwrap();
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert_eq!(
         ctx.reveal_draft_status,
         Some(db::queries::DraftStatus::Confirmed)
@@ -925,7 +925,7 @@ fn find_name_action_context_register_owner_is_not_a_transfer() {
         Some(7517),
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert!(ctx.has_owner_coin);
     assert_eq!(ctx.transfer_has_items, Some(false));
 }
@@ -970,7 +970,7 @@ fn find_name_action_context_transfer_with_items() {
         None,
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert_eq!(ctx.transfer_has_items, Some(true));
 }
 
@@ -998,7 +998,7 @@ fn find_name_action_context_update_owner_is_not_a_transfer() {
         None,
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert_eq!(ctx.transfer_has_items, Some(false));
 }
 
@@ -1040,7 +1040,7 @@ fn find_name_action_context_spent_coins_ignored() {
     )
     .unwrap();
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert!(ctx.has_bid_commitment);
     assert!(!ctx.has_bid_coin); // Spent coin is ignored
 }
@@ -1265,7 +1265,8 @@ fn an_invalid_name_is_refused_rather_than_read_as_nothing_to_reveal() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let Err(err) = find_name_action_context(&conn, PROFILE, "NotAName", None) else {
+    let Err(err) = find_name_action_context(&conn, PROFILE, "NotAName", AuctionScope::Unknown)
+    else {
         panic!("an unhashable name must not resolve to an empty context");
     };
     assert!(
@@ -1320,7 +1321,7 @@ fn find_name_action_context_counts_a_purchase_finalize_as_an_owner_spend() {
         Some("pftx"),
     )
     .unwrap();
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert!(ctx.owner_spend_in_flight);
 }
 
@@ -1364,7 +1365,7 @@ fn find_name_action_context_counts_a_cancel_in_flight_as_an_owner_spend() {
         Some("canceltx"),
     )
     .unwrap();
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert!(ctx.owner_spend_in_flight);
 }
 
@@ -1410,7 +1411,7 @@ fn find_name_action_context_counts_a_lock_transfer_as_an_owner_spend() {
             Some("locktx"),
         )
         .unwrap();
-        let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+        let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
         assert!(ctx.owner_spend_in_flight, "{action}");
     }
 }
@@ -1433,11 +1434,11 @@ fn find_name_action_context_reads_the_open_listing() {
         rusqlite::params![PROFILE, NAME],
     )
     .unwrap();
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert_eq!(ctx.listing_state, Some(ListingState::Locking));
     conn.execute("UPDATE shakedex_listings SET state = 'aborted'", [])
         .unwrap();
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert_eq!(ctx.listing_state, None, "an ended listing locks nothing");
 }
 
@@ -1485,7 +1486,7 @@ fn a_locking_listing_blocks_only_while_its_lock_draft_is_alive() {
             rusqlite::params![PROFILE, NAME],
         )
         .unwrap();
-        let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+        let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
         assert_eq!(
             ctx.listing_state.is_some(),
             blocks,
@@ -1496,7 +1497,7 @@ fn a_locking_listing_blocks_only_while_its_lock_draft_is_alive() {
             [],
         )
         .unwrap();
-        let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+        let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
         assert_eq!(
             ctx.listing_state,
             Some(ListingState::ReadyToFinalize),
@@ -1512,7 +1513,7 @@ fn a_locking_listing_blocks_only_while_its_lock_draft_is_alive() {
         rusqlite::params![PROFILE, NAME],
     )
     .unwrap();
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert_eq!(ctx.listing_state, None, "locking, no lock draft linked");
 }
 
@@ -1578,7 +1579,7 @@ fn client(url: &str) -> crate::noncustodial::rpc::NodeRpcClient {
 fn unrevealed_candidates_are_every_bid_of_the_auction_whose_reveal_is_not_sent() {
     let conn = test_db();
     two_bids(&conn);
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     let mut got: Vec<_> = ctx
         .unrevealed_bid_coins
         .iter()
@@ -1591,7 +1592,7 @@ fn unrevealed_candidates_are_every_bid_of_the_auction_whose_reveal_is_not_sent()
     // The newest one's reveal stamped (no local draft: made elsewhere): only
     // the older bid is left a candidate, whichever is newest.
     db::queries::set_bid_reveal_txid(&conn, PROFILE, NAME, "b-new", "rev-new").unwrap();
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     let got: Vec<_> = ctx
         .unrevealed_bid_coins
         .iter()
@@ -1620,7 +1621,7 @@ async fn an_older_bid_left_unrevealed_beside_a_revealed_one_is_lost_on_the_nodes
         .expect(0)
         .create_async()
         .await;
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None)
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown)
         .unwrap()
         .with_node_unrevealed_bids(&client(&node.url()))
         .await;
@@ -1681,7 +1682,7 @@ async fn an_unrevealed_bid_is_not_lost_without_the_nodes_word() {
             .with_body(body)
             .create_async()
             .await;
-        let ctx = find_name_action_context(&conn, PROFILE, NAME, None)
+        let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown)
             .unwrap()
             .with_node_unrevealed_bids(&client(&node.url()))
             .await;
@@ -1705,7 +1706,7 @@ async fn an_unrevealed_bid_is_not_lost_without_the_nodes_word() {
         .with_body(node_bid_coin("bidold", OLD_ADDR, sync::COV_BID))
         .create_async()
         .await;
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, None)
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown)
         .unwrap()
         .with_node_unrevealed_bids(&client(&node.url()))
         .await;
@@ -1747,7 +1748,7 @@ fn a_reveal_of_an_earlier_auction_is_stranded_not_redeemable() {
         Some(&cov),
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
     assert_eq!(
         ctx.redeemable_reveal_count, 0,
         "not redeemable in THIS auction"
@@ -1766,14 +1767,171 @@ fn a_reveal_of_an_earlier_auction_is_stranded_not_redeemable() {
     assert_eq!(ctx.redeemable_value_doos, 0);
 
     // Viewed from its own auction it is an ordinary losing reveal.
-    let own = find_name_action_context(&conn, PROFILE, NAME, Some(111)).unwrap();
+    let own = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(111)).unwrap();
     assert_eq!(own.redeemable_reveal_count, 1);
     assert_eq!(own.redeemable_value_doos, 100_000);
     assert_eq!(own.stranded_bid_count, 0);
     assert_eq!(own.stranded_lockup_doos, 0);
 
     // An auction we cannot tell filters nothing, as for the bids.
-    let unknown = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    let unknown = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Unknown).unwrap();
     assert_eq!(unknown.redeemable_reveal_count, 1);
     assert_eq!(unknown.stranded_bid_count, 0);
+}
+
+// ============================================================================
+// An auction nobody revealed in: the name expires, our lockup is stranded
+// ============================================================================
+
+#[test]
+fn the_scope_is_read_off_getnameinfo() {
+    let scope = |v: serde_json::Value| AuctionScope::from_name_info(&v);
+    assert_eq!(
+        scope(serde_json::json!({ "start": {}, "info": null })),
+        AuctionScope::Lapsed
+    );
+    assert_eq!(
+        scope(serde_json::json!({ "info": { "height": 779, "state": "CLOSED" } })),
+        AuctionScope::Live(779)
+    );
+    assert_eq!(
+        scope(serde_json::json!({ "info": { "state": "CLOSED" } })),
+        AuctionScope::Unknown,
+        "an answer without the height says nothing about the auction"
+    );
+    assert_eq!(scope(serde_json::json!({})), AuctionScope::Unknown);
+}
+
+/// A bid of ours never revealed, and a reveal of ours, on a name the node
+/// reports no state for (`getnameinfo.info` null): the name expired, so the
+/// lapsed auction's coins can be neither revealed nor redeemed.
+fn lapsed_bid_and_reveal(conn: &rusqlite::Connection) {
+    seed_profile(conn);
+    seed_derived_address(conn, OLD_ADDR, 0, 0);
+    seed_derived_address(conn, NEW_ADDR, 0, 1);
+    let nh = name_hash();
+    db::queries::insert_bid_commitment(
+        conn, PROFILE, NAME, &nh, OLD_ADDR, 0, 0, 1_000_000, 2_000_000, "nonce", "b-old",
+    )
+    .unwrap();
+    seed_tracked_utxo(
+        conn,
+        "bidold",
+        0,
+        OLD_ADDR,
+        sync::COV_BID as i64,
+        Some(&bid_cov(&nh)),
+    );
+    seed_tracked_utxo(
+        conn,
+        "revold",
+        0,
+        NEW_ADDR,
+        COV_REVEAL as i64,
+        Some(&reveal_covenant_of_auction(&nh, 111)),
+    );
+}
+
+/// hsd's `GET /coin` answer for our REVEAL coin `revold`:0.
+fn node_reveal_coin() -> String {
+    serde_json::json!({
+        "version": 0, "height": 125, "value": 700_000, "address": NEW_ADDR,
+        "coinbase": false, "hash": "revold", "index": 0,
+        "covenant": { "type": COV_REVEAL, "action": "REVEAL",
+                      "items": [name_hash(), "6f000000", "00".repeat(32)] }
+    })
+    .to_string()
+}
+
+/// The node holds both coins of the expired name: they are counted as the
+/// stranded lockup, with the values the node reports, and neither is offered
+/// as a bid to reveal or a reveal to redeem.
+#[tokio::test]
+async fn an_expired_auction_strands_our_lockup_on_the_nodes_word() {
+    let conn = test_db();
+    lapsed_bid_and_reveal(&conn);
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Lapsed).unwrap();
+    assert!(!ctx.has_bid_commitment, "no live auction to bid in");
+    assert!(!ctx.has_bid_coin, "nothing to reveal");
+    assert!(!ctx.has_reveal_coin, "nothing to redeem");
+    assert_eq!(ctx.redeemable_reveal_count, 0);
+    assert_eq!(ctx.redeemable_value_doos, 0);
+    assert_eq!(ctx.stranded_bid_count, 0, "not before the node answers");
+
+    let mut node = mockito::Server::new_async().await;
+    let bid = node
+        .mock("GET", "/coin/bidold/0")
+        .with_body(node_bid_coin("bidold", OLD_ADDR, sync::COV_BID))
+        .expect(1)
+        .create_async()
+        .await;
+    let reveal = node
+        .mock("GET", "/coin/revold/0")
+        .with_body(node_reveal_coin())
+        .expect(1)
+        .create_async()
+        .await;
+    let ctx = ctx.with_node_lapsed_coins(&client(&node.url())).await;
+    bid.assert_async().await;
+    reveal.assert_async().await;
+    assert_eq!(ctx.stranded_bid_count, 2);
+    assert_eq!(ctx.stranded_lockup_doos, 2_000_000 + 700_000);
+}
+
+/// Without the node's word nothing is claimed: a coin it does not hold (404),
+/// a node error, and a coin that is not ours as we hold it leave the count
+/// at zero. A name whose auction is live, or that we cannot place, asks the
+/// node nothing here.
+#[tokio::test]
+async fn an_expired_auction_claims_no_lockup_without_the_nodes_word() {
+    let conn = test_db();
+    lapsed_bid_and_reveal(&conn);
+    for (label, status, body) in [
+        ("spent", 404, String::new()),
+        ("node error", 500, "boom".to_string()),
+        (
+            "another address",
+            200,
+            node_bid_coin("bidold", NEW_ADDR, sync::COV_BID),
+        ),
+    ] {
+        let mut node = mockito::Server::new_async().await;
+        let _b = node
+            .mock("GET", "/coin/bidold/0")
+            .with_status(status)
+            .with_body(body)
+            .create_async()
+            .await;
+        let _r = node
+            .mock("GET", "/coin/revold/0")
+            .with_status(status)
+            .with_body(if status == 200 {
+                node_bid_coin("revold", NEW_ADDR, sync::COV_BID)
+            } else {
+                String::new()
+            })
+            .create_async()
+            .await;
+        let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Lapsed)
+            .unwrap()
+            .with_node_lapsed_coins(&client(&node.url()))
+            .await;
+        assert_eq!(ctx.stranded_bid_count, 0, "{label}");
+        assert_eq!(ctx.stranded_lockup_doos, 0, "{label}");
+    }
+    for scope in [AuctionScope::Unknown, AuctionScope::Live(111)] {
+        let mut node = mockito::Server::new_async().await;
+        let none = node
+            .mock("GET", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let ctx = find_name_action_context(&conn, PROFILE, NAME, scope)
+            .unwrap()
+            .with_node_lapsed_coins(&client(&node.url()))
+            .await;
+        none.assert_async().await;
+        assert!(ctx.has_bid_coin, "{scope:?}: the bid is this auction's");
+        assert_eq!(ctx.stranded_bid_count, 0, "{scope:?}");
+    }
 }

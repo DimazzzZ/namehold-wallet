@@ -291,7 +291,9 @@ pub(crate) struct NameActionContext {
     /// replaced: the money is missing with nothing on screen to explain it.
     /// An unspent REVEAL coin of an earlier auction counts here too, with its
     /// value: a REDEEM is valid only while the name is on the reveal's own
-    /// auction (`bad-redeem-nonlocal`), so it is just as gone.
+    /// auction (`bad-redeem-nonlocal`), so it is just as gone. On a name that
+    /// expired ([`AuctionScope::Lapsed`]) our BID and REVEAL coins are added
+    /// only once the node confirms them ([`Self::lapsed_auction_coins`]).
     pub stranded_bid_count: i64,
     pub stranded_lockup_doos: i64,
     /// Unspent REVEAL coins for this name that are NOT the name's owner — the
@@ -352,6 +354,13 @@ pub(crate) struct NameActionContext {
     /// only from that answer; with no node, or a node that did not answer,
     /// it stays false.
     pub unrevealed_bid_on_node: bool,
+    /// Our unspent BID and REVEAL coins of a name the node reports no state
+    /// for ([`AuctionScope::Lapsed`]): the candidates for a lockup the lapsed
+    /// auction stranded. Only the candidates: each is counted in
+    /// `stranded_bid_count` / `stranded_lockup_doos` once the node answers
+    /// that it still holds the coin
+    /// ([`NameActionContext::with_node_lapsed_coins`]).
+    pub lapsed_auction_coins: Vec<queries::NameCoin>,
 }
 
 /// Whether a reveal of a commitment is broadcast, waiting, or mined: its
@@ -369,18 +378,62 @@ pub(crate) fn reveal_sent_or_mined(status: Option<DraftStatus>, reveal_txid: Opt
     }
 }
 
+/// Which auction of a name the wallet's evidence is read against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuctionScope {
+    /// The node reports an auction of the name, opened at this height
+    /// (`getnameinfo.info.height`).
+    Live(i64),
+    /// The node answered and reports no name state (`getnameinfo.info` is
+    /// `null`): the name was never opened, or it expired. hsd expires a name
+    /// nobody revealed in as soon as it closes, and any name once its renewal
+    /// window or a revocation's maturity has passed (`namestate.js`
+    /// `isExpired`); the next transaction on it resets the state
+    /// (`maybeExpire`), so no BID or REVEAL of the lapsed auction can ever be
+    /// revealed or redeemed again.
+    Lapsed,
+    /// Nobody could tell: no node to ask, or a reply without the auction's
+    /// height. Nothing is filtered ([`queries::same_auction`]).
+    Unknown,
+}
+
+impl AuctionScope {
+    /// Read the scope off a `getnameinfo` reply.
+    pub(crate) fn from_name_info(name_info: &serde_json::Value) -> Self {
+        match name_info.get("info") {
+            Some(serde_json::Value::Null) => Self::Lapsed,
+            info => info
+                .and_then(|i| i.get("height"))
+                .and_then(|h| h.as_i64())
+                .map_or(Self::Unknown, Self::Live),
+        }
+    }
+
+    /// The live auction's start, for [`queries::same_auction`]; `None` when
+    /// there is none to compare with.
+    fn live_start(self) -> Option<i64> {
+        match self {
+            Self::Live(start) => Some(start),
+            Self::Lapsed | Self::Unknown => None,
+        }
+    }
+}
+
 /// Gather wallet evidence from the DB for a name.
-/// `auction_start` is the OPEN height of the auction currently running for
-/// `name`, when the caller knows it. Bids belong to an auction, not to a name —
-/// a name can be auctioned repeatedly — so a commitment from an auction that
-/// has since lapsed must not be read as one of this wallet's bids on the live
-/// one. `None` means "we could not tell", and then nothing is filtered.
+/// `auction` is the auction currently running for `name`, as far as the
+/// caller knows. Bids belong to an auction, not to a name — a name can be
+/// auctioned repeatedly — so a commitment from an auction that has since
+/// lapsed must not be read as one of this wallet's bids on the live one.
+/// [`AuctionScope::Unknown`] means "we could not tell", and then nothing is
+/// filtered.
 pub(crate) fn find_name_action_context(
     conn: &rusqlite::Connection,
     profile_id: &str,
     name: &str,
-    auction_start: Option<i64>,
+    auction: AuctionScope,
 ) -> Result<NameActionContext, AppError> {
+    let auction_start = auction.live_start();
+    let lapsed = auction == AuctionScope::Lapsed;
     // Newest first, so the first match is the most recent bid in this auction.
     // A DB failure is returned, not read as "this wallet has never bid": the
     // capabilities built from it decide whether Reveal and Redeem are offered,
@@ -391,7 +444,7 @@ pub(crate) fn find_name_action_context(
         .collect();
     let commitments: Vec<queries::BidCommitmentRow> = for_name
         .iter()
-        .filter(|b| b.belongs_to_auction(auction_start))
+        .filter(|b| !lapsed && b.belongs_to_auction(auction_start))
         .cloned()
         .collect();
     let bid = commitments.first().cloned();
@@ -405,8 +458,13 @@ pub(crate) fn find_name_action_context(
     // Scoping the bids panel by auction (029/030) made these invisible, which
     // is worse than the wrong count it replaced: the money is simply missing
     // with nothing on screen to explain it.
+    //
+    // A name that expired has no live auction: every bid of ours on it is of
+    // a lapsed one, and is not counted on the local coin set alone. Those BID
+    // coins are kept as candidates for the node's word below.
     let (stranded_bid_count, stranded_lockup_doos) = for_name
         .iter()
+        .filter(|_| !lapsed)
         .filter(|b| !b.belongs_to_auction(auction_start))
         .filter(|b| {
             queries::find_unspent_covenant_utxo(
@@ -424,6 +482,26 @@ pub(crate) fn find_name_action_context(
         .fold((0i64, 0i64), |(n, sum), b| {
             (n.saturating_add(1), sum.saturating_add(b.lockup_value_doos))
         });
+    let mut lapsed_auction_coins: Vec<queries::NameCoin> = Vec::new();
+    if lapsed {
+        for b in &for_name {
+            if let Some(coin) = queries::find_unspent_covenant_utxo(
+                conn,
+                profile_id,
+                &b.address,
+                sync::COV_BID as i64,
+                name,
+                &b.name_hash_hex,
+            )? {
+                if !lapsed_auction_coins
+                    .iter()
+                    .any(|c| c.txid == coin.txid && c.vout == coin.vout)
+                {
+                    lapsed_auction_coins.push(coin);
+                }
+            }
+        }
+    }
     // Part 3 (confirmed pre-existing bug, folded in from the Task 2 review):
     // revealing SPENDS the COV_BID coin and CREATES a COV_REVEAL coin — so a
     // COV_REVEAL coin can only exist AFTER a successful reveal, never before.
@@ -505,7 +583,17 @@ pub(crate) fn find_name_action_context(
             &name_hash_hex,
         )?
         .into_iter()
-        .partition(|c| c.belongs_to_auction(auction_start));
+        .partition(|c| !lapsed && c.belongs_to_auction(auction_start));
+    // An expired name's reveals are of the lapsed auction too: the next
+    // transaction on the name resets its state (`namestate.js` `maybeExpire`),
+    // so a REDEEM or REGISTER of them is `bad-redeem-nonlocal`. Like its bids,
+    // they wait for the node's word.
+    let stranded_reveals = if lapsed {
+        lapsed_auction_coins.extend(stranded_reveals);
+        Vec::new()
+    } else {
+        stranded_reveals
+    };
     let (stranded_bid_count, stranded_lockup_doos) =
         stranded_reveals
             .iter()
@@ -655,6 +743,7 @@ pub(crate) fn find_name_action_context(
         listing_state,
         unrevealed_bid_coins,
         unrevealed_bid_on_node: false,
+        lapsed_auction_coins,
     })
 }
 
@@ -798,14 +887,11 @@ async fn evaluate_name_action_capabilities(
                 .unwrap_or_else(|| "AVAILABLE".to_string());
 
             // The auction running right now, straight from the node.
-            let auction_start = name_info
-                .get("info")
-                .and_then(|i| i.get("height"))
-                .and_then(|h| h.as_i64());
+            let auction = AuctionScope::from_name_info(&name_info);
 
             let (action_ctx, tracked_owner_address, profile_addrs) = {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-                let action_ctx = find_name_action_context(&conn, profile_id, &name, auction_start)?;
+                let action_ctx = find_name_action_context(&conn, profile_id, &name, auction)?;
                 let tracked_owner_address =
                     queries::get_tracked_name_state(&conn, profile_id, &name)?
                         .and_then(|t| t.owner_address);
@@ -827,6 +913,9 @@ async fn evaluate_name_action_capabilities(
             } else {
                 action_ctx
             };
+            // An expired name: our coins of its lapsed auction are a stranded
+            // lockup, on the node's word. Nothing to ask otherwise.
+            let action_ctx = action_ctx.with_node_lapsed_coins(&client).await;
             let NameOwnership {
                 owns_name,
                 spend_locked,
@@ -856,13 +945,14 @@ async fn evaluate_name_action_capabilities(
                 // No live node — the cached `getnameinfo` payload is the best
                 // evidence of which auction is running. `upsert_name_state`
                 // clears it when the node reports none.
-                let cached_auction_start = tracked
+                let cached_auction = tracked
                     .as_ref()
                     .and_then(|t| t.raw_json.as_deref())
                     .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
-                    .and_then(|v| v.get("info")?.get("height")?.as_i64());
+                    .and_then(|v| v.get("info")?.get("height")?.as_i64())
+                    .map_or(AuctionScope::Unknown, AuctionScope::Live);
                 let action_ctx =
-                    find_name_action_context(&conn, profile_id, &name, cached_auction_start)?;
+                    find_name_action_context(&conn, profile_id, &name, cached_auction)?;
                 let addrs = queries::get_profile_addresses(&conn, profile_id)?;
                 // Same expiry math as `read_renewals::compute_renewals`:
                 // `NameParams::expiry_end` + the best persisted height estimate
@@ -1417,7 +1507,7 @@ impl NameActionContext {
     /// R10a: ask the node about each of `unrevealed_bid_coins` (`GET
     /// /coin`). A bid reads as lost unrevealed only on the node's answer that
     /// the coin is still an unspent BID of this name at its address, every
-    /// field matched ([`node_bid_coin_matches`]). A coin the node does not
+    /// field matched ([`node_name_coin_matches`]). A coin the node does not
     /// have was spent, by a reveal made elsewhere or one in its mempool (hsd
     /// answers 404 for a coin a mempool transaction spends), so it is not
     /// lost; a node error or a reply that does not match decides nothing
@@ -1426,7 +1516,7 @@ impl NameActionContext {
         let mut on_node = false;
         for c in &self.unrevealed_bid_coins {
             match client.get_coin(&c.txid, c.vout).await {
-                Ok(Some(coin)) if node_bid_coin_matches(c, &coin) => {
+                Ok(Some(coin)) if node_name_coin_matches(c, &coin, sync::COV_BID) => {
                     on_node = true;
                     break;
                 }
@@ -1452,11 +1542,53 @@ impl NameActionContext {
         }
     }
 
+    /// Ask the node about each of `lapsed_auction_coins` (`GET /coin`), and
+    /// count every one it still holds, as our BID or REVEAL of this name at
+    /// its address ([`node_name_coin_matches`]), in the stranded lockup, with
+    /// the value the node reports. A coin the node does not have was spent,
+    /// and a node error or a reply that does not match claims nothing; both
+    /// are logged, the error with the coin it was about.
+    pub(crate) async fn with_node_lapsed_coins(self, client: &NodeRpcClient) -> Self {
+        let (mut count, mut doos) = (self.stranded_bid_count, self.stranded_lockup_doos);
+        for c in &self.lapsed_auction_coins {
+            let Ok(kind) = u8::try_from(c.covenant_type) else {
+                continue;
+            };
+            match client.get_coin(&c.txid, c.vout).await {
+                Ok(Some(coin)) if node_name_coin_matches(c, &coin, kind) => {
+                    count = count.saturating_add(1);
+                    doos = doos.saturating_add(coin.value.max(0));
+                }
+                Ok(Some(coin)) => eprintln!(
+                    "names: the node's coin {}:{} is not our coin of the expired \
+                     name ({:?} at {:?}): not read as a stranded lockup",
+                    c.txid,
+                    c.vout,
+                    coin.covenant.as_ref().map(|k| k.kind),
+                    coin.address
+                ),
+                Ok(None) => {}
+                Err(e) => eprintln!(
+                    "names: could not ask the node about coin {}:{} of an expired \
+                     name: {e}; not read as a stranded lockup",
+                    c.txid, c.vout
+                ),
+            }
+        }
+        Self {
+            stranded_bid_count: count,
+            stranded_lockup_doos: doos,
+            ..self
+        }
+    }
+
     /// Count the redeemable reveals again against the owner coin the node
     /// reports in `info` (`getnameinfo.info`), the answer the redeem builder
     /// goes by. A reply that names no owner leaves the local count in place.
     pub(crate) fn with_node_owner(self, info: Option<&serde_json::Value>) -> Self {
-        let Some(info) = info else {
+        // `info: null` is hsd's whole answer for a name with no state: there
+        // is no owner to name.
+        let Some(info) = info.filter(|i| !i.is_null()) else {
             return self;
         };
         let Some(owner) = crate::commands::draft_ctx::owner_outpoint(info) else {
@@ -1484,12 +1616,13 @@ impl NameActionContext {
     }
 }
 
-/// Whether the node's `coin` is our BID coin `ours`: the same outpoint, a BID
-/// covenant whose first item is the coin's name hash as we hold it, and the
-/// same address. Every field is matched; a missing one is no match.
-fn node_bid_coin_matches(
+/// Whether the node's `coin` is our name coin `ours`: the same outpoint, a
+/// covenant of `kind` whose first item is the coin's name hash as we hold it,
+/// and the same address. Every field is matched; a missing one is no match.
+fn node_name_coin_matches(
     ours: &queries::NameCoin,
     coin: &crate::noncustodial::rpc::NodeCoin,
+    kind: u8,
 ) -> bool {
     let Some(cov) = coin.covenant.as_ref() else {
         return false;
@@ -1502,7 +1635,7 @@ fn node_bid_coin_matches(
     };
     coin.txid == ours.txid
         && coin.vout == ours.vout
-        && cov.kind == sync::COV_BID
+        && cov.kind == kind
         && cov
             .items
             .first()
@@ -3825,6 +3958,7 @@ mod tests {
             listing_state: None,
             unrevealed_bid_coins: Vec::new(),
             unrevealed_bid_on_node: false,
+            lapsed_auction_coins: Vec::new(),
         }
     }
 
