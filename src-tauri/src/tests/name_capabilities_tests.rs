@@ -61,6 +61,7 @@ fn ctx(
         unrevealed_bid_coins: Vec::new(),
         unrevealed_bid_on_node: false,
         stranded_candidates: Vec::new(),
+        stranded_unchecked_count: 0,
     }
 }
 
@@ -1284,4 +1285,53 @@ fn cap_redeem_is_refused_when_the_name_expires_with_the_next_block() {
     };
     assert!(!closed(1).can_redeem.allowed, "{:?}", closed(1).can_redeem);
     assert!(closed(2).can_redeem.allowed, "{:?}", closed(2).can_redeem);
+}
+
+/// In the last block before expiry the task agrees with the refused button:
+/// no "Redeem Lockup" task (which drives the Wallet's lost banner and the
+/// Auctions row's Redeem urgency), and the reason says why. With two blocks
+/// left the task is a redeem again. CLOSED and REVOKED alike.
+#[test]
+fn no_redeem_task_when_the_name_expires_with_the_next_block() {
+    let closed = |blocks_until_expire: i64| {
+        let stats = serde_json::json!({
+            "renewalPeriodStart": 100,
+            "renewalPeriodEnd": 2600,
+            "blocksUntilExpire": blocks_until_expire,
+            "daysUntilExpire": 0.01,
+        });
+        build_name_action_capabilities(
+            "example".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            Some(&stats),
+            &NameActionContext {
+                has_reveal_coin: true,
+                redeemable_reveal_count: 1,
+                ..Default::default()
+            },
+            false,
+            true,
+            None,
+            Network::Regtest,
+        )
+    };
+    for (what, caps) in [("revoked", revoked_caps(1)), ("closed", closed(1))] {
+        assert_eq!(
+            caps.task_state,
+            AuctionTaskState::UnavailableOther,
+            "{what}"
+        );
+        assert_eq!(caps.next_action_key, None, "{what}");
+        assert_eq!(
+            caps.next_action_reason.as_deref(),
+            Some(crate::commands::names::REDEEM_WINDOW_CLOSING_REASON),
+            "{what}"
+        );
+        assert!(!caps.can_redeem.allowed, "{what}");
+    }
+    for (what, caps) in [("revoked", revoked_caps(2)), ("closed", closed(2))] {
+        assert_eq!(caps.task_state, AuctionTaskState::LostNeedsRedeem, "{what}");
+        assert_eq!(caps.next_action_key.as_deref(), Some("REDEEM"), "{what}");
+    }
 }

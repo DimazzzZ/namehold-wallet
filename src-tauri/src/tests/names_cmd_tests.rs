@@ -4717,6 +4717,7 @@ async fn capabilities_of_an_expired_name_count_the_lockup_the_node_still_holds()
     coin.assert_async().await;
     assert_eq!(caps.stranded_bid_count, 1, "{caps:?}");
     assert_eq!(caps.stranded_lockup_doos, 2000);
+    assert_eq!(caps.stranded_unchecked_count, 0, "the node answered");
     assert_eq!(caps.my_bid_count, 0, "no live auction to have bid in");
     assert!(!caps.can_reveal.allowed);
 }
@@ -4761,4 +4762,57 @@ async fn capabilities_node_down_read_a_cached_expiry_as_a_lapsed_auction() {
         caps.stranded_bid_count, 0,
         "no node to confirm the coin: nothing claimed"
     );
+    assert_eq!(
+        caps.stranded_unchecked_count, 1,
+        "the candidate is reported as not checked, not as nothing stranded"
+    );
+}
+
+/// The node answers `getnameinfo` but not `GET /coin` for our BID coin of
+/// the expired name: nothing is claimed stranded, and the candidate is
+/// reported as not checked, so the UI does not read "nothing stranded".
+#[tokio::test]
+async fn capabilities_report_a_stranded_candidate_the_node_could_not_answer_for() {
+    let txid = "ad".repeat(32);
+    let mut server = mockito::Server::new_async().await;
+    let mut mocks = mock_blockchain_and_name(&mut server, 1.0, None).await;
+    mocks.push(
+        server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+            .with_body(
+                r#"{"result":{"start":{"reserved":false,"week":17,"start":34},"info":null},"error":null,"id":1}"#,
+            )
+            .expect_at_least(1)
+            .create_async()
+            .await,
+    );
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "uncheckable",
+            &txid,
+            crate::noncustodial::sync::COV_BID,
+        );
+        id
+    };
+    let coin = server
+        .mock("GET", format!("/coin/{txid}/0").as_str())
+        .with_status(500)
+        .expect(1)
+        .create_async()
+        .await;
+    let app = mock_app_with(state);
+    let caps =
+        names::get_name_action_capabilities(app.state(), "uncheckable".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve");
+    coin.assert_async().await;
+    assert_eq!(caps.stranded_bid_count, 0, "{caps:?}");
+    assert_eq!(caps.stranded_unchecked_count, 1);
 }

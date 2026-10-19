@@ -1049,29 +1049,42 @@ pub async fn read_name_bids(
         None => return Ok(empty_name_bids_response(&name)),
     };
 
-    // Node-only path: when the node is authoritative AND the chain scanner has
-    // indexed past the name's auction height, serve bids from the local
-    // `name_bid_outpoints` table — no HNSFans call. Fall through to the
-    // explorer when the scanner hasn't caught up yet.
-    if crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await {
-        let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name(&name)?);
-        // Which auction the name is on, by the node's word and read as the
-        // capabilities read it (`AuctionScope`), so the panel and the
-        // stranded-lockup notice agree on the same bid. An expired name has
-        // no auction to list: our bids of the lapsed one belong to the
-        // notice. A node that does not answer leaves the tracked row's
-        // height to decide, as before.
+    use crate::commands::names::AuctionScope;
+    // Which auction the name is on, read as the capabilities read it
+    // (`AuctionScope`) on every path, so the panel and the stranded-lockup
+    // notice agree on the same bid: the node's word when it is ready and
+    // answers, else the `getnameinfo` reply cached on the tracked row. An
+    // expired name has no auction to list: our bids of the lapsed one belong
+    // to the notice, whether the bids then come from the index or the
+    // explorer.
+    let cached_scope = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let tracked = queries::get_tracked_name_state(&conn, &id, &name)?;
+        AuctionScope::from_cached_name_info(tracked.as_ref().and_then(|t| t.raw_json.as_deref()))
+    };
+    let node_ready = crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await;
+    let scope = if node_ready {
         let client = {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
             crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, &id)?
         };
-        let scope = match client.get_name_info(&name).await {
-            Ok(reply) => crate::commands::names::AuctionScope::from_name_info(&reply),
-            Err(_) => crate::commands::names::AuctionScope::Unknown,
-        };
-        if scope == crate::commands::names::AuctionScope::Lapsed {
-            return Ok(empty_name_bids_response(&name));
+        match client.get_name_info(&name).await {
+            Ok(reply) => AuctionScope::from_name_info(&reply),
+            Err(_) => cached_scope,
         }
+    } else {
+        cached_scope
+    };
+    if scope == AuctionScope::Lapsed {
+        return Ok(empty_name_bids_response(&name));
+    }
+
+    // Node-only path: when the node is authoritative AND the chain scanner has
+    // indexed past the name's auction height, serve bids from the local
+    // `name_bid_outpoints` table — no HNSFans call. Fall through to the
+    // explorer when the scanner hasn't caught up yet.
+    if node_ready {
+        let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name(&name)?);
         let (indexed_bids, commitments, scanner_height, name_height) = {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
             // Both the index and the cursor are network-keyed (028): a name
@@ -1101,10 +1114,7 @@ pub async fn read_name_bids(
                 )
                 .ok()
                 .flatten();
-            let nh = match scope {
-                crate::commands::names::AuctionScope::Live(start) => Some(start),
-                _ => tracked_nh,
-            };
+            let nh = scope.live_start().or(tracked_nh);
             // Bids belong to an auction, not to a name (029). Without a current
             // auction there is nothing to show: a lapsed auction's bids are
             // still indexed, and serving them is what made a name sitting at
@@ -1153,7 +1163,14 @@ pub async fn read_name_bids(
         let explorer_opt = profile_network_from_conn(&conn, &id)
             .ok()
             .and_then(|network| explorer_client(&settings, network));
-        (explorer_opt, queries::list_bid_commitments(&conn, &id)?)
+        // This auction's commitments only, as on the index path: a bid of an
+        // earlier auction the explorer still lists is a stranded candidate,
+        // not one of ours in the live auction.
+        let comms: Vec<queries::BidCommitmentRow> = queries::list_bid_commitments(&conn, &id)?
+            .into_iter()
+            .filter(|c| c.belongs_to_auction(scope.live_start()))
+            .collect();
+        (explorer_opt, comms)
     };
     // G2: no explorer for this network and the node hasn't indexed the name
     // yet — return empty bids (same shape as when the name has no bids) rather

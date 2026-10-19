@@ -248,6 +248,12 @@ pub struct NameActionCapabilities {
     /// redeems a reveal only on its own auction.
     pub stranded_bid_count: i64,
     pub stranded_lockup_doos: i64,
+    /// Candidates for a stranded lockup that no node could be asked about
+    /// (offline, a node that is not synced, or one that did not answer
+    /// `GET /coin`): neither stranded nor cleared. Reported so the UI can say
+    /// it could not check, which is not the same as "nothing stranded"; never
+    /// a loss verdict.
+    pub stranded_unchecked_count: i64,
     /// Losing reveals on this name that a REDEEM would reclaim, and what they
     /// are worth. Reported so the button can say what it does: "Redeem" alone
     /// is a covenant name, not an explanation, and this is money the wallet is
@@ -375,6 +381,11 @@ pub(crate) struct NameActionContext {
     /// node answers that it still holds the coin
     /// ([`NameActionContext::with_node_stranded_coins`]).
     pub stranded_candidates: Vec<queries::NameCoin>,
+    /// How many of `stranded_candidates` no node could be asked about: all
+    /// of them without a synced node ([`Self::with_stranded_unchecked`]),
+    /// those the node did not answer for otherwise
+    /// ([`Self::with_node_stranded_coins`]).
+    pub stranded_unchecked_count: i64,
 }
 
 /// Whether a reveal of a commitment is broadcast, waiting, or mined: its
@@ -423,9 +434,22 @@ impl AuctionScope {
         }
     }
 
+    /// Read the scope off the `getnameinfo` reply cached on the tracked row
+    /// (`raw_json`), for when no live node answers. Why `Lapsed` is kept from
+    /// a cache: `upsert_name_state` stores the node's `info: null` there on
+    /// purpose, and an expiry never undoes itself; only a new OPEN starts
+    /// another auction, which a stale cache misses either way. No cache, or
+    /// one without the height, is `Unknown`. The capabilities and the bids
+    /// panel both read it here, so they agree on the same bid offline.
+    pub(crate) fn from_cached_name_info(raw_json: Option<&str>) -> Self {
+        raw_json
+            .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+            .map_or(Self::Unknown, |v| Self::from_name_info(&v))
+    }
+
     /// The live auction's start, for [`queries::same_auction`]; `None` when
     /// there is none to compare with.
-    fn live_start(self) -> Option<i64> {
+    pub(crate) fn live_start(self) -> Option<i64> {
         match self {
             Self::Live(start) => Some(start),
             Self::Lapsed | Self::Unknown => None,
@@ -478,42 +502,34 @@ pub(crate) fn find_name_action_context(
     // called stranded on the node's word that it still holds the coin, never
     // on the local coin set alone, which can be behind a spend made elsewhere.
     //
-    // A lookup that fails (two of our coins of the name at one address) is
-    // skipped and logged, not returned: these coins only feed a notice the
-    // node confirms, and the error took every capability of the name down
-    // with it.
-    let mut stranded_candidates: Vec<queries::NameCoin> = Vec::new();
-    for b in for_name
+    // The coin is found at the commitment's address, and it must itself be of
+    // an auction that is not the live one (the auction its covenant commits
+    // to, `NameCoin::covenant_auction_start`): with an address reused across
+    // auctions, this auction's own BID coin sits at the same address, and
+    // read by the address alone it was a stranded candidate the node then
+    // confirmed. A coin that records no auction is left to the commitment's
+    // word. Every such coin at the address is a candidate, not exactly one:
+    // nothing here spends it or pairs it with a nonce, so two of them at one
+    // address are no ambiguity, and the node is asked about each.
+    let earlier_addresses: std::collections::HashSet<&str> = for_name
         .iter()
         .filter(|b| lapsed || !b.belongs_to_auction(auction_start))
-    {
-        let coin = match queries::find_unspent_covenant_utxo(
+        .map(|b| b.address.as_str())
+        .collect();
+    let mut stranded_candidates: Vec<queries::NameCoin> = if earlier_addresses.is_empty() {
+        Vec::new()
+    } else {
+        queries::find_unspent_covenant_utxos_by_name_hash(
             conn,
             profile_id,
-            &b.address,
             sync::COV_BID as i64,
-            name,
-            &b.name_hash_hex,
-        ) {
-            Ok(coin) => coin,
-            Err(e) => {
-                eprintln!(
-                    "names: the BID coin of an earlier or expired auction of '{name}' at {} \
-                     is not a stranded candidate: {e}",
-                    b.address
-                );
-                None
-            }
-        };
-        if let Some(coin) = coin {
-            if !stranded_candidates
-                .iter()
-                .any(|c| c.txid == coin.txid && c.vout == coin.vout)
-            {
-                stranded_candidates.push(coin);
-            }
-        }
-    }
+            &hex::encode(names::hash_name(name)?),
+        )?
+        .into_iter()
+        .filter(|c| earlier_addresses.contains(c.address.as_str()))
+        .filter(|c| lapsed || c.covenant_auction_start() != auction_start)
+        .collect()
+    };
     // Part 3 (confirmed pre-existing bug, folded in from the Task 2 review):
     // revealing SPENDS the COV_BID coin and CREATES a COV_REVEAL coin — so a
     // COV_REVEAL coin can only exist AFTER a successful reveal, never before.
@@ -747,8 +763,15 @@ pub(crate) fn find_name_action_context(
         unrevealed_bid_coins,
         unrevealed_bid_on_node: false,
         stranded_candidates,
+        stranded_unchecked_count: 0,
     })
 }
+
+/// Why a name holding our losing reveals has no task in the last block before
+/// it expires ([`RedeemWindow::ExpiresNextBlock`]).
+pub(crate) const REDEEM_WINDOW_CLOSING_REASON: &str = "Your losing bids on this name can no \
+     longer be redeemed: the name expires with the next block, and hsd takes no redeem of it \
+     from then on.";
 
 /// Reason surfaced on spend-capable actions when the synced node names a
 /// reveal of ours as the owner but the wallet does not track the name yet, so
@@ -947,16 +970,10 @@ async fn evaluate_name_action_capabilities(
                 let tracked = queries::get_tracked_name_state(&conn, profile_id, &name)?;
                 // No live node — the cached `getnameinfo` payload is the best
                 // evidence of which auction is running, read as the node's
-                // reply is. Why `Lapsed` is kept from a cache:
-                // `upsert_name_state` stores the node's `info: null` there on
-                // purpose, and an expiry never undoes itself; only a new OPEN
-                // starts another auction, which a stale cache misses either
-                // way. No cache, or one without the height, is `Unknown`.
-                let cached_auction = tracked
-                    .as_ref()
-                    .and_then(|t| t.raw_json.as_deref())
-                    .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
-                    .map_or(AuctionScope::Unknown, |v| AuctionScope::from_name_info(&v));
+                // reply is.
+                let cached_auction = AuctionScope::from_cached_name_info(
+                    tracked.as_ref().and_then(|t| t.raw_json.as_deref()),
+                );
                 let action_ctx =
                     find_name_action_context(&conn, profile_id, &name, cached_auction)?;
                 let addrs = queries::get_profile_addresses(&conn, profile_id)?;
@@ -984,10 +1001,9 @@ async fn evaluate_name_action_capabilities(
                 .as_deref()
                 .map(|s| s.to_uppercase())
                 .unwrap_or_default();
-            // No node to ask about the stranded candidates: a stranded lockup
-            // is a loss verdict, which the local coin set alone does not make
-            // (it can be behind a spend made elsewhere), so none is counted.
-            let action_ctx = action_ctx.with_live_tip(live_tip);
+            // No node to ask about the stranded candidates: none is counted,
+            // each is reported unchecked.
+            let action_ctx = action_ctx.with_live_tip(live_tip).with_stranded_unchecked();
             let NameOwnership {
                 owns_name,
                 spend_locked,
@@ -1355,6 +1371,18 @@ pub(crate) fn build_name_action_capabilities(
     });
     let task_state =
         derive_auction_task_state(action_ctx, &phase, owns_name, days_until_expire, network);
+    // The last block before expiry: hsd takes no redeem in the block the name
+    // expires in, so Redeem is refused above ([`RedeemWindow::ExpiresNextBlock`]).
+    // A "Redeem Lockup" task and the Wallet's lost banner would urge a button
+    // that is disabled; the state agrees with the button instead, and the
+    // reason says why.
+    let redeem_closing = matches!(task_state, AuctionTaskState::LostNeedsRedeem)
+        && window == RedeemWindow::ExpiresNextBlock;
+    let task_state = if redeem_closing {
+        AuctionTaskState::UnavailableOther
+    } else {
+        task_state
+    };
 
     // 6. Determine next action.
     let (next_action_key, next_action_label, mut next_action_reason) =
@@ -1386,6 +1414,10 @@ pub(crate) fn build_name_action_capabilities(
             "You own this name. These are your own losing bids on it — redeem them to reclaim the lockup."
                 .into(),
         );
+    }
+
+    if redeem_closing {
+        next_action_reason = Some(REDEEM_WINDOW_CLOSING_REASON.into());
     }
 
     // 7. Extract countdown from stats.
@@ -1431,6 +1463,7 @@ pub(crate) fn build_name_action_capabilities(
         pending_broadcast_action: action_ctx.pending_broadcast_action.clone(),
         stranded_bid_count: action_ctx.stranded_bid_count,
         stranded_lockup_doos: action_ctx.stranded_lockup_doos,
+        stranded_unchecked_count: action_ctx.stranded_unchecked_count,
         redeemable_reveal_count: action_ctx.redeemable_reveal_count,
         redeemable_value_doos: action_ctx.redeemable_value_doos,
     }
@@ -1485,6 +1518,7 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         pending_broadcast_action: None,
         stranded_bid_count: 0,
         stranded_lockup_doos: 0,
+        stranded_unchecked_count: 0,
         redeemable_reveal_count: 0,
         redeemable_value_doos: 0,
     }
@@ -1566,11 +1600,27 @@ impl NameActionContext {
             }
         }
         asked.log("a stranded lockup");
+        // Why: a coin the node could not be asked about is neither stranded
+        // nor cleared, and the UI says it could not check it.
+        let unchecked = i64::try_from(asked.failed.len()).unwrap_or(i64::MAX);
         Self {
+            stranded_unchecked_count: self.stranded_unchecked_count.saturating_add(unchecked),
             stranded_bid_count: count,
             // Why: a sum past i64::MAX doos is far beyond the HNS supply; it
             // is shown as the largest number, never wrapped negative.
             stranded_lockup_doos: i64::try_from(doos).unwrap_or(i64::MAX),
+            ..self
+        }
+    }
+
+    /// No node to ask about the stranded candidates: every one is left
+    /// unchecked, so the UI can say it could not check them. None is counted
+    /// stranded: that is a loss verdict, which the local coin set alone does
+    /// not make (it can be behind a spend made elsewhere).
+    pub(crate) fn with_stranded_unchecked(self) -> Self {
+        Self {
+            stranded_unchecked_count: i64::try_from(self.stranded_candidates.len())
+                .unwrap_or(i64::MAX),
             ..self
         }
     }
@@ -4044,6 +4094,7 @@ mod tests {
             unrevealed_bid_coins: Vec::new(),
             unrevealed_bid_on_node: false,
             stranded_candidates: Vec::new(),
+            stranded_unchecked_count: 0,
         }
     }
 

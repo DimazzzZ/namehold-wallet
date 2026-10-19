@@ -718,6 +718,12 @@ export interface NameActionCapabilities {
   strandedBidCount: number;
   strandedLockupDoos: number;
   /**
+   * Candidates for a stranded lockup that no node could be asked about
+   * (offline, an unsynced node, or one that did not answer): neither stranded
+   * nor cleared. Not a loss verdict; the UI says it could not check them.
+   */
+  strandedUncheckedCount: number;
+  /**
    * Losing reveals a REDEEM would reclaim on this name, and what they are
    * worth. "Redeem" is a covenant name, not an explanation — the button says
    * what it reclaims, and this is where the figure comes from.

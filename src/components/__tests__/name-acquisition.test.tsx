@@ -559,6 +559,97 @@ describe("NameActionsModal — guided acquisition flow", () => {
     expect(notice).toHaveTextContent(/cannot be recovered/i);
   });
 
+  it("says the bids could not be checked when no node confirmed the stranded candidates", async () => {
+    // Offline on an expired name: our bid of the lapsed auction is a candidate
+    // no node could be asked about. Not a loss verdict, and not "nothing
+    // stranded" either.
+    invokeMock.mockImplementation(
+      routeModal(
+        { name: "offlinelapsed", state: "AVAILABLE", height: null, stats: null },
+        {
+          capabilities: makeCapabilities({
+            name: "offlinelapsed",
+            phase: "AVAILABLE",
+            taskState: "availableToOpen",
+            canOpen: { allowed: true, reason: null },
+            nextActionKey: "OPEN",
+            nextActionLabel: "Open Auction",
+            strandedUncheckedCount: 1,
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="offlinelapsed" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    const line = await screen.findByTestId("stranded-unchecked");
+    expect(line).toHaveTextContent(
+      "Some of your bids on this name could not be checked — sync with your node to see whether a lockup was lost.",
+    );
+    expect(screen.queryByTestId("stranded-bids")).toBeNull();
+    expect(line).not.toHaveTextContent(/cannot be recovered/i);
+  });
+
+  it("says nothing about unchecked bids when every candidate was checked", async () => {
+    invokeMock.mockImplementation(
+      routeModal(
+        { name: "checked", state: "AVAILABLE", height: null, stats: null },
+        {
+          capabilities: makeCapabilities({
+            name: "checked",
+            phase: "AVAILABLE",
+            taskState: "availableToOpen",
+            canOpen: { allowed: true, reason: null },
+            nextActionKey: "OPEN",
+            nextActionLabel: "Open Auction",
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="checked" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    expect(await screen.findByText("Open Auction")).toBeInTheDocument();
+    expect(screen.queryByTestId("stranded-unchecked")).toBeNull();
+  });
+
+  it("says why our losing reveals have no redeem in the last block before expiry", async () => {
+    // One block of the name left: hsd takes no redeem in the block it expires
+    // in, so the backend reports no task, with the reason. No "Redeem" urgency
+    // and no "nothing to do here" either.
+    const reason =
+      "Your losing bids on this name can no longer be redeemed: the name expires with the next block, and hsd takes no redeem of it from then on.";
+    invokeMock.mockImplementation(
+      routeModal(
+        {
+          name: "lastblock",
+          state: "CLOSED",
+          height: 100,
+          stats: { blocksUntilExpire: 1, daysUntilExpire: 0.01 },
+        },
+        {
+          capabilities: makeCapabilities({
+            name: "lastblock",
+            phase: "CLOSED",
+            taskState: "unavailableOther",
+            hasRevealCoin: true,
+            redeemableRevealCount: 1,
+            redeemableValueDoos: 2_000_000,
+            canRedeem: refused(
+              "the name expires with the next block, and hsd takes no redeem of it from then on",
+            ),
+            nextActionReason: reason,
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="lastblock" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    expect(await screen.findByTestId("no-task-reason")).toHaveTextContent(reason);
+    expect(screen.queryByText(/No auction actions are needed/)).toBeNull();
+    expect(screen.queryByTestId("guided-redeem")).toBeNull();
+  });
+
   it("shows Bid for a BIDDING name", async () => {
     invokeMock.mockImplementation(
       routeModal({

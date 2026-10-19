@@ -2042,13 +2042,13 @@ async fn a_reveal_of_an_earlier_auction_is_stranded_only_on_the_nodes_word() {
     assert_eq!(ctx.redeemable_reveal_count, 0, "never offered to redeem");
 }
 
-/// Two BID coins of the name at one address make the coin lookup refuse to
-/// pick one. Among stranded candidates that is skipped (and logged), not the
-/// whole capabilities read: the candidates only feed a notice the node
-/// confirms, and an error here took Reveal, Redeem and every other
-/// capability of the name down with it.
+/// Two BID coins of the name at one address, both of an earlier or expired
+/// auction, are both stranded candidates: nothing spends them or pairs them
+/// with a nonce, so there is no coin to pick, and the node is asked about
+/// each. A refusal here took Reveal, Redeem and every other capability of
+/// the name down with it, and then hid both lockups.
 #[test]
-fn an_ambiguous_address_among_the_stranded_candidates_is_skipped_not_an_error() {
+fn two_stranded_bid_coins_at_one_address_are_both_candidates_not_an_error() {
     let conn = test_db();
     seed_profile(&conn);
     seed_derived_address(&conn, OLD_ADDR, 0, 0);
@@ -2065,12 +2065,98 @@ fn an_ambiguous_address_among_the_stranded_candidates_is_skipped_not_an_error() 
             0,
             OLD_ADDR,
             sync::COV_BID as i64,
-            Some(&bid_cov(&nh)),
+            Some(&bid_cov_of_auction(&nh, 111)),
         );
     }
     for scope in [AuctionScope::Lapsed, AuctionScope::Live(779)] {
         let ctx = find_name_action_context(&conn, PROFILE, NAME, scope)
             .unwrap_or_else(|e| panic!("{scope:?}: {e:?}"));
-        assert!(ctx.stranded_candidates.is_empty(), "{scope:?}");
+        let mut got: Vec<_> = ctx
+            .stranded_candidates
+            .iter()
+            .map(|c| c.txid.as_str())
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, ["bidold", "bidold2"], "{scope:?}");
     }
+}
+
+/// A BID covenant committing to the auction that opened at `auction_start`
+/// (`items[1]`, u32 LE, as hsd writes it).
+fn bid_cov_of_auction(name_hash_hex: &str, auction_start: u32) -> String {
+    serde_json::json!({
+        "type": sync::COV_BID,
+        "action": "BID",
+        "items": [name_hash_hex, hex::encode(auction_start.to_le_bytes())],
+    })
+    .to_string()
+}
+
+/// An address reused across auctions: our bid of the earlier auction (111)
+/// and our bid of the live one (779) sit at one address, and the earlier
+/// one's BID coin is spent. The stranded candidates are read off the coin's
+/// own auction, so this auction's BID coin, unspent at that address, is not
+/// one: read by the address alone, the node confirmed it and the live bid
+/// read as a stranded lockup.
+#[test]
+fn this_auctions_bid_coin_at_a_reused_address_is_not_a_stranded_candidate() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, OLD_ADDR, 0, 0);
+    let nh = name_hash();
+    for (blind, start) in [("b-old", 111), ("b-new", 779)] {
+        db::queries::insert_bid_commitment(
+            &conn, PROFILE, NAME, &nh, OLD_ADDR, 0, 0, 1_000_000, 2_000_000, "nonce", blind,
+        )
+        .unwrap();
+        db::queries::set_auction_heights(&conn, PROFILE, blind, start, start + 21).unwrap();
+    }
+    seed_tracked_utxo(
+        &conn,
+        "bidnew",
+        0,
+        OLD_ADDR,
+        sync::COV_BID as i64,
+        Some(&bid_cov_of_auction(&nh, 779)),
+    );
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
+    assert!(
+        ctx.stranded_candidates.is_empty(),
+        "{:?}",
+        ctx.stranded_candidates
+    );
+    assert!(ctx.has_bid_coin, "it is this auction's bid coin");
+}
+
+/// Two BID coins of different auctions at one address, with only the earlier
+/// auction's commitment here (the live bid placed from another device): the
+/// earlier coin is the stranded candidate, this auction's coin is not.
+#[test]
+fn of_two_bid_coins_at_one_address_only_the_earlier_auctions_is_a_candidate() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, OLD_ADDR, 0, 0);
+    let nh = name_hash();
+    db::queries::insert_bid_commitment(
+        &conn, PROFILE, NAME, &nh, OLD_ADDR, 0, 0, 1_000_000, 2_000_000, "nonce", "b-old",
+    )
+    .unwrap();
+    db::queries::set_auction_heights(&conn, PROFILE, "b-old", 111, 132).unwrap();
+    for (txid, start) in [("bidold", 111), ("bidnew", 779)] {
+        seed_tracked_utxo(
+            &conn,
+            txid,
+            0,
+            OLD_ADDR,
+            sync::COV_BID as i64,
+            Some(&bid_cov_of_auction(&nh, start)),
+        );
+    }
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Live(779)).unwrap();
+    let got: Vec<_> = ctx
+        .stranded_candidates
+        .iter()
+        .map(|c| c.txid.as_str())
+        .collect();
+    assert_eq!(got, ["bidold"]);
 }

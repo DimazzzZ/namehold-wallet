@@ -64,6 +64,7 @@ export function makeCapabilities(
     pendingBroadcastAction: null,
     strandedBidCount: 0,
     strandedLockupDoos: 0,
+    strandedUncheckedCount: 0,
     redeemableRevealCount: 0,
     redeemableValueDoos: 0,
     lockedForSale: false,
