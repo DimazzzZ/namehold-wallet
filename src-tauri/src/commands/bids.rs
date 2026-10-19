@@ -27,6 +27,7 @@
 use serde::Serialize;
 use tauri::State;
 
+use super::user_file;
 use crate::db::queries;
 use crate::error::AppError;
 use crate::noncustodial::bids::{compute_blind, compute_nonce};
@@ -390,26 +391,18 @@ pub(crate) fn bid_backup_json(
 }
 
 /// Write the bid backup of a profile to `path` (chosen in the native save
-/// dialog), as [`bid_backup_json`] renders it. On unix the file is owner-only
-/// (0600) whether it is new or already existed, and the secrets are written
-/// only after that. A path that cannot be written is an error.
+/// dialog), as [`bid_backup_json`] renders it, through
+/// [`user_file::write_chosen_file`]: a symbolic link or a path that is not a
+/// regular file is refused, and on unix the file is owner-only (0600)
+/// whether it is new or already existed, set before the secrets are
+/// written. A path that cannot be written is an error.
 pub(crate) fn save_bid_backup_from_conn(
     conn: &rusqlite::Connection,
     profile_id: &str,
     path: &std::path::Path,
 ) -> Result<(), AppError> {
-    use std::io::Write;
     let json = bid_backup_json(conn, profile_id)?;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-    let mut file = opts.open(path)?;
-    // `mode` applies to a new file only: an existing one keeps its own.
-    #[cfg(unix)]
-    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-    file.write_all(json.as_bytes())?;
-    Ok(())
+    user_file::write_chosen_file(path, json.as_bytes(), true)
 }
 
 /// Save the bid backup of a profile to `path`, a path the renderer took from

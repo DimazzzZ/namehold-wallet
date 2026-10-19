@@ -1278,3 +1278,68 @@ async fn save_bid_backup_over_an_existing_file_makes_it_owner_only() {
     );
     assert_eq!(written, expected);
 }
+
+/// F3: the path comes from the webview (SECURITY.md §1). A symbolic link
+/// there is refused, and the file it points to keeps its bytes and its mode.
+#[cfg(unix)]
+#[tokio::test]
+async fn save_bid_backup_to_a_symlink_is_refused_and_its_target_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest")
+    };
+    let target = backup_path("target");
+    std::fs::write(&target, "the user's own file").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let link = backup_path("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let app = mock_app_with(state);
+
+    let err = bids::save_bid_backup(
+        app.state(),
+        Some(profile_id),
+        link.to_string_lossy().into_owned(),
+    )
+    .await
+    .expect_err("a symlink must be refused");
+    let content = std::fs::read_to_string(&target).unwrap();
+    let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+    std::fs::remove_file(&link).unwrap();
+    std::fs::remove_file(&target).unwrap();
+    assert!(
+        err.to_string()
+            .contains(crate::commands::user_file::SAVE_TO_SYMLINK),
+        "{err:?}"
+    );
+    assert_eq!(content, "the user's own file");
+    assert_eq!(mode & 0o777, 0o644, "the link's target keeps its mode");
+}
+
+/// F3: a path that is not a regular file (here a directory) is refused.
+#[tokio::test]
+async fn save_bid_backup_to_a_directory_is_refused() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest")
+    };
+    let dir = backup_path("dir");
+    std::fs::create_dir(&dir).unwrap();
+    let app = mock_app_with(state);
+
+    let err = bids::save_bid_backup(
+        app.state(),
+        Some(profile_id),
+        dir.to_string_lossy().into_owned(),
+    )
+    .await
+    .expect_err("a directory must be refused");
+    std::fs::remove_dir(&dir).unwrap();
+    assert!(
+        err.to_string()
+            .contains(crate::commands::user_file::SAVE_TO_NON_FILE),
+        "{err:?}"
+    );
+}

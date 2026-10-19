@@ -2411,7 +2411,9 @@ pub(crate) fn publish_listing_from_conn(
 
 /// R23: write the saved listing file of one of the profile's listings to
 /// `path` (chosen in the native save dialog), as written; refused as the
-/// export is ([`export_listing_file_from_conn`]), writing nothing.
+/// export is ([`export_listing_file_from_conn`]), writing nothing, and
+/// refused for a symbolic link or a path that is not a regular file
+/// ([`super::user_file::write_chosen_file`]).
 pub(crate) fn save_listing_file_from_conn(
     conn: &rusqlite::Connection,
     profile_id: &str,
@@ -2419,8 +2421,8 @@ pub(crate) fn save_listing_file_from_conn(
     path: &std::path::Path,
 ) -> Result<(), AppError> {
     let text = export_listing_file_from_conn(conn, profile_id, listing_id)?;
-    std::fs::write(path, text)?;
-    Ok(())
+    // The file holds no secret (it is meant to be shared): not owner-only.
+    super::user_file::write_chosen_file(path, text.as_bytes(), false)
 }
 
 /// What a restore by name (R32) decides from: every node read, and the lock

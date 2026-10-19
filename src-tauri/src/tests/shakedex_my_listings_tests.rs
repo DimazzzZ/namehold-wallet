@@ -711,6 +711,32 @@ fn save_listing_file_writes_the_stored_file_as_written_and_nothing_when_refused(
     assert!(!refused.exists());
 }
 
+/// F3: the export path comes from the webview (SECURITY.md §1): a symbolic
+/// link there is refused and the file it points to is left as it was.
+#[cfg(unix)]
+#[test]
+fn save_listing_file_to_a_symlink_is_refused_and_its_target_untouched() {
+    let base = std::env::temp_dir().join(format!("namehold_listing_link_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir(&base).unwrap();
+    let target = base.join("target.txt");
+    std::fs::write(&target, "the user's own file").unwrap();
+    let link = base.join("listing.json");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let conn = store_conn();
+    insert(&conn, &listed_with_file(&file_with_fee(0)));
+
+    let err = save_listing_file_from_conn(&conn, "sell1", "l", &link).unwrap_err();
+    let content = std::fs::read_to_string(&target).unwrap();
+    std::fs::remove_dir_all(&base).unwrap();
+    assert!(
+        err.to_string()
+            .contains(crate::commands::user_file::SAVE_TO_SYMLINK),
+        "{err:?}"
+    );
+    assert_eq!(content, "the user's own file");
+}
+
 /// The TS mirrors (`src/types/index.ts`) list exactly the Rust fields.
 #[test]
 fn ts_my_listing_mirrors_list_every_field() {

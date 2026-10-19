@@ -56,6 +56,7 @@ Namehold.
   any transaction, `sign_tx_draft` requires explicit user confirmation
   (`commands/tx.rs::sign_tx_draft_inner`, `prompt_secure`) showing action, recipient, amount, fee, txid, and
   warnings
+- A file the backend writes at a path the renderer names (the bid backup, `save_bid_backup`; a listing file, `shakedex_save_listing_file`; the path comes from the native save dialog) goes through `commands/user_file.rs::write_chosen_file`: a symbolic link there is refused and its target left untouched (checked with `symlink_metadata`, and the open does not follow the last component, `O_NOFOLLOW`), as is anything that is not a regular file, and nothing is truncated before those checks. The bid backup is 0600 before its secrets are written. Residual risk, not mitigated: a compromised webview can still name any regular file the user's account can write (or a hard link to one) and have it replaced by a backup or a listing file; a save dialog's answer cannot be told apart from a path the page made up.
 
 #### 2. Local disk read (malware, laptop theft, backup snapshot)
 
