@@ -3162,20 +3162,28 @@ async fn advance_one(
 /// another process: the heartbeat runs every ten seconds, and a market call
 /// inside that window would be the double upload the lock exists to
 /// prevent. A row of another process raises `lock`, so the rest of the sync
-/// stops too. No row is not lost: nothing else claims the profile (and a
-/// job run outside a sync holds none). A row that cannot be read stops the
-/// job: no market call is made that the lock cannot be shown to allow.
+/// stops too; our own row is not lost. No row is not lost: nothing else
+/// claims the profile (and a job run outside a sync holds none). A lock row
+/// that cannot be read stops this job (no market call is made that the lock
+/// cannot be shown to allow) without raising `lock`: that is no takeover,
+/// and the log says the read failed.
 /// Checked per listing, not between one listing's calls: a listing whose
 /// exchange with the market has begun records its answer, so the
 /// bookkeeping matches what was sent. Logs the stop.
 fn market_lock_lost(conn: &rusqlite::Connection, lock: &LockLost, profile_id: &str) -> bool {
     if !lock.is_lost() {
-        let theirs = match crate::db::sync_lock::get_lock_info(conn, profile_id) {
-            Ok(row) => row.is_some_and(|r| r.owner_pid != std::process::id()),
-            Err(_) => true,
-        };
-        if theirs {
-            lock.raise();
+        match crate::db::sync_lock::get_lock_info(conn, profile_id) {
+            Ok(row) => {
+                if row.is_some_and(|r| r.owner_pid != std::process::id()) {
+                    lock.raise();
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "shakedex market: the sync lock of {profile_id} could not be read ({e}); stopping before the next listing"
+                );
+                return true;
+            }
         }
     }
     let lost = lock.is_lost();

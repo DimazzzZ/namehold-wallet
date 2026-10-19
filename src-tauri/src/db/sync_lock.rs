@@ -6,7 +6,7 @@
 //! crashes: if a lock's heartbeat is older than [`STALE_THRESHOLD_SECS`], any
 //! other process may take it over.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::AppError;
 
@@ -34,10 +34,10 @@ impl LockOwnerType {
 /// The heartbeat (`commands::sync::spawn_lock_heartbeat`) raises it when
 /// [`refresh_heartbeat`] answers `false`: the row is no longer ours. A market
 /// job raises it too when, before a listing, it reads a row of another
-/// process (`shakedex_jobs::market_lock_lost`). The run
-/// then stops before its next step, address-window round or write, and the
-/// market jobs before their next listing, so two processes do not go on
-/// syncing one profile. Clones share one flag.
+/// process (`shakedex_jobs::market_lock_lost`). The run then stops before its
+/// next step, address-window round or write, and the market jobs before
+/// their next listing, so two processes do not go on syncing one profile.
+/// Clones share one flag.
 #[derive(Debug, Clone, Default)]
 pub struct LockLost(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
@@ -157,7 +157,9 @@ pub fn release(conn: &Connection, profile_id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Check if any process holds the lock for a profile.
+/// Check if any process holds the lock for a profile: `None` when no row
+/// exists. A query that fails (a busy or broken database) is an error, never
+/// "no row".
 pub fn get_lock_info(
     conn: &Connection,
     profile_id: &str,
@@ -177,7 +179,7 @@ pub fn get_lock_info(
                 })
             },
         )
-        .ok();
+        .optional()?;
     Ok(result)
 }
 
@@ -406,6 +408,7 @@ mod tests {
             Err(AppError::Db(_))
         ));
         assert!(matches!(release(&conn, "p1"), Err(AppError::Db(_))));
+        assert!(matches!(get_lock_info(&conn, "p1"), Err(AppError::Db(_))));
         assert!(matches!(release_all_owned(&conn), Err(AppError::Db(_))));
         assert!(matches!(acquire_for_app(&conn, "p1"), Err(AppError::Db(_))));
     }

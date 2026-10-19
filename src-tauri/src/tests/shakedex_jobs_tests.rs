@@ -3800,6 +3800,10 @@ enum Lock {
     Raised,
     /// Another process's row, the heartbeat not run yet.
     OtherOwner,
+    /// This process's own row: held, as a sync holds it.
+    OwnRow,
+    /// The lock row cannot be read (the table is gone).
+    Unreadable,
 }
 
 /// One market job under `lock`: whether the market saw a request of the
@@ -3819,6 +3823,18 @@ async fn job_under(job: Job, lock: Lock) -> (bool, bool, LockLost) {
                     [PROFILE],
                 )
                 .unwrap();
+        }
+        Lock::OwnRow => {
+            f.conn
+                .execute(
+                    "INSERT INTO sync_locks (profile_id, owner_pid, owner_type, acquired_at, heartbeat_at)
+                     VALUES (?1, ?2, 'app', 0, 0)",
+                    rusqlite::params![PROFILE, std::process::id()],
+                )
+                .unwrap();
+        }
+        Lock::Unreadable => {
+            f.conn.execute_batch("DROP TABLE sync_locks").unwrap();
         }
     }
     let before = bookkeeping(&f);
@@ -3851,23 +3867,32 @@ async fn job_under(job: Job, lock: Lock) -> (bool, bool, LockLost) {
 /// each stops before the listing it would otherwise send, and leaves it to
 /// the process that holds the lock. Lost is the heartbeat's flag, or the
 /// lock row naming another process before the heartbeat has seen it (which
-/// raises the flag, so the rest of the sync stops too). Each site's
-/// control, with the lock ours, does reach the market (or, for the expiry
-/// refresh, writes its bookkeeping).
+/// raises the flag, so the rest of the sync stops too). A lock row that
+/// cannot be read stops the job the same way but is no takeover: the flag
+/// stays down. Each site's controls, with the lock ours (no row, or our own
+/// row), do reach the market (or, for the expiry refresh, write its
+/// bookkeeping) and leave the flag down.
 #[tokio::test]
 async fn market_jobs_stop_before_a_listing_once_the_sync_lock_is_lost() {
     for job in Job::ALL {
-        let (called, changed, flag) = job_under(job, Lock::Held).await;
-        assert!(
-            called || (job.method().is_none() && changed),
-            "{job:?}: the control acts"
-        );
-        assert!(!flag.is_lost(), "{job:?}");
-        for lock in [Lock::Raised, Lock::OtherOwner] {
+        for lock in [Lock::Held, Lock::OwnRow] {
+            let (called, changed, flag) = job_under(job, lock).await;
+            assert!(
+                called || (job.method().is_none() && changed),
+                "{job:?} {lock:?}: the control acts"
+            );
+            assert!(!flag.is_lost(), "{job:?} {lock:?}: still ours");
+        }
+        for lock in [Lock::Raised, Lock::OtherOwner, Lock::Unreadable] {
             let (called, changed, flag) = job_under(job, lock).await;
             assert!(!called, "{job:?} {lock:?}: no market call");
             assert!(!changed, "{job:?} {lock:?}: no bookkeeping written");
-            assert!(flag.is_lost(), "{job:?} {lock:?}: the sync stops");
+            let takeover = !matches!(lock, Lock::Unreadable);
+            assert_eq!(
+                flag.is_lost(),
+                takeover,
+                "{job:?} {lock:?}: only a takeover stops the sync"
+            );
         }
     }
 }
