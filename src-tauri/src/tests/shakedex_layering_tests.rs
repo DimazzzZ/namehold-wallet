@@ -102,3 +102,52 @@ fn transaction_commands_do_not_reach_into_the_shakedex_commands() {
         );
     }
 }
+
+/// SECURITY.md, "The daemon never signs or broadcasts": a lexical scan of
+/// the code lines (comments and a trailing `mod tests` left out) of the
+/// market jobs' two files, `shakedex_jobs.rs` and the market client they
+/// write through, `market/learnhns.rs`: neither names a signing call or key
+/// material. The whole class is refused, case-insensitively: anything that
+/// signs (`sign_…`, a signer), any private key, seed or mnemonic, a master
+/// key, the unlocked session and the vault. A send is refused too, except
+/// the one purchase rebroadcast in `shakedex_jobs.rs`, which
+/// `may_broadcast` closes for the daemon (`Rebroadcast::Never`): that exact
+/// line, exactly once.
+#[test]
+fn shakedex_jobs_hold_no_signing_call() {
+    let sources = [
+        ("shakedex_jobs.rs", include_str!("../shakedex_jobs.rs")),
+        ("market/learnhns.rs", include_str!("../market/learnhns.rs")),
+    ];
+    let forbidden = [
+        "sign_",
+        "signer",
+        "privkey",
+        "secretkey",
+        "seed",
+        "mnemonic",
+        ".master(",
+        "session",
+        "vault",
+        "sendrawtransaction",
+        "send_raw_transaction",
+    ];
+    const REBROADCAST: &str = "match self.client.send_raw_transaction(signed).await {";
+    let mut rebroadcasts = 0;
+    for (file, src) in sources {
+        let mut scanned = 0;
+        for line in code_lines(src) {
+            scanned += 1;
+            if file == "shakedex_jobs.rs" && line.trim_end() == REBROADCAST {
+                rebroadcasts += 1;
+                continue;
+            }
+            let lower = line.to_lowercase();
+            for f in forbidden {
+                assert!(!lower.contains(f), "{file} names `{f}`: {line}");
+            }
+        }
+        assert!(scanned > 300, "{file}: only {scanned} lines scanned");
+    }
+    assert_eq!(rebroadcasts, 1, "the one guarded rebroadcast, exactly once");
+}

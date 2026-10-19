@@ -12,7 +12,8 @@ use tauri::State;
 
 use crate::commands::draft_ctx::{self, random_id, Ctx};
 use crate::db::queries::{
-    self, ListingMode, ListingState, NameCoin, PurchaseState, ShakedexListing, ShakedexPurchase,
+    self, ListingMode, ListingState, MarketStatus, NameCoin, PurchaseState, ShakedexListing,
+    ShakedexPurchase,
 };
 use crate::error::AppError;
 use crate::market::learnhns::{
@@ -176,32 +177,6 @@ pub struct PurchasePreview {
 }
 
 // --- helpers ----------------------------------------------------------------
-
-/// Read the `learnhns_base_url` test seam, but ONLY in debug builds / tests.
-/// Release builds always talk to the real LearnHNS Market host.
-fn learnhns_base_url_override(_settings: &SettingsMap) -> String {
-    #[cfg(any(debug_assertions, test))]
-    {
-        // Unset is empty, which the caller reads as "use the real host".
-        _settings
-            .get("learnhns_base_url")
-            .cloned()
-            .unwrap_or_default()
-    }
-    #[cfg(not(any(debug_assertions, test)))]
-    {
-        String::new()
-    }
-}
-
-fn learnhns_client(settings: &SettingsMap) -> Result<LearnHnsClient, AppError> {
-    let base = learnhns_base_url_override(settings);
-    if base.trim().is_empty() {
-        Ok(LearnHnsClient::new())
-    } else {
-        LearnHnsClient::with_base_url(base.trim())
-    }
-}
 
 /// What browsing and importing need: no keys, any profile kind.
 struct BrowseCtx {
@@ -374,9 +349,9 @@ struct Prepared {
     market_fee: Option<MarketFee>,
 }
 
-/// Why a market link cannot be imported off mainnet. The UI disables link
-/// import with the same words (`marketText.ts`).
-pub const MARKET_MAINNET_ONLY: &str = "LearnHNS Market lists mainnet names only";
+/// Why a market link cannot be imported off mainnet (and why every market
+/// write refuses off mainnet); defined next to the client.
+pub use crate::market::learnhns::MARKET_MAINNET_ONLY;
 
 /// Why a Shakedex draft is refused on a node that cannot send (R6). The UI
 /// shows the same sentence on the disabled Buy and Finalize
@@ -447,7 +422,10 @@ async fn prepare(
     let published = if from_market && step.fee > 0 {
         // Best-effort: a market that cannot say what it charges makes the fee
         // unpublished, so it is shown with a warning and not paid by default.
-        let info: Option<FeeInfo> = learnhns_client(&ctx.settings)?.fee_info().await.ok();
+        let info: Option<FeeInfo> = LearnHnsClient::from_settings(&ctx.settings)?
+            .fee_info()
+            .await
+            .ok();
         info.is_some_and(|i| {
             market_fee_is_published(step.fee, listing.fee_addr.as_deref(), step.price, &i)
         })
@@ -641,6 +619,11 @@ pub(crate) fn build_lock_draft_inner(
             publish: i.publish,
             market_status: None,
             market_retry_at: None,
+            market_attempts: 0,
+            market_error: None,
+            market_accepted: false,
+            market_changed: false,
+            market_told: false,
             expires_at: None,
             abort_draft_id: None,
             abort_txid: None,
@@ -851,7 +834,7 @@ pub(crate) async fn prepare_lock_finalize(
     }
     let coin = ctx
         .node
-        .get_coin(&lock_transfer_txid, 0)
+        .get_coin(&lock_transfer_txid, sell::LOCK_TRANSFER_NAME_VOUT)
         .await?
         .ok_or_else(|| {
             AppError::InvalidInput(
@@ -970,6 +953,14 @@ pub struct ListingSummary {
     pub cancel_draft_id: Option<String>,
     pub cancel_finalize_draft_id: Option<String>,
     pub cancel_blocks_remaining: Option<i64>,
+    /// Where the listing stands on LearnHNS Market (R23, R25, R28); `None`
+    /// while our current listing is not yet told (unpublished, not yet
+    /// announced, or reset by a move back to Listed).
+    pub market_status: Option<MarketStatus>,
+    /// The market's own refusal, or why it gave no answer.
+    pub market_error: Option<String>,
+    /// RFC 3339 UTC: when the next market action on the listing is due.
+    pub market_retry_at: Option<String>,
 }
 
 impl ListingSummary {
@@ -989,6 +980,9 @@ impl ListingSummary {
             cancel_draft_id: l.cancel_draft_id.clone(),
             cancel_finalize_draft_id: l.cancel_finalize_draft_id.clone(),
             cancel_blocks_remaining: l.cancel_blocks_remaining,
+            market_status: l.market_status,
+            market_error: l.market_error.clone(),
+            market_retry_at: l.market_retry_at.clone(),
         })
     }
 }
@@ -1494,6 +1488,7 @@ pub(crate) async fn cancel_listing_confirmed<R: tauri::Runtime>(
             cancel_address: &p.cancel_address,
             lock_address: &p.lock_address,
             current_price: p.current_price,
+            published: p.listing.publish,
         }),
     )
     .await?;
@@ -1855,6 +1850,11 @@ pub(crate) fn restore_lock_inner(
         publish: false,
         market_status: None,
         market_retry_at: None,
+        market_attempts: 0,
+        market_error: None,
+        market_accepted: false,
+        market_changed: false,
+        market_told: false,
         expires_at: None,
         abort_draft_id: None,
         abort_txid: None,
@@ -1913,40 +1913,6 @@ pub(crate) fn restored_lock_for_file(
     Ok(listing)
 }
 
-/// The value of the lock coin hsd reports for `file`'s lock outpoint, read
-/// field by field: a coin of another outpoint, without its address, at
-/// another address than `lock_address`, or with a negative value, is "could
-/// not check".
-fn lock_coin_value(
-    coin: &rpc::NodeCoin,
-    file: &ListingFile,
-    lock_address: &str,
-) -> Result<u64, AppError> {
-    let lock_txid = hex::encode(file.lock_txid);
-    if !(coin.txid == lock_txid && coin.vout == file.lock_vout) {
-        return Err(AppError::Rpc(format!(
-            "node answered coin {}:{} for the lock coin {lock_txid}:{}",
-            coin.txid, coin.vout, file.lock_vout
-        )));
-    }
-    let Some(address) = coin.address.as_deref() else {
-        return Err(AppError::Rpc(
-            "node did not report the lock coin's address".into(),
-        ));
-    };
-    if address != lock_address {
-        return Err(AppError::Rpc(format!(
-            "node reported the lock coin at {address}, not at this lock's address"
-        )));
-    }
-    u64::try_from(coin.value).map_err(|_| {
-        AppError::Rpc(format!(
-            "node reported a lock coin value of {} doos",
-            coin.value
-        ))
-    })
-}
-
 /// What the upgrade of a Restored lock decides from: the listing and the
 /// file already matched ([`restored_lock_for_file`]), the lock coin as hsd
 /// reports it (`None`: its 404, spent), and the lock key derived from the
@@ -1962,7 +1928,7 @@ pub(crate) struct OwnFileInput<'a> {
 /// R32: upgrade a Restored lock with its own listing file. The file's public
 /// key must be the lock key this wallet derives for the name; while the lock
 /// coin is a coin, every step must also be signed by that key over it
-/// (`template::verify_step_signature`, at the coin's value as hsd reports
+/// ([`sell::verify_file_steps`], at the coin's value as hsd reports
 /// it). A spent lock coin leaves the outpoint and key to check: the chain
 /// then judges the sale (R22) by the file's payment address. The listing
 /// becomes Listed with the file's payment address, steps, expiry and mode;
@@ -1980,26 +1946,8 @@ pub(crate) fn upgrade_restored_lock_inner(
         )));
     }
     if let Some(coin) = i.coin {
-        let lock_value = lock_coin_value(coin, file, &i.key.address)?;
-        let payment = output_address_from_string(i.network, &file.payment_addr)?;
-        for step in &file.steps {
-            template::verify_step_signature(
-                &template::StepTemplate {
-                    lock_outpoint: (file.lock_txid, file.lock_vout),
-                    lock_value,
-                    lock_pubkey: &file.public_key,
-                    payment: payment.clone(),
-                    price: step.price,
-                    lock_time_secs: step.lock_time,
-                },
-                &step.signature,
-            )
-            .map_err(|_| {
-                AppError::InvalidInput(
-                    "a price in this listing file is not signed by this lock".into(),
-                )
-            })?;
-        }
+        let lock_value = sell::lock_coin_value(coin, file, &i.key.address)?;
+        sell::verify_file_steps(file, lock_value, i.network)?;
     }
     let steps: Vec<sell::StoredStep> = file
         .steps
@@ -2067,7 +2015,7 @@ pub async fn shakedex_list_market(
             page_count: 1,
         });
     }
-    let client = learnhns_client(&ctx.settings)?;
+    let client = LearnHnsClient::from_settings(&ctx.settings)?;
     // No page asked for is the first page; pages count from 1.
     let page = page.unwrap_or(1).max(1);
     let (raw_rows, total) = client.list_available(page, MARKET_PER_PAGE).await?;
@@ -2157,7 +2105,7 @@ pub async fn shakedex_import_listing(
                 return Err(AppError::InvalidInput(MARKET_MAINNET_ONLY.into()));
             }
             linked_name = Some(name.clone());
-            learnhns_client(&ctx.settings)?
+            LearnHnsClient::from_settings(&ctx.settings)?
                 .listing_file(&name)
                 .await?
                 .ok_or_else(|| {

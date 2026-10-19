@@ -909,6 +909,16 @@ export type ShakedexListingState =
   | "restored"
   | "expired";
 
+/** Rust's `MarketStatus` (where a published listing stands on LearnHNS Market), camelCase. */
+export type ShakedexMarketStatus =
+  | "pending"
+  | "listed"
+  | "replacedReuploaded"
+  | "retrying"
+  | "refused"
+  | "stepsUnverified"
+  | "reported";
+
 /** Rust's `ListingMode`, camelCase. */
 export type ShakedexListingMode = "buyNow" | "reverseAuction";
 
@@ -938,6 +948,12 @@ export interface ShakedexListingSummary {
   cancelFinalizeDraftId: string | null;
   /** Blocks left until the cancel's FINALIZE is valid, at the last sync. */
   cancelBlocksRemaining: number | null;
+  /** Where the listing stands on LearnHNS Market; null while our current listing is not yet told. */
+  marketStatus: ShakedexMarketStatus | null;
+  /** The market's own refusal, or why it gave no answer. */
+  marketError: string | null;
+  /** RFC 3339 UTC: when the next market action on the listing is due. */
+  marketRetryAt: string | null;
 }
 
 export type ImportSource =

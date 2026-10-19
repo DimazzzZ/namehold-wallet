@@ -6,7 +6,9 @@
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
-use crate::db::queries::{self, ListingMode, ListingState, ListingWrite, ShakedexListing};
+use crate::db::queries::{
+    self, ListingMode, ListingState, ListingWrite, MarketStatus, ShakedexListing,
+};
 use crate::noncustodial::address;
 use crate::noncustodial::derivation;
 use crate::noncustodial::hd::ExtendedPrivKey;
@@ -81,6 +83,11 @@ fn fx(state: ListingState) -> Fx {
         publish: false,
         market_status: None,
         market_retry_at: None,
+        market_attempts: 0,
+        market_error: None,
+        market_accepted: false,
+        market_changed: false,
+        market_told: false,
         expires_at: Some(1_731_536_000),
         abort_draft_id: None,
         abort_txid: None,
@@ -234,6 +241,16 @@ fn apply(f: &Fx, w: ListingWrite, to: ListingState) -> Result<usize, crate::erro
                 expires_at: 1,
             },
         ),
+        ListingWrite::RefreshExpiry => queries::refresh_listing_expiry(
+            c,
+            id,
+            &queries::RefreshedExpiry {
+                lock: own,
+                old_file: listing(f).listing_file_json.as_deref().unwrap_or(""),
+                listing_file_json: r#"{"refreshed":true}"#,
+                expires_at: 2_000_000_000,
+            },
+        ),
         ListingWrite::Upgrade => queries::upgrade_restored_lock(
             c,
             id,
@@ -293,6 +310,7 @@ fn each_listing_write_moves_exactly_its_transitions() {
             S::CancelAwaitingFinalize,
         ),
         (ListingWrite::LowerPrice, S::Listed, S::Listed),
+        (ListingWrite::RefreshExpiry, S::Listed, S::Listed),
     ];
     for from in before_lock_end {
         expected.push((ListingWrite::Abort, from, S::Aborted));
@@ -3623,4 +3641,392 @@ async fn a_stable_sold_listing_is_not_written_again() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// R25 (T6; carried from T5): a write that moves a listing into Listed from
+/// another state clears its market bookkeeping, acceptance and change flag,
+/// so the publish job uploads it afresh — a cancel that died after the
+/// market was told, a reorg back from Sold, a restored lock upgraded. A
+/// Listed to Listed write (a lowered price, a refreshed expiry) makes it
+/// Retrying, due now, with no failure counted, keeps the acceptance and
+/// sets the change flag. R28: a write recording a mined sale (Sell,
+/// ProvenLockSale) or a mined cancel (CancelMined) clears only
+/// `market_retry_at`, so the report is due at once. Every other write, and
+/// every other target of a write that may also go to Listed (Unsell to
+/// Finalizing or Restored, Uncancel to Restored), leaves the bookkeeping as
+/// it is.
+#[test]
+fn every_write_back_onto_the_market_resets_its_market_status() {
+    use ListingState as S;
+    let f = fx(S::Listed);
+    let base = listing(&f);
+    let mut resets = 0;
+    for w in ListingWrite::ALL {
+        for from in w.from() {
+            for to in w.to() {
+                let proven = w == ListingWrite::ProvenLockSale;
+                let row = ShakedexListing {
+                    state: *from,
+                    lock_txid: base.lock_txid.clone().filter(|_| !proven),
+                    lock_vout: base.lock_vout.filter(|_| !proven),
+                    cancel_txid: Some(txid("c1")),
+                    cancel_vout: Some(0),
+                    cancel_finalize_draft_id: Some("cfin".to_string()),
+                    market_status: Some(MarketStatus::Reported),
+                    market_retry_at: Some("2026-10-10T00:00:00Z".into()),
+                    market_attempts: 3,
+                    market_error: Some("told".into()),
+                    market_accepted: true,
+                    market_changed: true,
+                    market_told: true,
+                    ..base.clone()
+                };
+                f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
+                queries::insert_shakedex_listing(&f.conn, &row).unwrap();
+                f.conn
+                    .execute(
+                        "UPDATE wallet_tx_drafts SET status = 'failed' WHERE id = 'fin'",
+                        [],
+                    )
+                    .unwrap();
+                assert_eq!(apply(&f, w, *to).unwrap(), 1, "{w:?} {from:?} -> {to:?}");
+                let after = listing(&f);
+                assert!(
+                    after.market_told,
+                    "{w:?} {from:?} -> {to:?}: market_told is never cleared"
+                );
+                let book = (
+                    after.market_status,
+                    after.market_retry_at.clone(),
+                    after.market_attempts,
+                    after.market_error.clone(),
+                    after.market_accepted,
+                    after.market_changed,
+                );
+                let reset = book == (None, None, 0, None, false, false);
+                let kept = book
+                    == (
+                        Some(MarketStatus::Reported),
+                        Some("2026-10-10T00:00:00Z".to_string()),
+                        3,
+                        Some("told".to_string()),
+                        true,
+                        true,
+                    );
+                // R28: recording a mined sale or cancel makes the report
+                // due at once: only `market_retry_at` is cleared.
+                let due_now = book
+                    == (
+                        Some(MarketStatus::Reported),
+                        None,
+                        3,
+                        Some("told".to_string()),
+                        true,
+                        true,
+                    );
+                // Listed to Listed (a Lower price, an expiry refresh): the
+                // market already holds this lock's listing, so the new copy
+                // is due for keep-listed's check at once (Retrying, no
+                // failure counted) and the acceptance stays.
+                let changed = book == (Some(MarketStatus::Retrying), None, 0, None, true, true);
+                if matches!(w, ListingWrite::LowerPrice | ListingWrite::RefreshExpiry) {
+                    assert!(changed, "{w:?} {from:?} -> {to:?}: not due as changed");
+                    resets += 1;
+                } else if *to == S::Listed {
+                    assert!(reset, "{w:?} {from:?} -> {to:?}: not reset");
+                    resets += 1;
+                } else if matches!(
+                    w,
+                    ListingWrite::Sell | ListingWrite::ProvenLockSale | ListingWrite::CancelMined
+                ) {
+                    assert!(due_now, "{w:?} {from:?} -> {to:?}: not due now");
+                } else {
+                    assert!(kept, "{w:?} {from:?} -> {to:?}: touched");
+                }
+            }
+        }
+    }
+    // Listed (from Finalizing), Unsell (from SalePending and Sold), Upgrade,
+    // Uncancel, LowerPrice, RefreshExpiry.
+    assert_eq!(resets, 7);
+    // A Listed listing the market was never told about stays untold through
+    // a Listed to Listed write: its first upload is the publish job's.
+    for w in [ListingWrite::LowerPrice, ListingWrite::RefreshExpiry] {
+        f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
+        queries::insert_shakedex_listing(&f.conn, &base).unwrap();
+        assert_eq!(apply(&f, w, S::Listed).unwrap(), 1, "{w:?}");
+        let after = listing(&f);
+        assert_eq!(
+            (after.market_status, after.market_accepted),
+            (None, false),
+            "{w:?}"
+        );
+    }
+    // A told listing whose change flag is clear gets it set.
+    for w in [ListingWrite::LowerPrice, ListingWrite::RefreshExpiry] {
+        let told = ShakedexListing {
+            market_status: Some(MarketStatus::Listed),
+            market_accepted: true,
+            ..base.clone()
+        };
+        f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
+        queries::insert_shakedex_listing(&f.conn, &told).unwrap();
+        assert_eq!(apply(&f, w, S::Listed).unwrap(), 1, "{w:?}");
+        assert!(listing(&f).market_changed, "{w:?}: change flag set");
+    }
+}
+
+/// The market jobs write their result only over the listing as they read
+/// it: a Lower price (new steps and file) or a state change in between makes
+/// the write a no-op.
+#[test]
+fn market_result_is_written_only_over_the_listing_the_job_read() {
+    let f = fx(ListingState::Listed);
+    let l = listing(&f);
+    let seen = queries::MarketSeen {
+        state: l.state,
+        steps_json: &l.steps_json,
+        listing_file_json: l.listing_file_json.as_deref(),
+    };
+    let update = queries::MarketUpdate {
+        status: MarketStatus::Listed,
+        retry_at: Some("2026-10-10T01:00:00Z"),
+        attempts: 0,
+        error: None,
+        accepted: true,
+        told: true,
+    };
+    assert_eq!(
+        queries::record_market_result(&f.conn, &f.id, &seen, &update).unwrap(),
+        1
+    );
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
+    // An acceptance outlives a later result that is none; the change flag
+    // is cleared by an acceptance only, never by a failure.
+    let failed = queries::MarketUpdate {
+        status: MarketStatus::Retrying,
+        accepted: false,
+        told: false,
+        ..update
+    };
+    f.conn
+        .execute("UPDATE shakedex_listings SET market_changed = 1", [])
+        .unwrap();
+    queries::record_market_result(&f.conn, &f.id, &seen, &failed).unwrap();
+    assert!(listing(&f).market_accepted);
+    assert!(listing(&f).market_changed, "a failure leaves the flag");
+    assert!(
+        listing(&f).market_told,
+        "a failure never clears market_told"
+    );
+    queries::record_market_result(&f.conn, &f.id, &seen, &update).unwrap();
+    assert!(!listing(&f).market_changed, "an acceptance clears it");
+    f.conn
+        .execute("UPDATE shakedex_listings SET steps_json = '[]'", [])
+        .unwrap();
+    let retry = queries::MarketUpdate {
+        status: MarketStatus::Retrying,
+        ..update
+    };
+    assert_eq!(
+        queries::record_market_result(&f.conn, &f.id, &seen, &retry).unwrap(),
+        0
+    );
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET steps_json = ?1, state = 'cancelling'",
+            [&l.steps_json],
+        )
+        .unwrap();
+    assert_eq!(
+        queries::record_market_result(&f.conn, &f.id, &seen, &retry).unwrap(),
+        0
+    );
+    // The same state and steps with another file (an `expiresAt` refresh).
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET state = 'listed', listing_file_json = '{\"other\":1}'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        queries::record_market_result(&f.conn, &f.id, &seen, &retry).unwrap(),
+        0
+    );
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
+}
+
+/// R28, a reorg back to Cancelling: while the cancel draft is unsent the
+/// listing is kept on the market again ([`queries::list_listings_kept_on_market`]),
+/// so the bookkeeping of a listing the market was told about starts over as
+/// Retrying, due now (a `Reported` left from the mined cancel would stop
+/// the jobs); with the cancel sent the bookkeeping stays. A listing the
+/// market was never told about stays untold: keep-listed takes only told
+/// ones, so a cancel in progress never publishes it for the first time.
+#[test]
+fn cancel_unmined_back_to_an_unsent_cancel_resets_its_market_status() {
+    let f = fx(ListingState::Listed);
+    let base = listing(&f);
+    queries::insert_tx_draft(&f.conn, "cx", PROFILE, "shakedex_cancel", "00", "{}", "{}").unwrap();
+    let unmined = |market_status: Option<MarketStatus>| {
+        let row = ShakedexListing {
+            state: ListingState::CancelAwaitingFinalize,
+            cancel_draft_id: Some("cx".into()),
+            cancel_txid: Some(txid("c1")),
+            cancel_vout: Some(0),
+            market_status,
+            market_retry_at: market_status.map(|_| "2026-10-10T00:00:00Z".into()),
+            market_attempts: 3,
+            market_error: Some("told".into()),
+            publish: true,
+            ..base.clone()
+        };
+        f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
+        queries::insert_shakedex_listing(&f.conn, &row).unwrap();
+        assert_eq!(
+            queries::mark_listing_cancel_unmined(&f.conn, &f.id, &txid("c1")).unwrap(),
+            1
+        );
+        listing(&f)
+    };
+    f.conn
+        .execute(
+            "UPDATE wallet_tx_drafts SET status = 'signed' WHERE id = 'cx'",
+            [],
+        )
+        .unwrap();
+    let untold = unmined(None);
+    assert_eq!(
+        (untold.state, untold.market_status, untold.market_retry_at),
+        (ListingState::Cancelling, None, None),
+        "never told: stays untold"
+    );
+    // Refused stays Refused (not retried until what is sent changes,
+    // Deviation 17), its retry time and words kept.
+    let refused = unmined(Some(MarketStatus::Refused));
+    assert_eq!(
+        (
+            refused.market_status,
+            refused.market_retry_at.as_deref(),
+            refused.market_attempts,
+            refused.market_error.as_deref()
+        ),
+        (
+            Some(MarketStatus::Refused),
+            Some("2026-10-10T00:00:00Z"),
+            3,
+            Some("told")
+        ),
+        "refused: kept"
+    );
+    // Told but never accepted (e.g. Retrying after no answer to its first
+    // upload): Retrying, yet not kept while Cancelling — nothing of it is on
+    // the market to keep.
+    let never_accepted = unmined(Some(MarketStatus::Retrying));
+    assert_eq!(
+        (never_accepted.market_status, never_accepted.market_accepted),
+        (Some(MarketStatus::Retrying), false)
+    );
+    assert!(queries::list_listings_kept_on_market(&f.conn, PROFILE)
+        .unwrap()
+        .is_empty());
+    for (status, reset) in [
+        ("draft", true),
+        ("signed", true),
+        ("broadcast_pending", false),
+        ("broadcasted", false),
+        ("confirmed", false),
+        ("failed", false),
+        ("dropped", false),
+    ] {
+        f.conn
+            .execute(
+                "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = 'cx'",
+                [status],
+            )
+            .unwrap();
+        let row = ShakedexListing {
+            state: ListingState::CancelAwaitingFinalize,
+            cancel_draft_id: Some("cx".into()),
+            cancel_txid: Some(txid("c1")),
+            cancel_vout: Some(0),
+            market_status: Some(MarketStatus::Reported),
+            market_retry_at: Some("2026-10-10T00:00:00Z".into()),
+            market_attempts: 3,
+            market_error: Some("told".into()),
+            market_accepted: true,
+            publish: true,
+            ..base.clone()
+        };
+        f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
+        queries::insert_shakedex_listing(&f.conn, &row).unwrap();
+        assert_eq!(
+            queries::mark_listing_cancel_unmined(&f.conn, &f.id, &txid("c1")).unwrap(),
+            1,
+            "{status}"
+        );
+        assert!(listing(&f).market_accepted, "{status}: acceptance kept");
+        assert_eq!(listing(&f).market_changed, reset, "{status}: change flag");
+        let after = listing(&f);
+        assert_eq!(after.state, ListingState::Cancelling, "{status}");
+        let book = (
+            after.market_status,
+            after.market_retry_at,
+            after.market_attempts,
+            after.market_error,
+        );
+        if reset {
+            assert_eq!(
+                book,
+                (Some(MarketStatus::Retrying), None, 0, None),
+                "{status}"
+            );
+        } else {
+            assert_eq!(
+                book,
+                (
+                    Some(MarketStatus::Reported),
+                    Some("2026-10-10T00:00:00Z".to_string()),
+                    3,
+                    Some("told".to_string())
+                ),
+                "{status}"
+            );
+        }
+        let kept = queries::list_listings_kept_on_market(&f.conn, PROFILE)
+            .unwrap()
+            .len();
+        assert_eq!(kept, usize::from(reset), "{status}");
+    }
+}
+
+/// `market_status` is stored by its spelling; an unknown spelling is refused
+/// when read, never mapped to a guess.
+#[test]
+fn market_status_is_stored_by_its_spelling() {
+    let f = fx(ListingState::Listed);
+    for (s, spelling) in [
+        (MarketStatus::Pending, "pending"),
+        (MarketStatus::Listed, "listed"),
+        (MarketStatus::ReplacedReuploaded, "replaced_reuploaded"),
+        (MarketStatus::Retrying, "retrying"),
+        (MarketStatus::Refused, "refused"),
+        (MarketStatus::StepsUnverified, "steps_unverified"),
+        (MarketStatus::Reported, "reported"),
+    ] {
+        assert_eq!(s.as_str(), spelling);
+        f.conn
+            .execute(
+                "UPDATE shakedex_listings SET market_status = ?1",
+                [spelling],
+            )
+            .unwrap();
+        assert_eq!(listing(&f).market_status, Some(s));
+    }
+    assert_eq!(MarketStatus::ALL.len(), 7);
+    f.conn
+        .execute("UPDATE shakedex_listings SET market_status = 'gone'", [])
+        .unwrap();
+    assert!(queries::get_shakedex_listing(&f.conn, &f.id).is_err());
 }

@@ -75,6 +75,7 @@ mod settings_cmd_tests;
 mod settings_tests;
 mod shakedex_cmd_tests;
 mod shakedex_finalize_tests;
+mod shakedex_jobs_tests;
 mod shakedex_layering_tests;
 mod shakedex_listing_file_tests;
 mod shakedex_listing_state_tests;
