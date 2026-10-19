@@ -1222,3 +1222,59 @@ async fn save_bid_backup_to_an_unwritable_path_is_an_error() {
     assert!(matches!(err, crate::error::AppError::Io(_)), "{err:?}");
     assert!(!path.exists());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn save_bid_backup_over_an_existing_file_makes_it_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        db::queries::insert_bid_commitment(
+            &conn,
+            &id,
+            "namea",
+            "aabb",
+            "rs1qaddrA",
+            0,
+            0,
+            1000,
+            2000,
+            &"11".repeat(32),
+            &"22".repeat(32),
+        )
+        .unwrap();
+        id
+    };
+    let path = backup_path("existing");
+    std::fs::write(
+        &path,
+        "an older, longer file that is world readable ....................",
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let expected = {
+        let conn = state.db.lock().unwrap();
+        bids::bid_backup_json(&conn, &profile_id).unwrap()
+    };
+    let app = mock_app_with(state);
+
+    bids::save_bid_backup(
+        app.state(),
+        Some(profile_id),
+        path.to_string_lossy().into_owned(),
+    )
+    .await
+    .expect("save should succeed");
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    let written = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        mode & 0o777,
+        0o600,
+        "an existing file must become owner only"
+    );
+    assert_eq!(written, expected);
+}
