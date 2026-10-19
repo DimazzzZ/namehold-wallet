@@ -196,9 +196,7 @@ SPV (Simplified Payment Verification) mode runs hsd with `--spv` instead of
 
 ### Security implications
 
-1. **Explorer trust**: In SPV mode, the wallet trusts the explorer for balance and
-   name data. If the explorer is compromised, it could show incorrect data. Mitigation:
-   configure a trusted explorer and optionally set a fallback URL.
+1. **Explorer trust**: In SPV mode, the wallet trusts the explorer for balance and name data. If the explorer is compromised, it could show incorrect data. Mitigation: configure a trusted explorer and optionally set a fallback URL. The explorer also says which addresses were used, and the sync derives and stores more addresses from that answer: an explorer that lists a transaction for every address makes each sync derive at most five gap limits of addresses per branch (`EXPLORER_WINDOW_ROUNDS`), never a send or a key.
 
 2. **No local verification**: Unlike full node mode, SPV mode doesn't verify
    transactions locally against the full chain. The explorer is the source of truth
