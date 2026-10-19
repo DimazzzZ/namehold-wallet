@@ -271,8 +271,14 @@ pub fn extend_address_window(
                 .ok_or_else(|| AppError::InvalidInput("child index overflow".into()))?,
             None => gap,
         };
-        // The window is contiguous from 0 (every writer derives `[0, n)` or
-        // the index after the used range), so it ends at the highest index.
+        // The stored window has no holes, so it ends at its highest index.
+        // Every writer keeps it so: `ensure_addresses` (`provision_addresses`,
+        // the fallbacks in `sync_wallet_state` and `read_balance`) derives
+        // `[0, n)`; `next_unused_receive_address` (`reserve_receive_address`)
+        // derives the index after the highest used one, at most one past the
+        // stored end; `adopt_receive_address` persists `0..=index`; and this
+        // function derives on from the stored end. A new writer that skips
+        // indices would leave the skipped ones unscanned.
         let have = max_derived_index(conn, profile_id, account_index, branch)?
             .map_or(0, |m| m.saturating_add(1));
         if wanted <= have {

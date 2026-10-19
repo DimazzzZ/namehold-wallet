@@ -374,6 +374,7 @@ HNS_IT_NOINDEX_NODE_URL=http://127.0.0.1:24037 HNS_IT_NOINDEX_NODE_API_KEY=test 
 | Test | Asserts |
 |------|---------|
 | `live_sync_grows_the_address_window_for_a_second_profile` | Coins mined to receive `gap-1`, `gap+5`, `2*gap+3` and change `gap-1`, `gap+2` of a fresh account; a second profile of the seed with the restore window `[0, gap)` tracks exactly hsd's coins at them after one node sync |
+| `live_sync_grows_the_address_window_past_a_spent_address` | A coin at receive `gap+3` is swept away (hsd: no coin, two transactions of history), then coins are mined to receive `gap-1` and `2*gap+3`; the second profile reaches `2*gap+3` only through `gap+3`'s history (needs `--index-tx`), and tracks exactly hsd's two coins |
 
 ## Shakedex purchases against the CLI
 

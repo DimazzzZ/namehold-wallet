@@ -743,8 +743,16 @@ const MAX_WINDOW_ROUNDS: u32 = 50;
 /// one address leaves it unused for this sync; the window it reached is
 /// persisted, so the next sync scans it.
 ///
-/// Sees only what the node indexes by address: on a node without
-/// `--index-address` both queries fail and the window does not grow.
+/// Each lookahead address is asked for its history once per sync, and on
+/// every sync while it stays unused: about `2 * gap` `GET /tx/address`
+/// requests a sync.
+///
+/// Sees only what the node indexes, and hsd answers an empty list, not an
+/// error, for what it does not index. The history (`GET /tx/address`) needs
+/// `--index-tx` as well as `--index-address`: with the address index alone
+/// only addresses that still hold coins move the window, so a run of spent
+/// addresses longer than the gap ends it. Without `--index-address` both
+/// queries return nothing and the window does not grow.
 pub(crate) async fn grow_address_window(
     client: &dyn crate::noncustodial::node_rpc::NodeRpc,
     db_path: &str,

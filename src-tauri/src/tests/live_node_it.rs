@@ -1066,6 +1066,23 @@ async fn live_sync_grows_the_address_window_for_a_second_profile() {
         }
     }
 
+    let (tracked, total) = second_profile_after_one_sync(&url, &key, acct, gap).await;
+    assert_eq!(
+        tracked, on_chain,
+        "the second profile tracks every coin hsd has"
+    );
+    assert_eq!(total, value);
+}
+
+/// A profile of the seed at `acct` in a fresh file DB (the node sync reopens
+/// it by path), holding a restore's window `[0, gap)`, after one node sync:
+/// its unspent tracked outpoints and their total value.
+async fn second_profile_after_one_sync(
+    url: &str,
+    key: &str,
+    acct: u32,
+    gap: u32,
+) -> (std::collections::HashSet<(String, u32)>, i64) {
     let db_path = std::env::temp_dir().join(format!(
         "namehold_live_window_{}_{}.db",
         std::process::id(),
@@ -1077,7 +1094,7 @@ async fn live_sync_grows_the_address_window_for_a_second_profile() {
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
-    seed_profile_into(&conn, &url, &key, acct);
+    seed_profile_into(&conn, url, key, acct);
     crate::commands::secure_wallet::provision_addresses(
         &conn,
         PROFILE,
@@ -1102,18 +1119,92 @@ async fn live_sync_grows_the_address_window_for_a_second_profile() {
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
-    let tracked: std::collections::HashSet<(String, u32)> =
-        rows.iter().map(|(t, v, _)| (t.clone(), *v)).collect();
-    assert_eq!(
-        tracked, on_chain,
-        "the second profile tracks every coin hsd has"
-    );
-    assert_eq!(rows.iter().map(|r| r.2).sum::<i64>(), value);
     drop(stmt);
     drop(conn);
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let total = rows.iter().map(|r| r.2).sum();
+    (rows.into_iter().map(|(t, v, _)| (t, v)).collect(), total)
+}
+
+/// A spent address moves the window too, through the node's address history
+/// (`GET /tx/address`, which needs `--index-tx` as well as `--index-address`).
+/// The first profile receives a coin at receive `gap+3` and sweeps it to an
+/// address of another account, so hsd has no coin there but has its history;
+/// then coins are mined to receive `gap-1` and `2*gap+3`. The second profile
+/// of the seed, with the restore window `[0, gap)`, reaches `2*gap+3` only if
+/// `gap+3` counts as used: from `gap-1` alone its window would end at
+/// `2*gap-1`. One node sync tracks both live coins, as hsd reports them.
+/// Done on the receive branch: a coin at a change address past the gap would
+/// need a send whose change lands there, which the build path does not offer.
+#[tokio::test]
+async fn live_sync_grows_the_address_window_past_a_spent_address() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skipping live_sync_grows_the_address_window_past_a_spent_address");
+        return;
+    };
+    let cl = client(&url, &key);
+    let tip = cl.get_blockchain_info().await.expect("info").blocks as i64;
+    let acct = fresh_acct(tip);
+    let gap = crate::commands::secure_wallet::gap_limit(&std::collections::HashMap::new());
+    let at = |index: u32| hd::derive_address(NET, &seed(), acct, 0, index).unwrap().2;
+    let spent = at(gap + 3);
+    let burn = recv_leaf_01_at(99);
+
+    // The first profile: its window reaches `gap+3`; the coin there matures
+    // and is swept away.
+    let conn = seeded_conn_acct(&url, &key, acct);
+    crate::commands::secure_wallet::provision_addresses(
+        &conn,
+        PROFILE,
+        NET,
+        &account_xpub_at(acct),
+        gap + 4,
+    )
+    .expect("the first profile's window");
+    let first = app_with(conn);
+    fund(&cl, &spent, 1).await;
+    fund(&cl, &burn, 3).await;
+    sync_wallet_state(first.state(), None).await.expect("sync");
+    let draft = build_send_hns_draft(first.state(), burn.clone(), 0, Some(1), Some(true))
+        .await
+        .expect("build sweep");
+    execute(&first, &cl, &burn, draft.id).await;
+    assert!(
+        cl.get_coins_by_address(&spent)
+            .await
+            .expect("coins")
+            .is_empty(),
+        "hsd has no coin left at receive {}",
+        gap + 3
+    );
+    assert_eq!(
+        cl.get_txs_by_address(&spent).await.expect("history").len(),
+        2,
+        "hsd's history of receive {}: the coinbase and the sweep",
+        gap + 3
+    );
+
+    let mut on_chain = std::collections::HashSet::new();
+    let mut value = 0i64;
+    for index in [gap - 1, 2 * gap + 3] {
+        let a = at(index);
+        fund(&cl, &a, 1).await;
+        let coins = cl.get_coins_by_address(&a).await.expect("coins");
+        assert_eq!(coins.len(), 1, "one coinbase at receive {index}");
+        for c in coins {
+            value += c.value;
+            on_chain.insert((c.txid, c.vout));
+        }
+    }
+
+    let (tracked, total) = second_profile_after_one_sync(&url, &key, acct, gap).await;
+    assert_eq!(
+        tracked, on_chain,
+        "the second profile tracks every coin hsd has"
+    );
+    assert_eq!(total, value);
 }
 
 /// Assert a `Result` is `Err` and its message matches `needle` (case-insensitive
