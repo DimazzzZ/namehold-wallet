@@ -10,6 +10,7 @@ use crate::noncustodial::shakedex::template::STEP_SIGHASH;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::db::queries::ListingMode;
 use crate::error::AppError;
 use crate::noncustodial::address;
 use crate::noncustodial::network::Network;
@@ -17,6 +18,17 @@ use crate::noncustodial::tx::{output_address_from_string, OutputAddress};
 
 pub const MAX_LISTING_FILE_BYTES: usize = 256 * 1024;
 const VERSION: u64 = 2;
+/// Our own top-level key naming the listing's mode, `"buyNow"` or
+/// `"reverseAuction"`. Not part of Shakedex: the CLI's parser drops unknown
+/// fields, and the one-step market copy leaves it out ([`market_copy`]).
+const MODE_KEY: &str = "mode";
+
+fn mode_spelling(mode: ListingMode) -> &'static str {
+    match mode {
+        ListingMode::BuyNow => "buyNow",
+        ListingMode::ReverseAuction => "reverseAuction",
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PriceStep {
@@ -37,6 +49,11 @@ pub struct ListingFile {
     pub fee_addr: Option<String>,
     pub steps: Vec<PriceStep>,
     pub expires_at: Option<u64>,
+    /// The mode the file names ([`MODE_KEY`]): None for a file without one
+    /// (another wallet's, or ours from before files named it) or with a
+    /// spelling we do not know. A lowered Buy Now's steps at different lock
+    /// times look like a reverse auction's, so only this can tell them apart.
+    pub mode: Option<ListingMode>,
     /// The file as written, for the round-trip (R2): what the fields above
     /// interpret (a `feeAddr` beside zero fees, an absent step `fee`, hex in
     /// either case, a null or ISO-8601 `expiresAt`) and every unknown field, at every
@@ -179,6 +196,11 @@ impl ListingFile {
             .map(expiry_seconds)
             .transpose()?
             .flatten();
+        let mode = match as_written.get(MODE_KEY).and_then(Value::as_str) {
+            Some("buyNow") => Some(ListingMode::BuyNow),
+            Some("reverseAuction") => Some(ListingMode::ReverseAuction),
+            _ => None,
+        };
         let lock_vout = u32::try_from(raw.locking_output_idx)
             .map_err(|_| bad("lockingOutputIdx out of range"))?;
         check_address(network, &raw.payment_addr, "paymentAddr")?;
@@ -232,6 +254,7 @@ impl ListingFile {
             fee_addr,
             steps,
             expires_at,
+            mode,
             as_written,
         })
     }
@@ -279,6 +302,7 @@ impl ListingFile {
             payment_addr: payment_addr.to_owned(),
             fee_addr: None,
             expires_at: None,
+            mode: None,
             as_written: serde_json::json!({
                 "name": name,
                 "lockingTxHash": hex::encode(lock_txid),
@@ -308,11 +332,12 @@ pub struct NewListingFile<'a> {
     pub steps: &'a [PriceStep],
     /// Unix seconds (R23: the MTP at signing plus 365 days).
     pub expires_at: u64,
+    pub mode: ListingMode,
 }
 
 /// R23: our listing as Shakedex v2 JSON, with the keys the CLI writes and
 /// LearnHNS serves, no market fee (`feeAddr: null`, every `fee` 0; a step
-/// carrying one is refused) and `expiresAt` in seconds. The file is read back by
+/// carrying one is refused), `expiresAt` in seconds and our [`MODE_KEY`]. The file is read back by
 /// [`ListingFile::parse`] before it is returned: a file our own strict
 /// reader refuses is never handed out.
 pub fn write_listing_file(l: &NewListingFile, network: Network) -> Result<String, AppError> {
@@ -332,6 +357,7 @@ pub fn write_listing_file(l: &NewListingFile, network: Network) -> Result<String
         "feeAddr": Value::Null,
         "lockingOutputIdx": l.lock_vout,
         "lockingTxHash": hex::encode(l.lock_txid),
+        "mode": mode_spelling(l.mode),
         "name": l.name,
         "paymentAddr": l.payment_addr,
         "publicKey": hex::encode(l.public_key),
@@ -347,14 +373,16 @@ pub fn write_listing_file(l: &NewListingFile, network: Network) -> Result<String
 /// R26: `stored`, one of our own listing files as stored, with `step`
 /// appended to its price steps (the keys [`write_listing_file`] writes, fee
 /// 0) and, when the file names no expiry (imported without one, R32),
-/// `expires_at` (R23, Unix seconds). Every other field, known or not, at
-/// every level, stays as written. The result is read back by
+/// `expires_at` (R23, Unix seconds), and, when it names no mode, `mode`
+/// (the listing's). Every other field, known or not, at every level, stays
+/// as written. The result is read back by
 /// [`ListingFile::parse`]: its steps must be the stored ones and `step`.
 /// Returns the file and the expiry it names.
 pub fn add_step_to_listing_file(
     stored: &str,
     step: &PriceStep,
     expires_at: u64,
+    mode: ListingMode,
     network: Network,
 ) -> Result<(String, u64), AppError> {
     if step.fee != 0 {
@@ -376,6 +404,9 @@ pub fn add_step_to_listing_file(
     if file.expires_at.is_none() {
         v["expiresAt"] = expires_at.into();
     }
+    if v.get(MODE_KEY).is_none() {
+        v[MODE_KEY] = mode_spelling(mode).into();
+    }
     let json = serde_json::to_string(&v)?;
     let back = ListingFile::parse(&json, network)?;
     let mut want = file.steps.clone();
@@ -395,9 +426,10 @@ pub fn add_step_to_listing_file(
 }
 
 /// R23 (T6): `stored`, one of our listing files as stored, cut to its price
-/// step `index` — LearnHNS Market takes exactly one step per upload. Every
-/// other field, known or not, at every level, stays as written, the kept
-/// step's unknown fields too. Read back by [`ListingFile::parse`]: its one
+/// step `index` — LearnHNS Market takes exactly one step per upload — and
+/// without our [`MODE_KEY`], which a one-step file does not need and the
+/// market was never shown. Every other field, known or not, at every level,
+/// stays as written, the kept step's unknown fields too. Read back by [`ListingFile::parse`]: its one
 /// step must be the stored step `index`.
 pub fn market_copy(stored: &str, index: usize, network: Network) -> Result<String, AppError> {
     let file = ListingFile::parse(stored, network)?;
@@ -416,6 +448,9 @@ pub fn market_copy(stored: &str, index: usize, network: Network) -> Result<Strin
         .cloned()
         .ok_or_else(|| bad(format!("no price step {index}")))?;
     *data = vec![kept];
+    if let Some(o) = v.as_object_mut() {
+        o.remove(MODE_KEY);
+    }
     let json = serde_json::to_string(&v)?;
     if ListingFile::parse(&json, network)?.steps != [step] {
         return Err(AppError::Other(

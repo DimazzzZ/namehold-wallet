@@ -6109,6 +6109,7 @@ fn own_file_with_steps(
             payment_addr: payment,
             steps: &steps,
             expires_at: 1_731_536_000,
+            mode: crate::db::queries::ListingMode::BuyNow,
         },
         Network::Regtest,
     )
@@ -6362,7 +6363,45 @@ async fn own_listing_file_import_reads_the_mode_from_the_step_times() {
     ] {
         let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
         restore(&app).await.expect("restored");
-        let s = import(&app, own_file_with_steps(1, key.pubkey, &key, &pay, &steps))
+        // A file from before files named their mode.
+        let mut v: serde_json::Value =
+            serde_json::from_str(&own_file_with_steps(1, key.pubkey, &key, &pay, &steps)).unwrap();
+        v.as_object_mut().unwrap().remove("mode");
+        let s = import(&app, serde_json::to_string(&v).unwrap())
+            .await
+            .expect(case);
+        assert_eq!((s.state, s.mode), (ListingState::Listed, want), "{case}");
+    }
+}
+
+/// R32 (QA Q4, the case the step times cannot settle): a Buy Now lowered
+/// after the MTP moved has steps at different lock times, like a reverse
+/// auction's. The file names its mode, and the import takes it over the
+/// step times either way.
+#[tokio::test]
+async fn own_listing_file_import_takes_the_mode_the_file_names() {
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let pay = addr00(Network::Regtest).0;
+    for (case, steps, named, want) in [
+        (
+            "a Buy Now lowered after the MTP moved",
+            vec![(5_000_000, 1_700_000_000), (4_000_000, 1_700_003_584)],
+            "buyNow",
+            ListingMode::BuyNow,
+        ),
+        (
+            "a reverse auction whose steps share a lock time",
+            vec![(5_000_000, 1_700_000_000), (4_000_000, 1_700_000_000)],
+            "reverseAuction",
+            ListingMode::ReverseAuction,
+        ),
+    ] {
+        let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+        restore(&app).await.expect("restored");
+        let mut v: serde_json::Value =
+            serde_json::from_str(&own_file_with_steps(1, key.pubkey, &key, &pay, &steps)).unwrap();
+        v["mode"] = named.into();
+        let s = import(&app, serde_json::to_string(&v).unwrap())
             .await
             .expect(case);
         assert_eq!((s.state, s.mode), (ListingState::Listed, want), "{case}");

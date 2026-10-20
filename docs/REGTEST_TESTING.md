@@ -363,11 +363,10 @@ HNS_IT_NOINDEX_NODE_URL=http://127.0.0.1:24037 HNS_IT_NOINDEX_NODE_API_KEY=test 
 | `live_redeem_of_the_winning_reveal_is_refused` | A lone bidder's reveal, before REGISTER and with the name never tracked, is the owner coin the node reports: `build_redeem_draft` refuses it ("won the auction"), as hsd would (`bad-redeem-owner`), and the coin stays unspent |
 | `live_double_open_and_double_bid_guarded` | Second OPEN/BID while first pending → command-level rejection |
 
-### Atomic swap + signing + capability (Group G)
+### Signing + capability (Group G)
 
 | Test | Asserts |
 |------|---------|
-| `live_finalize_with_payment_atomic` | One tx carries BOTH a FINALIZE covenant AND the seller-payment output |
 | `live_sign_name_message_ownership_gate` | `sign_name_message` signs an owned name; refuses one the wallet does not own |
 | `live_signer_profile_mismatch_refused` | Signer unlocked for profile X → refuses to sign profile Y's draft |
 | `live_watch_only_send_refused` | Watch-only profile → `build_send_hns_draft` refuses |

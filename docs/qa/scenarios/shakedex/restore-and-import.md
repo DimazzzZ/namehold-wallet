@@ -177,14 +177,14 @@ Expected:
 - **Priority:** P2
 - **Was:** T7 fixes recheck C4
 - **Covers:** R19, R26, R32
-- **Regression of:** Q4 (a Buy Now lowered before a block, exported and imported in another profile, read as `Reverse auction`)
+- **Regression of:** Q4 (a Buy Now lowered before a block, exported and imported in another profile, read as `Reverse auction`), and its sequel (the same after a block had moved the median time, until the file named its mode)
 - **Preconditions:** SE an ordinary owned name of the seller profile, home in both profiles.
 
 Steps:
 
 1. Seller: [lock-and-list](../../procedures/lock-and-list.md) SE, Buy Now 5, no export yet. Read Activity for SE (the `Lock for sale` and `Finalize into lock` rows, mined).
-2. **Without mining any block**, `Lower price` 5 → 4; confirm.
-3. `Export listing file` → `$QA_DIR/SE-lowered.json`; check both entries of `data` carry the **same** `lockTime`. If they differ (a block moved the median time between steps 1 and 2), the parked limitation applies ([ui](../../ui.md#known-issues-not-to-report-again)): record ◐ with both lock times and skip to step 6.
+2. [mine-and-sync](../../procedures/mine-and-sync.md) 1 block, so the median time moves; then `Lower price` 5 → 4; confirm.
+3. `Export listing file` → `$QA_DIR/SE-lowered.json`; check the file has `"mode": "buyNow"` and that its two entries' `lockTime` differ (if they are equal, no block moved the median time: record it and go on; the import must read `Buy now` either way).
 4. Second device: [restore-and-import](../../procedures/restore-and-import.md) SE with `SE-lowered.json`, pasted.
 5. Run [R7](profiles.md#r7--switching-profiles-never-shows-another-profiles-listings) now, before step 6, while the two profiles hold different SE rows (between the restore and the import is when they differ most).
 6. Seller: [cancel-and-bring-home](../../procedures/cancel-and-bring-home.md) SE. Read Activity for SE. Second device: Sync.
@@ -192,10 +192,10 @@ Steps:
 Expected:
 
 - Step 2: the seller's row stays `Buy now`, `Price 4.000000 HNS`, with `All 2 price steps`.
-- Step 4: the second device's row reads `Buy now`, `Price 4.000000 HNS`, and no `Now … · next … · floor …` line; the same price, expiry and lock coin as the seller's. `All 2 price steps` shows here too, both at the same time; that is correct. `Reverse auction` here is ❌ (Q4).
+- Step 4: the second device's row reads `Buy now`, `Price 4.000000 HNS`, and no `Now … · next … · floor …` line; the same price, expiry and lock coin as the seller's. `All 2 price steps` shows here too, at the file's lock times; that is correct. `Reverse auction` here is ❌ (Q4).
 - Step 6: Activity shows `Cancel listing` and `Finalize cancel` with Amount 0 and the `⤷` line. The second device's row should end `Cancelled` after a sync; if it stays `Listed for sale` because the cancel's home address lies more than `address_gap_limit` addresses past the last one used on chain (the seller's unfunded reservations count as used only on the seller's device), that is the known gap of spec §5 (◐, not a finding).
 - Passes if the imported lowered Buy Now reads `Buy now` with its one current price.
 
-- **Blocks mined:** 22
+- **Blocks mined:** 23
 - **Evidence:** screenshots `C4-1-seller-buy-now-4`, `C4-2-imported-buy-now-4`, `C4-3-steps-expanded`; both lock times from `SE-lowered.json`.
 - **Cleanup / end state:** SE an ordinary owned name of the seller; the seller's row `Cancelled`.

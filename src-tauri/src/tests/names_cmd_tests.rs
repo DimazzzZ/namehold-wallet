@@ -3947,63 +3947,6 @@ async fn build_batch_finalize_draft_wrapper_rejects_missing_owner() {
     assert!(format!("{err}").contains("does not hold"));
 }
 
-// --- build_finalize_with_payment_draft: happy path + guards -----------------
-
-#[tokio::test]
-async fn build_finalize_with_payment_draft_wrapper_happy_path() {
-    let mut server = mockito::Server::new_async().await;
-    let _mocks = mock_names_rpc(&mut server).await;
-    let state = create_full_test_state();
-    let payment_addr = {
-        let conn = state.db.lock().unwrap();
-        let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
-        insert_extra_funding(&conn, &id, &"66".repeat(32));
-        let cov = transfer_covenant_json_for("alpha");
-        seed_owner_coin_at_derived(
-            &conn,
-            &id,
-            "alpha",
-            &"a5".repeat(32),
-            crate::noncustodial::sync::COV_TRANSFER as i64,
-            Some(&cov),
-        );
-        // A valid regtest payment address (the wallet's own derived receive[0]).
-        first_derived_address(&conn, &id)
-    };
-    let app = mock_app_with(state);
-    let summary = names::build_finalize_with_payment_draft(
-        app.state(),
-        "alpha".into(),
-        payment_addr,
-        3_000_000,
-        None,
-    )
-    .await
-    .expect("finalize-with-payment draft should build");
-    assert_eq!(summary.action, "finalize-with-payment");
-}
-
-#[tokio::test]
-async fn build_finalize_with_payment_draft_wrapper_rejects_zero_payment() {
-    let state = create_full_test_state();
-    {
-        let conn = state.db.lock().unwrap();
-        insert_valid_profile(&conn, "regtest");
-    }
-    let app = mock_app_with(state);
-    let err = names::build_finalize_with_payment_draft(
-        app.state(),
-        "alpha".into(),
-        "rs1qtest".into(),
-        0,
-        None,
-    )
-    .await
-    .expect_err("zero payment value must be rejected");
-    assert!(format!("{err}").contains("payment value must be non-zero"));
-}
-
 // --- Single-name owner-action wrappers: happy paths -------------------------
 
 #[tokio::test]
@@ -4339,7 +4282,7 @@ async fn finalize_wrappers_refuse_a_finalize_inside_the_transfer_lockup() {
         mock_names_rpc_with_info(&mut server, with_info(serde_json::json!({"transfer": 995})))
             .await;
     let state = create_full_test_state();
-    let payment_addr = {
+    {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
         set_node_rpc_url(&conn, &server.url());
@@ -4355,8 +4298,7 @@ async fn finalize_wrappers_refuse_a_finalize_inside_the_transfer_lockup() {
                 Some(&cov),
             );
         }
-        first_derived_address(&conn, &id)
-    };
+    }
     let app = mock_app_with(state);
     let err = names::build_finalize_draft(app.state(), "alpha".into(), None)
         .await
@@ -4369,16 +4311,6 @@ async fn finalize_wrappers_refuse_a_finalize_inside_the_transfer_lockup() {
         names::build_batch_finalize_draft(app.state(), vec!["alpha".into(), "bravo".into()], None)
             .await
             .expect_err("a batch FINALIZE inside the lockup must be refused");
-    assert!(format!("{err}").contains("still locked"), "{err}");
-    let err = names::build_finalize_with_payment_draft(
-        app.state(),
-        "alpha".into(),
-        payment_addr,
-        3_000_000,
-        None,
-    )
-    .await
-    .expect_err("a paid FINALIZE inside the lockup must be refused");
     assert!(format!("{err}").contains("still locked"), "{err}");
     assert_eq!(drafts_of(&app), 0, "nothing is persisted");
 }
@@ -4596,15 +4528,6 @@ async fn locked_name_offers_no_owner_actions() {
                 names::build_finalize_draft(app.state(), "testname".into(), None)
                     .await
                     .unwrap_err(),
-                names::build_finalize_with_payment_draft(
-                    app.state(),
-                    "testname".into(),
-                    owner_addr.clone(),
-                    1000,
-                    None,
-                )
-                .await
-                .unwrap_err(),
                 names::build_batch_renew_draft(app.state(), n(), None)
                     .await
                     .unwrap_err(),

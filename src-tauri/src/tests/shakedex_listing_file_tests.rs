@@ -386,6 +386,7 @@ fn written(
             payment_addr: &pay,
             steps: &steps,
             expires_at: W_MTP + 365 * 86_400,
+            mode: crate::db::queries::ListingMode::BuyNow,
         },
         network,
     )
@@ -393,9 +394,75 @@ fn written(
     (json, key, pay, steps[0].clone())
 }
 
+use crate::db::queries::ListingMode;
 use crate::noncustodial::shakedex::listing_file::{
     add_step_to_listing_file, market_copy, same_market_listing, with_expiry,
 };
+
+/// The listing file names its mode (`"mode"`): a lowered Buy Now's steps at
+/// different lock times look like a reverse auction's, so the step times
+/// alone cannot say. Written by us, kept by a lower price (added to a file
+/// without one), read back, dropped from the one-step market copy, and an
+/// unknown spelling is no mode, kept as written.
+#[test]
+fn the_file_names_its_mode_and_the_market_copy_does_not() {
+    let network = Network::Main;
+    let (json, key, pay, _) = written(network);
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["mode"], "buyNow");
+    assert_eq!(
+        ListingFile::parse(&json, network).unwrap().mode,
+        Some(ListingMode::BuyNow)
+    );
+
+    let later = {
+        let lock_time = buy_now_lock_time(W_MTP + 3_600);
+        let t = StepTemplate {
+            lock_outpoint: (W_LOCK_TXID, 0),
+            lock_value: W_LOCK_VALUE,
+            lock_pubkey: &key.pubkey,
+            payment: output_address_from_string(network, &pay).unwrap(),
+            price: 3_000_000,
+            lock_time_secs: lock_time,
+        };
+        PriceStep {
+            price: 3_000_000,
+            lock_time,
+            signature: sign_step(&key, &t).unwrap(),
+            fee: 0,
+        }
+    };
+    // Kept as written by a lower price, whatever mode the caller passes.
+    let (two, _) =
+        add_step_to_listing_file(&json, &later, 0, ListingMode::ReverseAuction, network).unwrap();
+    assert_eq!(
+        ListingFile::parse(&two, network).unwrap().mode,
+        Some(ListingMode::BuyNow)
+    );
+    // A file without one (imported, or written before files named it) gets
+    // the listing's.
+    let mut bare = v.clone();
+    bare.as_object_mut().unwrap().remove("mode");
+    let bare = serde_json::to_string(&bare).unwrap();
+    assert_eq!(ListingFile::parse(&bare, network).unwrap().mode, None);
+    let (named, _) =
+        add_step_to_listing_file(&bare, &later, 0, ListingMode::BuyNow, network).unwrap();
+    assert_eq!(
+        ListingFile::parse(&named, network).unwrap().mode,
+        Some(ListingMode::BuyNow)
+    );
+
+    let copy: serde_json::Value =
+        serde_json::from_str(&market_copy(&two, 1, network).unwrap()).unwrap();
+    assert!(copy.get("mode").is_none(), "{copy}");
+
+    let mut odd = v.clone();
+    odd["mode"] = "dutch".into();
+    let odd = serde_json::to_string(&odd).unwrap();
+    let parsed = ListingFile::parse(&odd, network).unwrap();
+    assert_eq!(parsed.mode, None);
+    assert_eq!(parsed.to_json().unwrap(), odd);
+}
 
 /// R23 (T6): the market takes one step per upload. The copy keeps exactly
 /// step `index` and every other field as written (unknown fields too), and
@@ -425,7 +492,8 @@ fn market_copy_keeps_one_step_and_every_other_field() {
             fee: 0,
         }
     };
-    let (two, _) = add_step_to_listing_file(&stored, &cheaper, 0, network).unwrap();
+    let (two, _) =
+        add_step_to_listing_file(&stored, &cheaper, 0, ListingMode::BuyNow, network).unwrap();
 
     let copy = market_copy(&two, 1, network).unwrap();
     let back = ListingFile::parse(&copy, network).unwrap();
@@ -631,15 +699,25 @@ async fn written_listing_file_round_trips_through_the_strict_parser() {
 }
 
 /// The file carries exactly the keys the CLI writes and LearnHNS serves
-/// (the live dexreviews proof), so every Shakedex wallet reads it. This pins
-/// the key set, not their order (`serde_json` sorts keys; readers do not
-/// depend on order).
+/// (the live dexreviews proof), so every Shakedex wallet reads it, plus our
+/// own `mode`, which the CLI's parser drops and the market copy leaves out.
+/// This pins the key set, not their order (`serde_json` sorts keys; readers
+/// do not depend on order).
 #[test]
 fn written_listing_file_has_the_cli_field_set() {
     let keys = |j: &Value| -> Vec<String> { j.as_object().unwrap().keys().cloned().collect() };
     let (json, _, _, _) = written(Network::Main);
     let ours = v(&json);
-    assert_eq!(keys(&ours), keys(&v(DEX)));
+    let mut cli = keys(&v(DEX));
+    cli.push("mode".into());
+    cli.sort();
+    assert_eq!(keys(&ours), cli);
+    let copy = v(&market_copy(&json, 0, Network::Main).unwrap());
+    assert_eq!(
+        keys(&copy),
+        keys(&v(DEX)),
+        "the market copy is the CLI's set"
+    );
     assert_eq!(keys(&ours["data"][0]), keys(&v(DEX)["data"][0]));
     assert_eq!(ours["version"], 2);
     assert_eq!(ours["feeAddr"], Value::Null);
@@ -661,6 +739,7 @@ fn a_step_with_a_fee_is_not_written() {
             payment_addr: &pay,
             steps: &steps,
             expires_at: W_MTP + 365 * 86_400,
+            mode: crate::db::queries::ListingMode::BuyNow,
         },
         Network::Main,
     )
@@ -703,6 +782,7 @@ fn a_thousand_step_schedule_round_trips_under_the_size_limit() {
             payment_addr: &pay,
             steps: &steps,
             expires_at: W_MTP + 365 * 86_400,
+            mode: crate::db::queries::ListingMode::BuyNow,
         },
         network,
     )

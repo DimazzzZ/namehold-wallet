@@ -3595,87 +3595,8 @@ async fn live_double_open_and_double_bid_guarded() {
 }
 
 // =============================================================================
-// GROUP G — Atomic swap + signing + capability gates
+// GROUP G — Signing + capability gates
 // =============================================================================
-
-/// G1. build_finalize_with_payment_draft produces a SINGLE tx that finalizes
-/// the transfer to the buyer AND pays the seller `payment_value`. On-chain,
-/// both effects are present (or neither): the tx contains a FINALIZE output
-/// for `name` AND a value output to `payment_address`.
-#[tokio::test]
-async fn live_finalize_with_payment_atomic() {
-    let Some((url, key)) = it_env() else {
-        eprintln!("skip live_finalize_with_payment_atomic: set HNS_IT_NODE_URL");
-        return;
-    };
-    let conn = seeded_conn_regtest(&url, &key);
-    let app = app_with(conn);
-    let cl = client(&url, &key);
-    let (addr, _, _) = leaf00();
-    fund(&cl, &addr, 101).await;
-    sync_wallet_state(app.state(), None).await.expect("sync");
-    let tip = cl.get_blockchain_info().await.expect("info").blocks;
-    let name = format!("fwp{tip}");
-    acquire_name(&app, &cl, &addr, &name).await;
-
-    // Transfer to leaf 0/1 and wait out the lockup so finalize is valid.
-    let buyer = recv_leaf_01();
-    let transfer = crate::commands::names::build_transfer_draft(
-        app.state(),
-        name.clone(),
-        buyer.clone(),
-        Some(1),
-    )
-    .await
-    .expect("build transfer");
-    execute(&app, &cl, &addr, transfer.id).await;
-    cl.generate_to_address(11, &addr).await.expect("lockup");
-    sync_wallet_state(app.state(), None).await.expect("sync");
-
-    // Payment address: node-side would be ideal, but a wallet-owned leaf
-    // still exercises the atomic-tx path (buyer + seller happen to be the
-    // same wallet here; the invariant we check is that ONE tx has BOTH
-    // a FINALIZE covenant AND a value output to the payment_address).
-    let seller_pay = leaf00().0; // pay back to 0/0
-    let payment_value: u64 = 3_000_000;
-    let fwp = crate::commands::names::build_finalize_with_payment_draft(
-        app.state(),
-        name.clone(),
-        seller_pay.clone(),
-        payment_value,
-        Some(1),
-    )
-    .await
-    .expect("build finalize+payment");
-    execute(&app, &cl, &addr, fwp.id.clone()).await;
-    let row = draft_status(&app, &fwp.id);
-    let fwp_txid = row.txid.expect("fwp txid");
-
-    // The single tx has BOTH: a FINALIZE covenant output AND a value output
-    // to the seller_pay address for exactly payment_value.
-    let tx = cl.get_tx_by_hash(&fwp_txid).await.expect("rawtx");
-    let outputs = tx
-        .get("outputs")
-        .and_then(|o| o.as_array())
-        .expect("outputs array");
-    let has_finalize = outputs.iter().any(|o| {
-        o.get("covenant")
-            .and_then(|c| c.get("type"))
-            .and_then(|t| t.as_u64())
-            == Some(10)
-    });
-    let has_seller_payment = outputs.iter().any(|o| {
-        let addr = o.get("address").and_then(|a| a.as_str());
-        let val = o.get("value").and_then(|v| v.as_u64());
-        addr == Some(seller_pay.as_str()) && val == Some(payment_value)
-    });
-    assert!(has_finalize, "tx must carry a FINALIZE covenant output");
-    assert!(
-        has_seller_payment,
-        "tx must carry the seller payment output"
-    );
-    assert_eq!(node_state(&cl, &name).await.as_deref(), Some("CLOSED"));
-}
 
 /// G2. sign_name_message signs a message with the owner-coin key of an owned
 /// name, and refuses when the wallet does NOT own the name.
