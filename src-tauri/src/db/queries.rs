@@ -4285,6 +4285,14 @@ pub struct PurchaseNameState {
     pub state: PurchaseState,
     pub blocks_remaining: Option<i64>,
     pub purchase_id: String,
+    /// The price paid to the seller.
+    pub price_doos: i64,
+    /// The network's whole transfer lockup, which `blocks_remaining` counts down.
+    pub lockup_blocks: u32,
+    /// Blocks come on a schedule here, so the blocks left may be shown as a
+    /// time (`Network::has_wall_clock_block_timing`); regtest and simnet mine
+    /// on demand (R10).
+    pub wall_clock_timing: bool,
 }
 
 /// A profile's purchased names still on their way (`unconfirmed` or
@@ -4298,8 +4306,11 @@ pub fn read_shakedex_purchase_names(
     conn: &rusqlite::Connection,
     profile_id: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
+    let network = profile_network(conn, profile_id)?;
+    let lockup_blocks = network.name_params().transfer_lockup;
+    let wall_clock_timing = network.has_wall_clock_block_timing();
     let mut stmt = conn.prepare(&format!(
-        "SELECT p.id, p.name, p.state, p.blocks_remaining, p.destination_address
+        "SELECT p.id, p.name, p.state, p.blocks_remaining, p.destination_address, p.price_doos
          FROM shakedex_purchases p
          WHERE p.wallet_profile_id = ?1
            AND (p.state IN (?2, ?3)
@@ -4331,6 +4342,9 @@ pub fn read_shakedex_purchase_names(
                 state,
                 blocks_remaining,
                 purchase_id: id,
+                price_doos: row.get(5)?,
+                lockup_blocks,
+                wall_clock_timing,
             };
             Ok(serde_json::json!({
                 "name": name,

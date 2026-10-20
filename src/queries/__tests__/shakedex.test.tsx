@@ -7,7 +7,7 @@ const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 
 import {
-  useMarketPage,
+  useMarketPages,
   useImportListing,
   usePurchasePreview,
   useBuildPurchase,
@@ -59,20 +59,32 @@ beforeEach(() => {
 });
 
 describe("shakedex queries", () => {
-  it("useMarketPage asks shakedex_list_market for its page", async () => {
-    invokeMock.mockImplementation((cmd: string) =>
-      Promise.resolve(cmd === "list_wallet_profiles" ? [profileRow("p1")] : page),
+  it("useMarketPages asks for page 1, then the next page on Load more, until the last", async () => {
+    invokeMock.mockImplementation((cmd: string, args: { page: number }) =>
+      Promise.resolve(
+        cmd === "list_wallet_profiles"
+          ? [profileRow("p1")]
+          : { ...page, page: args.page, pageCount: 2 },
+      ),
     );
     const { wrapper } = setup();
-    const { result } = renderHook(() => useMarketPage(3), { wrapper });
-    await waitFor(() => expect(result.current.data).toEqual(page));
+    const { result } = renderHook(() => useMarketPages(), { wrapper });
+    await waitFor(() => expect(result.current.data?.pages).toHaveLength(1));
     expect(invokeMock).toHaveBeenCalledWith("shakedex_list_market", {
-      page: 3,
+      page: 1,
       walletProfileId: "p1",
     });
+    expect(result.current.hasNextPage).toBe(true);
+    await act(() => result.current.fetchNextPage());
+    await waitFor(() => expect(result.current.data?.pages.map((p) => p.page)).toEqual([1, 2]));
+    expect(invokeMock).toHaveBeenCalledWith("shakedex_list_market", {
+      page: 2,
+      walletProfileId: "p1",
+    });
+    expect(result.current.hasNextPage).toBe(false);
   });
 
-  it("useMarketPage never shows the previous profile's page while the next profile's loads (R7)", async () => {
+  it("useMarketPages never shows the previous profile's pages while the next profile's load (R7)", async () => {
     let active = "pA";
     const pageOf = (id: string): MarketPage => ({ ...page, rows: [{ name: id } as never] });
     let releaseB: (p: MarketPage) => void = () => {};
@@ -82,13 +94,13 @@ describe("shakedex queries", () => {
       return new Promise<MarketPage>((r) => (releaseB = r));
     });
     const { wrapper, qc } = setup();
-    const { result } = renderHook(() => useMarketPage(1), { wrapper });
-    await waitFor(() => expect(result.current.data).toEqual(pageOf("pA")));
+    const { result } = renderHook(() => useMarketPages(), { wrapper });
+    await waitFor(() => expect(result.current.data?.pages).toEqual([pageOf("pA")]));
     active = "pB";
     await act(() => qc.invalidateQueries({ queryKey: ["wallet", "profiles"] }));
     await waitFor(() => expect(result.current.data).toBeUndefined());
     act(() => releaseB(pageOf("pB")));
-    await waitFor(() => expect(result.current.data).toEqual(pageOf("pB")));
+    await waitFor(() => expect(result.current.data?.pages).toEqual([pageOf("pB")]));
   });
 
   it("useImportListing sends the source", async () => {

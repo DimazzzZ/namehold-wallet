@@ -23,22 +23,22 @@ What may sign, and what the backend refuses before anything is signed. A gate re
 Steps:
 
 1. Settings → Connections → untick `Allow sending via remote node` → `Save settings`. Note the original value first.
-2. (a) Owned Names → `Manage` on the ordinary name → `Sell…`; (b) Market › Browse; (c) My listings; (d) `Restore a lock by name` with a name typed; (e) on a Restored row, `Import its listing file`; (f) on a purchase `Ready to finalize`, `Finalize`.
+2. (a) Owned Names → `Manage` on the ordinary name → `Sell…`; (b) Market › Browse; (c) My listings; (d) `Restore a lock by name` with a name typed; (e) on a Restored row, `Import its listing file`; (f) on a purchase `Ready to finalize`, `Finalize` in Owned Names and in Market › Your purchases.
 3. Tick it back → `Save settings`; check every item again.
 
 Expected:
 
 - (a) `Sell…` disabled, hover "Shakedex needs a local node, or a remote node with sending allowed".
-- (b) An info alert at the top with the same sentence; an imported buyable row still verifies but its `Buy` is disabled with the sentence as tooltip.
+- (b) An imported buyable row still verifies (`✓ Verified`); selected, its panel's line above the button reads "Shakedex needs a local node, or a remote node with sending allowed." and the button `Buy .<name>` is disabled.
 - (c) Every signing button (Lower price, Cancel listing, Finalize & sign, Finalize home) disabled with the sentence printed under the row; `Export listing file` stays enabled.
 - (d) `Restore` disabled, the sentence under the section.
 - (e) `Import its listing file` disabled with the sentence (if the dialog opens instead, `choose a file…` and `Import` are disabled with it).
-- (f) `Finalize` disabled with the sentence.
+- (f) `Finalize` disabled with the sentence, in Owned Names as a hover and in Your purchases printed above its rows.
 - After step 3 everything is enabled again. Nothing refuses with another reason.
 - Passes if every entry point is gated by that sentence and released after; unreadable hovers are ◐.
 
 - **Blocks mined:** 0
-- **Evidence:** screenshots `G1-1-sell-disabled`, `G1-2-browse-alert`, `G1-3-listing-restore-disabled`, `G1-4-purchase-finalize-disabled`, `G1-5-restored-import-disabled`.
+- **Evidence:** screenshots `G1-1-sell-disabled`, `G1-2-browse-panel-reason`, `G1-3-listing-restore-disabled`, `G1-4-purchase-finalize-disabled`, `G1-5-restored-import-disabled`.
 - **Cleanup / end state:** `Allow sending via remote node` back at its original value (ticked).
 
 ## G2 — A watch-only profile cannot buy or sell
@@ -58,7 +58,7 @@ Steps:
 
 Expected:
 
-- Step 2: an info alert "Shakedex works with a recovery-phrase wallet for now"; the row verifies (`Ready to buy` or another verdict) but `Buy` is disabled with that tooltip.
+- Step 2: the import verifies as for any profile (a buyable listing joins the list `✓ Verified`; any other verdict is said in the import dialog); selected, the panel's line above the button reads "Shakedex works with a recovery-phrase wallet for now." and the button `Buy .<name>` is disabled.
 - Step 3: `Restore` disabled with the same sentence.
 - Step 4: `Sell…` disabled with that sentence, if the dialog shows owner actions at all (a watch-only profile may show only Name details: a known issue, not reported again).
 - Step 5: `Buy` and `Sell…` disabled with the same sentence.
@@ -85,7 +85,7 @@ Steps:
 Expected:
 
 - The checkbox reads "Allow buying and selling names on mainnet through Shakedex (experimental)" with the note "Testnet and regtest are always allowed. Finalizing a purchase, and Finalize & sign, Cancel and Lower price on a listing you already have, work whatever this says."
-- With either value Browse offers `Buy` and `Sell…` opens the Lock dialog; "Shakedex purchases on mainnet are experimental: enable them in Settings" and "Selling names through Shakedex on mainnet is experimental: enable it in Settings" appear nowhere.
+- With either value Browse shows no "Buying on mainnet is off." banner, the imported row's panel offers an enabled `Buy .<name> for <total> HNS` (never `Turn on buying`), and `Sell…` opens the Lock dialog; "Selling names through Shakedex on mainnet is experimental: enable it in Settings" appears nowhere.
 - Passes if the flag changes nothing on regtest. Its mainnet refusals are BLOCKED ✗ ([mainnet-absence](mainnet-absence.md)).
 
 - **Blocks mined:** 0

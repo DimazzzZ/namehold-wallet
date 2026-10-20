@@ -957,38 +957,120 @@ function importOwnFile(text: unknown): ShakedexListingSummary {
   return listingSummary(l);
 }
 
+/**
+ * A verified market row as `commands/shakedex.rs::market_row` writes it,
+ * from its steps: `[price in HNS, seconds until valid]`, the first valid
+ * now. One step is a fixed price; more are a reverse auction.
+ */
 function demoListing(
   name: string,
-  kind: "buyNow" | "reverseAuction",
-  currentPrice: number,
-  nextPrice: number | null,
-  nextValidInSecs: number | null,
-  floorPrice: number,
+  steps: [number, number][],
+  over: { warnExpiry?: boolean; expiresAt?: number | null; expiryEnd?: number } = {},
 ) {
+  const doos = steps.map(([hns, secs]) => ({
+    price: hns * 1_000_000,
+    lockTime: 1_700_000_000 + secs,
+    validInSecs: secs,
+  }));
+  const next = doos[1] ?? null;
   return {
-    listingJson: "{}",
+    listingJson: JSON.stringify({ version: 2, name }),
     name,
     verdict: {
       verdict: "buyable",
       currentStep: 0,
-      nextStep: nextPrice === null ? null : 1,
-      lockValue: currentPrice,
+      nextStep: next ? 1 : null,
+      lockValue: 0,
       nameHeight: 100,
-      expiryEnd: 100_000,
-      warnExpiry: false,
+      expiryEnd: over.expiryEnd ?? 100_000,
+      warnExpiry: over.warnExpiry ?? false,
       mtp: 0,
       tip: 0,
     },
-    kind,
-    currentPrice,
-    nextPrice,
-    nextValidInSecs,
-    floorPrice,
-    steps: [],
-    expiresAt: null,
+    kind: doos.length > 1 ? "reverseAuction" : "buyNow",
+    currentPrice: doos[0]!.price,
+    nextPrice: next?.price ?? null,
+    nextValidInSecs: next?.validInSecs ?? null,
+    floorPrice: Math.min(...doos.map((st) => st.price)),
+    steps: doos,
+    expiresAt: over.expiresAt ?? null,
     own: false,
   };
 }
+
+/** LearnHNS Market in browser QA: the redesign prototype's listings, two pages. */
+const DEMO_MARKET_PAGES = [
+  [
+    demoListing("coffee", [[250, 0]], { expiresAt: 1815177600 }),
+    demoListing("atelier", [
+      [1200, 0],
+      [1100, 21_600],
+      [1000, 43_200],
+      [800, 86_400],
+      [600, 172_800],
+      [400, 259_200],
+    ]),
+    demoListing("studio", [
+      [540, 0],
+      [500, 7_200],
+      [420, 28_800],
+      [300, 86_400],
+    ]),
+    // Expires about 23 days after the earliest finalize: "Expires soon".
+    demoListing("nightowl", [[80, 0]], { warnExpiry: true, expiryEnd: 3_600 }),
+    demoListing("ledgerline", [[95, 0]], { expiresAt: 1803859200 }),
+  ],
+  [
+    demoListing("marigold", [[30, 0]]),
+    demoListing("harborlight", [
+      [320, 0],
+      [290, 14_400],
+      [220, 36_000],
+      [150, 86_400],
+    ]),
+  ],
+];
+
+const DEMO_HIDDEN_ROWS = [
+  { name: "sunset", reason: { kind: "soldOrCancelled" }, listingJson: "{}" },
+  { name: "river", reason: { kind: "soldOrCancelled" }, listingJson: "{}" },
+  { name: "nova", reason: { kind: "soldOrCancelled" }, listingJson: "{}" },
+  {
+    name: "quartz",
+    reason: { kind: "failedVerification", reason: "the locked coin was already spent" },
+    listingJson: "{}",
+  },
+  { name: null, reason: { kind: "notYetValid", firstValidInSecs: 18_000 }, listingJson: null },
+  {
+    name: "oldmarket",
+    reason: { kind: "couldNotCheck", reason: "Node RPC error: operation timed out" },
+    listingJson: JSON.stringify({ version: 2, name: "oldmarket" }),
+  },
+];
+
+/** Bought and not finalized (`read_shakedex_purchase_names`): one ready, one 146 of 288 blocks in. */
+const DEMO_PURCHASES = [
+  ["pixelart", 410_200_000, 0],
+  ["harbor", 320_000_000, 142],
+].map(([name, priceDoos, blocksRemaining]) => ({
+  name,
+  state: null,
+  height: null,
+  renewal: null,
+  owner: null,
+  owner_address: "hs1qdest...(mock)",
+  registered: true,
+  expired: null,
+  stats: null,
+  shakedex: {
+    state: "awaitingFinalize",
+    blocksRemaining,
+    purchaseId: `purchase-${name}`,
+    priceDoos,
+    lockupBlocks: 288,
+    wallClockTiming: true,
+  },
+}));
 
 /** A Cancel transfer of a name that is no listing's abort. */
 function cancelDraft() {
@@ -1156,7 +1238,7 @@ const handlers: Record<string, Handler> = {
     });
     // R19: each name's listing; a name in our lock that is not one of ours
     // otherwise gets a row of its own at the lock address.
-    const names: Record<string, unknown>[] = [...staticNames, ...engineNames];
+    const names: Record<string, unknown>[] = [...staticNames, ...engineNames, ...DEMO_PURCHASES];
     for (const n of names) {
       const listing = nameListing(n.name as string);
       if (listing) n.listing = listing;
@@ -1337,6 +1419,7 @@ const handlers: Record<string, Handler> = {
     // Report as connected+synced so `useNodeLive()` returns true and the new
     // capabilities/positions polling actually fires under the mock.
     connected: true,
+    synced: true,
     height: chain.height,
     verification_progress: 1,
     headers: chain.height,
@@ -1737,30 +1820,54 @@ const handlers: Record<string, Handler> = {
   }),
 
   // ── Shakedex market ───────────────────────────────────────────────────
-  shakedex_list_market: () => ({
-    rows: [
-      demoListing("dexreviews", "buyNow", 250_000_000, null, null, 250_000_000),
-      demoListing("coffeeshop", "reverseAuction", 900_000_000, 800_000_000, 21_600, 600_000_000),
-    ],
-    hidden: {
-      soldOrCancelled: 28,
-      failedVerification: 4,
-      expiresBeforeFinalize: 0,
-      notYetValid: 0,
-      couldNotCheck: 0,
-    },
-    verified: true,
-    networkHasMarket: true,
-    hiddenRows: [
-      { name: "oldname", reason: { kind: "soldOrCancelled" } },
-      { name: "badname", reason: { kind: "failedVerification", reason: "signature mismatch" } },
-    ],
-    page: 1,
-    pageCount: 1,
-  }),
-  shakedex_import_listing: () =>
-    demoListing("imported", "buyNow", 100_000_000, null, null, 100_000_000),
-  shakedex_preview_purchase: () => null,
+  shakedex_list_market: (args) => {
+    const page = (args?.page as number | undefined) ?? 1;
+    const hiddenRows = page === 1 ? DEMO_HIDDEN_ROWS : [];
+    const count = (kind: string) => hiddenRows.filter((h) => h.reason.kind === kind).length;
+    return {
+      rows: DEMO_MARKET_PAGES[page - 1] ?? [],
+      hidden: {
+        soldOrCancelled: count("soldOrCancelled"),
+        failedVerification: count("failedVerification"),
+        expiresBeforeFinalize: count("expiresBeforeFinalize"),
+        notYetValid: count("notYetValid"),
+        couldNotCheck: count("couldNotCheck"),
+      },
+      verified: true,
+      networkHasMarket: true,
+      hiddenRows,
+      page,
+      pageCount: DEMO_MARKET_PAGES.length,
+    };
+  },
+  shakedex_import_listing: () => demoListing("imported", [[100, 0]]),
+  shakedex_preview_purchase: (args?: Record<string, unknown>) => {
+    const row = [...DEMO_MARKET_PAGES.flat(), demoListing("imported", [[100, 0]])].find(
+      (r) => r.listingJson === args?.listingJson,
+    );
+    const price = row?.currentPrice ?? 250_000_000;
+    const feeDoos = price / 50;
+    const fee = args?.payMarketFee && args?.fromMarket ? feeDoos : 0;
+    return {
+      name: row?.name ?? "dexreviews",
+      priceDoos: price,
+      marketFee: args?.fromMarket
+        ? {
+            valueDoos: feeDoos,
+            percentText: "2.00%",
+            published: true,
+            payable: true,
+            warning: null,
+          }
+        : null,
+      networkFeeDoos: 4_200,
+      totalDoos: price + fee + 4_200,
+      finalizeWait: "after a finalize, 288 blocks (about 2 days) after the purchase is mined",
+      lockupBlocks: 288,
+      wallClockTiming: true,
+      warnExpiry: false,
+    };
+  },
   shakedex_build_purchase_draft: () => null,
   shakedex_build_purchase_finalize_draft: () => null,
   ...sellingHandlers,

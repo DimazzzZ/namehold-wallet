@@ -28,7 +28,9 @@ export function PageHeader({ title, subtitle, badges, actions, children }: PageH
             if (action.to && !action.disabled && !action.loading) {
               return (
                 <Link key={action.label} to={action.to}>
-                  <Button variant={action.variant ?? "secondary"}>{content}</Button>
+                  <Button variant={action.variant ?? "secondary"} data-testid={action.testId}>
+                    {content}
+                  </Button>
                 </Link>
               );
             }
@@ -36,6 +38,7 @@ export function PageHeader({ title, subtitle, badges, actions, children }: PageH
               <Button
                 key={action.label}
                 variant={action.variant ?? "secondary"}
+                data-testid={action.testId}
                 disabled={action.disabled}
                 loading={action.loading}
                 onClick={action.onClick}

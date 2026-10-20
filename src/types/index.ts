@@ -139,6 +139,12 @@ export interface ShakedexNameState {
   state: "unconfirmed" | "awaitingFinalize";
   blocksRemaining: number | null;
   purchaseId: string;
+  /** The price paid to the seller. */
+  priceDoos: number;
+  /** The network's whole transfer lockup, which `blocksRemaining` counts down. */
+  lockupBlocks: number;
+  /** Blocks keep time on this network, so the wait may be shown as one (R10); false on regtest and simnet. */
+  wallClockTiming: boolean;
 }
 
 export interface HsdNameStats {
@@ -582,6 +588,7 @@ export interface ShellStatusItem {
 
 export interface PageAction {
   label: string;
+  testId?: string;
   variant?: "primary" | "secondary" | "danger" | "ghost";
   disabled?: boolean;
   loading?: boolean;
@@ -890,6 +897,8 @@ export interface HiddenRow {
   /** The listing's name; null when the row carries none. */
   name: string | null;
   reason: ShakedexHidden;
+  /** The listing file, so a row that could not be checked can be checked again; null when it did not parse. */
+  listingJson: string | null;
 }
 
 export interface MarketPage {
@@ -1072,5 +1081,9 @@ export interface PurchasePreview {
   totalDoos: number;
   /** "after a finalize, 288 blocks (about 2 days) after the purchase is mined", for the profile's network. */
   finalizeWait: string;
+  /** The network's transfer lockup, which the purchase waits out. */
+  lockupBlocks: number;
+  /** Whether that wait may be shown as a time: false on regtest and simnet. */
+  wallClockTiming: boolean;
   warnExpiry: boolean;
 }

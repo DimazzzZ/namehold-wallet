@@ -28,7 +28,7 @@ Expected:
 - The Lock dialog has no `Publish on LearnHNS Market` checkbox and no publish privacy note, and shows `Shared as a file only: LearnHNS Market lists mainnet names only`.
 - No My listings row offers `Publish on LearnHNS Market`, at any state; every row's status line is `Shared as a file only: LearnHNS Market lists mainnet names only`, never "On LearnHNS Market", "Not on market — retrying", "Goes on LearnHNS Market at the next sync" or another market status.
 - No Cancel dialog or cancel secure window shows "Told the listing is cancelled…".
-- Browse has no LearnHNS Market list, and the link import is blocked ([B1](buying.md#b1--browse-on-regtest)).
+- Browse lists no LearnHNS Market listing, has no `Load more`, and the link import is blocked ([B1](buying.md#b1--browse-on-regtest)).
 - Passes if all are absent.
 
 - **Blocks mined:** 0
@@ -85,11 +85,11 @@ Expected:
 
 | What | Spec | Why not on regtest | Covered instead by |
 |---|---|---|---|
-| The LearnHNS Market list: the hidden counter, the pager, a market row's kind from its step times, SPV and Explorer "Not verified" rows | R5, R8, R12 | no market off mainnet; SPV or Explorer would mean re-pointing a shared profile | vitest `market-list.test.tsx`; `market_row_kind_follows_the_step_times`; `list_market_reads_the_profile_it_is_given` |
-| A link import fetching `proof.json`; a published market fee pre-ticked | R5, R11 | needs LearnHNS (`fee_info`) | vitest `purchase-confirm.test.tsx`, `market-list.test.tsx` |
+| The LearnHNS Market list: the hidden-listings toggle, `Couldn't check` rows with Retry, Load more, a market row's kind from its step times, the SPV and Explorer "Listings can't be checked yet" state | R5, R8, R12 | no market off mainnet; SPV or Explorer would mean re-pointing a shared profile | vitest `market-page.test.tsx`, `market-model.test.ts`; `market_row_kind_follows_the_step_times`; `list_market_reads_the_profile_it_is_given` |
+| A link import fetching `proof.json`; a published market fee pre-ticked | R5, R11 | needs LearnHNS (`fee_info`) | vitest `market-page.test.tsx :: imports a market link as a link`, `listing-detail.test.tsx :: prices a LearnHNS link as from the market` |
 | Publishing, the pending listing, uploads, `expiresAt` refresh, keeping a listing on the market, market statuses, the cancel and sale reports | R23, R24 (re-upload), R25, R28 (market report) | LearnHNS refuses every write off mainnet | vitest `my-listings.test.tsx` (every market status text) |
-| The mainnet experimental flag refusing a purchase or a listing | R15, R29 | needs a mainnet profile | `mainnet_purchase_needs_experimental_flag`; the vitest gate tests; G3 checks the flag does nothing on regtest |
-| A name expiring before a purchase could be finalized | R9 | needs a name within ~300 blocks of expiry (~4 700 blocks after its last FINALIZE) | `shakedex_listing_expiring_before_finalize_is_not_offered`; every buyable row in B shows no `Expires soon` badge |
+| The mainnet experimental flag refusing a purchase or a listing; the "Buying on mainnet is off." banner and `Turn on buying` | R15, R29 | needs a mainnet profile | `mainnet_purchase_needs_experimental_flag`; the vitest gate tests (`market-page.test.tsx :: offers to turn buying on from the banner, and the panel's button does it too`); G3 checks the flag does nothing on regtest |
+| A name expiring before a purchase could be finalized | R9 | needs a name within ~300 blocks of expiry (~4 700 blocks after its last FINALIZE) | `shakedex_listing_expiring_before_finalize_is_not_offered`; every buyable row in B shows no `Expires soon` tag |
 | The Lock dialog's near-expiry warning and refusal | R31 | needs a name renewed ≥ 3 200 blocks ago (refusal ≥ 4 980) | `shakedex_lock_refused_near_expiry`; S2 checks a fresh name shows no warning |
 | A listing expiring with its name | R19 (Expired) | 5 000 blocks | `shakedex_listed_lock_expires_with_its_name`; R6 observes an existing expired row |
 | Reorgs, rebroadcast after missing blocks, mempool expiry, "Lost, paid" by expiry, a purchase beating a broadcast cancel | R13, R22, R28 | needs `invalidateblock`/`setmocktime`, forbidden on the shared node | `shakedex_purchase_follows_reorgs_of_its_own_blocks`, `shakedex_purchase_the_node_lost_is_given_up_after_mempool_expiry`, `shakedex_name_expired_before_finalize_is_lost_with_the_price_paid`, `shakedex_cli_purchase_beats_our_cancel`, `shakedex_namehold_listing_sold_to_the_cli_is_sold` |

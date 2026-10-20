@@ -3534,6 +3534,11 @@ async fn purchased_name_listed_while_awaiting_finalize() {
     assert_eq!(bought["shakedex"]["state"], "awaitingFinalize");
     assert_eq!(bought["shakedex"]["blocksRemaining"], 4);
     assert_eq!(bought["shakedex"]["purchaseId"], "p1");
+    assert_eq!(bought["shakedex"]["priceDoos"], 5_000_000);
+    // The whole lockup, so the wait can be shown as a share of it: regtest's.
+    assert_eq!(bought["shakedex"]["lockupBlocks"], 10);
+    // Regtest mines on demand: its blocks give no time to show (R10).
+    assert_eq!(bought["shakedex"]["wallClockTiming"], false);
     assert_eq!(bought["owner_address"], "rs1qdest");
     assert!(bought["state"].is_null());
     assert!(bought["owner"].is_null());
@@ -3542,6 +3547,21 @@ async fn purchased_name_listed_while_awaiting_finalize() {
     assert_eq!(pending["shakedex"]["state"], "unconfirmed");
     assert!(pending["shakedex"]["blocksRemaining"].is_null());
     assert_eq!(pending["shakedex"]["purchaseId"], "p2");
+}
+
+/// Mainnet mines on a schedule, so the UI may turn the blocks left of a
+/// lockup into a time; the lockup is mainnet's own (R10).
+#[tokio::test]
+async fn purchased_name_on_mainnet_carries_wall_clock_timing() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "mainnet");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_purchase(&conn, "W1", "p1", "bought", "awaiting_finalize", Some(4));
+
+    let app = app_with(conn);
+    let by_name = names_by_key(&read_names(app.state(), None).await.unwrap());
+    assert_eq!(by_name["bought"]["shakedex"]["wallClockTiming"], true);
+    assert_eq!(by_name["bought"]["shakedex"]["lockupBlocks"], 288);
 }
 
 #[tokio::test]

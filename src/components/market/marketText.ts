@@ -1,7 +1,7 @@
 import { settingToBool } from "../../lib/settingsBool";
-import { formatDate, formatHns } from "../../lib/utils";
+import { MIN_FEE_RATE_DOOS_PER_KVB, parseDoosPerKvb } from "../../lib/feeRate";
+import { formatDate, formatHns, formatHnsShort } from "../../lib/utils";
 import type {
-  HiddenCounts,
   MarketRow,
   ShakedexHidden,
   ShakedexListingActions,
@@ -50,40 +50,21 @@ export function shakedexRefusal(
 /** Why a market link cannot be imported off mainnet (R5). */
 export const MARKET_MAINNET_ONLY = "LearnHNS Market lists mainnet names only";
 
-/** Why Buy is disabled on mainnet until Settings allows it (R15). Finalize is not gated. */
+/**
+ * The backend's refusal of a mainnet purchase until Settings allows it
+ * (R15), shown through `mapError` if it ever comes; the UI itself offers
+ * "Turn on buying" first. Kept word for word with the backend's
+ * (`refusal_sentences_match_the_uis_word_for_word`). Finalize is not gated.
+ */
 export const MAINNET_EXPERIMENTAL =
   "Shakedex purchases on mainnet are experimental: enable them in Settings";
 
-/**
- * The backend's sentence for why a new purchase is refused here, in the order
- * its gates run (`commands/shakedex.rs::prepare`): profile, node, then the
- * mainnet flag, which only `"true"` enables, as in the backend. `null` when
- * nothing known refuses it.
- */
-export function purchaseRefusal(
-  kind: WalletProfileKind | undefined,
-  writeCap: WriteCapability | null | undefined,
-  network: WalletNetwork | undefined,
-  experimental: string | undefined,
-): string | null {
-  const refusal = shakedexRefusal(kind, writeCap);
-  if (refusal) return refusal;
-  if (network === "mainnet" && !settingToBool(experimental)) return MAINNET_EXPERIMENTAL;
-  return null;
-}
-
-/** Whether a new purchase can be made: `canUseShakedex` plus the mainnet flag. */
-export function canBuyShakedex(
-  kind: WalletProfileKind | undefined,
-  writeCap: WriteCapability | null | undefined,
+/** R15's mainnet gate: buying is off until Settings turns it on. */
+export function buyingGated(
   network: WalletNetwork | undefined,
   experimental: string | undefined,
 ): boolean {
-  return (
-    canUseShakedex(kind, writeCap) &&
-    network !== undefined &&
-    purchaseRefusal(kind, writeCap, network, experimental) === null
-  );
+  return network === "mainnet" && !settingToBool(experimental);
 }
 
 /** "~6 h" — the wait is measured against the node's median time, so it is only approximate. */
@@ -93,40 +74,22 @@ export function approxWait(secs: number): string {
   return `~${Math.round(secs / 86400)} d`;
 }
 
-/** The "Hidden N: X already sold or cancelled, ..." line; zero parts are omitted. */
-export function hiddenSummary(h: HiddenCounts): string | null {
-  const parts: [number, string][] = [
-    [h.soldOrCancelled, "already sold or cancelled"],
-    [h.failedVerification, "failed verification"],
-    [h.expiresBeforeFinalize, "expire before they can be finalized"],
-    [h.notYetValid, "not valid yet"],
-    [h.couldNotCheck, "could not be checked"],
-  ];
-  const total = parts.reduce((n, [c]) => n + c, 0);
-  if (total === 0) return null;
-  const text = parts
-    .filter(([c]) => c > 0)
-    .map(([c, label]) => `${c} ${label}`)
-    .join(", ");
-  return `Hidden ${total}: ${text}`;
-}
-
 /** A row the profile's chain source (SPV, Explorer) cannot check (R8). */
 export const NOT_VERIFIED = "Not verified — needs a full or remote node";
 
-/** A human sentence for why a listing is not buyable. */
+/** Why a listing is not buyable, as the hidden rows and an import's error say it. */
 export function hiddenReasonText(r: ShakedexHidden): string {
   switch (r.kind) {
     case "soldOrCancelled":
-      return "Already sold or cancelled.";
+      return "Already sold or cancelled";
     case "failedVerification":
-      return `Failed verification: ${r.reason}`;
+      return `Failed the check: ${r.reason}`;
     case "expiresBeforeFinalize":
-      return "The name expires before a purchase could be finalized.";
+      return "The name expires before a purchase could be finalized";
     case "notYetValid":
-      return `Not valid yet; the first price step becomes valid in ${approxWait(r.firstValidInSecs)}.`;
+      return `Not valid yet: the first price becomes valid in ${approxWait(r.firstValidInSecs)}`;
     case "couldNotCheck":
-      return `Could not be checked: ${nodeReason(r.reason)}`;
+      return `Couldn't check it: ${nodeReason(r.reason)}`;
     case "unverified":
       return NOT_VERIFIED;
   }
@@ -172,31 +135,183 @@ export const TONE_DOT: Record<StatusTone, string> = {
   bad: "bg-red-500",
 };
 
-/** `commands/shakedex.rs::OWN_LISTING` (R33): a row this device locked, on its status and its disabled Buy. */
+/** `commands/shakedex.rs::OWN_LISTING` (R33): a row this device locked, above its disabled Buy. */
 export const OWN_LISTING =
   "this is your own listing: cancel it instead (My listings), buying it would only cost you network fees";
 
-export function listingStatus(row: MarketRow): { tone: StatusTone; text: string } {
-  if (row.own) return { tone: "muted", text: OWN_LISTING };
-  const v = row.verdict;
-  if (v.verdict === "buyable") {
-    return v.warnExpiry
-      ? {
-          tone: "warn",
-          text: "Ready to buy. The name expires soon after it can be finalized: finalize in time.",
-        }
-      : { tone: "ok", text: "Ready to buy" };
+// --- Buying: the Market page ---
+
+/** A backend fragment as a sentence of its own: capitalized, with a full stop. */
+export function sentence(text: string): string {
+  const t = text.trim();
+  if (t === "") return t;
+  const capital = t.charAt(0).toUpperCase() + t.slice(1);
+  return /[.!?…]$/.test(capital) ? capital : `${capital}.`;
+}
+
+/** The gate banner's lead and text (R15). */
+export const BUYING_OFF_LEAD = "Buying on mainnet is off.";
+export const BUYING_OFF_TEXT =
+  "Shakedex swaps on mainnet are still experimental. You can browse and check listings; turn buying on when you're ready. Finalizing a name you already bought always works.";
+
+/** The reason above the detail panel's Turn on buying. */
+export const BUYING_OFF_REASON =
+  "Buying on mainnet is off, so this button turns it on first. Nothing is bought until you press Buy.";
+
+export const BUYING_ON_TOAST = "Mainnet buying turned on · also in Settings › Shakedex";
+
+/** The detail panel's text for a listing the node could not answer for. */
+export function uncheckedText(reason: string): string {
+  return `${sentence(nodeReason(reason))} The listing may be fine; Namehold just won't show a price or let you buy until it's verified.`;
+}
+
+/** "1,100 HNS": at most two decimals, for prices read at a glance. */
+export const hns = (doos: number) => `${formatHnsShort(doos)} HNS`;
+
+/** "1,000.0042 HNS": every doo, trailing zeros trimmed, for what is paid or missing. */
+export const hnsExact = (doos: number) => `${formatHns(doos).replace(/\.?0+$/, "")} HNS`;
+
+/** The Next price column: "↓ 1,100 HNS in ~6 h", "Fixed price", or a reverse auction at its floor. */
+export function nextPriceText(row: MarketRow): string {
+  if (row.kind !== "reverseAuction") return "Fixed price";
+  if (row.nextPrice == null || row.nextValidInSecs == null) return "At its floor";
+  return `↓ ${hns(row.nextPrice)} in ${approxWait(row.nextValidInSecs)}`;
+}
+
+/**
+ * A reverse auction's way down: "Drops to 1,100 HNS in ~6 h, down to a floor
+ * of 400 HNS in ~3 d." The floor's wait is its step's, as the backend gives it.
+ */
+export function priceDropText(row: MarketRow): string {
+  if (row.nextPrice == null || row.nextValidInSecs == null) {
+    return `At its floor of ${hns(row.floorPrice)}; the price drops no further.`;
   }
-  switch (v.kind) {
-    case "soldOrCancelled":
-    case "unverified":
-    case "notYetValid":
-      return { tone: "muted", text: hiddenReasonText(v) };
-    case "couldNotCheck":
-    case "expiresBeforeFinalize":
-      return { tone: "warn", text: hiddenReasonText(v) };
-    case "failedVerification":
-      return { tone: "bad", text: hiddenReasonText(v) };
+  const next = `Drops to ${hns(row.nextPrice)} in ${approxWait(row.nextValidInSecs)}`;
+  if (row.nextPrice === row.floorPrice) return `${next}, its floor.`;
+  const floor = row.steps.find((st) => st.price === row.floorPrice);
+  const when = floor?.validInSecs != null ? ` in ${approxWait(floor.validInSecs)}` : "";
+  return `${next}, down to a floor of ${hns(row.floorPrice)}${when}.`;
+}
+
+/**
+ * A fixed price's caption. The seller's `expiresAt` is shown, never
+ * enforced: the signed price stays valid on chain until the lock coin is
+ * spent (R2), so the caption says so beside the date. A date no `Date` can
+ * hold (a u64 from a foreign file) is left out.
+ */
+export function fixedPriceCaption(expiresAt: number | null): string {
+  const until = "stays at this price until it sells or the seller cancels.";
+  const d = expiresAt == null ? null : new Date(expiresAt * 1000);
+  if (d == null || Number.isNaN(d.getTime())) return sentence(until);
+  return `Listed until ${formatDate(d.toISOString().slice(0, 10))}, but it ${until}`;
+}
+
+/**
+ * Ten minutes a block: how long a count of blocks takes, roughly, where
+ * miners keep the pace. The backend's `network::TARGET_SPACING_SECS`, pinned
+ * by `refusal_sentences_match_the_uis_word_for_word`.
+ */
+const SECS_PER_BLOCK = 600;
+
+/**
+ * "July 2027": the month the name's registration runs out, from its expiry
+ * height and the node's tip, ten minutes a block. Null for a height no date
+ * can hold.
+ */
+export function registeredUntilMonth(
+  expiryEnd: number,
+  tip: number,
+  nowMs: number = Date.now(),
+): string | null {
+  const d = new Date(nowMs + (expiryEnd - tip) * SECS_PER_BLOCK * 1000);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+/** How it works' wait before the preview says the network's lockup. */
+export const WAIT_UNKNOWN = "The swap settles on-chain. Track it in Your purchases.";
+
+/**
+ * How it works' wait step for a network's lockup: "Wait ~2 days" where blocks
+ * keep time (`wallClockTiming`, R10), "Wait 10 blocks" where they are mined
+ * on demand (regtest, simnet).
+ */
+export function waitStep(blocks: number, wallClockTiming: boolean): [string, string] {
+  const track = "Track it in Your purchases.";
+  if (!wallClockTiming) {
+    return [
+      `Wait ${blocks} blocks`,
+      `The swap settles once ${blocks} more blocks are mined. ${track}`,
+    ];
+  }
+  const mins = (blocks * SECS_PER_BLOCK) / 60;
+  const unit = (n: number, one: string) => `~${n} ${one}${n === 1 ? "" : "s"}`;
+  const time =
+    mins < 60
+      ? unit(Math.max(1, Math.round(mins)), "minute")
+      : mins < 48 * 60
+        ? unit(Math.round(mins / 60), "hour")
+        : unit(Math.round(mins / 1440), "day");
+  return [`Wait ${time}`, `${blocks} blocks while the swap settles. ${track}`];
+}
+
+/**
+ * "~1 d 0 h left": the rest of a purchase's lockup, ten minutes a block,
+ * where blocks keep time (`wallClockTiming`, R10). Regtest and simnet mine on
+ * demand, so there it is "4 blocks left".
+ */
+export function lockupLeftText(blocks: number, wallClockTiming: boolean): string {
+  if (!wallClockTiming) return `${blocks} ${blocks === 1 ? "block" : "blocks"} left`;
+  const secs = blocks * SECS_PER_BLOCK;
+  if (secs < 3600) return `~${Math.max(1, Math.round(secs / 60))} min left`;
+  const hours = Math.round(secs / 3600);
+  if (hours < 24) return `~${hours} h left`;
+  return `~${Math.floor(hours / 24)} d ${hours % 24} h left`;
+}
+
+/**
+ * Why a typed fee rate cannot be used, or null (empty is the default). It
+ * takes what `parseDoosPerKvb` (and so `FeeRateOverride`) takes, except a
+ * rate below the minimum: the parser would raise it, and the panel refuses
+ * it, rather than pay a rate nobody typed. The rate sent is still whole
+ * sat/byte, rounded down (`parseFeeRateArg`): 1,500 doos/kvB pays 1 sat/byte.
+ */
+export function feeRateError(raw: string): string | null {
+  const t = raw.trim();
+  if (t === "") return null;
+  if (!Number.isInteger(Number(t))) return "Whole number only";
+  if (parseDoosPerKvb(t) === null || Number(t) < MIN_FEE_RATE_DOOS_PER_KVB) {
+    return `Minimum is ${MIN_FEE_RATE_DOOS_PER_KVB.toLocaleString("en-US")}`;
+  }
+  return null;
+}
+
+/** The start of every link `market/learnhns.rs::name_from_listing_link` takes. */
+const LISTING_LINK_PREFIX = "https://market.learnhns.com/listing/";
+
+export const IMPORT_BAD_LINK =
+  "That isn't a LearnHNS listing link. Expected market.learnhns.com/listing/<name>.";
+export const IMPORT_BAD_FILE =
+  "That isn't a Shakedex listing file. Expected JSON with version, name, lockingTxHash…";
+
+/** A pasted `http(s)://` text is a market link, not a listing file. */
+export function isListingLink(text: string): boolean {
+  return /^https?:\/\//i.test(text.trim());
+}
+
+/**
+ * What is plainly wrong with a pasted import before the node is asked: a
+ * link off LearnHNS's listing pages, or text that is not JSON. The backend
+ * judges the rest (the name in the link, the listing file's fields).
+ */
+export function importProblem(text: string): string | null {
+  const t = text.trim();
+  if (isListingLink(t)) return t.startsWith(LISTING_LINK_PREFIX) ? null : IMPORT_BAD_LINK;
+  try {
+    JSON.parse(t);
+    return null;
+  } catch {
+    return IMPORT_BAD_FILE;
   }
 }
 

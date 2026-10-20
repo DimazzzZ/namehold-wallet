@@ -1,5 +1,6 @@
 import {
   keepPreviousData,
+  useInfiniteQuery,
   useQuery,
   useMutation,
   useQueryClient,
@@ -21,19 +22,21 @@ import type {
 } from "../types";
 
 /**
- * One page (from 1) of the LearnHNS Market listings, each verified against
- * the chain of the active profile's network and node, so the key carries the
- * profile (R7, per-wallet read isolation). The previous page of the same
- * profile stays on screen while the next one loads; another profile's never.
+ * The LearnHNS Market listings, page after page (from 1) as Load more asks
+ * for the next, each verified against the chain of the active profile's
+ * network and node, so the key carries the profile (R7, per-wallet read
+ * isolation): another profile's pages are never shown.
  */
-export function useMarketPage(page: number) {
+export function useMarketPages() {
   const profileId = useActiveProfile().data?.id ?? null;
-  return useQuery<MarketPage>({
-    queryKey: ["shakedex", "market", profileId, page],
+  return useInfiniteQuery({
+    queryKey: ["shakedex", "market", profileId],
     enabled: profileId != null,
-    queryFn: () => invoke<MarketPage>("shakedex_list_market", { page, walletProfileId: profileId }),
-    placeholderData: (previous, previousQuery) =>
-      previousQuery?.queryKey[2] === profileId ? keepPreviousData(previous) : undefined,
+    initialPageParam: 1,
+    queryFn: ({ pageParam }) =>
+      invoke<MarketPage>("shakedex_list_market", { page: pageParam, walletProfileId: profileId }),
+    getNextPageParam: (last: MarketPage) =>
+      last.page < last.pageCount ? last.page + 1 : undefined,
     retry: false,
   });
 }

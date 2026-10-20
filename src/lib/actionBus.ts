@@ -29,7 +29,12 @@ export type ActionId =
   | "auctions:batchBid"
   | "watchlist:focusAdd"
   | "watchlist:exportCsv"
-  | "activity:focusSearch";
+  | "activity:focusSearch"
+  | "market:focusSearch"
+  | "market:import"
+  | "market:list:next"
+  | "market:list:prev"
+  | "market:primary";
 
 export interface ActionEventDetail {
   actionId: ActionId;

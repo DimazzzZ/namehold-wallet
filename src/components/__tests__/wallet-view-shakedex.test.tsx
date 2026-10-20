@@ -152,7 +152,16 @@ beforeEach(() => {
 describe("WalletView purchases", () => {
   it("shows Unconfirmed purchase", async () => {
     invokeMock.mockImplementation(
-      route([purchaseRow({ state: "unconfirmed", blocksRemaining: null, purchaseId: "p1" })]),
+      route([
+        purchaseRow({
+          state: "unconfirmed",
+          blocksRemaining: null,
+          purchaseId: "p1",
+          priceDoos: 5_000_000,
+          lockupBlocks: 10,
+          wallClockTiming: false,
+        }),
+      ]),
     );
     render(<WalletView />, { wrapper: wrapper() });
     expect(await screen.findByText("Unconfirmed purchase")).toBeInTheDocument();
@@ -161,7 +170,16 @@ describe("WalletView purchases", () => {
 
   it("shows Awaiting finalize with blocks and no Finalize yet", async () => {
     invokeMock.mockImplementation(
-      route([purchaseRow({ state: "awaitingFinalize", blocksRemaining: 214, purchaseId: "p1" })]),
+      route([
+        purchaseRow({
+          state: "awaitingFinalize",
+          blocksRemaining: 214,
+          purchaseId: "p1",
+          priceDoos: 5_000_000,
+          lockupBlocks: 10,
+          wallClockTiming: false,
+        }),
+      ]),
     );
     render(<WalletView />, { wrapper: wrapper() });
     expect(await screen.findByText("Awaiting finalize · 214 blocks")).toBeInTheDocument();
@@ -170,7 +188,16 @@ describe("WalletView purchases", () => {
 
   it("offers Finalize when ready and runs it, then shows the DNS hint", async () => {
     invokeMock.mockImplementation(
-      route([purchaseRow({ state: "awaitingFinalize", blocksRemaining: 0, purchaseId: "p1" })]),
+      route([
+        purchaseRow({
+          state: "awaitingFinalize",
+          blocksRemaining: 0,
+          purchaseId: "p1",
+          priceDoos: 5_000_000,
+          lockupBlocks: 10,
+          wallClockTiming: false,
+        }),
+      ]),
     );
     render(<WalletView />, { wrapper: wrapper() });
     expect(await screen.findByText("Ready to finalize")).toBeInTheDocument();
@@ -193,7 +220,14 @@ describe("WalletView purchases", () => {
 
   it("discards the draft when signing is cancelled", async () => {
     const base = route([
-      purchaseRow({ state: "awaitingFinalize", blocksRemaining: 0, purchaseId: "p1" }),
+      purchaseRow({
+        state: "awaitingFinalize",
+        blocksRemaining: 0,
+        purchaseId: "p1",
+        priceDoos: 5_000_000,
+        lockupBlocks: 10,
+        wallClockTiming: false,
+      }),
     ]);
     invokeMock.mockImplementation((cmd: string) =>
       cmd === "sign_tx_draft" ? Promise.reject("cancelled") : base(cmd),
@@ -209,7 +243,16 @@ describe("WalletView purchases", () => {
 
   it("purchase rows have no Manage button or batch checkbox", async () => {
     invokeMock.mockImplementation(
-      route([purchaseRow({ state: "awaitingFinalize", blocksRemaining: 0, purchaseId: "p1" })]),
+      route([
+        purchaseRow({
+          state: "awaitingFinalize",
+          blocksRemaining: 0,
+          purchaseId: "p1",
+          priceDoos: 5_000_000,
+          lockupBlocks: 10,
+          wallClockTiming: false,
+        }),
+      ]),
     );
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Ready to finalize");
@@ -225,7 +268,16 @@ describe("WalletView purchases", () => {
   it("watch-only profiles get no Finalize", async () => {
     invokeMock.mockImplementation(
       route(
-        [purchaseRow({ state: "awaitingFinalize", blocksRemaining: 0, purchaseId: "p1" })],
+        [
+          purchaseRow({
+            state: "awaitingFinalize",
+            blocksRemaining: 0,
+            purchaseId: "p1",
+            priceDoos: 5_000_000,
+            lockupBlocks: 10,
+            wallClockTiming: false,
+          }),
+        ],
         makeProfile({ watchOnly: true }),
       ),
     );
@@ -250,7 +302,16 @@ describe("WalletView purchases", () => {
   ])("%s sees Finalize disabled with the backend's reason", async (_, profile, canSend, reason) => {
     invokeMock.mockImplementation(
       route(
-        [purchaseRow({ state: "awaitingFinalize", blocksRemaining: 0, purchaseId: "p1" })],
+        [
+          purchaseRow({
+            state: "awaitingFinalize",
+            blocksRemaining: 0,
+            purchaseId: "p1",
+            priceDoos: 5_000_000,
+            lockupBlocks: 10,
+            wallClockTiming: false,
+          }),
+        ],
         profile,
         canSend,
       ),
@@ -268,7 +329,16 @@ describe("WalletView purchases", () => {
 
   it("the name of a purchase row opens no dialog", async () => {
     invokeMock.mockImplementation(
-      route([purchaseRow({ state: "awaitingFinalize", blocksRemaining: 0, purchaseId: "p1" })]),
+      route([
+        purchaseRow({
+          state: "awaitingFinalize",
+          blocksRemaining: 0,
+          purchaseId: "p1",
+          priceDoos: 5_000_000,
+          lockupBlocks: 10,
+          wallClockTiming: false,
+        }),
+      ]),
     );
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Ready to finalize");
@@ -281,7 +351,16 @@ describe("WalletView purchases", () => {
 
   it("keyboard open on a selected purchase row opens no dialog", async () => {
     invokeMock.mockImplementation(
-      route([purchaseRow({ state: "awaitingFinalize", blocksRemaining: 0, purchaseId: "p1" })]),
+      route([
+        purchaseRow({
+          state: "awaitingFinalize",
+          blocksRemaining: 0,
+          purchaseId: "p1",
+          priceDoos: 5_000_000,
+          lockupBlocks: 10,
+          wallClockTiming: false,
+        }),
+      ]),
     );
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Ready to finalize");
@@ -292,7 +371,16 @@ describe("WalletView purchases", () => {
 
   it("one block before the lockup ends there is no Finalize yet", async () => {
     invokeMock.mockImplementation(
-      route([purchaseRow({ state: "awaitingFinalize", blocksRemaining: 1, purchaseId: "p1" })]),
+      route([
+        purchaseRow({
+          state: "awaitingFinalize",
+          blocksRemaining: 1,
+          purchaseId: "p1",
+          priceDoos: 5_000_000,
+          lockupBlocks: 10,
+          wallClockTiming: false,
+        }),
+      ]),
     );
     render(<WalletView />, { wrapper: wrapper() });
     expect(await screen.findByText("Awaiting finalize · 1 block")).toBeInTheDocument();
@@ -302,7 +390,14 @@ describe("WalletView purchases", () => {
   it("while a Finalize runs, a second click builds nothing", async () => {
     let finish: (v: unknown) => void = () => {};
     const base = route([
-      purchaseRow({ state: "awaitingFinalize", blocksRemaining: 0, purchaseId: "p1" }),
+      purchaseRow({
+        state: "awaitingFinalize",
+        blocksRemaining: 0,
+        purchaseId: "p1",
+        priceDoos: 5_000_000,
+        lockupBlocks: 10,
+        wallClockTiming: false,
+      }),
     ]);
     invokeMock.mockImplementation((cmd: string) =>
       cmd === "shakedex_build_purchase_finalize_draft"
@@ -329,7 +424,16 @@ describe("WalletView purchases", () => {
     async (status) => {
       invokeMock.mockImplementation(
         route(
-          [purchaseRow({ state: "awaitingFinalize", blocksRemaining: 0, purchaseId: "p1" })],
+          [
+            purchaseRow({
+              state: "awaitingFinalize",
+              blocksRemaining: 0,
+              purchaseId: "p1",
+              priceDoos: 5_000_000,
+              lockupBlocks: 10,
+              wallClockTiming: false,
+            }),
+          ],
           makeProfile(),
           true,
           [finalizeDraft("fd0", status, "p1")],
@@ -347,7 +451,16 @@ describe("WalletView purchases", () => {
     async (status) => {
       invokeMock.mockImplementation(
         route(
-          [purchaseRow({ state: "awaitingFinalize", blocksRemaining: 0, purchaseId: "p1" })],
+          [
+            purchaseRow({
+              state: "awaitingFinalize",
+              blocksRemaining: 0,
+              purchaseId: "p1",
+              priceDoos: 5_000_000,
+              lockupBlocks: 10,
+              wallClockTiming: false,
+            }),
+          ],
           makeProfile(),
           true,
           [finalizeDraft("fd0", status, "p1"), finalizeDraft("fd9", "broadcasted", "other")],
