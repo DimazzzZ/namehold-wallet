@@ -1084,7 +1084,7 @@ async fn live_batch_transfer_two_names() {
 // =============================================================================
 //
 // The tests below extend the live-node suite to cover every money/crypto-
-// critical path (see .mimocode/plans/1789149229571-clever-cabin.md). They reuse
+// critical path. They reuse
 // the existing harness (`seeded_conn_regtest` / `app_with` / `unlock` /
 // `execute` / `mine_until` / `acquire_name`) and add the small helpers below.
 
