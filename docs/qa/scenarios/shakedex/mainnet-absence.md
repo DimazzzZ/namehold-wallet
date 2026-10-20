@@ -77,6 +77,36 @@ Expected:
 - **Evidence:** browser screenshots of the Publish button and the states.
 - **Cleanup / end state:** stop the dev server.
 
+## M5 — The mainnet Market page in the browser mock
+
+- **Priority:** P2
+- **Covers:** R5, R8, R12, R14, R15 (the page's layout and texts on mainnet)
+- **Preconditions:** mode C ([environment](../../environment.md#modes)): `pnpm dev`, whose mock profile is mainnet with LearnHNS listings, unavailable listings and two purchases; a fresh page load (the mock keeps the buying setting until reload). Window 1440×800.
+
+Steps:
+
+1. Open `/market`; read the page top to bottom without scrolling.
+2. Click `▸ 5 unavailable listings hidden…`; read; click it again.
+3. Select `.studio`; read the panel. Scroll the page down until the list's foot is in view; read the panel's button.
+4. Press `Load more`; read the list's foot.
+5. Press the banner's `Turn on buying`; read.
+
+Expected:
+
+- The banner "Buying on mainnet is off. Shakedex swaps on mainnet are still experimental. …" with a filled `Turn on buying`; underlined tabs `Browse` / `My listings`; `Import listing…` outlined (white).
+- `Your purchases`: `.pixelart` "Paid 410.2 HNS", a green bar, "Ready to finalize" and an outlined `Finalize` (the banner holds the page's one filled button); `.harbor` "Paid 320 HNS", "146 of 288 blocks" and `~1 d 0 h left`.
+- The list: `.nightowl` tagged `Expires soon`, prices such as `1,200 HNS` with `↓ 1,100 HNS in ~6 h` for `.atelier` and `Fixed price` for fixed rows, `✓ Verified`; `.oldmarket` with `—`, `Couldn't check` and `Retry` beside it, inside the card. The first verified row is selected.
+- The panel of a selected listing: above its full-width outlined `Turn on buying`, the amber line "Buying on mainnet is off, so this button turns it on first. Nothing is bought until you press Buy."; its steps read `Buy`, `Wait ~2 days` ("288 blocks while the swap settles. Track it in Your purchases.") and `Finalize`, with no `How it works` heading.
+- Step 2: the toggle reads `▸ 5 unavailable listings hidden: 3 sold, 1 failed the check, 1 not valid yet`, then `▾ Hide 5 unavailable listings` with the rows on a gray background, not selectable.
+- Step 3: `.studio`'s panel shows "Price drops over time · LearnHNS Market", its price steps and "Waiting gets a lower price, but anyone can buy it first."; at the top of the page and scrolled, the panel's button stays on screen, its lower sections scrolling inside the panel.
+- Step 4: `.marigold` and `.harborlight` join the list, and the foot reads "All LearnHNS listings loaded".
+- Step 5: the toast "Mainnet buying turned on · also in Settings › Shakedex"; the banner is gone and the panel's button becomes the filled `Buy .<name> for <total> HNS`; `Finalize` in Your purchases stays outlined beside it.
+- Passes if the page matches; it says nothing about a real node or market.
+
+- **Blocks mined:** 0
+- **Evidence:** browser screenshots `M5-1-top`, `M5-2-hidden-open`, `M5-3-studio-scrolled`, `M5-4-all-loaded`, `M5-5-buying-on`.
+- **Cleanup / end state:** reload the page (the mock forgets the setting); stop the dev server.
+
 ## C5 — Not GUI-checkable on regtest
 
 - **Priority:** P3
@@ -85,7 +115,7 @@ Expected:
 
 | What | Spec | Why not on regtest | Covered instead by |
 |---|---|---|---|
-| The LearnHNS Market list: the hidden-listings toggle, `Couldn't check` rows with Retry, Load more, a market row's kind from its step times, the SPV and Explorer "Listings can't be checked yet" state | R5, R8, R12 | no market off mainnet; SPV or Explorer would mean re-pointing a shared profile | vitest `market-page.test.tsx`, `market-model.test.ts`; `market_row_kind_follows_the_step_times`; `list_market_reads_the_profile_it_is_given` |
+| The LearnHNS Market list: the hidden-listings toggle, `Couldn't check` rows with Retry, Load more, a market row's kind from its step times, the SPV and Explorer "Listings can't be checked yet" state | R5, R8, R12 | no market off mainnet; SPV or Explorer would mean re-pointing a shared profile | vitest `market-page.test.tsx`, `market-model.test.ts`; `market_row_kind_follows_the_step_times`; `list_market_reads_the_profile_it_is_given`; the layout and texts in the browser mock: M5 |
 | A link import fetching `proof.json`; a published market fee pre-ticked | R5, R11 | needs LearnHNS (`fee_info`) | vitest `market-page.test.tsx :: imports a market link as a link`, `listing-detail.test.tsx :: prices a LearnHNS link as from the market` |
 | Publishing, the pending listing, uploads, `expiresAt` refresh, keeping a listing on the market, market statuses, the cancel and sale reports | R23, R24 (re-upload), R25, R28 (market report) | LearnHNS refuses every write off mainnet | vitest `my-listings.test.tsx` (every market status text) |
 | The mainnet experimental flag refusing a purchase or a listing; the "Buying on mainnet is off." banner and `Turn on buying` | R15, R29 | needs a mainnet profile | `mainnet_purchase_needs_experimental_flag`; the vitest gate tests (`market-page.test.tsx :: offers to turn buying on from the banner, and the panel's button does it too`); G3 checks the flag does nothing on regtest |

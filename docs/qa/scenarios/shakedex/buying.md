@@ -167,7 +167,7 @@ Expected:
 - The panel: `Price to seller` `5.000000 HNS`, the `LearnHNS fee` line locked at `—`, `Network fee`, `Total` = price + fee; `▸ Fee rate`; the three steps with step 2 `Wait 10 blocks`, "The swap settles once 10 more blocks are mined. Track it in Your purchases."; no expiry warning under `Checked by your node`; no line above the button.
 - The secure window rows: `Action` Purchase, `Name`, `Price (to seller)` `5.000000 HNS`, `Network fee`, `Total`, `Paid to` (the CLI's payment address), `Name becomes yours` "after a finalize, 10 blocks after the purchase is mined", `Txid`; the summary does not count the name's own value as money spent.
 - While it runs the button reads `Sending…`. Then the toast "Purchase of .<X1> sent"; the panel shows "Purchase sent" and ".<X1> is locked to you. Finalize it from Your purchases above once its wait is over." with the checks still above it; the row is tagged `Bought`; `Your purchases` lists `.<X1>`, "Paid 5 HNS", "Waiting for the purchase to be mined". Owned Names: `.<X1>` as plain text, badge `Unconfirmed purchase`, no checkbox, no `Manage`, no `Finalize`. Activity: a row labelled `Buy`. The mempool holds the purchase.
-- After the block and Sync: `Awaiting finalize · 9 blocks`, and Your purchases reads "1 of 10 blocks"; Activity still labels the row `Buy`, Amount minus the price (`−5.000000 HNS`), the fee shown apart; `info <X1>` shows `transfer` at that block and the owner a TRANSFER out of the CLI's lock.
+- After the block and Sync: `Awaiting finalize · 9 blocks`, and Your purchases reads "1 of 10 blocks" with `9 blocks left` on the right (regtest counts blocks, never a time like `~1 h left`); Activity still labels the row `Buy`, Amount minus the price (`−5.000000 HNS`), the fee shown apart; `info <X1>` shows `transfer` at that block and the owner a TRANSFER out of the CLI's lock.
 - Passes if the purchase pays exactly the price shown and is tracked as above; a missed toast is ◐.
 
 - **Blocks mined:** 1
@@ -190,7 +190,7 @@ Steps:
 
 Expected:
 
-- `Awaiting finalize · 1 block` after 8 blocks (Your purchases: "9 of 10 blocks"), then `Ready to finalize` with an enabled `Finalize`, in Owned Names and in Your purchases (the green bar, "Ready to finalize"; a `Finalize` there, filled only while the page shows no other filled button, does the same, its toast ".<X1> finalize sent · it moves into your wallet once mined").
+- `Awaiting finalize · 1 block` after 8 blocks (Your purchases: "9 of 10 blocks", `1 block left`), then `Ready to finalize` with an enabled `Finalize`, in Owned Names and in Your purchases (the green bar, "Ready to finalize"; a `Finalize` there, filled only while the page shows no other filled button, does the same, its toast ".<X1> finalize sent · it moves into your wallet once mined").
 - After confirming: the toast "Finalize broadcast — <first 12 hex of the txid>…" and the info toast "The name still carries the seller's DNS records: update them once it is yours."; the row reads `Finalize · waiting for a block` with no second `Finalize`; Activity shows `Finalize purchase`; Market › Your purchases no longer lists it.
 - After the block: an ordinary owned row (a link, a checkbox, `Manage`); Manage shows the seller's TXT record `shakedex-cli-sell` and the usual owner actions enabled, `Sell…` among them (Renew may be disabled for a name just renewed; Transfer is disabled until an address is typed). Activity: `Finalize purchase`, Amount 0 with the `⤷` line. `info <X1>` shows our FINALIZE as the owner and `transfer 0`.
 - Passes if the name becomes an ordinary owned name with the seller's records; a missed toast is ◐.
@@ -407,3 +407,52 @@ Expected:
 - **Blocks mined:** 0
 - **Evidence:** screenshots `B17-1-seller`, `B17-3-second-device`.
 - **Cleanup / end state:** the seller profile active; nothing bought.
+
+## B18 — Market hotkeys
+
+- **Priority:** P2
+- **Covers:** R5 (the Market's keyboard use)
+- **Preconditions:** two verified rows in Browse (X1 and X3 imported: after B9, before B7 buys X1), sending allowed, the signer unlocked.
+
+Steps:
+
+1. Open Market › Browse; click an empty part of the page so no field has focus. Press `Shift+?`; read the cheatsheet; close it.
+2. Press `/`; type `zz`; read the list; clear the field; press `Esc` or click an empty part of the page.
+3. Press `i`; read; press `Esc`.
+4. Press `j`, read the selected row and the panel's name; press `k`, read again.
+5. With X3's row selected, press `Enter`; in the secure window press `Cancel`.
+
+Expected:
+
+- The cheatsheet lists, for the Market: `/` "Focus name search", `I` "Import a listing", `J / ↓` "Next listing", `K / ↑` "Previous listing", `Enter` "Run the listing panel's button".
+- `/` puts the caret in `Find a name`; `zz` leaves "No listings match" / "Try another name or filter." and the panel's "Pick a listing to see its price, what your node checked, and what buying involves."
+- `i` opens `Import a listing`; `Esc` closes it with nothing imported.
+- `j` moves the blue selection (and the panel) to the next row, `k` back; past either end it stays put.
+- `Enter` does what the panel's full-width button does: the secure window for X3's purchase opens; after `Cancel` the panel shows "Confirmation declined" and nothing is bought (as B9).
+- Passes if every key does its action and none fires while typing in a field.
+
+- **Blocks mined:** 0
+- **Evidence:** screenshots `B18-1-cheatsheet`, `B18-2-no-match`, `B18-4-selection-moved`, `B18-5-declined`.
+- **Cleanup / end state:** both listings still buyable.
+
+## B19 — One filled button on the page
+
+- **Priority:** P2
+- **Covers:** R14, R15 (design rule: one primary action per page)
+- **Preconditions:** run inside B8, after step 1 reaches `Ready to finalize` and before its `Finalize`; another verified row in Browse (X3).
+
+Steps:
+
+1. Market › Browse; select X3's row; read `Your purchases` and the panel's button.
+2. Type `zz` in `Find a name`; read again. Clear the field.
+
+Expected:
+
+- Step 1: the panel's `Buy .<X3> for <total> HNS` is the one filled blue button; `Finalize` in Your purchases is outlined (white, gray border).
+- Step 2: the list says "No listings match", the panel has no button, and `Finalize` in Your purchases is now filled blue, the only filled button on the page.
+- On regtest there is never a "Buying on mainnet is off." banner; tabs `Browse` / `My listings` are underlined text, never a filled button.
+- Passes if at every step at most one button on the page is filled blue.
+
+- **Blocks mined:** 0
+- **Evidence:** screenshots `B19-1-buy-filled`, `B19-2-finalize-filled`.
+- **Cleanup / end state:** back to B8 step 1's end; continue B8.
