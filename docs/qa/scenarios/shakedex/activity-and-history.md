@@ -1,6 +1,6 @@
 ---
 area: Shakedex rows in Activity and on Owned Names, and the balance
-priority: P1–P2
+priority: P1–P3
 blocks: 0
 requires:
   - the transactions the selling, buying and restore cases left on chain
@@ -85,4 +85,27 @@ Expected:
 
 - **Blocks mined:** 0
 - **Evidence:** screenshots `A1-1-owned-names`, `A1-2-activity`; the reconciliation table in the report.
+- **Cleanup / end state:** nothing changed.
+
+## A2 — The withdrawn paid swap leaves no way in
+
+- **Priority:** P3
+- **Covers:** the spec's clean-up stage (the withdrawn paid swap removed, recorded offers read-only)
+- **Preconditions:** any profile; nothing in this run recorded a paid swap offer (nothing can any more).
+
+Steps:
+
+1. Open Activity; scroll to its foot.
+2. Wallet › Owned Names → `Manage` on any owned name; read every section of the name's actions.
+3. Open the cheatsheet (`Shift+?`) on the Wallet page and on Activity.
+
+Expected:
+
+- Activity shows no "Paid swap offers" card (it appears only for offers recorded before the withdrawal, which a regtest profile made in a run never has).
+- The name's actions offer `Sell…` and no "Sell with payment", "Buy with payment" or claim panel ("Buyer's finalize-with-payment TX ID").
+- No hotkey or command mentions a paid swap.
+- Passes if no paid swap entry point is left. The card with recorded offers is pinned by vitest `activity-view.test.tsx` and `paid_swaps_cmd_tests`, since a run must not write the wallet database to create one.
+
+- **Blocks mined:** 0
+- **Evidence:** screenshots `A2-1-activity-foot`, `A2-2-name-actions`.
 - **Cleanup / end state:** nothing changed.

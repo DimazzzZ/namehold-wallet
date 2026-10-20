@@ -24,6 +24,7 @@ import { mapError, StagedError } from "../lib/errors";
 import { NameActionsModal } from "./NameActionsModal";
 import { BlockInfoModal } from "./BlockInfoModal";
 import { TxInfoModal } from "./TxInfoModal";
+import { PaidSwapOffers } from "./PaidSwapOffers";
 import { mergeActivity, type MergedRow } from "../lib/activity";
 import { subscribeAction } from "../lib/actionBus";
 
@@ -309,6 +310,8 @@ export function ActivityView() {
           )}
         </>
       )}
+
+      <PaidSwapOffers />
 
       {infoName && (
         <NameActionsModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />

@@ -1807,18 +1807,6 @@ const handlers: Record<string, Handler> = {
     createdAt: new Date().toISOString(),
   }),
 
-  build_finalize_with_payment_draft: () => ({
-    id: "draft-finalize-payment-001",
-    walletProfileId: "webqa-profile",
-    action: "finalize-with-payment",
-    status: "draft",
-    summary: null,
-    errorMessage: null,
-    txid: null,
-    confirmationHeight: null,
-    createdAt: new Date().toISOString(),
-  }),
-
   // ── Shakedex market ───────────────────────────────────────────────────
   shakedex_list_market: (args) => {
     const page = (args?.page as number | undefined) ?? 1;
@@ -1882,15 +1870,8 @@ const handlers: Record<string, Handler> = {
   export_watchlist_csv: () => 0,
   import_watchlist_csv: () => ({ imported: 0, skipped: 0, errors: [] }),
 
-  // ── Paid swap offers (seller-side tracking) ─────────────────────────
-  create_paid_swap_offer: () => null,
-  get_paid_swap_offer: () => null,
-  remove_paid_swap_offer: () => null,
-  claim_paid_transfer: () => ({
-    verified: true,
-    paidDoos: 1_000_000,
-    confirmations: 1,
-  }),
+  // ── Paid swap offers recorded before the withdrawal (read-only) ────
+  list_paid_swap_offers: () => [],
 
   // ── DNS resource ──────────────────────────────────────────────────────
   get_resource: () => ({

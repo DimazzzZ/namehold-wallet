@@ -28,7 +28,6 @@ import { NameDetails } from "./name-actions/NameDetails";
 import { OwnershipActions } from "./name-actions/OwnershipActions";
 import { UpcomingSection } from "./name-actions/UpcomingSection";
 import { resolveSections } from "../lib/nameSections";
-import { PaidSwapClaim } from "./name-actions/PaidSwapClaim";
 import { LockDialog } from "./market/LockDialog";
 import { sellRefusal } from "./market/marketText";
 import { useSettingsStore } from "../stores/settings";
@@ -1121,9 +1120,6 @@ export function NameActionsModal({
                 <NameSignMessage name={name} profileId={profile?.id ?? null} caps={caps} />
               </>
             )}
-
-            {/* Paid swap claim: shown when a paid_swap_offer exists for this name */}
-            <PaidSwapClaim name={name} />
           </div>
         )}
 
