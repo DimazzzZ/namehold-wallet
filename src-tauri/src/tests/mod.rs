@@ -12,7 +12,6 @@ mod build_batch_reveal_draft_tests;
 mod build_batch_transfer_draft_tests;
 mod build_bid_draft_tests;
 mod build_finalize_draft_tests;
-mod build_finalize_with_payment_draft_tests;
 mod build_open_draft_tests;
 mod build_redeem_draft_tests;
 mod build_register_draft_tests;

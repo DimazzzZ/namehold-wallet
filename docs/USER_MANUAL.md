@@ -475,8 +475,10 @@ transaction was atomic, so "one transaction" meant one wallet funding both
 halves of its own trade.
 
 Buying a name that someone has listed through Shakedex is a different mechanism and is available; see "Buying names on the Market" above. So is selling through Shakedex; see "Selling names through Shakedex" above. Selling a name any other way still means transferring it and being paid
-separately, with the trust that implies. If you recorded an offer before the
-buttons were withdrawn, its claim panel still appears and still works.
+separately, with the trust that implies. Offers recorded before the buttons
+were withdrawn are listed at the foot of Activity under "Paid swap offers",
+read-only: the name, the buyer's address, the price and whether it was
+claimed.
 
 `docs/specs/2026-09-21-paid-name-swaps.md` has the consensus rules behind this
 and what a working implementation would need.
