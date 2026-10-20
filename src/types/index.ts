@@ -11,6 +11,16 @@ export type MigrationStatus =
 /** Node operating mode — determines sync behavior and data sources. */
 export type NodeMode = "full" | "spv";
 
+/** An offer recorded by the withdrawn paid swap flow (`commands::paid_swaps`), read-only. */
+export interface PaidSwapOffer {
+  name: string;
+  buyerAddress: string;
+  priceDoos: number;
+  transferTxid: string | null;
+  claimed: boolean;
+  createdAt: string;
+}
+
 /**
  * Persisted `chain_source` setting. SPV is NOT a value here: the backend
  * derives `ChainSource::SpvNode` from `chain_source` + `node_mode` — see

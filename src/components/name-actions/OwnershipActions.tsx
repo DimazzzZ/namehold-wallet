@@ -12,8 +12,8 @@ import type { NameActionCapabilities, NameActionCapability } from "../../types";
  * The paid-swap entry points were withdrawn: only the holder of the TRANSFER
  * coin can finalize, which is the sender, so the "buyer" side could never be
  * pressed by a buyer — and with every input signed SIGHASH_ALL nothing about
- * the flow was atomic. See docs/specs/2026-09-21-paid-name-swaps.md. Claiming
- * an offer already recorded still works, in `PaidSwapClaim`.
+ * the flow was atomic. See docs/specs/2026-09-21-paid-name-swaps.md. Offers
+ * recorded before that are listed read-only in Activity (`PaidSwapOffers`).
  */
 export interface OwnershipActionsProps {
   caps: NameActionCapabilities | null | undefined;

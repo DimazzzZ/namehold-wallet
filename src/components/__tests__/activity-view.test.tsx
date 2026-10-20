@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -706,5 +706,56 @@ describe("ActivityView — inline draft actions", () => {
     await screen.findByTestId("activity-draft-execute");
     // No tx-info-link button exists for a draft with null txid.
     expect(screen.queryByTestId("activity-tx-info-link")).not.toBeInTheDocument();
+  });
+});
+
+describe("ActivityView: paid swap offers recorded before the withdrawal", () => {
+  const offers = [
+    {
+      name: "newer",
+      buyerAddress: "hs1qnewer",
+      priceDoos: 2_500_000,
+      transferTxid: "ab12",
+      claimed: true,
+      createdAt: "2026-09-10 10:00:00",
+    },
+    {
+      name: "older",
+      buyerAddress: "hs1qolder",
+      priceDoos: 1_000_000,
+      transferTxid: null,
+      claimed: false,
+      createdAt: "2026-09-01 10:00:00",
+    },
+  ];
+
+  it("lists each recorded offer read-only, with its buyer, price and claim", async () => {
+    const base = routes([]);
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "list_paid_swap_offers" ? Promise.resolve(offers) : base(cmd),
+    );
+    render(<ActivityView />, { wrapper: wrapper() });
+    const card = await screen.findByTestId("paid-swap-offers");
+    expect(card).toHaveTextContent("Paid swap offers");
+    const rows = within(card).getAllByTestId("paid-swap-offer");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent(".newer");
+    expect(rows[0]).toHaveTextContent("hs1qnewer");
+    expect(rows[0]).toHaveTextContent("2.5 HNS");
+    expect(rows[0]).toHaveTextContent("Claimed");
+    expect(rows[1]).toHaveTextContent("Not claimed");
+    expect(within(card).queryByRole("button")).toBeNull();
+  });
+
+  it("shows nothing when no offer was recorded", async () => {
+    const base = routes([]);
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "list_paid_swap_offers" ? Promise.resolve([]) : base(cmd),
+    );
+    render(<ActivityView />, { wrapper: wrapper() });
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some((c) => c[0] === "list_paid_swap_offers")).toBe(true),
+    );
+    expect(screen.queryByTestId("paid-swap-offers")).toBeNull();
   });
 });
