@@ -190,6 +190,7 @@ fn file_of(key: &LockKey, payment: &str, steps: &[PriceStep], expires_at: u64) -
             payment_addr: payment,
             steps,
             expires_at,
+            mode: crate::db::queries::ListingMode::BuyNow,
         },
         NET,
     )

@@ -43,7 +43,7 @@ Case ids are unique across all files. Setup ([environment](environment.md#test-n
 
 1. Build, install, record ([environment](environment.md#build-and-install-from-the-branch-head)); start the node; record the height. Setup: names and CLI listings, funding (~90 blocks).
 2. P1: B1, B2, B9, B7, B8 (11); B12 (1+); S2 with M1, X1(a)(b) and X4 folded in (22); S3 (12); R1 with S1 and R4(c) folded in (22); R2 (12); G1; X1(c) (2); X2 (≤ 10); then C1 and C2 over everything mined.
-3. P2: B3–B6, then B11 before B10 (≤ 23); S4 (12); S5 (23); S6, S7, S12 (2); R3 (22); R4, R5; C4 with R7 inside it (22); G2, G3; J1; X3, X4, X5; A1.
+3. P2: B3–B6, then B11 before B10 (≤ 23); S4 (12); S5 (23); S6, S7, S12 (2); R3 (22); R4, R5; C4 with R7 inside it (23); G2, G3; J1; X3, X4, X5; A1.
 4. P3: B13 (13), B14 (11, or 0 if later cases mine enough), B15, B16, B17; S8, S9, S10, S11; R6; J2, J3; X6; M2, M3; A2; record C5.
 
 About 365 blocks in all, about 550 in the worst case with retries.
