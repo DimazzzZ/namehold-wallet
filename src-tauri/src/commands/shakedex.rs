@@ -1260,6 +1260,7 @@ pub(crate) async fn finalize_and_sign_confirmed<R: tauri::Runtime>(
             payment_addr: &p.payment_address,
             steps: &signed,
             expires_at,
+            mode: p.listing.mode,
         },
         net,
     )?;
@@ -2035,6 +2036,7 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
             fee: 0,
         },
         mtp + sell::LISTING_LIFETIME_SECS,
+        listing.mode,
         ctx.network,
     )?;
     let mut stored_new = stored.clone();
@@ -2595,7 +2597,8 @@ pub(crate) struct OwnFileInput<'a> {
 /// it). A spent lock coin leaves the outpoint and key to check: the chain
 /// then judges the sale (R22) by the file's payment address. The listing
 /// becomes Listed with the file's payment address, steps, expiry and the
-/// mode its step times give ([`sell::mode_of_step_times`]);
+/// mode it names (`ListingFile::mode`), or else the one its step times give
+/// ([`sell::mode_of_step_times`]);
 /// the file is kept as parsed (`ListingFile::to_json`, unknown fields
 /// included). Writes nothing on a refusal.
 pub(crate) fn upgrade_restored_lock_inner(
@@ -2622,7 +2625,10 @@ pub(crate) fn upgrade_restored_lock_inner(
             signature: hex::encode(s.signature),
         })
         .collect();
-    let mode = sell::mode_of_step_times(file.steps.iter().map(|s| s.lock_time));
+    // The mode the file names; the step times only for a file without one.
+    let mode = file
+        .mode
+        .unwrap_or_else(|| sell::mode_of_step_times(file.steps.iter().map(|s| s.lock_time)));
     let expires_at = file
         .expires_at
         .map(i64::try_from)
