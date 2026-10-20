@@ -144,6 +144,9 @@ pub struct HiddenRow {
     /// The listing's name; `None` when the row carries none.
     pub name: Option<String>,
     pub reason: Hidden,
+    /// The listing file as the market sent it, so a row that could not be
+    /// checked can be checked again; `None` when it did not parse.
+    pub listing_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -178,6 +181,11 @@ pub struct PurchasePreview {
     pub total_doos: u64,
     /// `purchase::finalize_wait_text` for the profile's network.
     pub finalize_wait: String,
+    /// The network's transfer lockup, which the purchase waits out.
+    pub lockup_blocks: u32,
+    /// Whether that wait may be shown as a time
+    /// (`Network::has_wall_clock_block_timing`).
+    pub wall_clock_timing: bool,
     pub warn_expiry: bool,
 }
 
@@ -2708,6 +2716,7 @@ pub async fn shakedex_list_market(
                     // name; it is still counted and listed as hidden.
                     name: raw["name"].as_str().map(str::to_owned),
                     reason,
+                    listing_json: None,
                 });
                 continue;
             }
@@ -2737,6 +2746,7 @@ pub async fn shakedex_list_market(
                 hidden_rows.push(HiddenRow {
                     name: Some(listing.name.clone()),
                     reason: h,
+                    listing_json: Some(text),
                 });
             }
         }
@@ -2823,6 +2833,8 @@ pub async fn shakedex_preview_purchase(
         network_fee_doos: res.fee,
         total_doos: price + paid_fee + res.fee,
         finalize_wait: purchase::finalize_wait_text(p.ctx.network),
+        lockup_blocks: p.ctx.network.name_params().transfer_lockup,
+        wall_clock_timing: p.ctx.network.has_wall_clock_block_timing(),
         warn_expiry: p.buyable.warn_expiry,
     })
 }

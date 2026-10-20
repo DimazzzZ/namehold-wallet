@@ -7,10 +7,10 @@ The seller profile buys a CLI listing file through the Market page, and finalize
 
 ## Steps
 
-1. Market › Browse → `choose a file…` (native Open panel) → `FILE`, or paste its text into "Paste a listing file or a market.learnhns.com link" → `Import`. The row appears under `Imported listings` with the badge `From file` and `Ready to buy`. Imported rows add up and are cleared when you leave the Market page.
-2. `Buy` → the dialog `Buy .<name>` → `Buy` → the secure window (passphrase first if locked; rows `Action` Purchase, `Name`, `Price (to seller)`, `Network fee`, `Total`, `Paid to`, `Name becomes yours`, `Txid`) → confirm. Toast "Purchase sent — it appears under your names as an unconfirmed purchase". Owned Names shows the name as plain text with the badge `Unconfirmed purchase`.
+1. Market › Browse → `Import listing…` → in `Import a listing`, `Choose a file…` (native Open panel) → `FILE`, or paste its text into the box → `Import`. The dialog closes with the toast ".<name> imported and verified"; the row joins the list with the tag `From file` and `✓ Verified`, selected. Imported rows add up and are cleared when you leave the Market page.
+2. In the panel beside the list, `Buy .<name> for <total> HNS` → the secure window (passphrase first if locked; rows `Action` Purchase, `Name`, `Price (to seller)`, `Network fee`, `Total`, `Paid to`, `Name becomes yours`, `Txid`) → confirm. Toast "Purchase of .<name> sent"; the panel reads "Purchase sent", and Market › Your purchases lists the name. Owned Names shows the name as plain text with the badge `Unconfirmed purchase`.
 3. [mine-and-sync](mine-and-sync.md) 1: `Awaiting finalize · 9 blocks`.
-4. If `FINALIZE`: [mine-and-sync](mine-and-sync.md) 9 → `Ready to finalize` with a `Finalize` button → `Finalize` → secure window (`Finalize purchased name`) → confirm → toasts "Finalize broadcast — <first 12 hex of the txid>…" and "The name still carries the seller's DNS records: update them once it is yours." → the row reads `Finalize · waiting for a block` → [mine-and-sync](mine-and-sync.md) 1.
+4. If `FINALIZE`: [mine-and-sync](mine-and-sync.md) 9 → `Ready to finalize` with a `Finalize` button on Owned Names → `Finalize` → secure window (`Finalize purchased name`) → confirm → toasts "Finalize broadcast — <first 12 hex of the txid>…" and "The name still carries the seller's DNS records: update them once it is yours." → the row reads `Finalize · waiting for a block` → [mine-and-sync](mine-and-sync.md) 1.
 
 ## End state
 

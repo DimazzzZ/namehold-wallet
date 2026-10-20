@@ -16,10 +16,8 @@ import {
   useSignTxDraft,
   useBroadcastTxDraft,
   useNameAction,
-  useExecuteDraft,
-  useDeleteTxDraft,
 } from "../queries/wallet";
-import { useBuildPurchaseFinalize } from "../queries/shakedex";
+import { finalizeSentIds, usePurchaseFinalize } from "./market/usePurchase";
 import {
   useReadNames,
   useReadBalance,
@@ -68,7 +66,7 @@ import {
   truncateMiddle,
 } from "../lib/utils";
 import { mergeActivity } from "../lib/activity";
-import { mapError, stageOf, unwrapStaged } from "../lib/errors";
+import { mapError } from "../lib/errors";
 import { explorerAddressUrl, explorerCoversNetwork } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
@@ -139,29 +137,8 @@ export function WalletView() {
     [nameCaps],
   );
 
-  const buildFinalize = useBuildPurchaseFinalize();
-  const executeDraft = useExecuteDraft();
-  const deleteDraft = useDeleteTxDraft();
-  // Purchase id of the Finalize in flight, to disable that row's button.
-  const [finalizingId, setFinalizingId] = useState<string | null>(null);
-  // Purchases whose finalize may already be on the chain. Owned Names keeps
-  // them ready to finalize until the purchase job sees it mined, and the
-  // backend refuses a second finalize meanwhile.
-  const finalizeSent = useMemo(
-    () =>
-      new Set(
-        drafts
-          .filter(
-            (d) =>
-              d.action === "shakedex_purchase_finalize" &&
-              (d.status === "broadcasted" ||
-                d.status === "confirmed" ||
-                d.status === "broadcast_pending"),
-          )
-          .map((d) => d.summary?.purchaseId),
-      ),
-    [drafts],
-  );
+  const { finalize: finalizePurchaseDraft, finalizingId } = usePurchaseFinalize();
+  const finalizeSent = useMemo(() => finalizeSentIds(drafts), [drafts]);
 
   const startSync = useStartFullSync();
   const startHsd = useStartHsd();
@@ -345,42 +322,8 @@ export function WalletView() {
     });
   const clearSelection = () => setSelectedNames(new Set());
 
-  // Finalize a purchased name: build the draft, then unlock → secure confirm →
-  // sign → broadcast. The draft's warnings carry the hint that the name still
-  // has the seller's DNS records (R14).
-  const finalizePurchase = async (purchaseId: string) => {
-    if (!profile) return;
-    setFinalizingId(purchaseId);
-    try {
-      let draft: TxDraftSummary;
-      try {
-        draft = await buildFinalize.mutateAsync({ purchaseId, feeRate: null });
-      } catch (e) {
-        showToast(mapError(e, "build"), "error");
-        return;
-      }
-      try {
-        const result = await executeDraft.run(draft.id, profile.id, unlocked);
-        qc.invalidateQueries({ queryKey: ["wallet"] });
-        qc.invalidateQueries({ queryKey: ["read"] });
-        showToast(`Finalize broadcast — ${result.txid.slice(0, 12)}…`, "success");
-        for (const w of draft.summary?.warnings ?? []) showToast(w, "info");
-      } catch (e) {
-        showToast(mapError(unwrapStaged(e), stageOf(e)), "error");
-        // A cancelled confirm or an unlock/sign failure leaves an orphan draft
-        // holding coins; a broadcast-stage failure may have a tx in flight.
-        if (stageOf(e) === "sign") {
-          try {
-            await deleteDraft.mutateAsync(draft.id);
-          } catch {
-            // Best-effort; the Activity view can still discard it.
-          }
-        }
-      }
-    } finally {
-      setFinalizingId(null);
-    }
-  };
+  const finalizePurchase = (purchaseId: string) =>
+    finalizePurchaseDraft(purchaseId, (txid) => `Finalize broadcast — ${txid.slice(0, 12)}…`);
 
   // Per-selection eligibility for batch actions. `nameCaps` is pinned to the
   // active profile via useNamesActionCapabilities and updates when phases move.

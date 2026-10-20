@@ -1,14 +1,27 @@
 import { describe, it, expect } from "vitest";
+import { parseDoosPerKvb, parseFeeRateArg } from "../../lib/feeRate";
 import cases from "../../test/fixtures/sell-price-cases.json";
-import { makeListing } from "../../test/fixtures/listings";
+import { makeAuctionRow, makeListing, makeMarketRow } from "../../test/fixtures/listings";
 import {
-  listingStatus,
+  IMPORT_BAD_FILE,
+  IMPORT_BAD_LINK,
+  feeRateError,
+  fixedPriceCaption,
+  hiddenReasonText,
+  importProblem,
+  lockupLeftText,
+  waitStep,
+  nextPriceText,
+  priceDropText,
+  registeredUntilMonth,
+  sentence,
+  uncheckedText,
   nodeReason,
-  MAINNET_EXPERIMENTAL,
   NEEDS_SENDING_NODE,
   RECOVERY_PHRASE_ONLY,
   listedUntilText,
-  purchaseRefusal,
+  buyingGated,
+  shakedexRefusal,
   parseStepPrice,
   scheduleProblem,
   sellRefusal,
@@ -40,20 +53,21 @@ describe("listedUntilText", () => {
   });
 });
 
-describe("purchaseRefusal", () => {
+describe("buyingGated and shakedexRefusal", () => {
   const send = { signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null };
   const noSend = { ...send, broadcasterAvailable: false, canWrite: false };
 
-  it("refuses a mainnet purchase until the experimental flag is on, as the backend does", () => {
-    expect(purchaseRefusal("mnemonic_hot", send, "mainnet", "false")).toBe(MAINNET_EXPERIMENTAL);
-    expect(purchaseRefusal("mnemonic_hot", send, "mainnet", undefined)).toBe(MAINNET_EXPERIMENTAL);
-    expect(purchaseRefusal("mnemonic_hot", send, "mainnet", "true")).toBeNull();
-    expect(purchaseRefusal("mnemonic_hot", send, "regtest", "false")).toBeNull();
+  it('gates mainnet buying until the experimental flag is "true", as the backend does', () => {
+    expect(buyingGated("mainnet", "false")).toBe(true);
+    expect(buyingGated("mainnet", undefined)).toBe(true);
+    expect(buyingGated("mainnet", "true")).toBe(false);
+    expect(buyingGated("regtest", "false")).toBe(false);
   });
 
-  it("gives the profile and node refusals first, in the backend's order", () => {
-    expect(purchaseRefusal("ledger_hardware", send, "mainnet", "false")).toBe(RECOVERY_PHRASE_ONLY);
-    expect(purchaseRefusal("mnemonic_hot", noSend, "mainnet", "false")).toBe(NEEDS_SENDING_NODE);
+  it("refuses a profile that cannot sign, then a node that cannot send", () => {
+    expect(shakedexRefusal("ledger_hardware", noSend)).toBe(RECOVERY_PHRASE_ONLY);
+    expect(shakedexRefusal("mnemonic_hot", noSend)).toBe(NEEDS_SENDING_NODE);
+    expect(shakedexRefusal("mnemonic_hot", send)).toBeNull();
   });
 });
 
@@ -76,43 +90,120 @@ describe("nodeReason", () => {
   });
 });
 
-describe("listingStatus", () => {
-  const base = {
-    listingJson: "{}",
-    name: "n",
-    kind: "buyNow",
-    currentPrice: 1,
-    nextPrice: null,
-    nextValidInSecs: null,
-    floorPrice: 1,
-    steps: [],
-    expiresAt: null,
-  } as const;
-
-  it("reads a buyable listing as ready, and warns when it expires soon", () => {
-    const buyable = { verdict: "buyable", warnExpiry: false } as never;
-    expect(listingStatus({ ...base, verdict: buyable } as never)).toEqual({
-      tone: "ok",
-      text: "Ready to buy",
-    });
-    const soon = { verdict: "buyable", warnExpiry: true } as never;
-    expect(listingStatus({ ...base, verdict: soon } as never).tone).toBe("warn");
+describe("hiddenReasonText", () => {
+  it("says why each hidden listing cannot be bought", () => {
+    expect(hiddenReasonText({ kind: "soldOrCancelled" })).toBe("Already sold or cancelled");
+    expect(hiddenReasonText({ kind: "failedVerification", reason: "bad signature" })).toBe(
+      "Failed the check: bad signature",
+    );
+    expect(hiddenReasonText({ kind: "notYetValid", firstValidInSecs: 18_000 })).toBe(
+      "Not valid yet: the first price becomes valid in ~5 h",
+    );
   });
 
   it("gives a listing that could not be checked the node's reason in plain words", () => {
-    const v = {
-      verdict: "hidden",
-      kind: "couldNotCheck",
-      reason: "Node RPC error: error sending request for url (http://127.0.0.1:14037/)",
-    } as never;
-    const s = listingStatus({ ...base, verdict: v } as never);
-    expect(s.tone).toBe("warn");
-    expect(s.text).toMatch(/^Could not be checked: your node did not answer/);
+    expect(
+      hiddenReasonText({
+        kind: "couldNotCheck",
+        reason: "Node RPC error: error sending request for url (http://127.0.0.1:14037/)",
+      }),
+    ).toMatch(/^Couldn't check it: your node did not answer/);
+  });
+});
+
+describe("the detail panel's texts", () => {
+  it("reads a reverse auction's way down to its floor", () => {
+    expect(nextPriceText(makeAuctionRow())).toBe("↓ 1,100 HNS in ~6 h");
+    expect(priceDropText(makeAuctionRow())).toBe(
+      "Drops to 1,100 HNS in ~6 h, down to a floor of 400 HNS in ~3 d.",
+    );
+    const atFloor = makeAuctionRow({ nextPrice: null, nextValidInSecs: null });
+    expect(nextPriceText(atFloor)).toBe("At its floor");
+    expect(priceDropText(atFloor)).toBe("At its floor of 400 HNS; the price drops no further.");
+    expect(nextPriceText(makeMarketRow())).toBe("Fixed price");
   });
 
-  it("marks a listing that fails verification as bad", () => {
-    const v = { verdict: "hidden", kind: "failedVerification", reason: "x" } as never;
-    expect(listingStatus({ ...base, verdict: v } as never).tone).toBe("bad");
+  it("dates a fixed price's listing and still says the date does not end it (R2)", () => {
+    expect(fixedPriceCaption(1815232480)).toBe(
+      "Listed until July 10, 2027, but it stays at this price until it sells or the seller cancels.",
+    );
+    expect(fixedPriceCaption(null)).toBe(
+      "Stays at this price until it sells or the seller cancels.",
+    );
+    // expiresAt comes from a foreign listing file as any u64.
+    expect(fixedPriceCaption(18446744073709552000)).toBe(
+      "Stays at this price until it sells or the seller cancels.",
+    );
+  });
+
+  it("dates the name's expiry by its height, ten minutes a block", () => {
+    const now = Date.UTC(2026, 9, 20);
+    expect(registeredUntilMonth(1000 + 52_560, 1000, now)).toBe("October 2027");
+    expect(registeredUntilMonth(Number.MAX_SAFE_INTEGER, 0, now)).toBeNull();
+  });
+
+  it("says roughly how long a lockup has left where blocks keep time", () => {
+    expect(lockupLeftText(138, true)).toBe("~23 h left");
+    expect(lockupLeftText(144, true)).toBe("~1 d 0 h left");
+    expect(lockupLeftText(150, true)).toBe("~1 d 1 h left");
+    expect(lockupLeftText(2, true)).toBe("~20 min left");
+    expect(lockupLeftText(1, true)).toBe("~10 min left");
+  });
+
+  it("names How it works' wait by the lockup, in time only where blocks keep it", () => {
+    expect(waitStep(288, true)).toEqual([
+      "Wait ~2 days",
+      "288 blocks while the swap settles. Track it in Your purchases.",
+    ]);
+    expect(waitStep(36, true)[0]).toBe("Wait ~6 hours");
+    expect(waitStep(6, true)[0]).toBe("Wait ~1 hour");
+    expect(waitStep(1, true)[0]).toBe("Wait ~10 minutes");
+    expect(waitStep(10, false)).toEqual([
+      "Wait 10 blocks",
+      "The swap settles once 10 more blocks are mined. Track it in Your purchases.",
+    ]);
+  });
+
+  it("gives no time where blocks are mined on demand (regtest, simnet)", () => {
+    expect(lockupLeftText(4, false)).toBe("4 blocks left");
+    expect(lockupLeftText(1, false)).toBe("1 block left");
+  });
+
+  it("refuses a fee rate that is not a whole number or below the minimum", () => {
+    expect(feeRateError("")).toBeNull();
+    expect(feeRateError("1500")).toBeNull();
+    expect(feeRateError("1.5")).toBe("Whole number only");
+    expect(feeRateError("abc")).toBe("Whole number only");
+    expect(feeRateError("999")).toBe("Minimum is 1,000");
+    expect(feeRateError("0")).toBe("Minimum is 1,000");
+    expect(feeRateError("-5000")).toBe("Minimum is 1,000");
+  });
+
+  it("takes every rate the fee rate parser takes, at or above the minimum", () => {
+    for (const raw of ["1000", " 42000 ", "1e4"]) {
+      expect(parseDoosPerKvb(raw)).not.toBeNull();
+      expect(feeRateError(raw)).toBeNull();
+    }
+    // Whole sat/byte is what is sent, as the comment says.
+    expect(parseFeeRateArg("1500")).toBe(1);
+  });
+
+  it("refuses a link off LearnHNS's listing pages and text that is no JSON, before the node is asked", () => {
+    expect(importProblem("https://market.learnhns.com/listing/coffee")).toBeNull();
+    expect(importProblem("https://example.com/listing/coffee")).toBe(IMPORT_BAD_LINK);
+    expect(importProblem('{"version":2,"name":"coffee"}')).toBeNull();
+    expect(importProblem("version 2, coffee")).toBe(IMPORT_BAD_FILE);
+  });
+
+  it("makes a backend fragment a sentence", () => {
+    expect(sentence("this is your own listing")).toBe("This is your own listing.");
+    expect(sentence("Already one.")).toBe("Already one.");
+  });
+
+  it("puts the node's reason first when it could not check a listing", () => {
+    expect(uncheckedText("Node RPC error: operation timed out")).toBe(
+      "Your node took too long to answer. Try again in a moment. The listing may be fine; Namehold just won't show a price or let you buy until it's verified.",
+    );
   });
 });
 

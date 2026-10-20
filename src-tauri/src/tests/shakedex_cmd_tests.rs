@@ -736,6 +736,9 @@ async fn foreign_market_fee_is_not_paid_by_default() {
         preview.total_doos,
         preview.price_doos + preview.network_fee_doos
     );
+    // The panel's "Wait ~2 days" step: mainnet's lockup, timed by its blocks.
+    assert_eq!(preview.lockup_blocks, 288);
+    assert!(preview.wall_clock_timing);
 
     let draft = shakedex_build_purchase_draft(app.state(), listing, None, true, None)
         .await
@@ -877,6 +880,10 @@ async fn list_market_survives_one_lookup_failure() {
     let h = serde_json::to_value(&page.hidden_rows[0]).unwrap();
     assert_eq!(h["reason"]["kind"], "couldNotCheck");
     assert!(h["reason"]["reason"].as_str().unwrap().contains("boom"));
+    // The listing file comes along, so the row can be checked again.
+    let again: serde_json::Value =
+        serde_json::from_str(h["listingJson"].as_str().expect("listing file")).unwrap();
+    assert_eq!(again["name"], "cooljobs");
     assert_eq!(page.hidden.sold_or_cancelled, 0);
     assert_eq!(page.hidden.failed_verification, 0);
     let v = serde_json::to_value(row).unwrap();
@@ -1074,6 +1081,10 @@ async fn list_market_counts_unparsable_rows_as_failed() {
     assert_eq!(names, vec![None, Some("oldname")]);
     let first = serde_json::to_value(&page.hidden_rows[0]).unwrap();
     assert!(first["name"].is_null(), "a row without a name says so");
+    assert!(
+        first["listingJson"].is_null(),
+        "an unparsable row has no file to check again"
+    );
     for r in &page.hidden_rows {
         let v = serde_json::to_value(r).unwrap();
         assert_eq!(v["reason"]["kind"], "failedVerification");
@@ -2066,6 +2077,12 @@ fn refusal_sentences_match_the_uis_word_for_word() {
     let decl = format!(
         "const LISTING_LIFETIME_SECS = {};",
         crate::noncustodial::shakedex::sell::LISTING_LIFETIME_SECS
+    );
+    assert!(ui.contains(&decl), "marketText.ts lacks `{decl}`");
+    // A block's time, which the UI turns block counts into.
+    let decl = format!(
+        "const SECS_PER_BLOCK = {};",
+        crate::noncustodial::network::TARGET_SPACING_SECS
     );
     assert!(ui.contains(&decl), "marketText.ts lacks `{decl}`");
 }

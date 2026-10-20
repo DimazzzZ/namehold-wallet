@@ -153,6 +153,23 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
     actionId: "activity:focusSearch",
   },
 
+  {
+    keys: "/",
+    label: "/",
+    description: "Focus name search",
+    category: "action",
+    scope: "/market",
+    actionId: "market:focusSearch",
+  },
+  {
+    keys: "i",
+    label: "I",
+    description: "Import a listing",
+    category: "action",
+    scope: "/market",
+    actionId: "market:import",
+  },
+
   // --- List navigation (Wallet owned-names list) ---
   {
     keys: "j,down",
@@ -177,5 +194,31 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
     category: "list",
     scope: "/",
     actionId: "wallet:list:open",
+  },
+
+  // --- List navigation (Market listings) ---
+  {
+    keys: "j,down",
+    label: "J / ↓",
+    description: "Next listing",
+    category: "list",
+    scope: "/market",
+    actionId: "market:list:next",
+  },
+  {
+    keys: "k,up",
+    label: "K / ↑",
+    description: "Previous listing",
+    category: "list",
+    scope: "/market",
+    actionId: "market:list:prev",
+  },
+  {
+    keys: "enter",
+    label: "Enter",
+    description: "Run the listing panel's button",
+    category: "list",
+    scope: "/market",
+    actionId: "market:primary",
   },
 ];

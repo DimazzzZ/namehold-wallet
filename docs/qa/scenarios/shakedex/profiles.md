@@ -30,7 +30,7 @@ Steps:
 Expected:
 
 - My listings never shows a row, state or button of the other profile, not even for a moment; while the new profile's list loads it may show a loading state or nothing, never the old rows.
-- Browse in a regtest profile shows "There is no LearnHNS Market for this network. Import a listing file or paste one below." with the import box, and no rows carried over from the other profile.
+- Browse in a regtest profile shows "Nothing is listed right now" / "There is no LearnHNS Market on this network. If a seller sent you a listing directly, import it." with `Import listing…` in the header, and no rows (and no Your purchases entries) carried over from the other profile.
 - Owned Names and the balances never swap.
 - After each switch the header shows `Signer locked` (the switch drops the other profile's signer); `Signer unlocked` right after a switch is ❌.
 - Passes if none of the snapshots (two per switch, six switches) shows a foreign row.

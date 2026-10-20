@@ -101,14 +101,14 @@ Expected:
 Steps:
 
 1. `scripts/regtest.sh stop`.
-2. Sync; open My listings; Browse → import a file; `Buy` on a row imported earlier; `Sell…` → `Lock name` on an ordinary name; `Restore` a name.
+2. Sync; open My listings; Browse → `Import listing…` → import a file; select a row imported earlier and read its panel; `Sell…` → `Lock name` on an ordinary name; `Restore` a name.
 3. `scripts/regtest.sh --with-wallet`, Sync; read every row again.
 
 Expected:
 
 - Sync reports an error and stops (for example "No explorer is available for this wallet's network, and the local node is not synced. Set 'explorer_api_url' in Settings, or wait for the node to finish syncing.", shown briefly) and the Sync button comes back.
 - Listed rows read `Current price could not be checked: your node did not answer. Is it running? Check Settings → Connections.` (or the timeout sentence "your node took too long to answer. Try again in a moment."); no row changes state, nothing is aborted, expired or lost.
-- The import reads `Could not be checked: your node did not answer…` with price `—` and no `Buy`; the Buy preview shows `Could not price this purchase` with a node reason; `Lock name` and `Restore` fail with a node reason; name actions may show "Name actions unavailable." with the node's reason and `Sell…` disabled. Nothing is written: no new draft in Activity.
+- The import dialog says "Couldn't check it: your node did not answer. Is it running? Check Settings → Connections." and adds no row; the earlier row's panel cannot price the purchase: the line above its disabled Buy gives a node reason; `Lock name` and `Restore` fail with a node reason; name actions may show "Name actions unavailable." with the node's reason and `Sell…` disabled. Nothing is written: no new draft in Activity.
 - After the restart and a Sync every row is as before.
 - Passes if an outage changes no state and writes nothing.
 

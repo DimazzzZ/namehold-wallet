@@ -232,29 +232,38 @@ The full agent-runnable scenarios for this section (steps, exact expected text, 
 
 Paid name swaps were withdrawn on 2026-09-21 (`docs/specs/2026-09-21-paid-name-swaps.md`); a claim panel for an offer recorded before that still works. Buying and selling through Shakedex replace them. The buying checklist comes first, the selling checklist after it.
 - [ ] Market is the 4th sidebar item, right after Auctions, with a "New" tag, and hotkey 4 opens it; 5, 6 and 7 open Watchlist, Move from Namebase and Settings
-- [ ] Browse: listings load with name, current step price, and Buy Now / Reverse auction kind; next-price times read as approximate
-- [ ] Hidden counter, below the table, shows a total and expands to names and a reason each
-- [ ] A market longer than 100 listings shows "Page 1 of N"; Next and Previous move between pages and are disabled at the ends; one page shows no pager
-- [ ] Testnet/regtest: the Market page says there is no market for that network; file and paste import work, link import is refused; imported rows carry a "From file" badge
-- [ ] Import a listing file; import pasted JSON; import a market.learnhns.com/listing/<name> link; a bad one shows an error
-- [ ] A link import is badged "From LearnHNS link" and its published market fee is pre-ticked as for a market row; file and pasted imports are badged "From file" and never pre-tick a fee
-- [ ] A buyable import can be bought while the market page is still loading or LearnHNS is unreachable; in SPV/Explorer an import shows "Not verified" and no Buy
+- [ ] Browse: one list of imports and market listings with Name · Price now · Next price · Check; the first verified row is selected and shown in the panel beside the list; next-price times read as approximate
+- [ ] Search ("Find a name", a leading dot ignored), the All / Fixed price / Price drops filter and the Lowest price / Next price drop / Newest sort; a search with no match reads "No listings match"
+- [ ] Unavailable listings are not rows: the toggle at the foot of the list counts them by reason ("▸ N unavailable listings hidden: …") and expands to names and a reason each, not selectable
+- [ ] A listing the node could not check reads "Couldn't check" with Retry and no price; Retry does not select the row and checks it again
+- [ ] A market longer than 100 listings shows Load more, which appends the next 100 to the list; after the last page it reads "All LearnHNS listings loaded". A first page with nothing buyable still shows the hidden-listings toggle and Load more under "Nothing is listed right now"
+- [ ] After Buy, the bought row stays in the list, selected, tagged Bought, with "Purchase sent" in the panel, even though the market now reads its lock coin as spent
+- [ ] Local node stopped: the list reads "Listings can't be checked right now" / "Namehold can't reach your node…" instead of a "Couldn't check" row per listing; an imported listing still shows and can be selected
+- [ ] Testnet/regtest: the list says "There is no LearnHNS Market on this network"; file and paste import work, link import is refused; imported rows carry a "From file" tag
+- [ ] Import listing… opens the Import a listing dialog: import a listing file (Choose a file…), pasted JSON, a market.learnhns.com/listing/<name> link; a link elsewhere or text that is no JSON is refused in the dialog without asking the node; a listing that does not verify is not added and the dialog says why
+- [ ] A verified import closes the dialog, joins the list selected (search and filter cleared) with a toast ".<name> imported and verified"
+- [ ] A link import is tagged "From link" and its published market fee is pre-ticked as for a market row; file and pasted imports are tagged "From file" and pay no market fee (the fee line is locked, "This listing didn't come through LearnHNS, so there's no market fee.")
+- [ ] In SPV/Explorer the list says listings can't be checked yet instead of showing them; an import there is refused with "Not verified — needs a full or remote node."
 - [ ] A listing with a non-zero fee and an unusable feeAddr (another network, not 20-byte v0) still verifies; its fee line says it names no valid fee address and no fee output is added
 - [ ] A listing over a single-bid name (lock coin worth 0) verifies and can be bought
-- [ ] Market fee published by LearnHNS is pre-ticked; an unpublished fee address is unticked with a warning
-- [ ] Purchase dialog shows price, market fee with its percentage, network fee, total; the secure window adds the market fee address
-- [ ] Purchase goes through the secure window and the name appears as "Unconfirmed purchase"
+- [ ] LearnHNS fee published by LearnHNS is pre-ticked; an unpublished fee address is unticked with a warning; the choice is kept per listing while the app is open
+- [ ] The listing panel shows the price, "Checked by your node", price to seller, LearnHNS fee with its percentage, network fee and total to 6 decimals, the Fee rate disclosure, and the Buy · Wait · Finalize steps (step 2 "Wait ~2 days" on mainnet, "Wait 10 blocks" on regtest); the secure window adds the market fee address
+- [ ] When Buy cannot be pressed, the amber line above it says why (short of the total by how much, a fee rate that is not a whole number or below 1,000, the profile's or node's refusal, an own listing); Buy otherwise reads "Buy .<name> for <total> HNS"
+- [ ] Purchase goes through the secure window; the panel reads "Purchase sent", the row is tagged "Bought", Your purchases lists it, and Owned Names shows "Unconfirmed purchase"
 - [ ] Cancel the secure window: the prepared purchase is discarded and Buy on the same listing works again at once, without a sync
-- [ ] Reverse auction: if a cheaper step becomes valid between confirming and broadcast, nothing is sent; the dialog says "the price changed — review the purchase again" and shows the new figures
+- [ ] Reverse auction: if a cheaper step becomes valid between confirming and broadcast, nothing is sent; the panel says "the price changed — review the purchase again" and shows the new figures
 - [ ] Unconfirmed purchase stays "Unconfirmed purchase" (not "Awaiting finalize") while its TRANSFER is only in the mempool, also on a node without a transaction index
 - [ ] A purchase on its way does not appear in Renewals
 - [ ] After confirmation it reads "Awaiting finalize · N blocks", then "Ready to finalize" with a Finalize button
+- [ ] Market › Your purchases shows each purchase with "Paid <price> HNS", "<done> of <lockup> blocks" (288 on mainnet/testnet, 10 on regtest) and how long is left: "~<time> left" on mainnet and testnet, "<n> blocks left" on regtest (it mines on demand), and Finalize once ready, also with mainnet buying off; a purchase leaves the card once its finalize is sent
 - [ ] Finalize works; the row then reads "Finalize · waiting for a block" with no second Finalize until the name arrives; the DNS records are then updated by the buyer
 - [ ] A purchase someone else beats (or the seller cancels) reads "Lost" in Activity with "nothing was paid" shown under the badge, and its coins are spendable again
-- [ ] SPV and Explorer modes can browse but Buy is disabled with a reason
-- [ ] Remote node with "Allow sending via remote node" off: the purchase dialog shows "Could not price this purchase" with the backend's reason and Buy stays disabled
-- [ ] Ledger, watch-only and extended-private-key wallets cannot buy: every Buy is disabled with "Shakedex works with a recovery-phrase wallet for now". On a purchase row, Finalize is disabled with the same reason for Ledger and extended-private-key wallets, and not shown at all for watch-only ones
-- [ ] Mainnet without "Allow buying and selling names on mainnet through Shakedex (experimental)" in Settings: every Buy on the Market page is disabled with "Shakedex purchases on mainnet are experimental: enable them in Settings"; testnet and regtest need no flag; Finalize works regardless
+- [ ] SPV and Explorer modes: the list says listings can't be checked yet, so nothing can be bought
+- [ ] Remote node with "Allow sending via remote node" off: the line above Buy gives the backend's reason and Buy stays disabled
+- [ ] Mainnet with the Shakedex setting off: the banner "Buying on mainnet is off." with Turn on buying, and the panel's button reads Turn on buying (outlined, not filled); either ticks the setting, the toast says "Mainnet buying turned on · also in Settings › Shakedex", the banner goes and Buy appears
+- [ ] Market hotkeys: `/` focuses the search, `i` opens Import, `j`/`k` move the selection, Enter presses the panel's button; the shortcuts sheet lists them on the Market
+- [ ] Ledger, watch-only and extended-private-key wallets cannot buy: Buy is disabled with "Shakedex works with a recovery-phrase wallet for now." above it. On a purchase row in Owned Names, Finalize is disabled with the same reason for Ledger and extended-private-key wallets, and not shown at all for watch-only ones; in Your purchases it is disabled with that reason, shown above the rows, for all three
+- [ ] Mainnet without "Allow buying and selling names on mainnet through Shakedex (experimental)" in Settings: nothing can be bought until it is on, and the panel's button is Turn on buying (above) rather than Buy; testnet and regtest need no flag; Finalize works regardless. A watch-only wallet on mainnet with the setting off sees the banner's filled Turn on buying and a grey disabled Buy, never two blue buttons
 - [ ] Regtest: buy a listing created by the shakedex CLI end to end
 - [ ] Legacy: saved offers list still shows offers recorded before the withdrawal, and claim_paid_transfer verifies the broadcast tx before marking paid
 

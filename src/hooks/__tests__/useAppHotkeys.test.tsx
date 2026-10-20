@@ -92,6 +92,7 @@ describe("HOTKEY_BINDINGS table", () => {
       "/",
       "/activity",
       "/auctions",
+      "/market",
       "/watchlist",
       "/migration",
       "/settings",
@@ -220,6 +221,24 @@ describe("route-scoped action keys", () => {
       "wallet:list:next",
       "wallet:list:prev",
       "wallet:list:open",
+    ]);
+    spy.stop();
+  });
+
+  it("/, i, j/k and Enter at /market dispatch the Market's actions", () => {
+    renderHarness("/market");
+    const spy = spyOnActionBus();
+    dispatchKey("/", "Slash");
+    dispatchKey("i", "KeyI");
+    dispatchKey("j", "KeyJ");
+    dispatchKey("k", "KeyK");
+    dispatchKey("Enter", "Enter");
+    expect(spy.events.map((e) => e.actionId)).toEqual([
+      "market:focusSearch",
+      "market:import",
+      "market:list:next",
+      "market:list:prev",
+      "market:primary",
     ]);
     spy.stop();
   });
