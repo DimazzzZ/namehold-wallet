@@ -38,6 +38,14 @@ use tokio::sync::oneshot;
 use crate::error::AppError;
 use crate::AppState;
 
+/// What an `import` prompt asks the user to type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportInput {
+    RecoveryPhrase,
+    Xpub,
+}
+
 /// A request shown by the secure window. `payload` carries display-only secret
 /// material (e.g. a mnemonic to reveal); it is sent window-ward only.
 ///
@@ -59,6 +67,11 @@ pub struct SecurePromptRequest {
     /// For `reveal`: the mnemonic to display. `None` otherwise.
     /// See the struct-level doc-comment for the IPC-transience caveat.
     pub payload: Option<String>,
+    /// For `import`: what the user is asked to type, `recovery_phrase` or
+    /// `xpub`; the window picks its placeholder and empty-entry error from it.
+    /// `None` means a recovery phrase.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<ImportInput>,
     /// Structured details rendered by the window for read-only display.
     /// Used by `confirm` mode to show tx summary rows (label + value pairs).
     /// `None` for other modes.

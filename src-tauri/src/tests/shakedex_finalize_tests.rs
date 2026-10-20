@@ -620,7 +620,7 @@ fn confirm_rows_for_finalize() {
         signed_tx_hex: None,
         signing_inputs_json: "{}".into(),
         summary_json: summary.to_string(),
-        status: "draft".into(),
+        status: db::queries::DraftStatus::Draft,
         error_message: None,
         txid: None,
         confirmation_height: None,

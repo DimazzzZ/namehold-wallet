@@ -1,3 +1,4 @@
+import { isSignerUnlockedFor } from "../lib/signer";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -222,7 +223,7 @@ export function WalletView() {
   // demand. Treat them as "unlocked" so the send/action flow doesn't try to
   // prompt for a passphrase that doesn't exist.
   const isLedger = profile?.kind === "ledger_hardware";
-  const unlocked = isLedger ? true : (signer?.unlocked ?? false);
+  const unlocked = isLedger ? true : isSignerUnlockedFor(signer, profile?.id);
   const canWrite = writeCap?.canWrite ?? false;
   const isWatchOnly = profile?.watchOnly ?? false;
   const canFinalizePurchase = canUseShakedex(profile?.kind, writeCap);

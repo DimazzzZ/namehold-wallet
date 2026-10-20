@@ -143,6 +143,45 @@ fn test_fingerprint_empty_string() {
 // --- gap_limit tests ---
 
 #[test]
+fn test_gap_limit_clamp_is_logged_once() {
+    let flag = std::sync::atomic::AtomicBool::new(false);
+    assert!(
+        secure_wallet::log_clamp_once(&flag, 5000),
+        "the first clamp logs"
+    );
+    assert!(
+        !secure_wallet::log_clamp_once(&flag, 5000),
+        "a repeat stays silent"
+    );
+    assert!(
+        !secure_wallet::log_clamp_once(&flag, 9000),
+        "so does another value"
+    );
+}
+
+#[test]
+fn test_gap_limit_logs_only_when_it_clamps() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let with = |raw: &str| {
+        let mut settings = std::collections::HashMap::new();
+        settings.insert("address_gap_limit".to_string(), raw.to_string());
+        settings
+    };
+    for raw in ["50", "1000", "0", "abc"] {
+        let flag = AtomicBool::new(false);
+        secure_wallet::gap_limit_logging(&with(raw), &flag);
+        assert!(
+            !flag.load(Ordering::Relaxed),
+            "{raw:?} is not clamped and must not log"
+        );
+    }
+    let flag = AtomicBool::new(false);
+    let got = secure_wallet::gap_limit_logging(&with("5000"), &flag);
+    assert_eq!(got, secure_wallet::MAX_GAP_LIMIT);
+    assert!(flag.load(Ordering::Relaxed), "a clamped stored value logs");
+}
+
+#[test]
 fn test_gap_limit_default() {
     let settings = std::collections::HashMap::new();
     assert_eq!(secure_wallet::gap_limit(&settings), 20);
@@ -174,6 +213,39 @@ fn test_gap_limit_negative_falls_back() {
     let mut settings = std::collections::HashMap::new();
     settings.insert("address_gap_limit".into(), "-5".into());
     assert_eq!(secure_wallet::gap_limit(&settings), 20);
+}
+
+/// F2: the setting is renderer-writable and every node sync derives and asks
+/// the node about `gap` addresses per branch, so a huge value is clamped to
+/// the cap; the cap itself is kept.
+#[test]
+fn test_gap_limit_is_capped() {
+    let cap = secure_wallet::MAX_GAP_LIMIT;
+    for (raw, want) in [
+        (cap.to_string(), cap),
+        ((cap + 1).to_string(), cap),
+        (u32::MAX.to_string(), cap),
+        ("1".to_string(), 1),
+        // Past u32: not a number this setting can hold, the default.
+        ("99999999999".to_string(), 20),
+        (" 50".to_string(), 20),
+        ("1e3".to_string(), 20),
+    ] {
+        let mut settings = std::collections::HashMap::new();
+        settings.insert("address_gap_limit".into(), raw.clone());
+        assert_eq!(secure_wallet::gap_limit(&settings), want, "{raw:?}");
+    }
+}
+
+/// Settings refuses a gap limit past the backend's cap, with the same number.
+#[test]
+fn test_gap_limit_cap_matches_the_settings_field() {
+    const UI: &str = include_str!("../../../src/lib/settingsDefaults.ts");
+    let decl = format!(
+        "export const MAX_ADDRESS_GAP_LIMIT = {};",
+        secure_wallet::MAX_GAP_LIMIT
+    );
+    assert!(UI.contains(&decl), "settingsDefaults.ts lacks `{decl}`");
 }
 
 // --- session_ttl_ms tests ---
@@ -275,6 +347,55 @@ async fn test_set_active_wallet_profile() {
     let summary = result.unwrap();
     assert!(summary.active);
     assert_eq!(summary.id, "wp1");
+}
+
+/// Activating a profile (create, every import kind, Ledger) must drop an
+/// unlocked signer that belongs to ANOTHER profile, or the UI shows "Unlocked"
+/// while every use of the key is refused.
+#[test]
+fn test_activate_profile_drops_another_profiles_signer() {
+    let state = create_full_test_state();
+    seed_unlocked_signer(&state, "old");
+    secure_wallet::activate_profile(&state, "new").unwrap();
+    assert!(state.signer.lock().unwrap().is_none());
+    let conn = state.db.lock().unwrap();
+    assert_eq!(
+        crate::db::queries::get_active_profile_id(&conn).unwrap(),
+        "new"
+    );
+}
+
+#[test]
+fn test_write_capability_signer_counts_only_for_its_own_profile() {
+    let state = create_full_test_state();
+    seed_unlocked_signer(&state, "a");
+    let slot = state.signer.lock().unwrap();
+    assert!(crate::commands::tx::signer_unlocked_for(slot.as_ref(), "a"));
+    assert!(!crate::commands::tx::signer_unlocked_for(
+        slot.as_ref(),
+        "b"
+    ));
+    assert!(!crate::commands::tx::signer_unlocked_for(slot.as_ref(), ""));
+    assert!(!crate::commands::tx::signer_unlocked_for(None, "a"));
+}
+
+#[test]
+fn test_activate_profile_keeps_its_own_signer() {
+    let state = create_full_test_state();
+    seed_unlocked_signer(&state, "same");
+    secure_wallet::activate_profile(&state, "same").unwrap();
+    let slot = state.signer.lock().unwrap();
+    assert_eq!(slot.as_ref().unwrap().wallet_profile_id(), "same");
+}
+
+#[test]
+fn test_import_prompts_name_their_input_kind() {
+    let xpub = serde_json::to_value(secure_wallet::xpub_import_request()).unwrap();
+    assert_eq!(xpub["mode"], "import");
+    assert_eq!(xpub["input"], "xpub");
+    let phrase = serde_json::to_value(secure_wallet::phrase_import_request()).unwrap();
+    assert_eq!(phrase["mode"], "import");
+    assert_eq!(phrase["input"], "recovery_phrase");
 }
 
 #[tokio::test]

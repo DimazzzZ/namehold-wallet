@@ -15,6 +15,8 @@ export interface PromptRequest {
   title: string;
   message: string;
   payload?: string | null;
+  /** For `import`: what is being typed. Absent means a recovery phrase. */
+  input?: "recovery_phrase" | "xpub" | null;
   details?: { rows?: { label: string; value: string }[] } | null;
 }
 
@@ -108,8 +110,9 @@ export function render(
     };
     wrap.append(el("div", { className: "row end" }, [cancel, ok]));
   } else if (req.mode === "import") {
+    const isXpub = req.input === "xpub";
     const ta = el("textarea", {
-      placeholder: "Enter your 12 or 24 word recovery phrase",
+      placeholder: isXpub ? "Enter the account xpub" : "Enter your 12 or 24 word recovery phrase",
       autofocus: true,
     });
     wrap.append(ta, err);
@@ -118,7 +121,7 @@ export function render(
     ok.onclick = () => {
       const v = ta.value.trim().replace(/\s+/g, " ");
       if (!v) {
-        err.textContent = "Recovery phrase is required.";
+        err.textContent = isXpub ? "Account xpub is required." : "Recovery phrase is required.";
         return;
       }
       submit({ value: v, confirmed: true });

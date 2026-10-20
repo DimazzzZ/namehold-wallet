@@ -135,12 +135,7 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 - **Write-capability gating.** Spend/name actions are enabled only when the signer
   is unlocked **and** the node is reachable, synced, and address-indexed — with a
   precise reason shown when any condition isn't met.
-- **Background sync daemon.** When "Sync in background" is enabled (Settings →
-  Connections, default ON), a separate Rust binary syncs all profiles every 60s.
-  A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync
-  and the daemon via heartbeats (10s) and stale-lock takeover (30s) so they never
-  write the same profile concurrently. The daemon writes its PID to
-  `~/.namehold/syncd.pid` for lifecycle tracking.
+- **Background sync daemon.** When "Sync in background" is enabled (Settings → Connections, default ON), a separate Rust binary syncs all profiles every 60s. A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync and the daemon via heartbeats (10s) and stale-lock takeover (30s); the app's Sync takes the lock from a daemon run. A run whose lock is taken over stops at its next check, within one heartbeat, and the LearnHNS Market jobs read the lock row before each listing, so they stop at once. The daemon writes its PID to `~/.namehold/syncd.pid` for lifecycle tracking.
 
 ## Security
 

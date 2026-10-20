@@ -223,7 +223,7 @@ fn reservation(conn: &Connection) -> Option<String> {
 /// The purchase draft's status and message, as Activity shows them.
 fn draft_status(conn: &Connection) -> (String, Option<String>) {
     let d = queries::get_tx_draft(conn, DRAFT_ID).unwrap().unwrap();
-    (d.status, d.error_message)
+    (d.status.to_string(), d.error_message)
 }
 
 fn tip(blocks: i64) -> BlockchainInfo {
@@ -1616,7 +1616,14 @@ async fn daemon_sync_makes_no_send_call_where_the_apps_sync_does() {
         let db_path = path.to_str().unwrap();
 
         match caller {
-            SyncCaller::Daemon => crate::daemon::sync_profile(db_path, PROFILE).await,
+            SyncCaller::Daemon => {
+                crate::daemon::sync_profile(
+                    db_path,
+                    PROFILE,
+                    &crate::db::sync_lock::LockLost::default(),
+                )
+                .await
+            }
             SyncCaller::App => {
                 let status = std::sync::Arc::new(tokio::sync::Mutex::new(SyncStatus::default()));
                 run_sync_steps(&status, db_path, PROFILE, SyncCaller::App).await;

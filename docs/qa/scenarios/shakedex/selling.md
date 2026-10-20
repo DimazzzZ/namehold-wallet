@@ -97,7 +97,7 @@ Expected:
 
 - Step 3: the cancel is refused before any secure window opens, in the backend's words: "a purchase of this listing is in the node's mempool: the node would not take a cancel now" (or "the lock coin is no longer unspent (bought, cancelled, or being spent in the node's mempool): there is nothing to cancel"; quote which). Lower price is refused likewise: "a purchase of this listing is in the node's mempool: its price cannot be lowered" (or "…: the price cannot be lowered"). Nothing is signed: no `Cancel listing` draft in Activity, the row stays Listed.
 - Step 4: My listings `Sale pending` with only `Export listing file` and no price line; Owned Names `Sale pending`.
-- Step 5: `Sold`, no buttons, no price line, in My listings and on Owned Names (Owned Names may need one more refresh); Activity shows the 5.000000 HNS arriving with the fill's txid (an unsigned amount there is a known issue). `getrawmempool` held the fill before the block, with `info SB` still on the lock coin; after it the owner is the fill's TRANSFER.
+- Step 5: `Sold`, no buttons, no price line, in My listings and on Owned Names (Owned Names may need one more refresh); Activity shows the 5.000000 HNS arriving with the fill's txid as a green `+5.000000`. `getrawmempool` held the fill before the block, with `info SB` still on the lock coin; after it the owner is the fill's TRANSFER.
 - Passes if both refusals come before any secure window and the row walks Listed → Sale pending → Sold.
 
 - **Blocks mined:** 12

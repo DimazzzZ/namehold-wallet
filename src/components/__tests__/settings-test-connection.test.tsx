@@ -13,7 +13,6 @@ import { screen, fireEvent, waitFor } from "@testing-library/react";
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
-vi.mock("@tauri-apps/plugin-fs", () => ({ readTextFile: vi.fn(), writeTextFile: vi.fn() }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn(),
   readText: vi.fn().mockResolvedValue(""),
@@ -59,7 +58,7 @@ describe("Settings — Test connection", () => {
     );
     expect(invokeMock).toHaveBeenCalledWith("check_node_connection", {
       url: "https://node.example.com:12037",
-      api_key: undefined,
+      apiKey: undefined,
     });
   });
 
@@ -87,5 +86,19 @@ describe("Settings — Test connection", () => {
     );
     // Still reachable — the green summary stays; the warning is additive.
     expect(screen.getByTestId("connection-success")).toBeInTheDocument();
+  });
+
+  it("says in the footer that a cross-network node blocks Save", async () => {
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "check_node_connection"
+        ? Promise.resolve({ ...reachable, network: "testnet", networkMatches: false })
+        : routeSettingsCommand(cmd),
+    );
+    renderSettings();
+    fireEvent.click(await screen.findByTestId("test-connection-button"));
+    await screen.findByTestId("connection-network-mismatch");
+    fireEvent.change(screen.getByTestId("settings-fee-rate"), { target: { value: "2000" } });
+    expect(await screen.findByTestId("settings-save")).toBeDisabled();
+    expect(screen.getByTestId("settings-save-blocked")).toHaveTextContent(/testnet/);
   });
 });

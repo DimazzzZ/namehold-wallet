@@ -11,7 +11,9 @@
 //! UTXOs are not needed. The explorer provides balance display directly.
 //!
 //! Steps 2+3 (repair + discover) use the explorer path, which is the default
-//! when `node_authoritative == false` in `run_sync_steps`.
+//! when `node_authoritative == false` in `run_sync_steps`. Before them,
+//! `run_sync_steps` grows the address window from the explorer
+//! (`sync::explorer_window_step`): hsd serves no address history in SPV mode.
 //!
 //! This is the SPV counterpart to `sync_node_step` in `sync.rs`.
 

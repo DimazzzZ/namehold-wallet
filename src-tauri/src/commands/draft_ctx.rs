@@ -101,8 +101,11 @@ pub(crate) fn persist_in_tx(
             .iter()
             .enumerate()
             .filter(|(i, _)| Some(*i) != res.plan.change_output_index)
-            .map(|(_, o)| o.value as i64)
-            .sum(),
+            .fold(0u64, |sum, (_, o)| sum.saturating_add(o.value))
+            .try_into()
+            // Why: a total past i64::MAX doos is far beyond the HNS supply;
+            // it is shown as the largest number, never wrapped negative.
+            .unwrap_or(i64::MAX),
         fee_doos: res.fee as i64,
         change_doos: res.change as i64,
         input_total_doos: res.input_total as i64,
@@ -452,6 +455,83 @@ pub(crate) async fn ensure_finalize_matured(
     Ok(())
 }
 
+/// What hsd would answer to a REDEEM of a name mined in the next block, read
+/// off the name's `getnameinfo.info` (`state`, `stats`) at the node's tip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RedeemWindow {
+    /// The auction has not closed: hsd refuses a REDEEM before CLOSED
+    /// (`chain.js`, `bad-redeem-state`).
+    NotClosed,
+    /// CLOSED, or REVOKED (hsd lets an auction's losers get their money out
+    /// "even in a revoked state", `chain.js` REDEEM), with the name still
+    /// unexpired in the next block.
+    Open,
+    /// The name expires in the next block, where the transaction is judged
+    /// (the mempool and the block both verify at `tip + 1`). `maybeExpire`
+    /// then resets it to a new auction height, which no REDEEM of this
+    /// auction matches.
+    ExpiresNextBlock,
+    /// The reply does not say when the name expires.
+    Unknown,
+}
+
+/// [`RedeemWindow`] of a name in hsd `state`, from its `stats`. The blocks
+/// hsd counts are `end - tip`, and the name is expired at a height `>= end`
+/// (`namestate.js` `isExpired`: `renewal + renewalWindow` for a CLOSED name,
+/// `revoked + auctionMaturity` for a REVOKED one), so a transaction at
+/// `tip + 1` is taken only while two blocks or more are left.
+pub(crate) fn redeem_window(state: &str, stats: Option<&serde_json::Value>) -> RedeemWindow {
+    let key = match state {
+        "CLOSED" => "blocksUntilExpire",
+        "REVOKED" => "blocksUntilReopen",
+        _ => return RedeemWindow::NotClosed,
+    };
+    match stats.and_then(|s| s.get(key)).and_then(|b| b.as_i64()) {
+        Some(blocks) if blocks <= 1 => RedeemWindow::ExpiresNextBlock,
+        Some(_) => RedeemWindow::Open,
+        None => RedeemWindow::Unknown,
+    }
+}
+
+/// Why a REDEEM is not offered once the name expires with the next block.
+pub(crate) const REDEEM_EXPIRES_NEXT_BLOCK: &str =
+    "the name expires with the next block, and hsd takes no redeem of it from then on";
+
+/// Refuses a REDEEM of `name` that hsd would reject in the next block: before
+/// the auction closed, or once the name expires there ([`redeem_window`]). A
+/// reply that does not say when the name expires gives no verdict.
+pub(crate) async fn ensure_redeem_window_open(
+    client: &dyn NodeRpc,
+    name: &str,
+) -> Result<(), AppError> {
+    let info = node_name_info(client, name).await?;
+    let state = info.get("state").and_then(|s| s.as_str()).unwrap_or("");
+    match redeem_window(state, info.get("stats")) {
+        RedeemWindow::Open => Ok(()),
+        RedeemWindow::NotClosed => Err(AppError::InvalidInput(format!(
+            "the auction of '{name}' has not closed (state '{state}'): nothing to redeem yet"
+        ))),
+        RedeemWindow::ExpiresNextBlock => Err(AppError::InvalidInput(format!(
+            "'{name}': {REDEEM_EXPIRES_NEXT_BLOCK}"
+        ))),
+        RedeemWindow::Unknown => Err(AppError::Rpc(format!(
+            "node did not report when '{name}' expires"
+        ))),
+    }
+}
+
+/// The name's owner coin in a `getnameinfo.info` reply, read once for the
+/// redeem builder ([`exclude_owner_reveal`]), the Redeem button
+/// (`NameActionContext::with_node_owner`) and the Shakedex jobs: see
+/// [`crate::noncustodial::rpc::name_owner_outpoint`].
+pub(crate) use crate::noncustodial::rpc::name_owner_outpoint as owner_outpoint;
+
+/// Is `coin` the outpoint `(hash, index)`?
+/// ([`crate::noncustodial::rpc::same_outpoint`]).
+pub(crate) fn is_outpoint(coin: &queries::NameCoin, outpoint: (&str, u32)) -> bool {
+    crate::noncustodial::rpc::same_outpoint((&coin.txid, coin.vout), outpoint)
+}
+
 /// The reveal coins in `coins` that a REDEEM may spend: every one but the
 /// name's owner coin as the node reports it (`getnameinfo.info.owner`). Until
 /// REGISTER spends it, the winning reveal IS the owner coin, and hsd rejects
@@ -467,17 +547,14 @@ pub(crate) async fn exclude_owner_reveal(
         return Ok(coins);
     }
     let info = node_name_info(client, name).await?;
-    let owner = info.get("owner");
-    let hash = owner.and_then(|o| o.get("hash")).and_then(|h| h.as_str());
-    let index = owner.and_then(|o| o.get("index")).and_then(|i| i.as_u64());
-    let (Some(hash), Some(index)) = (hash, index) else {
+    let Some(owner) = owner_outpoint(&info) else {
         return Err(AppError::Rpc(format!(
             "node did not report the name's owner for '{name}'"
         )));
     };
     let losing: Vec<_> = coins
         .into_iter()
-        .filter(|c| !(c.txid.eq_ignore_ascii_case(hash) && u64::from(c.vout) == index))
+        .filter(|c| !is_outpoint(c, owner))
         .collect();
     if losing.is_empty() {
         return Err(AppError::InvalidInput(format!(

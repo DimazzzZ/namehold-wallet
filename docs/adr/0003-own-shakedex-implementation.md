@@ -17,4 +17,3 @@ Buying and selling names through Shakedex listings needs a lock script, P2WSH sp
 - Correctness rests on our tests: the hsd v8.0.0 golden vector, strict verification of live LearnHNS listings, and a regtest end-to-end purchase from a listing created by the real shakedex CLI.
 - Revisit if the crate gains independent reviewers and its author enables value movement in production, or if keeping our implementation in step with the protocol becomes costly.
 
-Audit: `.mimocode/research/hns-swap-crate-audit.md` (internal knowledge base, not in git). Protocol: `.mimocode/research/shakedex-protocol.md`.

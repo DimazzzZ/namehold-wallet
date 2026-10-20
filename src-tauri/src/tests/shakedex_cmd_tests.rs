@@ -526,6 +526,113 @@ async fn sold_listing_refused() {
     assert!(err_text(err).contains("sold or cancelled"));
 }
 
+/// A `shakedex_listings` row of `profile` that locks with `pubkey_hex`.
+fn own_listing_row(conn: &rusqlite::Connection, profile: &str, id: &str, pubkey_hex: &str) {
+    db::queries::insert_shakedex_listing(
+        conn,
+        &db::queries::ShakedexListing {
+            id: id.into(),
+            wallet_profile_id: profile.into(),
+            name: "regname".into(),
+            mode: db::queries::ListingMode::BuyNow,
+            state: db::queries::ListingState::Listed,
+            lock_pubkey_hex: pubkey_hex.into(),
+            lock_transfer_draft_id: None,
+            lock_finalize_draft_id: None,
+            lock_transfer_txid: None,
+            lock_txid: None,
+            lock_vout: None,
+            payment_address: None,
+            cancel_address: None,
+            cancel_child_index: None,
+            steps_json: "[]".into(),
+            listing_file_json: None,
+            publish: false,
+            market_status: None,
+            market_retry_at: None,
+            market_attempts: 0,
+            market_error: None,
+            market_accepted: false,
+            market_changed: false,
+            market_told: false,
+            market_sent_step: None,
+            expires_at: None,
+            abort_draft_id: None,
+            abort_txid: None,
+            sold_txid: None,
+            cancel_txid: None,
+            cancel_draft_id: None,
+            cancel_vout: None,
+            cancel_finalize_draft_id: None,
+            cancel_blocks_remaining: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        },
+    )
+    .unwrap();
+}
+
+/// R33: a listing whose lock address is the lock address of a listing row on
+/// this device is refused with "your own listing", by the preview and the
+/// build alike, whichever profile holds the row; a listing locked elsewhere
+/// is still bought.
+#[tokio::test]
+async fn own_listing_is_refused_and_another_is_bought() {
+    let r = regtest_listing();
+    let own_key = hex::encode(
+        crate::noncustodial::shakedex::listing_file::ListingFile::parse(&r.json, Network::Regtest)
+            .unwrap()
+            .public_key,
+    );
+    let mut node = mockito::Server::new_async().await;
+    let _b = mock_blockchain_info(&mut node, REGTEST_TIP, Some(REGTEST_MTP)).await;
+    let _n = mock_name_info(&mut node, r.name_info.clone()).await;
+    let _c = mock_coin(&mut node, &r.txid, r.coin.clone()).await;
+    let app = app_with(seeded("regtest", "mnemonic_hot", &node.url()));
+    // Another key's row (the shape of any other seller's lock) changes nothing.
+    with_db(&app, |c| {
+        own_listing_row(c, PROFILE, "other", &"02".repeat(33))
+    });
+    // The row is of ANOTHER profile of this device.
+    with_db(&app, |c| {
+        db::queries::insert_wallet_profile(
+            c,
+            "shk2",
+            "Second",
+            "mnemonic_hot",
+            "regtest",
+            "x",
+            1,
+            false,
+        )
+        .unwrap();
+        own_listing_row(c, "shk2", "mine", &own_key);
+    });
+    let sentence = "this is your own listing: cancel it instead";
+    let err = shakedex_preview_purchase(app.state(), r.json.clone(), false, false, None)
+        .await
+        .unwrap_err();
+    assert!(err_text(err).contains(sentence));
+    let err = shakedex_build_purchase_draft(app.state(), r.json.clone(), None, false, None)
+        .await
+        .unwrap_err();
+    assert!(err_text(err).contains(sentence));
+    with_db(&app, |c| {
+        assert!(db::queries::list_open_shakedex_purchases(c, PROFILE)
+            .unwrap()
+            .is_empty());
+        let drafts: i64 = c
+            .query_row("SELECT COUNT(*) FROM wallet_tx_drafts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(drafts, 0, "the refusal leaves no draft behind");
+        c.execute("DELETE FROM shakedex_listings WHERE id = 'mine'", [])
+            .unwrap();
+    });
+    shakedex_build_purchase_draft(app.state(), r.json.clone(), None, false, None)
+        .await
+        .expect("a listing locked by another key is still bought");
+}
+
 // --- build: what is written -------------------------------------------------
 
 #[tokio::test]
@@ -775,6 +882,38 @@ async fn list_market_survives_one_lookup_failure() {
     let v = serde_json::to_value(row).unwrap();
     assert_eq!(v["verdict"]["verdict"], "buyable");
     assert_eq!(v["steps"][0]["lockTime"], 1_783_696_480u64);
+}
+
+/// R33: a market row whose lock is one of this device's own is marked `own`
+/// (the page shows it as yours, without Buy); other rows are not.
+#[tokio::test]
+async fn list_market_marks_the_rows_locked_by_this_device() {
+    let mut node = mockito::Server::new_async().await;
+    let _m = live_node(&mut node).await;
+    let mut market = mockito::Server::new_async().await;
+    let _p = mock_market_page(&mut market, &[LISTING_FILE]).await;
+    let conn = mainnet(&node.url());
+    set(&conn, "learnhns_base_url", &market.url());
+    let app = app_with(conn);
+    let page = shakedex_list_market(app.state(), None, None)
+        .await
+        .expect("page");
+    assert!(!page.rows[0].own, "a listing locked elsewhere is not ours");
+    let key = hex::encode(
+        crate::noncustodial::shakedex::listing_file::ListingFile::parse(
+            LISTING_FILE,
+            Network::Main,
+        )
+        .unwrap()
+        .public_key,
+    );
+    with_db(&app, |c| own_listing_row(c, PROFILE, "mine", &key));
+    let page = shakedex_list_market(app.state(), None, None)
+        .await
+        .expect("page");
+    assert_eq!(page.rows.len(), 1);
+    assert!(page.rows[0].own);
+    assert_eq!(serde_json::to_value(&page.rows[0]).unwrap()["own"], true);
 }
 
 /// The page exactly as the live Market served it (ISO `expiresAt`, `bids`,
@@ -1077,6 +1216,37 @@ async fn import_link_refuses_a_file_for_another_name() {
     );
 }
 
+/// R33: an imported listing locked by this device comes back marked `own`,
+/// read from the same rows as the Market page; one locked elsewhere does not.
+#[tokio::test]
+async fn import_listing_marks_a_listing_locked_by_this_device() {
+    let mut node = mockito::Server::new_async().await;
+    let _m = live_node(&mut node).await;
+    let app = app_with(mainnet(&node.url()));
+    let import = || {
+        shakedex_import_listing(
+            app.state(),
+            ImportSource::Text {
+                json: LISTING_FILE.into(),
+            },
+        )
+    };
+    let row = import().await.expect("import");
+    assert!(!row.own, "a listing locked elsewhere is not ours");
+    let key = hex::encode(
+        crate::noncustodial::shakedex::listing_file::ListingFile::parse(
+            LISTING_FILE,
+            Network::Main,
+        )
+        .unwrap()
+        .public_key,
+    );
+    with_db(&app, |c| own_listing_row(c, PROFILE, "mine", &key));
+    let row = import().await.expect("import");
+    assert!(row.own);
+    assert_eq!(serde_json::to_value(&row).unwrap()["own"], true);
+}
+
 #[tokio::test]
 async fn import_text_and_file() {
     let mut node = mockito::Server::new_async().await;
@@ -1156,7 +1326,7 @@ fn purchase_draft_row(summary: &Value) -> db::queries::TxDraftRow {
         signed_tx_hex: None,
         signing_inputs_json: "{}".into(),
         summary_json: summary.to_string(),
-        status: "draft".into(),
+        status: db::queries::DraftStatus::Draft,
         error_message: None,
         txid: None,
         confirmation_height: None,
@@ -1500,7 +1670,11 @@ async fn signed_reverse_auction_purchase(
 
 fn draft_status(app: &tauri::App<tauri::test::MockRuntime>, id: &str) -> String {
     with_db(app, |c| {
-        db::queries::get_tx_draft(c, id).unwrap().unwrap().status
+        db::queries::get_tx_draft(c, id)
+            .unwrap()
+            .unwrap()
+            .status
+            .to_string()
     })
 }
 
@@ -1883,6 +2057,7 @@ fn refusal_sentences_match_the_uis_word_for_word() {
             "CANCEL_LOCKUP_NOT_COUNTED",
             crate::commands::shakedex::CANCEL_LOCKUP_NOT_COUNTED,
         ),
+        ("OWN_LISTING", crate::commands::shakedex::OWN_LISTING),
     ] {
         let decl = format!("export const {name} = {sentence:?};");
         assert!(ui.contains(&decl), "marketText.ts lacks `{decl}`");

@@ -13,7 +13,7 @@ last_verified: "bc8cd4d, 2026-10-18, report kept outside the repo"
 
 # Buying
 
-The seller profile buys names the Shakedex CLI listed: import a listing file, check it on the node, buy it through the secure window, and finalize the name. Off mainnet there is no LearnHNS Market, so every listing comes from a file or pasted JSON. Never buy a listing the app itself locked ([rules](../../rules.md)).
+The seller profile buys names the Shakedex CLI listed: import a listing file, check it on the node, buy it through the secure window, and finalize the name. Off mainnet there is no LearnHNS Market, so every listing comes from a file or pasted JSON. A listing the app itself locked is not bought (B17, [rules](../../rules.md)).
 
 ## B1 — Browse on regtest
 
@@ -286,8 +286,9 @@ Steps:
 
 Expected:
 
+- Owned Names and the Market page refresh as soon as the dialog shows the failure, without waiting for the next poll.
 - The broadcast reports "The node did not take the transaction. hsd does not say why; often its coins are already spent elsewhere. You can try again; the coins stay held until the node is checked again." (or another broadcast error: quote it); the dialog may then also show `Could not price this purchase` with "this listing is already sold or cancelled" and `Buy` disabled.
-- After Sync: Activity shows the purchase with the badge `Lost` and under it "someone else bought the name first, or the seller cancelled the listing — nothing was paid"; Owned Names has no row for X3; the spendable balance is back to the noted value. A stale Owned Names row until the next poll is a known issue.
+- After Sync: Activity shows the purchase with the badge `Lost` and under it "someone else bought the name first, or the seller cancelled the listing — nothing was paid"; Owned Names has no row for X3; the spendable balance is back to the noted value.
 - `info <X3>` shows the owner as the CLI fill's TRANSFER.
 - Passes if nothing was paid and the coins are spendable again; record how many syncs or blocks the verdict took.
 
@@ -378,9 +379,31 @@ Steps:
 Expected:
 
 - Either nothing remains (the draft was discarded at quit), or Activity shows a `Buy` draft with `Sign & broadcast` and `Discard` (say which). Owned Names showing `Unconfirmed purchase` for a purchase that was never sent is a finding only if it persists after a Sync.
-- After `Discard` (and its confirm "Discard this draft? Any coins it reserved will be freed. This cannot be undone.", if it appears) the draft and any purchase row go, toast "Draft discarded", and the balance is unchanged.
+- After `Discard` (and its confirm "Discard this draft? Any coins it reserved will be freed. This cannot be undone.", if it appears) the draft and any purchase row go, toast "Draft discarded", Owned Names drops the `Unconfirmed purchase` row at once (no Sync needed), and the balance is unchanged.
 - Passes if no unsent purchase survives a discard and no coins stay reserved.
 
 - **Blocks mined:** 0
 - **Evidence:** screenshot `B16-1-after-relaunch`.
 - **Cleanup / end state:** the listing still buyable.
+
+## B17 — Your own listing is not bought
+
+- **Priority:** P3
+- **Covers:** R33
+- **Preconditions:** a listing file the seller profile exported (`$QA_DIR/SA.json` from [selling](selling.md), any state); the second-device profile ([environment](../../environment.md#profiles)).
+
+Steps:
+
+1. In the seller profile: Market › Browse, import `$QA_DIR/SA.json` (paste it or choose the file).
+2. Hover the row's `Buy`.
+3. [switch-profile](../../procedures/switch-profile.md) to the second device and import the same file again; hover `Buy`.
+
+Expected:
+
+- Steps 1 and 3: the row's status reads "this is your own listing: cancel it instead (My listings), buying it would only cost you network fees", whatever the listing's state on chain; `Buy` is shown, disabled, and its hint (step 2) says the same sentence. The second device of the same phrase on this machine counts as the same device.
+- Nothing opens, nothing is signed: no `Buy` draft in Activity.
+- Passes if neither profile can start a purchase of the listing.
+
+- **Blocks mined:** 0
+- **Evidence:** screenshots `B17-1-seller`, `B17-3-second-device`.
+- **Cleanup / end state:** the seller profile active; nothing bought.

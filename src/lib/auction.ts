@@ -171,6 +171,20 @@ export const AUCTION_PHASE_GUIDE: Record<AuctionPhase, AuctionPhaseGuide | null>
   OTHER: null,
 };
 
+/**
+ * The guided step of a REVOKED name that still holds a losing reveal of ours.
+ * A revoked name has no acquisition guidance, but hsd lets an auction's losers
+ * redeem "even in a revoked state" until the name expires (`chain.js`,
+ * REDEEM), and the backend reports `lostNeedsRedeem` for it.
+ */
+export const REVOKED_REDEEM_GUIDE: AuctionPhaseGuide = {
+  title: "Redeem Your Lockup",
+  description:
+    "The winner revoked this name. Your losing bid can still be redeemed until the name expires.",
+  action: "Redeem",
+  actionHint: "Reclaims the lockup of every losing bid of yours on this name.",
+};
+
 /** The guidance payload returned by [`auctionGuidance`]. */
 export interface AuctionGuidance {
   phase: AuctionPhase;
@@ -232,6 +246,10 @@ export function taskStateLabel(state: AuctionTaskState): string {
       return "Won — Register Now";
     case "lostNeedsRedeem":
       return "Lost — Redeem Now";
+    case "lostUnrevealed":
+      return "Lost — Not Revealed";
+    case "closedResultUnknown":
+      return "Closed — Sync to See Result";
     case "transferPendingFinalize":
       return "Transfer — Finalize";
     case "ownedNoUrgentAction":
@@ -268,6 +286,11 @@ export function taskStateBadgeVariant(
       return "success";
     case "lostNeedsRedeem":
       return "error";
+    case "lostUnrevealed":
+      return "error";
+    case "closedResultUnknown":
+      // Neutral blue: no verdict yet, only a sync to wait for.
+      return "info";
     case "transferPendingFinalize":
       return "info";
     case "ownedNoUrgentAction":
@@ -296,6 +319,8 @@ export function taskStateUrgency(state: AuctionTaskState): string | null {
       return "You won the auction! Register to finalize ownership and set DNS.";
     case "lostNeedsRedeem":
       return "Your bid lost. Redeem your reveal coin to reclaim the funds.";
+    case "lostUnrevealed":
+      return "You did not reveal this bid in time; its lockup is lost and cannot be redeemed.";
     case "transferPendingFinalize":
       return "This name is being transferred. Finalize to complete.";
     case "expiringSoon":

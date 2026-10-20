@@ -361,3 +361,80 @@ fn build_redeem_draft_fails_with_insufficient_funds() {
         "no draft persisted when the plan can't be funded"
     );
 }
+
+/// A REVEAL coin as sync stores it: the covenant items hsd writes for a
+/// REVEAL (`rules.js`: name hash, the auction's start height as a u32 LE,
+/// nonce).
+fn reveal_coin_of_auction(txid: &str, addr: &str, value: u64, auction_start: u32) -> NameCoin {
+    let nh_hex = hex::encode(names::hash_name(NAME).unwrap());
+    let cov_json = serde_json::json!({
+        "type": sync::COV_REVEAL,
+        "action": "REVEAL",
+        "items": [nh_hex, hex::encode(auction_start.to_le_bytes()), "00".repeat(32)],
+    })
+    .to_string();
+    NameCoin {
+        covenant_json: Some(cov_json),
+        ..reveal_coin(txid, addr, value)
+    }
+}
+
+fn reserved_reveal_txids(conn: &rusqlite::Connection) -> Vec<String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT txid FROM tracked_utxos
+             WHERE reserved_by_draft_id IS NOT NULL AND covenant_type = ?1 ORDER BY txid",
+        )
+        .unwrap();
+    stmt.query_map(rusqlite::params![sync::COV_REVEAL as i64], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// A name auctioned again after it expired: the wallet still holds a reveal
+/// of the earlier auction beside a losing reveal of this one. The builder
+/// writes the name's current height into every REDEEM, and hsd refuses one
+/// whose height is not its reveal's as `bad-txns-covenants` (`rules.js`,
+/// "Heights must match"); one carrying the reveal's own height would be
+/// `bad-redeem-nonlocal` (`chain.js`). Either way one refused input takes
+/// the whole transaction down, the redeemable reveal with it. The redeem
+/// spends this auction's reveal only.
+#[test]
+fn build_redeem_draft_leaves_out_a_reveal_of_an_earlier_auction() {
+    let (conn, ctx, coin) = setup(2_000_000, 10_000_000);
+    let ns = closed_name_state();
+    let current = reveal_coin_of_auction(&coin.txid, &coin.address, 2_000_000, ns.height);
+    let old_txid = "cc".repeat(32);
+    seed_reveal_coin(&conn, &old_txid, 7_000_000, &coin.address);
+    let old = reveal_coin_of_auction(&old_txid, &coin.address, 7_000_000, 500);
+
+    let summary =
+        build_redeem_draft_inner(&conn, &ctx, NAME, Some(10), &ns, &[old, current]).unwrap();
+
+    assert_eq!(
+        summary
+            .summary
+            .get("sendTotalDoos")
+            .and_then(|v| v.as_i64()),
+        Some(2_000_000),
+        "only this auction's reveal is reclaimed"
+    );
+    assert_eq!(reserved_reveal_txids(&conn), vec![coin.txid.clone()]);
+}
+
+/// With nothing but an earlier auction's reveal there is nothing to redeem:
+/// the builder says why instead of building a transaction hsd refuses.
+#[test]
+fn build_redeem_draft_refuses_when_every_reveal_is_from_an_earlier_auction() {
+    let (conn, ctx, coin) = setup(2_000_000, 10_000_000);
+    let old = reveal_coin_of_auction(&coin.txid, &coin.address, 2_000_000, 500);
+
+    let err = build_redeem_draft_inner(&conn, &ctx, NAME, Some(10), &closed_name_state(), &[old])
+        .unwrap_err();
+    match err {
+        AppError::NotFound(msg) => assert!(msg.contains("earlier auction"), "got {msg}"),
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+    assert!(reserved_reveal_txids(&conn).is_empty(), "nothing reserved");
+}

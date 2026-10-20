@@ -2,8 +2,7 @@ name: Labeler
 
 # Path-based auto-labeling for pull requests.
 # Applies `domain:` labels (and `type: docs` for pure-docs PRs) based on the
-# files a PR touches. Config: .github/labeler.yml. Reference doc:
-# .mimocode/docs/triage-labels.md (local, gitignored).
+# files a PR touches. Config: .github/labeler.yml.
 #
 # `type:` (except docs), `priority:`, triage, and flag labels are intentionally
 # NOT auto-applied — those are judgement calls left to the author or triager.

@@ -48,11 +48,24 @@ describe("UnlockButton", () => {
 
   it("renders nothing when the wallet is already unlocked", () => {
     (useActiveProfile as any).mockReturnValue({ data: { id: "profile-1" } });
-    (useSignerSession as any).mockReturnValue({ data: { unlocked: true } });
+    (useSignerSession as any).mockReturnValue({
+      data: { unlocked: true, walletProfileId: "profile-1" },
+    });
     (useUnlockSigner as any).mockReturnValue({ isPending: false, mutateAsync: vi.fn() });
 
     const { container } = render(<UnlockButton />);
     expect(container.firstChild).toBeNull();
+  });
+
+  it("still offers Unlock when the unlocked signer belongs to another profile", () => {
+    (useActiveProfile as any).mockReturnValue({ data: { id: "profile-2" } });
+    (useSignerSession as any).mockReturnValue({
+      data: { unlocked: true, walletProfileId: "profile-1" },
+    });
+    (useUnlockSigner as any).mockReturnValue({ isPending: false, mutateAsync: vi.fn() });
+
+    render(<UnlockButton />);
+    expect(screen.getByTestId("unlock-now")).toBeInTheDocument();
   });
 
   it("renders the button when locked and profile exists", () => {

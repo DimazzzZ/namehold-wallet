@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useSettingsStore } from "../stores/settings";
 import { useNodeStatus, useStartHsd, useStopHsd, useResyncHsd } from "../queries/node";
-import { useActiveProfile, useExportBidCommitments } from "../queries/wallet";
+import { useActiveProfile, useSaveBidBackup } from "../queries/wallet";
 import { open, save } from "../lib/dialog";
 import { isTauri } from "../lib/runtime";
 import { defaultNodeRpcUrl } from "../lib/utils";
@@ -26,6 +26,7 @@ import { useUiStore } from "../stores/ui";
 import { UpdatesSettings } from "./UpdatesSettings";
 import { useAppUpdate } from "../hooks/useAppUpdate";
 import { MIN_FEE_RATE_DOOS_PER_KVB, parseDoosPerKvb } from "../lib/feeRate";
+import { MAX_ADDRESS_GAP_LIMIT } from "../lib/settingsDefaults";
 import {
   enable as enableAutostart,
   disable as disableAutostart,
@@ -61,11 +62,14 @@ export function Settings() {
   const { settings, loaded, saveAll } = useSettingsStore();
   const showToast = useUiStore((s) => s.showToast);
   const { data: profile } = useActiveProfile();
-  const exportBids = useExportBidCommitments();
+  const saveBidBackup = useSaveBidBackup();
 
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  // Advanced is collapsed by default; the user's own toggle is kept here and
+  // an error inside it forces it open (see `advancedHasError`).
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const nodeProbe = useNodeConnectionCheck();
 
   // The persisted pair the Chain source selector reads and writes, resolved
@@ -154,6 +158,21 @@ export function Settings() {
       ? "Fee rate must be a whole number of doos/kvB"
       : null;
 
+  // The gap limit is optional (empty = the default, 20). The backend uses a
+  // whole number in 1..=MAX_ADDRESS_GAP_LIMIT and clamps a larger one, so
+  // the field refuses anything else rather than save a value not used as typed.
+  const gapRaw = (form.address_gap_limit ?? "").trim();
+  const gapLimitError =
+    gapRaw &&
+    !(/^\d+$/.test(gapRaw) && Number(gapRaw) >= 1 && Number(gapRaw) <= MAX_ADDRESS_GAP_LIMIT)
+      ? `Address gap limit must be a whole number from 1 to ${MAX_ADDRESS_GAP_LIMIT}`
+      : null;
+
+  // A stored value outside its range lands here as an error in a collapsed
+  // section while Save stays disabled; open the section and say why next to
+  // Save, so the block is never silent.
+  const advancedHasError = !!feeRateError || !!gapLimitError;
+
   // Pick the hsd data directory with the native folder browser (Finder).
   const pickDataDir = async () => {
     try {
@@ -176,6 +195,14 @@ export function Settings() {
   // just parks a broken setting. Only a POSITIVE mismatch blocks — a node that
   // was never tested, or one that didn't report its chain, saves as before.
   const nodeNetworkMismatch = nodeProbe.result?.networkMatches === false;
+
+  const saveBlockReason =
+    explorerUrlError ||
+    feeRateError ||
+    gapLimitError ||
+    (nodeNetworkMismatch
+      ? `the node is on ${nodeProbe.result?.network ?? "another network"}, not this wallet's network`
+      : null);
 
   const handleSave = async () => {
     if (explorerUrlError) {
@@ -228,16 +255,12 @@ export function Settings() {
       return;
     }
     try {
-      const json = await exportBids.mutateAsync(profile.id);
       const path = await save({
         filters: [{ name: "JSON", extensions: ["json"] }],
         defaultPath: `${profile.label || "wallet"}-bid-backup.json`,
       });
       if (!path) return;
-      if (isTauri()) {
-        const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-        await writeTextFile(path, json);
-      }
+      await saveBidBackup.mutateAsync({ walletProfileId: profile.id, path });
       showToast("Bid backup exported", "success");
     } catch (e) {
       showToast(`Bid backup export failed: ${e}`, "error");
@@ -510,10 +533,10 @@ export function Settings() {
           size="sm"
           variant="secondary"
           onClick={handleExportBidBackup}
-          disabled={exportBids.isPending || !profile}
+          disabled={saveBidBackup.isPending || !profile}
           data-testid="export-bid-backup"
         >
-          {exportBids.isPending ? "Exporting…" : "Export bid backup"}
+          {saveBidBackup.isPending ? "Exporting…" : "Export bid backup"}
         </Button>
       </div>
 
@@ -619,17 +642,36 @@ export function Settings() {
       )}
 
       {/* Advanced (collapsed by default — rarely changed). */}
-      <details className="bg-white rounded border border-gray-200 group">
-        <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-gray-700">
+      <details
+        className="bg-white rounded border border-gray-200 group"
+        open={advancedOpen || advancedHasError}
+        onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}
+      >
+        <summary
+          className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-gray-700"
+          data-testid="settings-advanced"
+        >
           Advanced
         </summary>
         <div className="px-4 pb-4 space-y-3">
-          <Input
-            label="Address gap limit"
-            value={form.address_gap_limit ?? ""}
-            onChange={(e) => updateField("address_gap_limit", e.target.value)}
-            placeholder="20"
-          />
+          <div>
+            <Input
+              label="Address gap limit"
+              value={form.address_gap_limit ?? ""}
+              onChange={(e) => updateField("address_gap_limit", e.target.value)}
+              placeholder="20"
+              inputMode="numeric"
+              data-testid="settings-gap-limit"
+            />
+            {gapLimitError ? (
+              <div className="text-xs text-red-600 mt-1">{gapLimitError}</div>
+            ) : (
+              <div className="text-xs text-gray-500 mt-1">
+                Unused addresses each sync looks ahead for, per branch: 1 to {MAX_ADDRESS_GAP_LIMIT}
+                .
+              </div>
+            )}
+          </div>
           <Input
             label="Signer session timeout (seconds)"
             value={form.signer_session_timeout_seconds ?? ""}
@@ -646,7 +688,9 @@ export function Settings() {
               data-testid="settings-fee-rate"
             />
             {feeRateError ? (
-              <div className="text-xs text-red-600 mt-1">{feeRateError}</div>
+              <div className="text-xs text-red-600 mt-1" data-testid="settings-fee-rate-error">
+                {feeRateError}
+              </div>
             ) : (
               <div className="text-xs text-gray-500 mt-1">
                 Applied when a transaction is built without an explicit Advanced &gt; Fee rate
@@ -659,9 +703,14 @@ export function Settings() {
 
       {dirty && (
         <StickyFooter>
+          {saveBlockReason ? (
+            <div className="text-xs text-red-600 mr-3" data-testid="settings-save-blocked">
+              Can&rsquo;t save: {saveBlockReason}
+            </div>
+          ) : null}
           <Button
             onClick={handleSave}
-            disabled={saving || !!explorerUrlError || !!feeRateError || nodeNetworkMismatch}
+            disabled={saving || !!saveBlockReason}
             data-testid="settings-save"
           >
             {saving ? "Saving…" : "Save settings"}

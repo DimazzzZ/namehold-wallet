@@ -1,3 +1,4 @@
+import { isSignerUnlockedFor } from "../../lib/signer";
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog } from "../ui/Dialog";
@@ -8,7 +9,11 @@ import { parseFeeRateArg } from "../../lib/feeRate";
 import { mapError, stageOf, unwrapStaged } from "../../lib/errors";
 import { formatHns } from "../../lib/utils";
 import { displayName } from "../../lib/idn";
-import { useBuildPurchase, usePurchasePreview } from "../../queries/shakedex";
+import {
+  invalidatePurchaseViews,
+  useBuildPurchase,
+  usePurchasePreview,
+} from "../../queries/shakedex";
 import {
   useActiveProfile,
   useDeleteTxDraft,
@@ -92,10 +97,8 @@ export function PurchaseConfirm({ open, row, fromMarket, onClose }: PurchaseConf
       return;
     }
     try {
-      await exec.run(draftId, profile.id, signer?.unlocked ?? false);
+      await exec.run(draftId, profile.id, isSignerUnlockedFor(signer, profile.id));
       showToast("Purchase sent — it appears under your names as an unconfirmed purchase");
-      qc.invalidateQueries({ queryKey: ["read"] });
-      qc.invalidateQueries({ queryKey: ["shakedex"] });
       onClose();
     } catch (e) {
       setError(mapError(unwrapStaged(e), stageOf(e)));
@@ -113,6 +116,7 @@ export function PurchaseConfirm({ open, row, fromMarket, onClose }: PurchaseConf
         void preview.refetch();
       }
     } finally {
+      invalidatePurchaseViews(qc);
       setBusy(false);
     }
   };

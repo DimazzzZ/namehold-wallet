@@ -1,3 +1,4 @@
+import { isSignerUnlockedFor } from "../lib/signer";
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -45,6 +46,7 @@ import {
   nextTransition,
   formatCountdown,
   AUCTION_PHASE_GUIDE,
+  REVOKED_REDEEM_GUIDE,
   taskSummaryFromCapabilities,
   pendingBroadcastBadge,
   redeemExplainer,
@@ -148,7 +150,7 @@ export function NameActionsModal({
   // Ledger wallets don't use the local signer session — the device signs on
   // demand. Treat them as "unlocked" so exec.run() skips the unlock step and
   // goes straight to sign (which dispatches to the device).
-  const unlocked = isLedger ? true : (signer?.unlocked ?? false);
+  const unlocked = isLedger ? true : isSignerUnlockedFor(signer, profile?.id);
   const canWrite = writeCap?.canWrite ?? false;
   const lock = !!busy || !canWrite;
 
@@ -170,8 +172,20 @@ export function NameActionsModal({
 
   const badge = auctionPhase(info?.state);
   const countdown = nextTransition(info?.state, info?.stats);
-  const guide = AUCTION_PHASE_GUIDE[badge.phase];
+  // A revoked name has no guided step of its own, except a losing reveal of
+  // ours to redeem before it expires.
+  const guide =
+    AUCTION_PHASE_GUIDE[badge.phase] ??
+    (badge.phase === "REVOKED" && caps?.taskState === "lostNeedsRedeem"
+      ? REVOKED_REDEEM_GUIDE
+      : null);
   const summary = taskSummaryFromCapabilities(caps);
+  // Our losing reveals in the last block before the name expires, when hsd
+  // takes no redeem any more: the backend raises `redeemWindowClosing` and
+  // says why in `nextActionReason`. Said instead of "no auction actions are
+  // needed". Only on that flag: other no-task capabilities (the fallbacks)
+  // carry internal reasons that are not for this panel.
+  const noTaskReason = caps?.redeemWindowClosing ? (caps.nextActionReason ?? null) : null;
   // Loading gate for the phase badge: the yellow `badge.label` fallback is the
   // raw on-chain phase (e.g. "Bidding"), which contradicts the table's
   // task-state label (e.g. "Waiting for Bidding") while the SINGLE caps query
@@ -726,7 +740,11 @@ export function NameActionsModal({
 
         {/* Guided action - only show when loaded and no error.
             For CLOSED phase, only show when there is an actionable task
-            (won/register, lost/redeem, or owned).
+            (won/register, lost/redeem, or owned), or a bid of ours that was
+            never revealed: nothing to act on, but the panel says its lockup
+            is lost, where the static block would call the name registered.
+            The same holds for a bid of ours whose outcome the wallet cannot
+            settle yet (no synced node): the panel says to sync.
             Skip for third-party CLOSED names. */}
         {!isLoading &&
           !isError &&
@@ -734,7 +752,9 @@ export function NameActionsModal({
           (badge.phase !== "CLOSED" ||
           caps?.ownsName ||
           caps?.taskState === "wonNeedsRegister" ||
-          caps?.taskState === "lostNeedsRedeem" ? (
+          caps?.taskState === "lostNeedsRedeem" ||
+          caps?.taskState === "lostUnrevealed" ||
+          caps?.taskState === "closedResultUnknown" ? (
             <div className="bg-blue-50 border border-blue-200 rounded p-3">
               <div className="font-medium text-blue-900 mb-2">
                 {summary?.nextActionLabel ?? guide.title}
@@ -786,7 +806,7 @@ export function NameActionsModal({
                 </div>
               ) : null}
             </div>
-          ) : badge.phase === "CLOSED" ? (
+          ) : badge.phase === "CLOSED" && !noTaskReason ? (
             <div className="bg-blue-50 border border-blue-200 rounded p-3">
               <div className="font-medium text-blue-900 mb-2">Name details</div>
               <div className="text-sm text-gray-700">
@@ -799,6 +819,15 @@ export function NameActionsModal({
             </div>
           ) : null)}
 
+        {!isLoading && !isError && noTaskReason && (
+          <div
+            className="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded p-3"
+            data-testid="no-task-reason"
+          >
+            {noTaskReason}
+          </div>
+        )}
+
         <NameBidsPanel
           name={name}
           profileId={profile?.id ?? null}
@@ -806,10 +835,12 @@ export function NameActionsModal({
           suppressEmptyHint={biddingNotOpenYet}
         />
 
-        {/* A bid this wallet placed in an EARLIER auction of this name whose
-            lockup is stranded. The bids panel above is scoped to the current
-            auction, so without this the coin is simply missing from the UI
-            with nothing to explain where the money went. */}
+        {/* A bid this wallet placed in an auction of this name that is over —
+            an earlier one of a name auctioned again, or the lapsed one of a
+            name that expired — whose lockup is stranded: never revealed, or
+            revealed and never redeemed or registered. The bids panel above is
+            scoped to the current auction, so without this the coin is simply
+            missing from the UI with nothing to explain where the money went. */}
         {(caps?.strandedBidCount ?? 0) > 0 && (
           <div
             className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
@@ -817,13 +848,27 @@ export function NameActionsModal({
           >
             <span className="font-semibold">
               {caps!.strandedBidCount === 1
-                ? "1 bid from an earlier auction of this name"
-                : `${caps!.strandedBidCount} bids from earlier auctions of this name`}
+                ? "1 bid of yours from an auction that is over"
+                : `${caps!.strandedBidCount} bids of yours from auctions that are over`}
             </span>{" "}
             {formatHnsShort(caps!.strandedLockupDoos ?? 0)} HNS is still locked in{" "}
-            {caps!.strandedBidCount === 1 ? "it" : "them"}. That auction closed without a reveal,
-            and a bid can only be revealed while its own auction is running — so the lockup cannot
-            be recovered.
+            {caps!.strandedBidCount === 1 ? "it" : "them"}. A bid can be revealed, and a reveal
+            redeemed or registered, only while its own auction is the name's current one. That
+            auction has ended, so the lockup cannot be recovered.
+          </div>
+        )}
+
+        {/* Our coins of an auction that is over that no node could be asked
+            about (offline, or a node that did not answer): whether a lockup
+            was lost is not known, which is not the same as nothing stranded.
+            A neutral line, never a loss verdict. */}
+        {(caps?.strandedUncheckedCount ?? 0) > 0 && (
+          <div
+            className="text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded p-2"
+            data-testid="stranded-unchecked"
+          >
+            Some of your bids on this name could not be checked — sync with your node to see whether
+            a lockup was lost.
           </div>
         )}
 

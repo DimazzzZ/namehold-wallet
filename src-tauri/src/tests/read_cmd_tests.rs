@@ -492,7 +492,7 @@ fn add_draft(
     let summary = serde_json::json!({ "name": name }).to_string();
     db::queries::insert_tx_draft(conn, id, profile, action, "00", "[]", &summary).unwrap();
     if status != "draft" {
-        db::queries::update_tx_draft_status(conn, id, status, None, None).unwrap();
+        db::queries::update_tx_draft_status(conn, id, status.parse().unwrap(), None, None).unwrap();
     }
 }
 
@@ -1273,6 +1273,51 @@ async fn read_name_bids_shows_nothing_when_the_name_has_no_open_auction() {
     );
 }
 
+/// An expired name, by the node's word (`getnameinfo` → `info: null`), has no
+/// auction to list bids of — the same reading the capabilities give it
+/// (`AuctionScope::Lapsed`), where our bids of it are a stranded lockup. An
+/// explorer that still reports the lapsed auction's bids must not put ours
+/// back in the panel as bids of a live one.
+#[tokio::test]
+async fn read_name_bids_lists_nothing_for_a_name_the_node_reports_expired() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(r#"{"result":{"start":{"reserved":false,"week":17,"start":34},"info":null},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _explorer = server
+        .mock("GET", "/api/names/expired")
+        .with_status(200)
+        .with_body(
+            r#"{"name":"expired","state":"CLOSED","highest":2000000,
+                "bids":[{"txid":"txOurs","index":0,"lockup":2000000}]}"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+    db::queries::insert_bid_commitment(
+        &conn, "W1", "expired", "aabb", "addr", 0, 0, 1_000_000, 2_000_000, "nonce", "blind1",
+    )
+    .unwrap();
+    db::queries::set_bid_txid(&conn, "W1", "blind1", "txOurs").unwrap();
+
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "expired".into(), Some("W1".into()))
+        .await
+        .unwrap();
+    let bids = val["bids"].as_array().expect("bids array");
+    assert!(bids.is_empty(), "an expired name lists no bids: {val}");
+    assert_eq!(val["myBidCount"], 0);
+}
+
 #[tokio::test]
 async fn read_name_bids_shows_only_the_current_auctions_bids() {
     let mut server = mockito::Server::new_async().await;
@@ -1309,6 +1354,155 @@ async fn read_name_bids_shows_only_the_current_auctions_bids() {
     assert_eq!(bids.len(), 1, "only the current auction's bid: {val}");
     assert_eq!(bids[0]["txid"], "txThisAuction");
     assert_eq!(bids[0]["lockup"], 250_000_000);
+}
+
+/// A profile on regtest whose node is `node_url` and whose explorer is
+/// `explorer_url`, with our bid on `name` (txid "txOurs", blind "blind1")
+/// placed in the auction that opened at 111, and the tracked row caching the
+/// node's `getnameinfo` reply `cached`.
+fn our_old_auction_bid(
+    node_url: &str,
+    explorer_url: &str,
+    name: &str,
+    cached: &str,
+) -> rusqlite::Connection {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", node_url).unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", explorer_url).unwrap();
+    db::queries::insert_bid_commitment(
+        &conn, "W1", name, "aabb", "addr", 0, 0, 1_000_000, 2_000_000, "nonce", "blind1",
+    )
+    .unwrap();
+    db::queries::set_bid_txid(&conn, "W1", "blind1", "txOurs").unwrap();
+    db::queries::set_auction_heights(&conn, "W1", "blind1", 111, 132).unwrap();
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, height, raw_json)
+         VALUES ('W1', ?1, '', 'CLOSED', 900, ?2)",
+        rusqlite::params![name, cached],
+    )
+    .unwrap();
+    conn
+}
+
+async fn mock_explorer_with_our_bid(server: &mut mockito::Server, name: &str) -> mockito::Mock {
+    server
+        .mock("GET", format!("/api/names/{name}").as_str())
+        .with_status(200)
+        .with_body(format!(
+            r#"{{"name":"{name}","state":"BIDDING","highest":2000000,
+                "bids":[{{"txid":"txOurs","index":0,"lockup":2000000}},
+                        {{"txid":"txTheirs","index":0,"lockup":3000000}}]}}"#
+        ))
+        .create_async()
+        .await
+}
+
+/// With no node to ask, the bids panel reads the auction off the cached
+/// `getnameinfo` reply, as the capabilities do: a name cached as expired
+/// (`info: null`) lists no bids, so our bid of the lapsed auction is not
+/// shown as ours while the capabilities count it only as a stranded
+/// candidate.
+#[tokio::test]
+async fn read_name_bids_offline_lists_nothing_for_a_name_cached_as_expired() {
+    let mut server = mockito::Server::new_async().await;
+    let _explorer = mock_explorer_with_our_bid(&mut server, "expired").await;
+    let conn = our_old_auction_bid(
+        "http://127.0.0.1:1",
+        &server.url(),
+        "expired",
+        r#"{"info":null}"#,
+    );
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "expired".into(), Some("W1".into()))
+        .await
+        .unwrap();
+    assert!(
+        val["bids"].as_array().expect("bids array").is_empty(),
+        "an expired name lists no bids offline: {val}"
+    );
+    assert_eq!(val["myBidCount"], 0);
+}
+
+/// Offline on a name auctioned again (the cache says the live auction opened
+/// at 900), the explorer's bids are matched against this auction's
+/// commitments only: our bid of the auction at 111 is not "mine" here.
+#[tokio::test]
+async fn read_name_bids_offline_marks_only_this_auctions_bids_as_ours() {
+    let mut server = mockito::Server::new_async().await;
+    let _explorer = mock_explorer_with_our_bid(&mut server, "again").await;
+    let conn = our_old_auction_bid(
+        "http://127.0.0.1:1",
+        &server.url(),
+        "again",
+        r#"{"info":{"name":"again","height":900,"state":"BIDDING"}}"#,
+    );
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "again".into(), Some("W1".into()))
+        .await
+        .unwrap();
+    let bids = val["bids"].as_array().expect("bids array");
+    assert_eq!(bids.len(), 2, "the explorer's bids are listed: {val}");
+    assert!(bids.iter().all(|b| b["mine"] == false), "{val}");
+    assert_eq!(val["myBidCount"], 0);
+}
+
+/// The node is ready but the scanner is behind, so the explorer serves the
+/// bids: the node's live auction (900) scopes the commitments there too, so
+/// our bid of the earlier auction is not marked as ours.
+#[tokio::test]
+async fn read_name_bids_scanner_behind_marks_only_this_auctions_bids_as_ours() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(r#"{"result":{"info":{"name":"behind","height":900,"state":"BIDDING"}},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _explorer = mock_explorer_with_our_bid(&mut server, "behind").await;
+    let conn = our_old_auction_bid(&server.url(), &server.url(), "behind", "{}");
+    conn.execute(
+        "UPDATE chain_scan_cursor SET last_height = 100 WHERE network = 'regtest'",
+        [],
+    )
+    .unwrap();
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "behind".into(), Some("W1".into()))
+        .await
+        .unwrap();
+    let bids = val["bids"].as_array().expect("bids array");
+    assert_eq!(bids.len(), 2, "served by the explorer: {val}");
+    assert!(bids.iter().all(|b| b["mine"] == false), "{val}");
+    assert_eq!(val["myBidCount"], 0);
+}
+
+/// The node is ready but does not answer `getnameinfo`: the cached reply
+/// decides, as it does for the capabilities, and a name cached as expired
+/// lists no bids.
+#[tokio::test]
+async fn read_name_bids_node_error_reads_the_cached_expiry() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_status(500)
+        .create_async()
+        .await;
+    let _explorer = mock_explorer_with_our_bid(&mut server, "gone").await;
+    let conn = our_old_auction_bid(&server.url(), &server.url(), "gone", r#"{"info":null}"#);
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "gone".into(), Some("W1".into()))
+        .await
+        .unwrap();
+    assert!(
+        val["bids"].as_array().expect("bids array").is_empty(),
+        "{val}"
+    );
+    assert_eq!(val["myBidCount"], 0);
 }
 
 // ---------------------------------------------------------------------------

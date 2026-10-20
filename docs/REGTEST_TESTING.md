@@ -223,12 +223,16 @@ The following scenarios must be validated against a running regtest node to conf
 
 ### Scenario 4: Missed Reveal (simulated)
 
+A bid that is never revealed loses its whole lockup: it cannot be redeemed. In hsd 8.0.0 a BID coin can only be spent by a REVEAL (`lib/covenants/rules.js`, `verifyCovenants`: "Bid has to go to a reveal"), a REVEAL is accepted only while the name is in the REVEAL phase (`lib/blockchain/chain.js`, `verifyCovenants`: `bad-reveal-state`), and a REDEEM spends only a REVEAL output ("Reveal has to go to a REGISTER, or a REDEEM" in `rules.js`). Once the reveal window closes, the BID coin stays unspent for good and nothing can move it.
+
 | Step | Action | Expected Result |
 |------|--------|----------------|
-| 1 | Open a name and bid | BID tx broadcasted |
-| 2 | Mine through REVEAL phase without revealing | Phase transitions to CLOSED |
-| 3 | Verify task state is `lostNeedsRedeem` | `canRedeem` is `true`; bid lockup still reclaimable |
-| 4 | Redeem the lockup | Lockup value returned to wallet |
+| 1 | Open a name and bid; have another wallet bid and reveal (with no reveal at all the auction lapses: see the variant below) | BID txs broadcasted |
+| 2 | Mine through REVEAL phase without revealing yours | Phase transitions to CLOSED |
+| 3 | Check the name's capabilities | Task state is `lostUnrevealed` ("Lost — Not Revealed"), not `lostNeedsRedeem`, `ownedNoUrgentAction` or `closedResultUnknown` (the reading without a synced node); `canRedeem` is `false` with "no unspent reveal coin to redeem" |
+| 4 | Check the bid's coin on the node | The BID output is still unspent and no transaction the wallet can build spends it: the lockup is lost |
+
+Variant, nobody reveals: hsd expires a name nobody revealed in as soon as it closes (`lib/covenants/namestate.js`, `isExpired`: "If nobody revealed their bids, start over"), and `getnameinfo` answers `info: null`. The name reads `AVAILABLE` ("Available to Open"), and the guided panel names the bid's lockup as stranded, with its amount, once the node confirms the BID coin is still unspent; Reveal and Redeem are not offered. Pinned live by `live_bid_of_an_auction_nobody_revealed_is_a_stranded_lockup`.
 
 ### Backend Capability Verification
 
@@ -237,7 +241,7 @@ Run the following command to validate the capability model:
 cd src-tauri && cargo test -- auction_capabilities
 ```
 
-Expected: 25 tests pass covering all task-state derivations and next-action mappings.
+Expected: 55 tests pass covering all task-state derivations and next-action mappings.
 
 ### Full Backend Test Suite
 
@@ -369,6 +373,16 @@ HNS_IT_NOINDEX_NODE_URL=http://127.0.0.1:24037 HNS_IT_NOINDEX_NODE_API_KEY=test 
 | `live_watch_only_send_refused` | Watch-only profile → `build_send_hns_draft` refuses |
 | `live_write_capability_downgrades` | Node reachable + local + signer unlocked → `can_write`; flip to Explorer → refused |
 
+### Address window (gap limit)
+
+| Test | Asserts |
+|------|---------|
+| `live_sync_grows_the_address_window_for_a_second_profile` | Coins mined to receive `gap-1`, `gap+5`, `2*gap+3` and change `gap-1`, `gap+2` of a fresh account; a second profile of the seed with the restore window `[0, gap)` tracks exactly hsd's coins at them after one node sync |
+| `live_sync_grows_the_address_window_past_a_spent_address` | A coin at receive `gap+3` is swept away (hsd: no coin, two transactions of history), then coins are mined to receive `gap-1` and `2*gap+3`; the second profile reaches `2*gap+3` only through `gap+3`'s history (needs `--index-tx`), and tracks exactly hsd's two coins |
+| `live_sync_grows_the_address_window_to_a_name_for_a_second_profile` | A name the first profile won, registered and moved (TRANSFER, FINALIZE) to its receive `gap+5`, with a coin at receive `gap-1`; the second profile, with the restore window `[0, gap)`, after one node sync and the node's name discovery lists the name through `read_names` and tracks the owner coin hsd names |
+
+The window's growth from the explorer (SPV, or a node that is not authoritative) has no live test here: there is no regtest explorer to run it against. It is covered by mocked-explorer tests in `commands::sync::address_window_tests`.
+
 ## Shakedex purchases against the CLI
 
 These are manual checks that Namehold buys from the real shakedex CLI and meets it as the other party (spec R30, Namehold-buys half, and the R7/R10/R13 chain paths). They are not part of CI: each test is skipped while `HNS_IT_SHAKEDEX` is unset or empty.
@@ -400,9 +414,10 @@ What the tests check:
 - `shakedex_finalize_from_another_device_is_a_restored_lock` (no CLI) — a copy of the wallet's database, as another device restored from the same recovery phrase, Finalize & signs and mines the FINALIZE; the first wallet's listing, still ReadyToFinalize, becomes a Restored lock with that FINALIZE's lock outpoint, read from hsd's owner coin.
 - `shakedex_namehold_listing_sold_to_the_cli_is_sold` — the CLI's hsd wallet buys our exported Buy Now; hsd's owner is the fill's TRANSFER out of our lock, the fill pays our payment address the price, and after a sync the listing is Sold with the fill's txid; the fill's block invalidated, the lock coin is a coin again and the listing Listed; the fill handed back, SalePending with the owner still the lock coin; mined again, Sold.
 - `shakedex_listed_lock_expires_with_its_name` (no CLI) — a Listed lock's name is mined to hsd's `renewalPeriodEnd` (the FINALIZE into the lock's block plus the renewal window) to an address no profile derives: one block before, the listing stays Listed; at it hsd reports no live name while the lock coin is still a coin, and the listing is Expired. The blocks are taken back out, by a guard even if the test panics.
-- `shakedex_restore_lock_by_name_after_a_fresh_profile` (no CLI) — a fresh profile from the same phrase and account, with a restore's address window, restores the Listed lock by name, as hsd's owner coin, a FINALIZE at the lock address derived from the phrase; a second restore is refused; the first device's saved file, imported after a sync, makes it Listed with that file's payment address. The payment address sits inside the default gap, so the test does not exercise the known restore-window gap (spec R21 and §5: the window is never extended, and a payment address reserved past it is refused until it is); that case is not tested live.
+- `shakedex_restore_lock_by_name_after_a_fresh_profile` (no CLI) — a fresh profile from the same phrase and account, with a restore's address window, restores the Listed lock by name, as hsd's owner coin, a FINALIZE at the lock address derived from the phrase; a second restore is refused; the first device's saved file, imported after a sync, makes it Listed with that file's payment address. The payment address sits inside the default gap; the window's growth past it is tested by `live_sync_grows_the_address_window_for_a_second_profile`.
 - `shakedex_restored_lock_by_name_bought_is_sold` (no CLI) — a fresh profile from the same phrase restores the Listed lock by name, so it knows no payment address; a Namehold buyer buys the first device's file: in the mempool (lock coin hsd's 404, owner still the lock coin) the restored lock stays Restored, and once mined (owner the purchase's TRANSFER out of the lock, linked from the stored outpoint) it is Sold with the purchase's txid.
 - `shakedex_cancel_mined_brings_the_name_home` (no CLI) — Namehold cancels its Listed listing: once mined, hsd's owner is the cancel's TRANSFER, spending the lock coin, staying at the lock address and committing to the listing's reserved cancel address, and the listing awaits its finalize with the lockup counted down; the cancel's FINALIZE is refused one block before the lockup ends and built at it; once mined, hsd's owner is that FINALIZE, spending the cancel's TRANSFER, at our cancel address with no transfer in progress, and the listing is Cancelled.
+- `shakedex_cancelled_listing_follows_a_reorg_of_its_finalize_home` (no CLI) — Namehold cancels its Listed listing and finalizes the name home: Cancelled, hsd's owner our FINALIZE. The FINALIZE's block is taken out with `invalidateblock` (which empties the mempool, so the FINALIZE is in no block and no mempool) while the cancel's TRANSFER stays mined and is hsd's owner again; after a sync the listing awaits its finalize again, the lockup counted (over) and no FINALIZE draft linked. Finalize home is built again from the app and mined, and the listing is Cancelled with the new FINALIZE the owner at our cancel address; one more block and `reconsiderblock` leave the chain on the new FINALIZE. A deeper reorg then takes the cancel's block out: hsd names the lock coin the owner again and the listing is Cancelling after a sync; the cancel sent again and mined, it awaits its finalize, and finalized home a third time it is Cancelled. A panic after an `invalidateblock` still reconsiders the block (`ReconsiderOnPanic`).
 - `shakedex_cli_purchase_beats_our_cancel` — our cancel is signed while the listing is Listed, then the CLI's hsd wallet buys the exported file. The fill's block is taken out with `invalidateblock` (which empties the mempool), the fill is sent back by hand so it sits in the mempool, and only then is our cancel broadcast: the broadcast says "did not take", while hsd's `sendrawtransaction` still answers the cancel with its txid. A block mines the fill again and `reconsiderblock` clears the invalid mark (no reorg). hsd shows the fill as the owner, spending the lock coin and paying our payment address the price, and the cancel in no block and no mempool; after a sync the listing is Sold with the fill's txid, the cancel draft is dropped by the listing job with its reason, and its coins are free again.
 - `shakedex_purchase_replacing_our_mined_cancel_is_sold` — our cancel is broadcast and mined, and after the tracker and a sync the listing awaits its finalize with the cancel draft `confirmed` and still holding its fee coins. The cancel's block is taken out with `invalidateblock` (which empties the mempool, so the cancel is in no block and no mempool), the CLI's hsd wallet fills the exported file into a block in its place, one more block makes that chain the longer one, and `reconsiderblock` clears the invalid mark (no reorg). hsd shows the purchase's TRANSFER as the owner, spending the lock coin and paying our payment address the price, and the cancel in no block and no mempool; after a sync, with the tracker not run so the draft still says `confirmed`, the listing job makes the listing Sold with the purchase's txid, clears the cancel's finalize fields, drops the cancel draft with its reason and frees its coins, which hsd still has as coins.
 - `shakedex_lowered_price_is_bought_by_the_cli_at_the_lower_price` — a Listed Buy Now at 5 HNS is lowered to 3 HNS; the exported file carries both steps, the CLI's hsd wallet fills it, and the mined fill spends the lock coin and pays our payment address exactly 3 HNS (the CLI takes the cheapest step valid at the median time); after a sync the listing is Sold with the fill's txid.

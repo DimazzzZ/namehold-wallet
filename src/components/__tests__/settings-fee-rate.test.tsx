@@ -12,7 +12,6 @@ import { screen, waitFor, fireEvent } from "@testing-library/react";
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
-vi.mock("@tauri-apps/plugin-fs", () => ({ readTextFile: vi.fn(), writeTextFile: vi.fn() }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn(),
   readText: vi.fn().mockResolvedValue(""),
@@ -58,7 +57,7 @@ describe("Settings — Fee rate override", () => {
 
     // Error message should appear
     await waitFor(() => {
-      expect(screen.getByText(/Fee rate must be a whole number/i)).toBeInTheDocument();
+      expect(screen.getByTestId("settings-fee-rate-error")).toBeInTheDocument();
     });
   });
 
@@ -70,14 +69,14 @@ describe("Settings — Fee rate override", () => {
     fireEvent.change(input, { target: { value: "abc" } });
 
     // Error appears
-    await screen.findByText(/Fee rate must be a whole number/i);
+    await screen.findByTestId("settings-fee-rate-error");
 
     // Change to valid value
     fireEvent.change(input, { target: { value: "4000" } });
 
     // Error should disappear
     await waitFor(() => {
-      expect(screen.queryByText(/Fee rate must be a whole number/i)).not.toBeInTheDocument();
+      expect(screen.queryByTestId("settings-fee-rate-error")).not.toBeInTheDocument();
     });
   });
 
@@ -88,13 +87,13 @@ describe("Settings — Fee rate override", () => {
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "not-a-number" } });
 
-    await screen.findByText(/Fee rate must be a whole number/i);
+    await screen.findByTestId("settings-fee-rate-error");
 
     // Trigger dirty state by changing another field
     fireEvent.click(await screen.findByTestId("autostart-hsd-checkbox"));
 
     // Save button should be disabled
-    const saveBtn = await screen.findByRole("button", { name: /Save settings/i });
+    const saveBtn = await screen.findByTestId("settings-save");
     expect(saveBtn).toBeDisabled();
   });
 
@@ -106,7 +105,7 @@ describe("Settings — Fee rate override", () => {
     fireEvent.change(input, { target: { value: "4000" } });
 
     // Save button should be enabled
-    const saveBtn = await screen.findByRole("button", { name: /Save settings/i });
+    const saveBtn = await screen.findByTestId("settings-save");
     expect(saveBtn).toBeEnabled();
   });
 
@@ -117,7 +116,7 @@ describe("Settings — Fee rate override", () => {
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "3500" } });
 
-    const saveBtn = await screen.findByRole("button", { name: /Save settings/i });
+    const saveBtn = await screen.findByTestId("settings-save");
     fireEvent.click(saveBtn);
 
     await waitFor(() => {
@@ -140,9 +139,9 @@ describe("Settings — Fee rate override", () => {
     fireEvent.change(input, { target: { value: "" } });
 
     // No error should appear for empty input
-    expect(screen.queryByText(/Fee rate must be a whole number/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-fee-rate-error")).not.toBeInTheDocument();
 
-    const saveBtn = await screen.findByRole("button", { name: /Save settings/i });
+    const saveBtn = await screen.findByTestId("settings-save");
     fireEvent.click(saveBtn);
 
     await waitFor(() => {

@@ -143,6 +143,13 @@ pub struct SyncStatus {
     /// Reset to `false` automatically on the next `start_full_sync` (which does
     /// `*s = SyncStatus::default()`).
     pub cancel_requested: bool,
+    /// Raised by the run's heartbeat ([`spawn_lock_heartbeat`]) when another
+    /// process took this profile's sync lock over. Not the user's Stop
+    /// (`cancel_requested`): the run stops the same way, logs why and ends on
+    /// the `lock_lost` step ([`finish_run`]). Not sent to the UI; the step and
+    /// its label say it. A fresh flag with every `SyncStatus::default()`.
+    #[serde(skip)]
+    pub lock_lost: crate::db::sync_lock::LockLost,
 }
 
 impl Default for SyncStatus {
@@ -166,9 +173,14 @@ impl Default for SyncStatus {
             discover_current_name: String::new(),
             waiting: false,
             cancel_requested: false,
+            lock_lost: crate::db::sync_lock::LockLost::default(),
         }
     }
 }
+
+/// The label of a run that stopped because another process took its sync
+/// lock over ([`SyncStatus::lock_lost`]).
+pub const LOCK_LOST_LABEL: &str = "Sync stopped: another process took over this profile's sync";
 
 // ---------------------------------------------------------------------------
 // Orchestrated sync — runs in a bg thread via `start_full_sync`
@@ -356,8 +368,13 @@ pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::V
             // both processes write the same profile — the corruption the lock
             // exists to prevent).
             let hb_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let hb_handle =
-                spawn_lock_heartbeat(db_path.clone(), profile_id.clone(), hb_stop.clone());
+            let lock_lost = status.lock().await.lock_lost.clone();
+            let hb_handle = spawn_lock_heartbeat(
+                db_path.clone(),
+                profile_id.clone(),
+                hb_stop.clone(),
+                lock_lost,
+            );
 
             // Run the shared sync steps (also used by the daemon).
             run_sync_steps(&status, &db_path, &profile_id, SyncCaller::App).await;
@@ -366,20 +383,7 @@ pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::V
             hb_stop.store(true, std::sync::atomic::Ordering::SeqCst);
             let _ = hb_handle.join();
 
-            // Done — but if either step observed a cancellation request, report
-            // the run as cancelled rather than complete.
-            {
-                let mut s = status.lock().await;
-                if s.cancel_requested {
-                    s.step = "cancelled".into();
-                    s.progress_label = "Sync stopped".into();
-                } else {
-                    s.step = "done".into();
-                    s.progress_label = "Sync complete".into();
-                }
-                s.running = false;
-                s.finished_at = Some(format!("{:?}", std::time::SystemTime::now()));
-            }
+            finish_run(&status).await;
             // Task 11 review, Finding 2: stamp `last_explorer_sync_at` once,
             // OUTSIDE the per-name repair/discover loops and their windowed
             // convergence/memo/cancel/backoff logic entirely (see the
@@ -396,6 +400,37 @@ pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::V
     });
 
     Ok(serde_json::json!({"started": true}))
+}
+
+/// The end of an app run: its terminal step and label. A run whose sync lock
+/// was taken over ends on `lock_lost` ([`LOCK_LOST_LABEL`]), one the user
+/// stopped on `cancelled`, any other on `done`.
+pub(crate) async fn finish_run(status: &Arc<Mutex<SyncStatus>>) {
+    let mut s = status.lock().await;
+    if s.lock_lost.is_lost() {
+        s.step = "lock_lost".into();
+        s.progress_label = LOCK_LOST_LABEL.into();
+    } else if s.cancel_requested {
+        s.step = "cancelled".into();
+        s.progress_label = "Sync stopped".into();
+    } else {
+        s.step = "done".into();
+        s.progress_label = "Sync complete".into();
+    }
+    s.running = false;
+    s.finished_at = Some(format!("{:?}", std::time::SystemTime::now()));
+}
+
+/// Whether the run must stop before `next` because another process took its
+/// sync lock over ([`SyncStatus::lock_lost`]); logs it when so.
+fn stop_for_lost_lock(lock: &crate::db::sync_lock::LockLost, profile_id: &str, next: &str) -> bool {
+    let lost = lock.is_lost();
+    if lost {
+        eprintln!(
+            "sync: the sync lock of {profile_id} was taken over by another process; stopping before {next}"
+        );
+    }
+    lost
 }
 
 /// Who runs [`run_sync_steps`].
@@ -425,7 +460,9 @@ impl SyncCaller {
 /// never drift apart on which steps to run or when to skip them.
 ///
 /// Steps:
-/// 1. Node UTXO sync (always attempted).
+/// 1. Node UTXO sync (always attempted). When the node is not authoritative,
+///    the address window then grows from the explorer
+///    ([`explorer_window_step`]), so the explorer reads below cover it.
 /// 2. Repair owned names — explorer path only (skipped when the node is
 ///    authoritative, since Step 1 already refreshed coins from the node).
 /// 3. Discover new names — node path when authoritative, explorer path otherwise.
@@ -440,6 +477,11 @@ impl SyncCaller {
 /// UI polls them) and may rebroadcast a missing purchase; the daemon has no
 /// UI, uses a throwaway status only to satisfy the step function signatures,
 /// and never broadcasts.
+///
+/// A run whose sync lock another process took over
+/// ([`SyncStatus::lock_lost`]) stops before its next step, and inside the
+/// node step and the market jobs before their next round, write or listing:
+/// the process that took the lock syncs the profile.
 pub async fn run_sync_steps(
     status: &Arc<Mutex<SyncStatus>>,
     db_path: &str,
@@ -447,6 +489,8 @@ pub async fn run_sync_steps(
     caller: SyncCaller,
 ) {
     let report_progress = caller == SyncCaller::App;
+    let lock = status.lock().await.lock_lost.clone();
+    let lost = |next: &str| stop_for_lost_lock(&lock, profile_id, next);
     // Determine node mode from settings.
     let node_mode = open_conn(db_path)
         .ok()
@@ -469,7 +513,10 @@ pub async fn run_sync_steps(
     if node_mode.is_spv() {
         let _spv_ok = crate::commands::sync_spv::sync_spv_step(db_path, profile_id).await;
     } else {
-        let _node_ok = sync_node_step(db_path, profile_id).await;
+        let _node_ok = sync_node_step(db_path, profile_id, &lock).await;
+    }
+    if lost("the node readiness check") {
+        return;
     }
 
     // Is the node authoritative (connected AND fully synced)? When it is,
@@ -517,7 +564,28 @@ pub async fn run_sync_steps(
         }
     };
 
+    // The explorer reads below cover only the stored addresses: grow the
+    // window from the explorer first, so they cover the addresses past it in
+    // this sync. A node that is authoritative already grew it (Step 1).
+    if !node_authoritative {
+        if lost("the address window") {
+            return;
+        }
+        if report_progress {
+            let mut s = status.lock().await;
+            s.step = "window".into();
+            s.progress_label = "Looking for addresses past the last used one…".into();
+        }
+        // The user's Stop skips it, as it ends the explorer steps below.
+        if !stopped(status).await {
+            explorer_window_step(status, db_path, profile_id).await;
+        }
+    }
+
     // Step 2: Repair owned names from inventory + tracked (explorer only).
+    if lost("the repair step") {
+        return;
+    }
     if report_progress {
         let mut s = status.lock().await;
         s.step = "repair".into();
@@ -533,6 +601,9 @@ pub async fn run_sync_steps(
 
     // Step 3: Minimal explorer discovery (skipped when the node is synced —
     // node-backed discovery runs in Step 1 / node_discover_step).
+    if lost("the discover step") {
+        return;
+    }
     if report_progress {
         let mut s = status.lock().await;
         s.step = "discover".into();
@@ -553,8 +624,14 @@ pub async fn run_sync_steps(
     // another network or SPV would report a mined purchase as unknown and get
     // it rebroadcast or declared lost. Best-effort, like the steps above.
     if node_authoritative {
+        if lost("the Shakedex purchases") {
+            return;
+        }
         crate::shakedex_jobs::refresh_purchases_step(db_path, profile_id, caller.rebroadcast())
             .await;
+        if lost("the Shakedex listings") {
+            return;
+        }
         // R19, R22: every listing's state from chain facts — before the
         // FINALIZE into the lock (Aborted, Expired, ReadyToFinalize,
         // Restored) and after it (Listed, SalePending, Sold). Reads the node
@@ -565,29 +642,45 @@ pub async fn run_sync_steps(
         // mainnet only. Each reads the node and writes to the market and the
         // listing's market bookkeeping only: no key, no signature, no send —
         // the daemon runs them as the app does (SECURITY.md, "The daemon
-        // never signs or broadcasts").
-        crate::shakedex_jobs::publish_listings_step(db_path, profile_id).await;
+        // never signs or broadcasts"). Each stops before its next listing
+        // once the lock is lost.
+        crate::shakedex_jobs::publish_listings_step(db_path, profile_id, &lock).await;
         // R24 (T8): a reverse auction's copy on the market follows its
         // schedule: the current step uploaded once it moves. Same contract
         // as the two around it: no key, no signature, no send.
-        crate::shakedex_jobs::advance_reverse_auctions_step(db_path, profile_id).await;
-        crate::shakedex_jobs::keep_listed_step(db_path, profile_id).await;
+        crate::shakedex_jobs::advance_reverse_auctions_step(db_path, profile_id, &lock).await;
+        crate::shakedex_jobs::keep_listed_step(db_path, profile_id, &lock).await;
     }
 }
 
 /// Spawn a background thread that refreshes the sync lock's heartbeat.
 ///
 /// Used by [`start_full_sync`] to keep the app's lock from going stale during
-/// a long sync run. The daemon has an equivalent heartbeat spawner for the
-/// same reason. Both refresh every [`crate::daemon::HEARTBEAT_INTERVAL_SECS`].
+/// a long sync run, and by the daemon for its own runs. Both refresh every
+/// [`crate::daemon::HEARTBEAT_INTERVAL_SECS`]. When a refresh finds the lock
+/// is no longer ours (another process took it over), it raises `lock_lost`,
+/// which stops the run ([`run_sync_steps`]), and refreshes no more.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn spawn_lock_heartbeat(
     db_path: String,
     profile_id: String,
     stop: Arc<std::sync::atomic::AtomicBool>,
+    lock_lost: crate::db::sync_lock::LockLost,
+) -> std::thread::JoinHandle<()> {
+    let interval = Duration::from_secs(crate::daemon::HEARTBEAT_INTERVAL_SECS);
+    spawn_lock_heartbeat_every(interval, db_path, profile_id, stop, lock_lost)
+}
+
+/// [`spawn_lock_heartbeat`] at `interval`, so a test need not wait out the
+/// production one.
+pub(crate) fn spawn_lock_heartbeat_every(
+    interval: Duration,
+    db_path: String,
+    profile_id: String,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    lock_lost: crate::db::sync_lock::LockLost,
 ) -> std::thread::JoinHandle<()> {
     use std::sync::atomic::Ordering;
-    let interval = Duration::from_secs(crate::daemon::HEARTBEAT_INTERVAL_SECS);
     std::thread::spawn(move || {
         while !stop.load(Ordering::SeqCst) {
             std::thread::sleep(interval);
@@ -595,8 +688,18 @@ pub fn spawn_lock_heartbeat(
                 break;
             }
             if let Ok(c) = open_conn(&db_path) {
-                if let Err(e) = crate::db::sync_lock::refresh_heartbeat(&c, &profile_id) {
-                    eprintln!("start_full_sync: heartbeat refresh failed for {profile_id}: {e}");
+                match crate::db::sync_lock::refresh_heartbeat(&c, &profile_id) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        eprintln!(
+                            "sync heartbeat: the sync lock of {profile_id} was taken over by another process; stopping this sync"
+                        );
+                        lock_lost.raise();
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("sync heartbeat: refresh failed for {profile_id}: {e}");
+                    }
                 }
             }
         }
@@ -664,13 +767,27 @@ fn apply_node_sync_batch(
     Ok(())
 }
 
-pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
+/// Node UTXO sync: scan the profile's addresses, apply the batch, grow the
+/// address window ([`grow_address_window`]) and apply what it found. Writes
+/// nothing more once `lock` is raised (another process took the sync lock
+/// over): the batch not yet applied is left for that process.
+pub async fn sync_node_step(
+    db_path: &str,
+    profile_id: &str,
+    lock: &crate::db::sync_lock::LockLost,
+) -> bool {
     let conn = match open_conn(db_path) {
         Ok(c) => c,
         Err(_) => return false,
     };
     let addresses = match queries::get_profile_addresses(&conn, profile_id) {
         Ok(a) => a,
+        Err(_) => return false,
+    };
+    // The settings read fails as the reads above do: no sync step, not a
+    // window grown by a gap the user did not set.
+    let gap = match queries::get_settings(&conn) {
+        Ok(s) => crate::commands::secure_wallet::gap_limit(&s),
         Err(_) => return false,
     };
     // Resolve the profile's effective node config (per-profile override ->
@@ -686,18 +803,423 @@ pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
         Err(_) => return false,
     };
 
-    let all_coins = match fetch_coins_with_guard_with_client(&client, &addresses).await {
+    let mut all_coins = match fetch_coins_with_guard_with_client(&client, &addresses).await {
         Some(coins) => coins,
         // Guard tripped: had addresses but every per-address query errored —
         // bail so the next sync retries from the same cursor (see the helper).
         None => return false,
     };
 
+    if stop_for_lost_lock(lock, profile_id, "the node sync batch") {
+        return false;
+    }
+    let mut conn = match open_conn(db_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    if apply_node_sync_batch(&mut conn, profile_id, &all_coins, height).is_err() {
+        return false;
+    }
+    drop(conn);
+
+    // Grow the address window by the gap limit and scan what it adds. Its own
+    // step after the scan above has landed: a failure here leaves that batch
+    // applied and the window as far as it got, and the next sync goes on.
+    let found = match grow_address_window(
+        &NodeHistory(&client),
+        db_path,
+        profile_id,
+        gap,
+        WindowStop::Lock(lock),
+    )
+    .await
+    {
+        Ok(found) => found,
+        Err(e) => {
+            eprintln!("sync_node_step: growing the address window of {profile_id} failed: {e}");
+            return true;
+        }
+    };
+    if stop_for_lost_lock(lock, profile_id, "the address window batch") {
+        return false;
+    }
+    if found.is_empty() {
+        return true;
+    }
+    all_coins.extend(found);
     let mut conn = match open_conn(db_path) {
         Ok(c) => c,
         Err(_) => return false,
     };
     apply_node_sync_batch(&mut conn, profile_id, &all_coins, height).is_ok()
+}
+
+/// The most rounds of [`grow_address_window`] one sync runs. Each round can
+/// move a branch's window by up to `gap` addresses, so this bounds the
+/// derivation and queries one sync spends on a long run of used addresses;
+/// the next sync goes on from where this one stopped.
+const MAX_WINDOW_ROUNDS: u32 = 50;
+
+/// What a source says of one address in [`grow_address_window`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AddressUse {
+    /// No transaction ever touched it, as far as the source knows.
+    Unused,
+    /// A transaction touched it, at `height` when the source says.
+    Used { height: Option<i64> },
+}
+
+/// How [`grow_address_window`] spaces its queries to a source.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Pacing {
+    /// Sleep before every query after the first.
+    throttle: Duration,
+    /// Sleep after a failed query.
+    backoff: Duration,
+    /// Stop asking, for this sync, after this many failures in a row.
+    give_up_after: Option<u32>,
+    /// The most rounds one sync runs with this source.
+    max_rounds: u32,
+}
+
+/// The most rounds of [`grow_address_window`] one sync runs from the
+/// explorer. The explorer is not checked against the chain, and one that
+/// lists a transaction for every address would grow each branch by the gap
+/// limit every round; five rounds bound that to `5 * gap` addresses a branch
+/// a sync (the node's [`MAX_WINDOW_ROUNDS`] would allow `50 * gap`). An
+/// honest run of used addresses longer than that goes on at the next sync,
+/// which starts from the window this one persisted.
+const EXPLORER_WINDOW_ROUNDS: u32 = 5;
+
+/// What stops [`grow_address_window`] before its next query or write.
+pub(crate) enum WindowStop<'a> {
+    /// The node sync: the sync lock taken over by another process.
+    Lock(&'a crate::db::sync_lock::LockLost),
+    /// A run with a status: the user's Stop or the lost lock ([`stopped`],
+    /// which says which in the progress label).
+    Status(&'a Arc<Mutex<SyncStatus>>),
+}
+
+impl WindowStop<'_> {
+    async fn now(&self, profile_id: &str) -> bool {
+        match self {
+            WindowStop::Lock(lock) => {
+                stop_for_lost_lock(lock, profile_id, "the next address window query or write")
+            }
+            WindowStop::Status(status) => {
+                let stop = stopped(status).await;
+                if stop {
+                    eprintln!(
+                        "sync: profile {profile_id}: stopped; the address window grows no \
+                         further this sync"
+                    );
+                }
+                stop
+            }
+        }
+    }
+}
+
+/// Where [`grow_address_window`] learns which addresses were used: the
+/// node's address index ([`NodeHistory`]) or the explorer's per-address tx
+/// lists ([`ExplorerHistory`]). The loop is the same for both.
+#[async_trait::async_trait]
+pub(crate) trait AddressHistory: Send + Sync {
+    /// Who answers, for the log.
+    fn name(&self) -> &'static str;
+    /// How to space the queries.
+    fn pacing(&self) -> Pacing;
+    /// Whether a transaction ever touched `address`.
+    async fn address_use(&self, address: &str) -> Result<AddressUse, AppError>;
+    /// The unspent coins at a newly derived address, for the caller's sync
+    /// batch; none from a source that does not list coins.
+    async fn coins(
+        &self,
+        address: &str,
+    ) -> Result<Vec<crate::noncustodial::rpc::NodeCoin>, AppError>;
+}
+
+/// The node as an [`AddressHistory`]: `GET /tx/address` for the history and
+/// `GET /coin/address` for the coins.
+///
+/// Sees only what the node indexes, and hsd answers an empty list, not an
+/// error, for what it does not index. The history needs `--index-tx` as well
+/// as `--index-address`: with the address index alone only addresses that
+/// still hold coins move the window, so a run of spent addresses longer than
+/// the gap ends it. Without `--index-address` both queries return nothing and
+/// the window does not grow.
+pub(crate) struct NodeHistory<'a>(pub &'a dyn crate::noncustodial::node_rpc::NodeRpc);
+
+#[async_trait::async_trait]
+impl AddressHistory for NodeHistory<'_> {
+    fn name(&self) -> &'static str {
+        "the node"
+    }
+
+    fn pacing(&self) -> Pacing {
+        Pacing {
+            throttle: Duration::ZERO,
+            backoff: Duration::ZERO,
+            give_up_after: None,
+            max_rounds: MAX_WINDOW_ROUNDS,
+        }
+    }
+
+    async fn address_use(&self, address: &str) -> Result<AddressUse, AppError> {
+        let txs = self.0.get_txs_by_address(address).await?;
+        Ok(match txs.first() {
+            Some(tx) => AddressUse::Used {
+                height: tx
+                    .get("height")
+                    .and_then(|h| h.as_i64())
+                    .filter(|h| *h >= 0),
+            },
+            None => AddressUse::Unused,
+        })
+    }
+
+    async fn coins(
+        &self,
+        address: &str,
+    ) -> Result<Vec<crate::noncustodial::rpc::NodeCoin>, AppError> {
+        self.0.get_coins_by_address(address).await
+    }
+}
+
+/// The explorer as an [`AddressHistory`]: an address is used when its tx
+/// list (`get_address_txids`) counts a transaction. The explorer lists no
+/// coins (SPV and explorer reads take the balance from it over the stored
+/// addresses), so [`AddressHistory::coins`] is empty, and gives no height, so
+/// an address it marks used has no first-seen height. Queries are spaced as
+/// the discover step spaces them: [`DISCOVERY_THROTTLE`] apart,
+/// [`SYNC_ERROR_BACKOFF`] after a failure, and none more this sync after
+/// [`SYNC_MAX_CONSECUTIVE_ERRORS`] failures in a row (the explorer is down or
+/// rate-limiting us).
+pub(crate) struct ExplorerHistory<'a, E>(pub &'a E);
+
+#[async_trait::async_trait]
+impl<E: crate::providers::ExplorerProvider + Sync> AddressHistory for ExplorerHistory<'_, E> {
+    fn name(&self) -> &'static str {
+        "the explorer"
+    }
+
+    fn pacing(&self) -> Pacing {
+        Pacing {
+            throttle: DISCOVERY_THROTTLE,
+            backoff: SYNC_ERROR_BACKOFF,
+            give_up_after: Some(SYNC_MAX_CONSECUTIVE_ERRORS),
+            max_rounds: EXPLORER_WINDOW_ROUNDS,
+        }
+    }
+
+    async fn address_use(&self, address: &str) -> Result<AddressUse, AppError> {
+        // One txid is enough to tell; `total` counts them all.
+        let (txids, total) = self.0.get_address_txids(address, 1, 0).await?;
+        Ok(if total > 0 || !txids.is_empty() {
+            AddressUse::Used { height: None }
+        } else {
+            AddressUse::Unused
+        })
+    }
+
+    async fn coins(
+        &self,
+        _address: &str,
+    ) -> Result<Vec<crate::noncustodial::rpc::NodeCoin>, AppError> {
+        Ok(Vec::new())
+    }
+}
+
+/// Gap-limit discovery: mark the lookahead addresses
+/// ([`crate::noncustodial::derivation::lookahead_addresses`]) that `source`
+/// says were used as used (an address whose coins were all spent has none
+/// left for a coin scan to see), grow the window
+/// ([`crate::noncustodial::derivation::extend_address_window`]), read the
+/// new addresses' coins and mark those used, and repeat until the window
+/// stops growing or the source's round cap ([`Pacing`]) is reached. Returns the coins found
+/// at the new addresses, for the caller's sync batch. A query that fails for
+/// one address leaves it unused for this sync, and the failure is logged;
+/// the window it reached is persisted, so the next sync scans it. A source
+/// that gives up after failures in a row ([`Pacing`]) ends the growth for
+/// this sync once what it found is written.
+///
+/// Each lookahead address is asked about once per sync, and on every sync
+/// while it stays unused: about `2 * gap` queries a sync.
+///
+/// Stops, asking and writing nothing more, once `stop` says so (the sync lock
+/// taken over by another process, or for a run with a status the user's
+/// Stop): checked before each round, each query and each write. What it
+/// found so far is returned; the caller applies none of it.
+pub(crate) async fn grow_address_window(
+    source: &dyn AddressHistory,
+    db_path: &str,
+    profile_id: &str,
+    gap: u32,
+    stop: WindowStop<'_>,
+) -> Result<Vec<crate::noncustodial::rpc::NodeCoin>, AppError> {
+    use crate::noncustodial::{derivation, sync as nsync};
+    let pacing = source.pacing();
+    let mut queries = 0u32;
+    let mut failures_in_a_row = 0u32;
+    let mut gave_up = false;
+    let mut found = Vec::new();
+    let mut checked: HashSet<String> = HashSet::new();
+    for _ in 0..pacing.max_rounds {
+        if gave_up || stop.now(profile_id).await {
+            break;
+        }
+        let ahead = derivation::lookahead_addresses(&open_conn(db_path)?, profile_id)?;
+        let mut with_history = Vec::new();
+        for address in ahead {
+            if !checked.insert(address.clone()) {
+                continue;
+            }
+            if queries > 0 {
+                sleep(pacing.throttle).await;
+            }
+            if stop.now(profile_id).await {
+                break;
+            }
+            queries += 1;
+            // An address the source did not answer for counts as unused this
+            // round (best effort: the window it reaches is persisted, and the
+            // next sync asks again), and the failure is logged.
+            match source.address_use(&address).await {
+                Ok(AddressUse::Used { height }) => {
+                    failures_in_a_row = 0;
+                    with_history.push((address, height));
+                }
+                Ok(AddressUse::Unused) => failures_in_a_row = 0,
+                Err(e) => {
+                    failures_in_a_row += 1;
+                    eprintln!(
+                        "sync: profile {profile_id}: no history for {address} from {} ({e}); \
+                         read as unused this sync",
+                        source.name()
+                    );
+                    if pacing.give_up_after.is_some_and(|n| failures_in_a_row >= n) {
+                        eprintln!(
+                            "sync: profile {profile_id}: {failures_in_a_row} failures in a row \
+                             from {}; the address window grows no further this sync",
+                            source.name()
+                        );
+                        gave_up = true;
+                        break;
+                    }
+                    sleep(pacing.backoff).await;
+                }
+            }
+        }
+        if stop.now(profile_id).await {
+            break;
+        }
+        let added = {
+            let conn = open_conn(db_path)?;
+            for (address, height) in &with_history {
+                nsync::mark_address_used(&conn, profile_id, address, *height)?;
+            }
+            derivation::extend_address_window(&conn, profile_id, gap)?
+        };
+        if added.is_empty() {
+            break;
+        }
+        let mut round = Vec::new();
+        for d in &added {
+            if stop.now(profile_id).await {
+                break;
+            }
+            // Best effort, as above: the new address is stored, and the next
+            // sync's coin scan reads it again; the failure is logged.
+            match source.coins(&d.address).await {
+                Ok(mut coins) => round.append(&mut coins),
+                Err(e) => eprintln!(
+                    "sync: profile {profile_id}: no coins for new address {} from {} ({e}); \
+                     the next sync reads it",
+                    d.address,
+                    source.name()
+                ),
+            }
+        }
+        if stop.now(profile_id).await {
+            break;
+        }
+        let conn = open_conn(db_path)?;
+        for coin in &round {
+            if let Some(address) = &coin.address {
+                nsync::mark_address_used(&conn, profile_id, address, coin.height)?;
+            }
+        }
+        found.extend(round);
+    }
+    Ok(found)
+}
+
+/// Grow the address window from the explorer ([`grow_address_window`] with
+/// [`ExplorerHistory`]), for a sync whose node is not authoritative (SPV, or
+/// a full node that is behind or unreachable), where balance and names are
+/// read from the explorer over the stored addresses: an address it has never
+/// derived is never read. Runs before the repair and discover steps, so they
+/// and the balance read cover the new addresses in the same sync. Best
+/// effort: no explorer for the profile's network, an unreadable setting or a
+/// failed write leaves the window as it is (logged), and the sync goes on.
+/// Stops, asking and writing nothing more, on the user's Stop or once the
+/// sync lock is lost (`status`, checked before every query).
+pub(crate) async fn explorer_window_step(
+    status: &Arc<Mutex<SyncStatus>>,
+    db_path: &str,
+    profile_id: &str,
+) {
+    let (explorer, gap) = {
+        let conn = match open_conn(db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "sync: profile {profile_id}: the address window is not grown from the \
+                     explorer: database not opened ({e})"
+                );
+                return;
+            }
+        };
+        let settings = match queries::get_settings(&conn) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "sync: profile {profile_id}: the address window is not grown from the \
+                     explorer: settings not read ({e})"
+                );
+                return;
+            }
+        };
+        // A network that cannot be read is unknown, not mainnet: no explorer
+        // is guessed for it (as in the discover step).
+        let explorer =
+            crate::commands::active_profile::profile_network_opt_from_conn(&conn, profile_id)
+                .and_then(|network| {
+                    crate::providers::explorer_client_from_settings(&settings, network)
+                });
+        (
+            explorer,
+            crate::commands::secure_wallet::gap_limit(&settings),
+        )
+    };
+    let Some(explorer) = explorer else {
+        eprintln!(
+            "sync: profile {profile_id}: no explorer for its network; the address window \
+             grows only from the node"
+        );
+        return;
+    };
+    if let Err(e) = grow_address_window(
+        &ExplorerHistory(&explorer),
+        db_path,
+        profile_id,
+        gap,
+        WindowStop::Status(status),
+    )
+    .await
+    {
+        eprintln!("sync: growing the address window of {profile_id} from the explorer failed: {e}");
+    }
 }
 
 /// Client-injected coin-fetch phase for [`sync_node_step`], with the
@@ -830,9 +1352,22 @@ const DISCOVERY_MAX_PAGES_PER_ADDRESS: u32 = 8;
 /// so a name repair just stamped this same run is not re-verified by discover.
 const DISCOVER_MEMO_HOURS: i64 = 12;
 
-/// Read the cancellation flag without holding the lock across the caller's work.
-async fn cancel_requested(status: &Arc<Mutex<SyncStatus>>) -> bool {
-    status.lock().await.cancel_requested
+/// Whether the run must stop now: the user asked to (`cancel_requested`) or
+/// another process took the sync lock over (`lock_lost`). When so, clears
+/// `waiting` and says which in the progress label. Holds the status lock only
+/// for the check, not across the caller's work.
+async fn stopped(status: &Arc<Mutex<SyncStatus>>) -> bool {
+    let mut s = status.lock().await;
+    let label = if s.lock_lost.is_lost() {
+        LOCK_LOST_LABEL
+    } else if s.cancel_requested {
+        "Sync cancelled"
+    } else {
+        return false;
+    };
+    s.waiting = false;
+    s.progress_label = label.into();
+    true
 }
 
 /// Repair owned names, looping over successive candidate windows until the whole
@@ -871,8 +1406,9 @@ pub async fn repair_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profile
 ///   abort at `SYNC_MAX_CONSECUTIVE_ERRORS`; the counter resets on any
 ///   successful check (owned OR not-owned). A whole window with zero successful
 ///   checks also aborts (belt-and-suspenders against an infinite loop).
-/// * Cancellation — `cancel_requested` is checked at the top of each window AND
-///   before each per-name check, so Stop is responsive even mid-window.
+/// * Cancellation — `cancel_requested` (and a lost sync lock, see [`stopped`])
+///   is checked at the top of each window AND before each per-name check, so
+///   Stop is responsive even mid-window.
 pub async fn repair_step_windowed(
     status: &Arc<Mutex<SyncStatus>>,
     db_path: &str,
@@ -929,10 +1465,7 @@ pub async fn repair_step_windowed(
 
     loop {
         // Cancellation is checked at the top of each window…
-        if cancel_requested(status).await {
-            let mut s = status.lock().await;
-            s.waiting = false;
-            s.progress_label = "Sync cancelled".into();
+        if stopped(status).await {
             return;
         }
 
@@ -964,10 +1497,7 @@ pub async fn repair_step_windowed(
         let mut progressed = 0u32;
         for name in &batch {
             // …and before each per-name check, so Stop is responsive mid-window.
-            if cancel_requested(status).await {
-                let mut s = status.lock().await;
-                s.waiting = false;
-                s.progress_label = "Sync cancelled".into();
+            if stopped(status).await {
                 return;
             }
             attempted.insert(name.clone());
@@ -1127,8 +1657,9 @@ async fn record_error_and_clear_waiting(status: &Arc<Mutex<SyncStatus>>, err: &A
 /// `repair_step_windowed`/`discover_step` — so it touches none of their
 /// windowed-convergence/memo/cancel/backoff logic.
 ///
-/// A run is "clean" iff it reached here with no cancellation and no
-/// aborting error: `SyncStatus.errors` is ONLY ever pushed to by
+/// A run is "clean" iff it reached here with no cancellation, its sync lock
+/// still its own (a run that lost it writes nothing more, this stamp
+/// included) and no aborting error: `SyncStatus.errors` is ONLY ever pushed to by
 /// [`record_error_and_clear_waiting`], which fires exclusively when a step
 /// aborts after `SYNC_MAX_CONSECUTIVE_ERRORS` consecutive explorer errors —
 /// so an empty `errors` here means repair + discover both ran to
@@ -1146,7 +1677,7 @@ pub async fn stamp_explorer_sync_if_clean(
 ) {
     let clean = {
         let s = status.lock().await;
-        !s.cancel_requested && s.errors.is_empty()
+        !s.cancel_requested && !s.lock_lost.is_lost() && s.errors.is_empty()
     };
     if !clean {
         return;
@@ -1216,10 +1747,7 @@ pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profi
     let mut seen_tx: HashSet<String> = HashSet::new();
     for (i, addr) in addrs.iter().enumerate() {
         // Cancellation is checked per-address (before any explorer call)…
-        if cancel_requested(status).await {
-            let mut s = status.lock().await;
-            s.waiting = false;
-            s.progress_label = "Sync cancelled".into();
+        if stopped(status).await {
             return;
         }
         // Update progress: which address we are scanning.
@@ -1231,10 +1759,7 @@ pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profi
         let mut pages = 0u32;
         loop {
             // …and per-page, so Stop is responsive even mid-crawl of a busy addr.
-            if cancel_requested(status).await {
-                let mut s = status.lock().await;
-                s.waiting = false;
-                s.progress_label = "Sync cancelled".into();
+            if stopped(status).await {
                 return;
             }
             {
@@ -1273,10 +1798,7 @@ pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profi
                 if !seen_tx.insert(txid.clone()) {
                     continue;
                 }
-                if cancel_requested(status).await {
-                    let mut s = status.lock().await;
-                    s.waiting = false;
-                    s.progress_label = "Sync cancelled".into();
+                if stopped(status).await {
                     return;
                 }
                 sleep(DISCOVERY_THROTTLE).await;
@@ -1366,10 +1888,7 @@ pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profi
     let mut discovered = 0u32;
     for name in &candidates {
         // Cancellation is checked before each per-candidate check.
-        if cancel_requested(status).await {
-            let mut s = status.lock().await;
-            s.waiting = false;
-            s.progress_label = "Sync cancelled".into();
+        if stopped(status).await {
             return;
         }
         if !seen_names.insert(name.clone()) {
@@ -1708,7 +2227,12 @@ mod db_hardening_tests {
         drop(conn);
 
         // Run sync_node_step — must bail out because every coin query errored.
-        let success = sync_node_step(db_path.to_str().unwrap(), "p1").await;
+        let success = sync_node_step(
+            db_path.to_str().unwrap(),
+            "p1",
+            &crate::db::sync_lock::LockLost::default(),
+        )
+        .await;
         assert!(
             !success,
             "sync_node_step must return false when all coin queries error"
@@ -1761,7 +2285,7 @@ mod db_hardening_tests {
     #[tokio::test]
     async fn sync_node_step_returns_false_when_conn_cannot_open() {
         let bad = unopenable_db_path();
-        let ok = sync_node_step(&bad, "p1").await;
+        let ok = sync_node_step(&bad, "p1", &crate::db::sync_lock::LockLost::default()).await;
         assert!(!ok, "sync_node_step must return false when open_conn fails");
     }
 
@@ -1888,5 +2412,739 @@ mod db_hardening_tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The address window grows by the gap limit during the node sync.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod address_window_tests {
+    use super::*;
+    use crate::noncustodial::derivation::{self, BRANCH_CHANGE, BRANCH_RECEIVE};
+    use crate::noncustodial::hd::{seed_from_mnemonic, ExtendedPrivKey, ExtendedPubKey};
+    use crate::noncustodial::network::Network;
+
+    const GAP: u32 = 3;
+
+    fn xpub() -> ExtendedPubKey {
+        let seed = seed_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+        )
+        .unwrap();
+        ExtendedPubKey::from_priv(&ExtendedPrivKey::from_seed(&seed).unwrap())
+    }
+
+    fn addr(branch: u32, index: u32) -> String {
+        derivation::derive_one(Network::Main, &xpub(), branch, index)
+            .unwrap()
+            .address
+    }
+
+    fn txid(n: u8) -> String {
+        format!("{n:02x}").repeat(32)
+    }
+
+    fn coin_body(n: u8, address: &str) -> String {
+        format!(
+            r#"[{{"hash":"{}","index":0,"value":1000000,"address":"{address}","height":90,"covenant":{{"type":0,"action":"NONE","items":[]}}}}]"#,
+            txid(n)
+        )
+    }
+
+    /// A watch-only profile restored with the window `[0, GAP)` per branch.
+    /// The chain has coins at receive 2 (inside it), receive 4 (past it, found
+    /// once receive 2 is used) and receive 7 (found only after receive 4 is),
+    /// a spent-only history at change 1 (no coin left, so only the history
+    /// marks it used) and a coin at change 3 behind it. One sync tracks every
+    /// coin: the window grows, the new addresses are scanned in the same sync,
+    /// and again until it stops growing.
+    #[tokio::test]
+    async fn one_sync_grows_the_window_and_scans_the_new_addresses() {
+        let mut server = mockito::Server::new_async().await;
+        let _info = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+            .with_body(r#"{"result":{"chain":"main","blocks":100},"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let coins = [
+            (1u8, addr(BRANCH_RECEIVE, 2)),
+            (2, addr(BRANCH_RECEIVE, 4)),
+            (3, addr(BRANCH_RECEIVE, 7)),
+            (4, addr(BRANCH_CHANGE, 3)),
+        ];
+        let mut mocks = Vec::new();
+        for (n, a) in &coins {
+            mocks.push(
+                server
+                    .mock("GET", format!("/coin/address/{a}").as_str())
+                    .with_body(coin_body(*n, a))
+                    .create_async()
+                    .await,
+            );
+        }
+        let spent_only = addr(BRANCH_CHANGE, 1);
+        mocks.push(
+            server
+                .mock("GET", format!("/tx/address/{spent_only}").as_str())
+                .with_body(format!(r#"[{{"hash":"{}","height":80}}]"#, txid(9)))
+                .create_async()
+                .await,
+        );
+        mocks.push(
+            server
+                .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+                .with_body("[]")
+                .create_async()
+                .await,
+        );
+        mocks.push(
+            server
+                .mock("GET", mockito::Matcher::Regex("^/tx/address/".into()))
+                .with_body("[]")
+                .create_async()
+                .await,
+        );
+
+        let db_path = std::env::temp_dir().join(format!(
+            "namehold_address_window_{}_{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        let xpub_str = xpub().to_base58check(Network::Main);
+        queries::insert_wallet_profile(
+            &conn,
+            "p1",
+            "Watch",
+            "watch_only_xpub",
+            "mainnet",
+            &xpub_str,
+            0,
+            true,
+        )
+        .unwrap();
+        crate::commands::secure_wallet::provision_addresses(
+            &conn,
+            "p1",
+            Network::Main,
+            &xpub_str,
+            GAP,
+        )
+        .unwrap();
+        queries::set_setting(&conn, "address_gap_limit", &GAP.to_string()).unwrap();
+        queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+        queries::set_setting(&conn, "node_rpc_api_key", "x").unwrap();
+        drop(conn);
+
+        assert!(
+            sync_node_step(
+                db_path.to_str().unwrap(),
+                "p1",
+                &crate::db::sync_lock::LockLost::default()
+            )
+            .await
+        );
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let tracked: HashSet<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT txid FROM tracked_utxos
+                     WHERE wallet_profile_id = 'p1' AND spent_by_txid IS NULL",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        let want: HashSet<String> = coins.iter().map(|(n, _)| txid(*n)).collect();
+        assert_eq!(tracked, want, "every coin of the account is tracked");
+        // The window ends GAP past the highest used index of each branch.
+        assert_eq!(
+            derivation::max_derived_index(&conn, "p1", 0, BRANCH_RECEIVE).unwrap(),
+            Some(7 + GAP)
+        );
+        assert_eq!(
+            derivation::max_derived_index(&conn, "p1", 0, BRANCH_CHANGE).unwrap(),
+            Some(3 + GAP)
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    }
+
+    /// The sync lock is taken over while the first round of window growth
+    /// scans the addresses it added (the coin at receive 4 is fetched): that
+    /// round writes nothing more, no later round runs (receive 7 is never
+    /// asked for) and the coins found are not applied. The window stays where
+    /// round one's growth left it, and only the coin of the first batch
+    /// (receive 2) is tracked.
+    #[tokio::test]
+    async fn a_lost_lock_stops_the_window_before_its_next_round() {
+        let mut server = mockito::Server::new_async().await;
+        let _info = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+            .with_body(r#"{"result":{"chain":"main","blocks":100},"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let lock = crate::db::sync_lock::LockLost::default();
+        let (r2, r4, r7) = (
+            addr(BRANCH_RECEIVE, 2),
+            addr(BRANCH_RECEIVE, 4),
+            addr(BRANCH_RECEIVE, 7),
+        );
+        let _r2 = server
+            .mock("GET", format!("/coin/address/{r2}").as_str())
+            .with_body(coin_body(1, &r2))
+            .create_async()
+            .await;
+        let raise = lock.clone();
+        let body = coin_body(2, &r4);
+        let r4_mock = server
+            .mock("GET", format!("/coin/address/{r4}").as_str())
+            .with_body_from_request(move |_| {
+                // What the heartbeat does once another process holds the lock.
+                raise.raise();
+                body.clone().into_bytes()
+            })
+            .expect(1)
+            .create_async()
+            .await;
+        let r7_mock = server
+            .mock("GET", format!("/coin/address/{r7}").as_str())
+            .expect(0)
+            .create_async()
+            .await;
+        let _rest = server
+            .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+            .with_body("[]")
+            .create_async()
+            .await;
+        let _history = server
+            .mock("GET", mockito::Matcher::Regex("^/tx/address/".into()))
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        let db_path = std::env::temp_dir().join(format!(
+            "namehold_address_window_lost_{}_{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        let xpub_str = xpub().to_base58check(Network::Main);
+        queries::insert_wallet_profile(
+            &conn,
+            "p1",
+            "Watch",
+            "watch_only_xpub",
+            "mainnet",
+            &xpub_str,
+            0,
+            true,
+        )
+        .unwrap();
+        crate::commands::secure_wallet::provision_addresses(
+            &conn,
+            "p1",
+            Network::Main,
+            &xpub_str,
+            GAP,
+        )
+        .unwrap();
+        queries::set_setting(&conn, "address_gap_limit", &GAP.to_string()).unwrap();
+        queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+        queries::set_setting(&conn, "node_rpc_api_key", "x").unwrap();
+        drop(conn);
+
+        assert!(!sync_node_step(db_path.to_str().unwrap(), "p1", &lock).await);
+
+        r4_mock.assert_async().await;
+        r7_mock.assert_async().await;
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let tracked: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT txid FROM tracked_utxos WHERE wallet_profile_id = 'p1'")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert_eq!(tracked, vec![txid(1)], "only the first batch is applied");
+        // Round one grew receive to receive 2 + GAP; receive 4 was never
+        // marked used, so no round grew it further.
+        assert_eq!(
+            derivation::max_derived_index(&conn, "p1", 0, BRANCH_RECEIVE).unwrap(),
+            Some(2 + GAP)
+        );
+        let r4_used: bool = conn
+            .query_row(
+                "SELECT used FROM derived_addresses WHERE address = ?1",
+                [&r4],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!r4_used, "round one wrote nothing once the lock was lost");
+        drop(conn);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    }
+
+    /// A file-backed DB with one mainnet watch-only profile `p1` restored with
+    /// the window `[0, GAP)` per branch, in SPV mode against an unreachable
+    /// node and the explorer at `explorer_url`.
+    fn spv_profile_db(tag: &str, explorer_url: &str) -> std::path::PathBuf {
+        let db_path = std::env::temp_dir().join(format!(
+            "namehold_address_window_{tag}_{}_{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        let xpub_str = xpub().to_base58check(Network::Main);
+        queries::insert_wallet_profile(
+            &conn,
+            "p1",
+            "Watch",
+            "watch_only_xpub",
+            "mainnet",
+            &xpub_str,
+            0,
+            true,
+        )
+        .unwrap();
+        crate::commands::secure_wallet::provision_addresses(
+            &conn,
+            "p1",
+            Network::Main,
+            &xpub_str,
+            GAP,
+        )
+        .unwrap();
+        queries::set_setting(&conn, "address_gap_limit", &GAP.to_string()).unwrap();
+        queries::set_setting(&conn, "node_mode", "spv").unwrap();
+        queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+        queries::set_setting(&conn, "explorer_api_url", explorer_url).unwrap();
+        drop(conn);
+        db_path
+    }
+
+    fn remove_db(db_path: &std::path::Path) {
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    }
+
+    /// One page of an address's txs, in the shape HNSFans answers
+    /// `/api/txs?address=` (the provider and discover tests record it).
+    fn txs_page(hashes: &[&str]) -> String {
+        let result: Vec<serde_json::Value> = hashes
+            .iter()
+            .map(|h| serde_json::json!({ "hash": h }))
+            .collect();
+        serde_json::json!({
+            "limit": 25, "offset": 0, "total": hashes.len(), "result": result
+        })
+        .to_string()
+    }
+
+    /// `address`'s tx list, served `hits` times (mockito hands a request to
+    /// the first matching mock still short of its hits, then to the last one).
+    async fn txs_mock(
+        server: &mut mockito::ServerGuard,
+        address: &str,
+        hashes: &[&str],
+        hits: usize,
+    ) -> mockito::Mock {
+        server
+            .mock("GET", "/api/txs")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "address".into(),
+                address.into(),
+            ))
+            .with_body(txs_page(hashes))
+            .expect(hits)
+            .create_async()
+            .await
+    }
+
+    /// An SPV sync of a restored profile whose window is `[0, GAP)`: the
+    /// explorer lists a tx at receive 2 (inside the window, no name) and a
+    /// FINALIZE of `pastwindow` paying receive 4 (past it). The window grows
+    /// from the explorer's tx lists until it stops growing, and the same
+    /// sync's explorer discovery reads receive 4: the name is tracked, and the
+    /// balance (read from the explorer over the stored addresses) covers it.
+    #[tokio::test]
+    async fn an_spv_sync_grows_the_window_from_the_explorer_and_finds_a_name_past_it() {
+        let mut server = mockito::Server::new_async().await;
+        let (r2, r4) = (addr(BRANCH_RECEIVE, 2), addr(BRANCH_RECEIVE, 4));
+        // Each is read twice: by the window's growth and by discovery.
+        let r2_txs = txs_mock(&mut server, &r2, &["txA"], 2).await;
+        let r4_txs = txs_mock(&mut server, &r4, &["txB"], 2).await;
+        let _rest = server
+            .mock("GET", "/api/txs")
+            .match_query(mockito::Matcher::Any)
+            .with_body(txs_page(&[]))
+            .create_async()
+            .await;
+        let _tx_a = server
+            .mock("GET", "/api/txs/txA")
+            .with_body(format!(
+                r#"{{"outputs":[{{"action":"NONE","address":"{r2}","value":5}}]}}"#
+            ))
+            .create_async()
+            .await;
+        let _tx_b = server
+            .mock("GET", "/api/txs/txB")
+            .with_body(format!(
+                r#"{{"outputs":[{{"action":"FINALIZE","name":"pastwindow","address":"{r4}","value":400000}}]}}"#
+            ))
+            .create_async()
+            .await;
+        let _name = server
+            .mock("GET", "/api/names/pastwindow")
+            .with_body(r#"{"name":"pastwindow","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#)
+            .create_async()
+            .await;
+        let _hist = server
+            .mock("GET", "/api/names/pastwindow/history")
+            .with_body(r#"{"result":[{"action":"Finalize","txid":"txB","index":0}]}"#)
+            .create_async()
+            .await;
+        let db_path = spv_profile_db("spv", &server.url());
+
+        let status = Arc::new(Mutex::new(SyncStatus::default()));
+        run_sync_steps(&status, db_path.to_str().unwrap(), "p1", SyncCaller::App).await;
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        assert_eq!(
+            derivation::max_derived_index(&conn, "p1", 0, BRANCH_RECEIVE).unwrap(),
+            Some(4 + GAP),
+            "the window ends GAP past receive 4"
+        );
+        assert_eq!(
+            derivation::max_derived_index(&conn, "p1", 0, BRANCH_CHANGE).unwrap(),
+            Some(GAP - 1),
+            "the change branch has no history and keeps its window"
+        );
+        assert!(
+            queries::get_profile_addresses(&conn, "p1")
+                .unwrap()
+                .contains(&r4),
+            "the explorer balance is read over receive 4"
+        );
+        let tracked: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM tracked_name_states
+                 WHERE wallet_profile_id = 'p1' AND name = 'pastwindow'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(tracked, "the name past the restore window is tracked");
+        drop(conn);
+        r2_txs.assert_async().await;
+        r4_txs.assert_async().await;
+        remove_db(&db_path);
+    }
+
+    /// An explorer that fails every tx list: the window stays `[0, GAP)` and
+    /// the sync goes on to the discover step over the stored addresses, which
+    /// reports the explorer's failure.
+    #[tokio::test]
+    async fn an_explorer_error_leaves_the_window_and_the_sync_goes_on() {
+        let mut server = mockito::Server::new_async().await;
+        let _txs = server
+            .mock("GET", "/api/txs")
+            .match_query(mockito::Matcher::Any)
+            .with_status(500)
+            .with_body("boom")
+            .create_async()
+            .await;
+        let db_path = spv_profile_db("spv_err", &server.url());
+
+        let status = Arc::new(Mutex::new(SyncStatus::default()));
+        run_sync_steps(&status, db_path.to_str().unwrap(), "p1", SyncCaller::App).await;
+
+        let s = status.lock().await;
+        assert_eq!(s.step, "discover", "the sync reached the discover step");
+        assert_eq!(s.discover_addresses_total, 2 * GAP);
+        assert!(
+            !s.errors.is_empty(),
+            "discovery reports the explorer failure"
+        );
+        drop(s);
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        for branch in [BRANCH_RECEIVE, BRANCH_CHANGE] {
+            assert_eq!(
+                derivation::max_derived_index(&conn, "p1", 0, branch).unwrap(),
+                Some(GAP - 1),
+                "no growth on branch {branch}"
+            );
+        }
+        drop(conn);
+        remove_db(&db_path);
+    }
+
+    fn status() -> Arc<Mutex<SyncStatus>> {
+        Arc::new(Mutex::new(SyncStatus::default()))
+    }
+
+    fn is_used(conn: &rusqlite::Connection, address: &str) -> bool {
+        conn.query_row(
+            "SELECT used FROM derived_addresses WHERE address = ?1",
+            [address],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    async fn failing_txs(server: &mut mockito::ServerGuard, hits: usize) -> mockito::Mock {
+        server
+            .mock("GET", "/api/txs")
+            .match_query(mockito::Matcher::Any)
+            .with_status(500)
+            .with_body("boom")
+            .expect(hits)
+            .create_async()
+            .await
+    }
+
+    /// The explorer is asked as the discover step asks it: after
+    /// `SYNC_MAX_CONSECUTIVE_ERRORS` failures in a row no more of the `2 * GAP`
+    /// lookahead addresses is asked about this sync.
+    #[tokio::test]
+    async fn the_explorer_window_stops_asking_after_failures_in_a_row() {
+        let mut server = mockito::Server::new_async().await;
+        let txs = failing_txs(&mut server, SYNC_MAX_CONSECUTIVE_ERRORS as usize).await;
+        let db_path = spv_profile_db("spv_give_up", &server.url());
+        // The explorer gives up before it has asked about every address.
+        const _: () = assert!(SYNC_MAX_CONSECUTIVE_ERRORS < 2 * GAP);
+
+        explorer_window_step(&status(), db_path.to_str().unwrap(), "p1").await;
+
+        txs.assert_async().await;
+        remove_db(&db_path);
+    }
+
+    /// The explorer lists a tx at receive 0, then fails five times in a row
+    /// (receive 1 and 2, change 0 to 2): it is asked no more, and the window
+    /// still grows from receive 0.
+    #[tokio::test]
+    async fn the_explorer_window_writes_what_it_found_before_it_stopped_asking() {
+        let mut server = mockito::Server::new_async().await;
+        let r0 = addr(BRANCH_RECEIVE, 0);
+        let r0_txs = txs_mock(&mut server, &r0, &["txA"], 1).await;
+        let failing = failing_txs(&mut server, SYNC_MAX_CONSECUTIVE_ERRORS as usize).await;
+        let db_path = spv_profile_db("spv_give_up_writes", &server.url());
+
+        explorer_window_step(&status(), db_path.to_str().unwrap(), "p1").await;
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        assert!(is_used(&conn, &r0), "receive 0 is marked used");
+        assert_eq!(
+            derivation::max_derived_index(&conn, "p1", 0, BRANCH_RECEIVE).unwrap(),
+            Some(GAP),
+            "the window ends GAP past receive 0"
+        );
+        drop(conn);
+        r0_txs.assert_async().await;
+        failing.assert_async().await;
+        remove_db(&db_path);
+    }
+
+    /// An explorer that lists a tx for every address (wrong or hostile) grows
+    /// each branch by GAP a round for `EXPLORER_WINDOW_ROUNDS` rounds, not for
+    /// the node's `MAX_WINDOW_ROUNDS`.
+    #[tokio::test]
+    async fn an_explorer_that_lists_every_address_grows_the_window_a_few_rounds_only() {
+        let mut server = mockito::Server::new_async().await;
+        let _txs = server
+            .mock("GET", "/api/txs")
+            .match_query(mockito::Matcher::Any)
+            .with_body(txs_page(&["txA"]))
+            .create_async()
+            .await;
+        let db_path = spv_profile_db("spv_hostile", &server.url());
+
+        explorer_window_step(&status(), db_path.to_str().unwrap(), "p1").await;
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        for branch in [BRANCH_RECEIVE, BRANCH_CHANGE] {
+            assert_eq!(
+                derivation::max_derived_index(&conn, "p1", 0, branch).unwrap(),
+                Some(GAP - 1 + EXPLORER_WINDOW_ROUNDS * GAP),
+                "branch {branch} grew GAP a round for EXPLORER_WINDOW_ROUNDS rounds"
+            );
+        }
+        drop(conn);
+        remove_db(&db_path);
+    }
+
+    /// Either half of the explorer's answer makes an address used: a `total`
+    /// above zero with an empty page, or a listed tx with a `total` of zero.
+    /// Both zero is unused.
+    #[tokio::test]
+    async fn the_explorer_reads_an_address_as_used_from_its_total_or_its_txids() {
+        let mut server = mockito::Server::new_async().await;
+        let cases = [
+            (
+                "hs1qtotalonly",
+                r#"{"limit":1,"offset":0,"total":3,"result":[]}"#,
+            ),
+            (
+                "hs1qhashonly",
+                r#"{"limit":1,"offset":0,"total":0,"result":[{"hash":"txA"}]}"#,
+            ),
+            (
+                "hs1qneither",
+                r#"{"limit":1,"offset":0,"total":0,"result":[]}"#,
+            ),
+        ];
+        let mut mocks = Vec::new();
+        for (address, body) in cases {
+            mocks.push(
+                server
+                    .mock("GET", "/api/txs")
+                    .match_query(mockito::Matcher::UrlEncoded(
+                        "address".into(),
+                        address.into(),
+                    ))
+                    .with_body(body)
+                    .create_async()
+                    .await,
+            );
+        }
+        let client = crate::providers::hnsfans::HnsFansClient::new(&server.url());
+        let source = ExplorerHistory(&client);
+        let used = AddressUse::Used { height: None };
+        assert_eq!(source.address_use("hs1qtotalonly").await.unwrap(), used);
+        assert_eq!(source.address_use("hs1qhashonly").await.unwrap(), used);
+        assert_eq!(
+            source.address_use("hs1qneither").await.unwrap(),
+            AddressUse::Unused
+        );
+    }
+
+    /// The sync lock is taken over while the explorer answers for receive 2:
+    /// no other address is asked about after it (only receive 0 and 1 were,
+    /// before), receive 2 is not marked used and the window does not grow.
+    #[tokio::test]
+    async fn a_lost_lock_stops_the_explorer_window_before_its_write() {
+        let mut server = mockito::Server::new_async().await;
+        let status = status();
+        let raise = status.lock().await.lock_lost.clone();
+        let r2 = addr(BRANCH_RECEIVE, 2);
+        let body = txs_page(&["txA"]);
+        let r2_txs = server
+            .mock("GET", "/api/txs")
+            .match_query(mockito::Matcher::UrlEncoded("address".into(), r2.clone()))
+            .with_body_from_request(move |_| {
+                // What the heartbeat does once another process holds the lock.
+                raise.raise();
+                body.clone().into_bytes()
+            })
+            .expect(1)
+            .create_async()
+            .await;
+        let rest = server
+            .mock("GET", "/api/txs")
+            .match_query(mockito::Matcher::Any)
+            .with_body(txs_page(&[]))
+            .expect(2)
+            .create_async()
+            .await;
+        let db_path = spv_profile_db("spv_lost", &server.url());
+
+        explorer_window_step(&status, db_path.to_str().unwrap(), "p1").await;
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        assert!(
+            !is_used(&conn, &r2),
+            "nothing is written once the lock is lost"
+        );
+        assert_eq!(
+            derivation::max_derived_index(&conn, "p1", 0, BRANCH_RECEIVE).unwrap(),
+            Some(GAP - 1)
+        );
+        drop(conn);
+        assert_eq!(status.lock().await.progress_label, LOCK_LOST_LABEL);
+        r2_txs.assert_async().await;
+        rest.assert_async().await;
+        remove_db(&db_path);
+    }
+
+    /// The user presses Stop while the explorer answers for receive 0: no
+    /// other address is asked about, nothing is written, and the label says
+    /// the sync was cancelled.
+    #[tokio::test]
+    async fn stop_ends_the_explorer_window_before_its_next_query() {
+        let mut server = mockito::Server::new_async().await;
+        let status = status();
+        let r0 = addr(BRANCH_RECEIVE, 0);
+        let press = status.clone();
+        let body = txs_page(&["txA"]);
+        let r0_txs = server
+            .mock("GET", "/api/txs")
+            .match_query(mockito::Matcher::UrlEncoded("address".into(), r0.clone()))
+            .with_body_from_request(move |_| {
+                // What `cancel_full_sync` does; the loop holds the status lock
+                // only for its checks, never across a query.
+                loop {
+                    if let Ok(mut s) = press.try_lock() {
+                        s.cancel_requested = true;
+                        break;
+                    }
+                    std::thread::yield_now();
+                }
+                body.clone().into_bytes()
+            })
+            .expect(1)
+            .create_async()
+            .await;
+        let rest = server
+            .mock("GET", "/api/txs")
+            .match_query(mockito::Matcher::Any)
+            .with_body(txs_page(&[]))
+            .expect(0)
+            .create_async()
+            .await;
+        let db_path = spv_profile_db("spv_stop", &server.url());
+
+        explorer_window_step(&status, db_path.to_str().unwrap(), "p1").await;
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        assert!(!is_used(&conn, &r0), "nothing is written after Stop");
+        assert_eq!(
+            derivation::max_derived_index(&conn, "p1", 0, BRANCH_RECEIVE).unwrap(),
+            Some(GAP - 1)
+        );
+        drop(conn);
+        assert_eq!(status.lock().await.progress_label, "Sync cancelled");
+        r0_txs.assert_async().await;
+        rest.assert_async().await;
+        remove_db(&db_path);
     }
 }

@@ -68,8 +68,8 @@ export function useNodeConnectionCheck(): NodeConnectionCheckState {
     try {
       const r = await invoke<NodeConnectionCheck>("check_node_connection", {
         url: trimmed,
-        api_key: apiKey || undefined,
-        expected_network: expectedNetwork || undefined,
+        apiKey: apiKey || undefined,
+        expectedNetwork: expectedNetwork || undefined,
       });
       if (requestId.current !== myRequestId) return; // superseded by reset()/run()
       setResult(r);

@@ -16,7 +16,6 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
-vi.mock("@tauri-apps/plugin-fs", () => ({ readTextFile: vi.fn(), writeTextFile: vi.fn() }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn(),
   readText: vi.fn().mockResolvedValue(""),
@@ -243,7 +242,7 @@ describe("Onboarding — Connection choice", () => {
     expect(screen.getByTestId("select-remote-button")).toBeDisabled();
   });
 
-  // G1: the picked network is passed to the backend as `expected_network`.
+  // G1: the picked network is passed to the backend as `expectedNetwork`.
   it("threads the selected network into the connection probe", async () => {
     render(<Onboarding />, { wrapper: wrapper() });
     fireEvent.change(screen.getByTestId("onboarding-network-select"), {
@@ -256,7 +255,7 @@ describe("Onboarding — Connection choice", () => {
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith(
         "check_node_connection",
-        expect.objectContaining({ expected_network: "testnet" }),
+        expect.objectContaining({ expectedNetwork: "testnet" }),
       ),
     );
   });

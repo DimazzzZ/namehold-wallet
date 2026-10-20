@@ -1076,6 +1076,90 @@ pub fn get_wallet_secret_meta(
 
 // --- Transaction drafts ----------------------------------------------------
 
+/// Where a transaction draft is (`wallet_tx_drafts.status`): `Draft` once
+/// built, `Signed`, then `BroadcastPending` (sent, no clear answer),
+/// `Broadcasted` (the node took it), `Confirmed` (mined) — or `Failed` (hsd
+/// refused it) and `Dropped` (never mined). Stored by [`DraftStatus::as_str`],
+/// the spellings the table's CHECK lists (migration 012); sent to the UI in
+/// the same spelling (`TxDraft.status`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftStatus {
+    Draft,
+    Signed,
+    BroadcastPending,
+    Broadcasted,
+    Confirmed,
+    Failed,
+    Dropped,
+}
+
+impl DraftStatus {
+    /// Every status, in lifecycle order.
+    pub const ALL: [Self; 7] = [
+        Self::Draft,
+        Self::Signed,
+        Self::BroadcastPending,
+        Self::Broadcasted,
+        Self::Confirmed,
+        Self::Failed,
+        Self::Dropped,
+    ];
+
+    /// The stored spelling, as the table's CHECK constraint lists it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Signed => "signed",
+            Self::BroadcastPending => "broadcast_pending",
+            Self::Broadcasted => "broadcasted",
+            Self::Confirmed => "confirmed",
+            Self::Failed => "failed",
+            Self::Dropped => "dropped",
+        }
+    }
+}
+
+impl std::fmt::Display for DraftStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for DraftStatus {
+    type Err = AppError;
+
+    fn from_str(s: &str) -> Result<Self, AppError> {
+        Self::ALL
+            .into_iter()
+            .find(|status| status.as_str() == s)
+            .ok_or_else(|| AppError::Other(format!("unknown draft status '{s}'")))
+    }
+}
+
+impl rusqlite::ToSql for DraftStatus {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
+impl rusqlite::types::FromSql for DraftStatus {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        value
+            .as_str()?
+            .parse()
+            .map_err(|e: AppError| rusqlite::types::FromSqlError::Other(e.to_string().into()))
+    }
+}
+
+/// Tests compare a status with its spelling, as the rows they seed write it.
+#[cfg(test)]
+impl PartialEq<&str> for DraftStatus {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
 /// A draft row as stored, including fields the command layer needs to sign and
 /// broadcast (kept backend-internal; the frontend gets [`TxDraftSummary`]).
 #[derive(Debug, Clone)]
@@ -1087,7 +1171,7 @@ pub struct TxDraftRow {
     pub signed_tx_hex: Option<String>,
     pub signing_inputs_json: String,
     pub summary_json: String,
-    pub status: String,
+    pub status: DraftStatus,
     pub error_message: Option<String>,
     pub txid: Option<String>,
     pub confirmation_height: Option<i64>,
@@ -1122,7 +1206,7 @@ impl TxDraftRow {
             id: self.id.clone(),
             wallet_profile_id: self.wallet_profile_id.clone(),
             action: self.action.clone(),
-            status: self.status.clone(),
+            status: self.status,
             summary,
             error_message: self.error_message.clone(),
             txid: self.txid.clone(),
@@ -1272,44 +1356,43 @@ pub fn release_reserved_utxos_for_draft(
 /// Whether a draft in `status` has reached, or may have reached, a node:
 /// `broadcast_pending` is a transport-ambiguous attempt the node may hold.
 /// Such a draft is never deleted (see [`delete_tx_draft`]).
-pub fn may_have_reached_chain(status: &str) -> bool {
+pub fn may_have_reached_chain(status: DraftStatus) -> bool {
     REACHED_CHAIN_STATUSES.contains(&status)
 }
 
 /// The draft statuses [`may_have_reached_chain`] accepts.
-pub const REACHED_CHAIN_STATUSES: [&str; 3] = ["broadcasted", "confirmed", "broadcast_pending"];
+pub const REACHED_CHAIN_STATUSES: [DraftStatus; 3] = [
+    DraftStatus::Broadcasted,
+    DraftStatus::Confirmed,
+    DraftStatus::BroadcastPending,
+];
 
 /// [`REACHED_CHAIN_STATUSES`] as an SQL list, for `status IN {..}` in the
 /// queries that ask the same question of the database.
 pub fn reached_chain_sql() -> String {
-    sql_list(REACHED_CHAIN_STATUSES.iter().copied())
+    sql_list(REACHED_CHAIN_STATUSES.iter().map(|s| s.as_str()))
 }
 
 /// The draft statuses of a draft never sent: discarding it changes nothing
 /// on chain. Disjoint from [`REACHED_CHAIN_STATUSES`].
-pub const UNSENT_STATUSES: [&str; 2] = ["draft", "signed"];
+pub const UNSENT_STATUSES: [DraftStatus; 2] = [DraftStatus::Draft, DraftStatus::Signed];
 
 /// Whether a draft in `status` was never sent ([`UNSENT_STATUSES`]).
-pub fn never_sent(status: &str) -> bool {
+pub fn never_sent(status: DraftStatus) -> bool {
     UNSENT_STATUSES.contains(&status)
 }
 
-/// The status of a draft the chain has mined.
-pub const CONFIRMED_STATUS: &str = "confirmed";
-
-/// The status of a send the node may or may not hold (not taken, or no
-/// answer): kept for the confirmation poll, and sendable again.
-pub const BROADCAST_PENDING_STATUS: &str = "broadcast_pending";
-
-/// The status of a draft whose broadcast hsd refused: dead ([`draft_alive`]).
-const FAILED_STATUS: &str = "failed";
+/// [`UNSENT_STATUSES`] as an SQL list, for `status IN {..}`.
+fn unsent_sql() -> String {
+    sql_list(UNSENT_STATUSES.iter().map(|s| s.as_str()))
+}
 
 /// Rule one: whether a draft in `status` is alive — it may yet be sent
 /// ([`never_sent`]), or it was sent and not given up
 /// ([`may_have_reached_chain`]). A `dropped` or `failed` draft, or one whose
 /// row is gone, is dead: it holds nothing (a Locking listing's name, R27) and
 /// its transaction is read from the chain alone (R19).
-pub fn draft_alive(status: &str) -> bool {
+pub fn draft_alive(status: DraftStatus) -> bool {
     never_sent(status) || may_have_reached_chain(status)
 }
 
@@ -1320,7 +1403,7 @@ pub fn alive_sql() -> String {
         UNSENT_STATUSES
             .iter()
             .chain(REACHED_CHAIN_STATUSES.iter())
-            .copied(),
+            .map(|s| s.as_str()),
     )
 }
 
@@ -1329,8 +1412,8 @@ pub fn alive_sql() -> String {
 /// given up, a missing lock coin proves nothing (R19); a Cancel transfer in
 /// such a status holds back the FINALIZE into the lock, which spends the
 /// same coin.
-pub fn draft_may_still_land(status: &str) -> bool {
-    draft_alive(status) && status != CONFIRMED_STATUS
+pub fn draft_may_still_land(status: DraftStatus) -> bool {
+    draft_alive(status) && status != DraftStatus::Confirmed
 }
 
 /// `items` quoted as an SQL list, `('a', 'b')`. Only for the fixed spellings
@@ -1361,7 +1444,7 @@ pub fn delete_tx_draft(conn: &rusqlite::Connection, id: &str) -> Result<(), AppE
 /// that replaces the draft with another one atomically. An error leaves the
 /// caller's transaction to roll back on drop.
 pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<(), AppError> {
-    let status: Option<String> = tx
+    let status: Option<DraftStatus> = tx
         .query_row(
             "SELECT status FROM wallet_tx_drafts WHERE id = ?1",
             params![id],
@@ -1369,7 +1452,7 @@ pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result
         )
         .optional()?;
     let status = status.ok_or_else(|| AppError::NotFound(format!("draft {id}")))?;
-    if may_have_reached_chain(&status) {
+    if may_have_reached_chain(status) {
         return Err(AppError::InvalidInput(
             "cannot delete a draft that has already been broadcast".to_string(),
         ));
@@ -1395,7 +1478,7 @@ pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result
     // A draft never sent (`draft`, `signed`) leaves the chain untouched; a
     // `dropped` or `failed` one was broadcast and may still be mined, so the
     // listings below keep their state and the chain judges them.
-    if never_sent(&status) {
+    if never_sent(status) {
         // A listing still Locking goes with its lock TRANSFER draft: the name
         // never left; its reserved addresses stay used.
         tx.execute(
@@ -1598,11 +1681,12 @@ impl ListingState {
     /// The states the after-lock job reads ([`list_shakedex_listings_after_lock`]):
     /// the FINALIZE into the lock built or mined (Finalizing, Listed), a
     /// purchase of the lock coin in the mempool (SalePending), a Restored
-    /// lock, Sold within the re-check window, which a reorg may undo, and a
+    /// lock, Sold within the re-check window, which a reorg may undo, a
     /// cancel on its way (Cancelling, CancelAwaitingFinalize,
-    /// CancelFinalizing), which a purchase may still beat or a reorg undo.
-    /// Disjoint from [`Self::BEFORE_LOCK_JOB`].
-    pub const AFTER_LOCK_JOB: [ListingState; 8] = [
+    /// CancelFinalizing), which a purchase may still beat or a reorg undo,
+    /// and Cancelled within the re-check window, whose FINALIZE home a reorg
+    /// may take out. Disjoint from [`Self::BEFORE_LOCK_JOB`].
+    pub const AFTER_LOCK_JOB: [ListingState; 9] = [
         Self::Finalizing,
         Self::Listed,
         Self::SalePending,
@@ -1611,7 +1695,12 @@ impl ListingState {
         Self::Cancelling,
         Self::CancelAwaitingFinalize,
         Self::CancelFinalizing,
+        Self::Cancelled,
     ];
+
+    /// The terminal states of [`Self::AFTER_LOCK_JOB`]: read only within the
+    /// re-check window ([`list_shakedex_listings_after_lock`]).
+    pub const AFTER_LOCK_RECHECKED: [ListingState; 2] = [Self::Sold, Self::Cancelled];
 
     /// The states of a listing whose cancel TRANSFER is mined (R28): its
     /// FINALIZE home is awaited or built.
@@ -1709,6 +1798,12 @@ pub enum ListingWrite {
     RevertCancelFinalize,
     /// [`mark_listing_cancelled`]: the name is home.
     CancelDone,
+    /// [`mark_listing_cancel_undone`]: a reorg took the FINALIZE home out,
+    /// the cancel's TRANSFER the name's owner again.
+    CancelUndone,
+    /// [`mark_cancelled_listing_unmined`]: a reorg took the FINALIZE home and
+    /// the cancel's TRANSFER out, the lock coin the name's owner again.
+    CancelledUnmined,
     /// [`lower_listing_price`]: a cheaper step, the state unchanged.
     LowerPrice,
     /// [`refresh_listing_expiry`]: the listing file's `expiresAt` rewritten
@@ -1717,7 +1812,7 @@ pub enum ListingWrite {
 }
 
 impl ListingWrite {
-    pub const ALL: [ListingWrite; 27] = [
+    pub const ALL: [ListingWrite; 29] = [
         Self::Ready,
         Self::LockingAgain,
         Self::Finalize,
@@ -1743,6 +1838,8 @@ impl ListingWrite {
         Self::FinalizeCancel,
         Self::RevertCancelFinalize,
         Self::CancelDone,
+        Self::CancelUndone,
+        Self::CancelledUnmined,
         Self::LowerPrice,
         Self::RefreshExpiry,
     ];
@@ -1764,7 +1861,9 @@ impl ListingWrite {
     ///   first.
     /// - A cancel (Cancel ... CancelDone) follows R28: built from Listed or
     ///   Restored, mined from any state whose lock coin is ours to spend,
-    ///   back to Cancelling on a reorg, Cancelled once the name is home;
+    ///   back to Cancelling on a reorg, Cancelled once the name is home,
+    ///   and back to CancelAwaitingFinalize when a reorg takes that home out
+    ///   (to Cancelling when it takes the cancel's TRANSFER out too);
     ///   Lower price rewrites a Listed listing's steps and file, its state
     ///   unchanged, and the `expiresAt` refresh likewise. A purchase mined
     ///   before our cancel is a sale all the same (Sell from Cancelling), and
@@ -1841,6 +1940,8 @@ impl ListingWrite {
             Self::FinalizeCancel => (&[S::CancelAwaitingFinalize], &[S::CancelFinalizing]),
             Self::RevertCancelFinalize => (&[S::CancelFinalizing], &[S::CancelAwaitingFinalize]),
             Self::CancelDone => (CANCEL_MINED, &[S::Cancelled]),
+            Self::CancelUndone => (&[S::Cancelled], &[S::CancelAwaitingFinalize]),
+            Self::CancelledUnmined => (&[S::Cancelled], &[S::Cancelling]),
             Self::LowerPrice => (&[S::Listed], &[S::Listed]),
             Self::RefreshExpiry => (&[S::Listed], &[S::Listed]),
         }
@@ -1949,7 +2050,7 @@ fn cancel_draft_unsent_sql() -> String {
         "EXISTS (
              SELECT 1 FROM wallet_tx_drafts d
              WHERE d.id = shakedex_listings.cancel_draft_id AND d.status IN {})",
-        sql_list(UNSENT_STATUSES.iter().copied())
+        unsent_sql()
     )
 }
 
@@ -2380,6 +2481,14 @@ pub fn shakedex_listing_holds_lock_coin(
     Ok(found.is_some())
 }
 
+/// The lock public keys (hex) of every listing row on this device, any
+/// profile and any state: a lock key stays this device's own for good.
+pub fn shakedex_lock_pubkeys(conn: &rusqlite::Connection) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare("SELECT DISTINCT lock_pubkey_hex FROM shakedex_listings")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 /// The open listing that keeps `name`'s owner actions away (R27), if any.
 /// A listing past Locking always does. A Locking one does only while its
 /// lock TRANSFER draft is alive ([`draft_alive`]): a dropped,
@@ -2395,7 +2504,7 @@ pub fn listing_blocking_owner_actions(
         return Ok(None);
     };
     let status = lock_draft_status(conn, &listing)?;
-    let blocks = listing_holds_the_name(listing.state, status.as_deref());
+    let blocks = listing_holds_the_name(listing.state, status);
     Ok(blocks.then_some(listing))
 }
 
@@ -2403,7 +2512,7 @@ pub fn listing_blocking_owner_actions(
 /// `lock_draft_status` (`None`: no draft, or its row gone), keeps the name's
 /// owner actions away and shows on the name's row: past Locking always;
 /// Locking only while that draft is alive ([`draft_alive`]).
-pub fn listing_holds_the_name(state: ListingState, lock_draft_status: Option<&str>) -> bool {
+pub fn listing_holds_the_name(state: ListingState, lock_draft_status: Option<DraftStatus>) -> bool {
     state != ListingState::Locking || lock_draft_status.is_some_and(draft_alive)
 }
 
@@ -2464,7 +2573,7 @@ pub fn read_shakedex_listing_names(
                 r.get::<_, String>(1)?,
                 r.get::<_, ListingState>(2)?,
                 r.get::<_, String>(3)?,
-                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<DraftStatus>>(4)?,
                 r.get::<_, Option<i64>>(5)?,
             ))
         },
@@ -2475,11 +2584,11 @@ pub fn read_shakedex_listing_names(
         if out.iter().any(|r| r.name == name) {
             continue;
         }
-        if !listing_holds_the_name(state, status.as_deref()) {
+        if !listing_holds_the_name(state, status) {
             continue;
         }
         let blocks_until_finalize =
-            locking_blocks_until_finalize(state, status.as_deref(), confirmed, params_net, tip);
+            locking_blocks_until_finalize(state, status, confirmed, params_net, tip);
         out.push(ListingNameRow {
             name,
             lock_pubkey_hex: pubkey,
@@ -2502,13 +2611,13 @@ pub fn read_shakedex_listing_names(
 /// the sync does.
 pub fn locking_blocks_until_finalize(
     state: ListingState,
-    lock_draft_status: Option<&str>,
+    lock_draft_status: Option<DraftStatus>,
     confirmed: Option<i64>,
     params_net: crate::noncustodial::network::NameParams,
     tip: i64,
 ) -> Option<i64> {
     match (state, lock_draft_status, confirmed) {
-        (ListingState::Locking, Some(CONFIRMED_STATUS), Some(h)) => {
+        (ListingState::Locking, Some(DraftStatus::Confirmed), Some(h)) => {
             Some(params_net.blocks_until_finalize(h, tip))
         }
         _ => None,
@@ -2520,7 +2629,7 @@ pub fn locking_blocks_until_finalize(
 pub fn lock_draft_status(
     conn: &rusqlite::Connection,
     listing: &ShakedexListing,
-) -> Result<Option<String>, AppError> {
+) -> Result<Option<DraftStatus>, AppError> {
     let Some(id) = listing.lock_transfer_draft_id.as_deref() else {
         return Ok(None);
     };
@@ -2824,33 +2933,31 @@ pub fn adopt_lock_finalized_elsewhere(
     )?)
 }
 
-/// The listings the after-lock job reads (R19, R22):
-/// [`ListingState::AFTER_LOCK_JOB`], Sold only within the last
-/// `sold_recheck_days` (a reorg can still take the purchase away).
+/// The listings the after-lock job reads (R19, R22, R28):
+/// [`ListingState::AFTER_LOCK_JOB`], Sold and Cancelled
+/// ([`ListingState::AFTER_LOCK_RECHECKED`]) only within the last
+/// `recheck_days` (a reorg can still take the purchase, or the FINALIZE
+/// home, away).
 pub fn list_shakedex_listings_after_lock(
     conn: &rusqlite::Connection,
     profile_id: &str,
-    sold_recheck_days: u32,
+    recheck_days: u32,
 ) -> Result<Vec<ShakedexListing>, AppError> {
-    let open = sql_list(
-        ListingState::AFTER_LOCK_JOB
-            .iter()
-            .filter(|s| **s != ListingState::Sold)
-            .map(|s| s.as_str()),
-    );
+    let (ended, open): (Vec<ListingState>, Vec<ListingState>) = ListingState::AFTER_LOCK_JOB
+        .into_iter()
+        .partition(|s| ListingState::AFTER_LOCK_RECHECKED.contains(s));
+    let open = sql_list(open.iter().map(|s| s.as_str()));
+    let ended = sql_list(ended.iter().map(|s| s.as_str()));
     let sql = format!(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
          WHERE wallet_profile_id = ?1
-           AND (state IN {open} OR (state = ?2 AND updated_at >= datetime('now', ?3)))
+           AND (state IN {open}
+                OR (state IN {ended} AND updated_at >= datetime('now', ?2)))
          ORDER BY created_at, id"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
-        params![
-            profile_id,
-            ListingState::Sold,
-            format!("-{sold_recheck_days} days")
-        ],
+        params![profile_id, format!("-{recheck_days} days")],
         row_to_shakedex_listing,
     )?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -3217,7 +3324,85 @@ pub fn mark_listing_cancel_unmined(
     id: &str,
     cancel_txid: &str,
 ) -> Result<usize, AppError> {
-    let w = ListingWrite::CancelUnmined;
+    cancel_unmined_write(conn, id, cancel_txid, ListingWrite::CancelUnmined, "")
+}
+
+/// R28, a reorg deeper than [`mark_listing_cancel_undone`]'s: the FINALIZE
+/// home a Cancelled listing ended on and the cancel's TRANSFER are both out
+/// of the chain, and hsd names the listing's stored lock coin the name's
+/// owner again (the listing's signed steps can buy it again). Cancelling,
+/// as [`mark_listing_cancel_unmined`] writes it (the mined output, the
+/// lockup count and the FINALIZE draft link forgotten, the market
+/// bookkeeping of an unsent cancel started over); from there the after-lock
+/// job follows the cancel and any purchase as for any Cancelling listing.
+/// Only for the cancel the listing stores, and only while no other listing
+/// of the name is open (`idx_shakedex_listings_open_name` allows one). The
+/// re-check window is the caller's ([`list_shakedex_listings_after_lock`]).
+/// Returns how many rows changed (0 or 1).
+pub fn mark_cancelled_listing_unmined(
+    conn: &rusqlite::Connection,
+    id: &str,
+    cancel_txid: &str,
+) -> Result<usize, AppError> {
+    let guard = format!(" AND {}", no_other_open_listing_sql());
+    let changed = cancel_unmined_write(
+        conn,
+        id,
+        cancel_txid,
+        ListingWrite::CancelledUnmined,
+        &guard,
+    )?;
+    log_blocked_by_open_listing(conn, id, changed, "Cancelling")?;
+    Ok(changed)
+}
+
+/// Another open listing of the same name as listing `id` (its id), the one
+/// that keeps `no_other_open_listing_sql` from moving `id` back to an open
+/// state; `None` when there is none.
+pub fn other_open_listing_of_its_name(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<Option<String>, AppError> {
+    let sql = format!(
+        "SELECT o.id FROM shakedex_listings l JOIN shakedex_listings o
+           ON o.wallet_profile_id = l.wallet_profile_id AND o.name = l.name AND o.id <> l.id
+         WHERE l.id = ?1 AND o.state NOT IN {}
+         ORDER BY o.id LIMIT 1",
+        sql_list(ListingState::TERMINAL.iter().map(|s| s.as_str()))
+    );
+    Ok(conn.query_row(&sql, params![id], |r| r.get(0)).optional()?)
+}
+
+/// A reorg write that changed nothing because another listing of the name
+/// is open is logged: the chain says the name is back in this listing's
+/// cancel or lock, and only one listing per name may be open, so the
+/// listing stays as it is until the other one ends.
+fn log_blocked_by_open_listing(
+    conn: &rusqlite::Connection,
+    id: &str,
+    changed: usize,
+    to: &str,
+) -> Result<(), AppError> {
+    if changed == 0 {
+        if let Some(other) = other_open_listing_of_its_name(conn, id)? {
+            eprintln!(
+                "shakedex: listing {id} is not moved back to {to} after a reorg: \
+                 listing {other} of the same name is open"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The write of [`mark_listing_cancel_unmined`] for `w`'s sources, with
+/// `guard` (empty, or ` AND <condition>`) added to its `WHERE`.
+fn cancel_unmined_write(
+    conn: &rusqlite::Connection,
+    id: &str,
+    cancel_txid: &str,
+    w: ListingWrite,
+    guard: &str,
+) -> Result<usize, AppError> {
     // SQLite evaluates every SET expression over the row as it was, so each
     // CASE reads the old `market_status`.
     let told = format!(
@@ -3234,7 +3419,7 @@ pub fn mark_listing_cancel_unmined(
              market_error = CASE WHEN {told} THEN NULL ELSE market_error END,
              market_changed = CASE WHEN {told} AND market_accepted = 1 THEN 1
                                    ELSE market_changed END
-         WHERE id = ?1 AND {} AND cancel_txid = ?3",
+         WHERE id = ?1 AND {} AND cancel_txid = ?3{guard}",
         w.source_sql()
     );
     Ok(conn.execute(
@@ -3321,6 +3506,38 @@ pub fn mark_listing_cancelled(
         &sql,
         params![id, w.target(), listing_txid(cancel.0), i64::from(cancel.1)],
     )?)
+}
+
+/// R28, a reorg: the FINALIZE home a Cancelled listing ended on is out of
+/// the chain, and hsd names its cancel TRANSFER `cancel` the name's owner
+/// again. CancelAwaitingFinalize, so the FINALIZE home is offered again;
+/// the lockup count and the FINALIZE draft link are forgotten (the job
+/// counts the lockup again; a draft that was sent is left to the draft
+/// tracker). Only for the listing's own mined cancel, and only while no
+/// other listing of the name is open (`idx_shakedex_listings_open_name`
+/// allows one). The re-check window is not applied here: the caller got the
+/// row from [`list_shakedex_listings_after_lock`], which applies it. Returns
+/// how many rows changed (0 or 1).
+pub fn mark_listing_cancel_undone(
+    conn: &rusqlite::Connection,
+    id: &str,
+    cancel: (&str, u32),
+) -> Result<usize, AppError> {
+    let w = ListingWrite::CancelUndone;
+    let sql = format!(
+        "UPDATE shakedex_listings
+         SET state = ?2, cancel_blocks_remaining = NULL, cancel_finalize_draft_id = NULL,
+             updated_at = datetime('now')
+         WHERE id = ?1 AND {} AND cancel_txid = ?3 AND cancel_vout = ?4 AND {}",
+        w.source_sql(),
+        no_other_open_listing_sql()
+    );
+    let changed = conn.execute(
+        &sql,
+        params![id, w.target(), listing_txid(cancel.0), i64::from(cancel.1)],
+    )?;
+    log_blocked_by_open_listing(conn, id, changed, "CancelAwaitingFinalize")?;
+    Ok(changed)
 }
 
 /// What Lower price writes (R26).
@@ -3557,7 +3774,7 @@ pub fn list_listings_ready_to_finalize(
                     WHERE d.id = shakedex_listings.lock_finalize_draft_id
                       AND d.status IN {})))
          ORDER BY wallet_profile_id, name",
-        sql_list(UNSENT_STATUSES.iter().copied())
+        unsent_sql()
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
@@ -3636,14 +3853,14 @@ fn release_cancel(
     // only until a mined cancel of another device replaces it, so it is read
     // as ours only when the draft knows no txid.
     let ours = row.txid.clone().or(cancel_txid);
-    if (row.status == CONFIRMED_STATUS && !confirmed_is_stale)
+    if (row.status == DraftStatus::Confirmed && !confirmed_is_stale)
         || ours.map(|t| listing_txid(&t)) == Some(listing_txid(spender_txid))
     {
         return Ok(false);
     }
     release_reserved_utxos_for_draft(conn, &draft)?;
-    if row.status != FAILED_STATUS {
-        update_tx_draft_status(conn, &draft, "dropped", Some(reason), None)?;
+    if row.status != DraftStatus::Failed {
+        update_tx_draft_status(conn, &draft, DraftStatus::Dropped, Some(reason), None)?;
     }
     Ok(true)
 }
@@ -4019,13 +4236,19 @@ pub fn list_recent_unpaid_lost_shakedex_purchases(
            AND updated_at > datetime('now', ?3)
            AND NOT EXISTS (
                SELECT 1 FROM wallet_tx_drafts d
-                WHERE d.id = purchase_draft_id AND d.status NOT IN ('dropped','failed'))
+                WHERE d.id = purchase_draft_id AND d.status NOT IN (?4, ?5))
          ORDER BY created_at ASC, id ASC"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
         .query_map(
-            params![profile_id, PurchaseState::Lost, format!("-{days} days")],
+            params![
+                profile_id,
+                PurchaseState::Lost,
+                format!("-{days} days"),
+                DraftStatus::Dropped,
+                DraftStatus::Failed
+            ],
             row_to_shakedex_purchase,
         )?
         .collect::<Result<Vec<_>, _>>()?;
@@ -4243,10 +4466,15 @@ pub fn delete_abandoned_shakedex_purchase(
             "DELETE FROM shakedex_purchases
              WHERE id = ?1 AND purchase_draft_id = ?2
                AND EXISTS (SELECT 1 FROM wallet_tx_drafts
-                           WHERE id = ?2 AND status IN ('draft','signed')
+                           WHERE id = ?2 AND status IN (?3, ?4)
                              AND created_at < datetime('now', '-{ttl_secs} seconds'))"
         ),
-        params![purchase_id, draft_id],
+        params![
+            purchase_id,
+            draft_id,
+            DraftStatus::Draft,
+            DraftStatus::Signed
+        ],
     )?;
     if n == 0 {
         return Ok(false);
@@ -4256,8 +4484,8 @@ pub fn delete_abandoned_shakedex_purchase(
         params![draft_id],
     )?;
     tx.execute(
-        "DELETE FROM wallet_tx_drafts WHERE id = ?1 AND status IN ('draft','signed')",
-        params![draft_id],
+        "DELETE FROM wallet_tx_drafts WHERE id = ?1 AND status IN (?2, ?3)",
+        params![draft_id, DraftStatus::Draft, DraftStatus::Signed],
     )?;
     tx.commit()?;
     Ok(true)
@@ -4280,10 +4508,10 @@ pub fn update_tx_draft_signed(
 ) -> Result<(), AppError> {
     conn.execute(
         "UPDATE wallet_tx_drafts
-            SET signed_tx_hex = ?2, summary_json = ?3, status = 'signed',
+            SET signed_tx_hex = ?2, summary_json = ?3, status = ?4,
                 error_message = NULL, updated_at = datetime('now')
          WHERE id = ?1",
-        params![id, signed_tx_hex, summary_json],
+        params![id, signed_tx_hex, summary_json, DraftStatus::Signed],
     )?;
     Ok(())
 }
@@ -4292,7 +4520,7 @@ pub fn update_tx_draft_signed(
 pub fn update_tx_draft_status(
     conn: &rusqlite::Connection,
     id: &str,
-    status: &str,
+    status: DraftStatus,
     error_message: Option<&str>,
     txid: Option<&str>,
 ) -> Result<(), AppError> {
@@ -4319,11 +4547,11 @@ pub fn update_tx_draft_confirmation(
 ) -> Result<(), AppError> {
     conn.execute(
         "UPDATE wallet_tx_drafts
-            SET status = 'confirmed', confirmation_height = ?2,
+            SET status = ?4, confirmation_height = ?2,
                 txid = COALESCE(?3, txid),
                 error_message = NULL, updated_at = datetime('now')
          WHERE id = ?1",
-        params![id, confirmation_height, txid],
+        params![id, confirmation_height, txid, DraftStatus::Confirmed],
     )?;
     Ok(())
 }
@@ -4342,10 +4570,10 @@ pub fn revert_tx_draft_to_broadcasted(
 ) -> Result<(), AppError> {
     conn.execute(
         "UPDATE wallet_tx_drafts
-            SET status = 'broadcasted', confirmation_height = NULL,
+            SET status = ?3, confirmation_height = NULL,
                 error_message = ?2, updated_at = datetime('now')
          WHERE id = ?1",
-        params![id, note],
+        params![id, note, DraftStatus::Broadcasted],
     )?;
     Ok(())
 }
@@ -4410,9 +4638,9 @@ pub fn list_drafts_awaiting_confirmation(
         "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
          WHERE wallet_profile_id = ?1
            AND (
-             status = 'broadcast_pending'
-             OR (status = 'broadcasted' AND txid IS NOT NULL)
-             OR (status = 'confirmed' AND txid IS NOT NULL
+             status = ?4
+             OR (status = ?5 AND txid IS NOT NULL)
+             OR (status = ?6 AND txid IS NOT NULL
                  AND (confirmation_height IS NULL
                       OR (?2 - confirmation_height + 1) < ?3))
            )
@@ -4420,7 +4648,14 @@ pub fn list_drafts_awaiting_confirmation(
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
-        params![profile_id, tip_height, finality_depth],
+        params![
+            profile_id,
+            tip_height,
+            finality_depth,
+            DraftStatus::BroadcastPending,
+            DraftStatus::Broadcasted,
+            DraftStatus::Confirmed
+        ],
         row_to_draft,
     )?;
     let mut out = Vec::new();
@@ -4441,13 +4676,21 @@ pub fn list_released_drafts_to_watch(
     let sql = format!(
         "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
          WHERE wallet_profile_id = ?1
-           AND status IN ('dropped', 'failed')
+           AND status IN (?3, ?4)
            AND signed_tx_hex IS NOT NULL
            AND (julianday('now') - julianday(updated_at)) * 86400 < ?2
          ORDER BY created_at DESC"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![profile_id, max_age_secs], row_to_draft)?;
+    let rows = stmt.query_map(
+        params![
+            profile_id,
+            max_age_secs,
+            DraftStatus::Dropped,
+            DraftStatus::Failed
+        ],
+        row_to_draft,
+    )?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);
@@ -4589,10 +4832,20 @@ pub fn has_pending_draft_for_name(
     let sql = format!(
         "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
          WHERE wallet_profile_id = ?1 AND action = ?2
-           AND status IN ('draft','signed','broadcast_pending','broadcasted')"
+           AND status IN (?3, ?4, ?5, ?6)"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![profile_id, action], row_to_draft)?;
+    let rows = stmt.query_map(
+        params![
+            profile_id,
+            action,
+            DraftStatus::Draft,
+            DraftStatus::Signed,
+            DraftStatus::BroadcastPending,
+            DraftStatus::Broadcasted
+        ],
+        row_to_draft,
+    )?;
     for r in rows {
         let row = r?;
         if draft_summary_covers_name(&row.summary_json, name) {
@@ -4627,11 +4880,18 @@ pub fn pending_broadcast_actions_for_name(
     let sql = format!(
         "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
          WHERE wallet_profile_id = ?1
-           AND status IN ('broadcast_pending','broadcasted')
+           AND status IN (?2, ?3)
          ORDER BY created_at DESC"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![profile_id], row_to_draft)?;
+    let rows = stmt.query_map(
+        params![
+            profile_id,
+            DraftStatus::BroadcastPending,
+            DraftStatus::Broadcasted
+        ],
+        row_to_draft,
+    )?;
     let mut out = Vec::new();
     for r in rows {
         let row = r?;
@@ -4697,8 +4957,8 @@ pub fn get_draft_status_by_txid(
     conn: &rusqlite::Connection,
     profile_id: &str,
     txid: &str,
-) -> Result<Option<String>, AppError> {
-    let status: Option<String> = conn
+) -> Result<Option<DraftStatus>, AppError> {
+    let status: Option<DraftStatus> = conn
         .query_row(
             "SELECT status FROM wallet_tx_drafts
              WHERE wallet_profile_id = ?1 AND txid = ?2
@@ -5204,6 +5464,42 @@ pub struct NameCoin {
     pub name_height: Option<i64>,
 }
 
+impl NameCoin {
+    /// The auction this coin's covenant commits to: `items[1]`, the start
+    /// height as a u32 LE, which hsd writes into BID, REVEAL, REDEEM and
+    /// REGISTER alike (`lib/covenants/rules.js`). `None` when the stored
+    /// covenant does not carry a 4-byte item there.
+    pub fn covenant_auction_start(&self) -> Option<i64> {
+        let item = hex::decode(covenant_item_hex(self.covenant_json.as_deref(), 1)?).ok()?;
+        let bytes: [u8; 4] = item.try_into().ok()?;
+        Some(i64::from(u32::from_le_bytes(bytes)))
+    }
+
+    /// Whether this coin belongs to the auction that opened at
+    /// `auction_start`, by the rule [`same_auction`] applies to bids.
+    pub fn belongs_to_auction(&self, auction_start: Option<i64>) -> bool {
+        same_auction(auction_start, self.covenant_auction_start())
+    }
+}
+
+/// Whether something placed in the auction that started at `placed` belongs to
+/// the auction that started at `auction_start`.
+///
+/// A name can be auctioned many times: one nobody reveals in lapses, an
+/// expired or revoked name opens again, so a bid or a reveal from a dead
+/// auction must not count in the live one. Two unknowns are deliberately
+/// permissive: a record with no auction of its own, and a caller that could
+/// not resolve the auction's start. Counting one that may be dead is a wrong
+/// number on screen, while hiding a live one is money the user is never told
+/// about. Only a recorded mismatch excludes.
+pub fn same_auction(auction_start: Option<i64>, placed: Option<i64>) -> bool {
+    match (auction_start, placed) {
+        (Some(start), Some(placed)) => placed == start,
+        (Some(_), None) => true,
+        (None, _) => true,
+    }
+}
+
 /// Find the spendable owner UTXO for `name`, joining name-state → tracked UTXO →
 /// derived address. `None` if we don't currently hold the name's coin.
 pub fn get_name_coin(
@@ -5259,7 +5555,7 @@ pub fn covenant_item_hex(covenant_json: Option<&str>, index: usize) -> Option<St
 
 /// Extract the name-hash hex from a stored covenant JSON blob — every
 /// Handshake name covenant carries the name hash as items[0].
-fn covenant_name_hash_hex(covenant_json: Option<&str>) -> Option<String> {
+pub(crate) fn covenant_name_hash_hex(covenant_json: Option<&str>) -> Option<String> {
     covenant_item_hex(covenant_json, 0)
 }
 
@@ -5313,6 +5609,34 @@ pub fn find_unspent_covenant_utxo(
     name: &str,
     name_hash_hex: &str,
 ) -> Result<Option<NameCoin>, AppError> {
+    find_unspent_covenant_utxo_of_auction(
+        conn,
+        profile_id,
+        address,
+        covenant_type,
+        name,
+        name_hash_hex,
+        None,
+    )
+}
+
+/// [`find_unspent_covenant_utxo`] among the coins of the auction that opened
+/// at `auction_start` ([`NameCoin::belongs_to_auction`]; `None` takes every
+/// auction). An address can be reused across auctions of one name, so this
+/// auction's BID coin may sit beside an earlier auction's, which can never be
+/// revealed: that one is not a second candidate, and refusing on it took
+/// Reveal and every capability of the name down. Two coins of the SAME
+/// auction at one address are still refused: each pairs with its own stored
+/// nonce, and picking one could reveal it with the other's.
+pub fn find_unspent_covenant_utxo_of_auction(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    address: &str,
+    covenant_type: i64,
+    name: &str,
+    name_hash_hex: &str,
+    auction_start: Option<i64>,
+) -> Result<Option<NameCoin>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT u.txid, u.vout, u.value_doos, u.address, d.branch, d.child_index,
                 u.covenant_type, u.covenant_json, NULL
@@ -5336,7 +5660,12 @@ pub fn find_unspent_covenant_utxo(
     let mut unknown: Vec<NameCoin> = Vec::new();
     for c in candidates {
         match covenant_name_hash_hex(c.covenant_json.as_deref()) {
-            Some(h) if h == want => matches.push(c),
+            Some(h) if h == want => {
+                // Another auction's coin of the name is not a candidate.
+                if c.belongs_to_auction(auction_start) {
+                    matches.push(c);
+                }
+            }
             Some(_) => {} // another name's coin — never touch it
             None => unknown.push(c),
         }
@@ -5546,22 +5875,11 @@ impl BidCommitmentRow {
     /// Whether this commitment belongs to the auction that opened at
     /// `auction_start`.
     ///
-    /// A name can be auctioned many times: one nobody reveals in lapses and the
-    /// name becomes available again, so a commitment from a dead auction must
-    /// not count as a bid on the live one.
-    ///
-    /// Two unknowns are deliberately permissive. A commitment recovered from
-    /// the chain rather than built here has no recorded auction (migration
-    /// 030), and a caller that could not resolve the auction's start passes
-    /// `None`; in both cases counting one that may be dead is a wrong number on
-    /// screen, while hiding a live one is a bid the user is never told to
-    /// reveal. Only a recorded mismatch excludes.
+    /// A commitment recovered from the chain rather than built here has no
+    /// recorded auction (migration 030); like a caller that could not resolve
+    /// the auction's start, it is not excluded ([`same_auction`]).
     pub fn belongs_to_auction(&self, auction_start: Option<i64>) -> bool {
-        match (auction_start, self.name_start_height) {
-            (Some(start), Some(placed)) => placed == start,
-            (Some(_), None) => true,
-            (None, _) => true,
-        }
+        same_auction(auction_start, self.name_start_height)
     }
 }
 
@@ -5766,14 +6084,18 @@ pub fn auction_position_names(
     profile_id: &str,
 ) -> Result<Vec<String>, AppError> {
     const RELEVANT_ACTIONS: [&str; 3] = ["open", "bid", "reveal"];
-    const IN_FLIGHT_STATUSES: [&str; 4] =
-        ["signed", "broadcast_pending", "broadcasted", "confirmed"];
+    const IN_FLIGHT_STATUSES: [DraftStatus; 4] = [
+        DraftStatus::Signed,
+        DraftStatus::BroadcastPending,
+        DraftStatus::Broadcasted,
+        DraftStatus::Confirmed,
+    ];
 
     let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     for draft in list_tx_drafts(conn, profile_id)? {
         if !RELEVANT_ACTIONS.contains(&draft.action.as_str())
-            || !IN_FLIGHT_STATUSES.contains(&draft.status.as_str())
+            || !IN_FLIGHT_STATUSES.contains(&draft.status)
         {
             continue;
         }
@@ -6029,7 +6351,8 @@ mod noncustodial_query_tests {
         assert_eq!(d.status, "signed");
         assert_eq!(d.signed_tx_hex.as_deref(), Some("0011aabb"));
 
-        update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("txidABC")).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Broadcasted, None, Some("txidABC"))
+            .unwrap();
         let d = get_tx_draft(&conn, "d1").unwrap().unwrap();
         assert_eq!(d.status, "broadcasted");
         assert_eq!(d.txid.as_deref(), Some("txidABC"));
@@ -6568,7 +6891,7 @@ mod noncustodial_query_tests {
         seed_profile(&conn, "p1");
         insert_tx_draft(&conn, "d1", "p1", "send_hns", "", "{}", "{}").unwrap();
 
-        update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("txid1")).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Broadcasted, None, Some("txid1")).unwrap();
         update_tx_draft_confirmation(&conn, "d1", 12345, None).unwrap();
         let d = get_tx_draft(&conn, "d1").unwrap().unwrap();
         assert_eq!(d.status, "confirmed");
@@ -6595,7 +6918,7 @@ mod noncustodial_query_tests {
         let conn = db();
         seed_profile(&conn, "p1");
         insert_tx_draft(&conn, "d1", "p1", "send_hns", "", "{}", "{}").unwrap();
-        update_tx_draft_status(&conn, "d1", "broadcast_pending", None, None).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::BroadcastPending, None, None).unwrap();
 
         update_tx_draft_confirmation(&conn, "d1", 999, Some("computed_txid")).unwrap();
         let d = get_tx_draft(&conn, "d1").unwrap().unwrap();
@@ -6609,7 +6932,7 @@ mod noncustodial_query_tests {
         let conn = db();
         seed_profile(&conn, "p1");
         insert_tx_draft(&conn, "d1", "p1", "send_hns", "", "{}", "{}").unwrap();
-        update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("txid1")).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Broadcasted, None, Some("txid1")).unwrap();
         update_tx_draft_confirmation(&conn, "d1", 12345, None).unwrap();
 
         revert_tx_draft_to_broadcasted(&conn, "d1", "reorg: tx no longer found at recorded height")
@@ -6633,20 +6956,42 @@ mod noncustodial_query_tests {
         insert_tx_draft(&conn, "d_draft", "p1", "send_hns", "", "{}", "{}").unwrap();
         // Broadcasted with txid → should appear.
         insert_tx_draft(&conn, "d_bcast", "p1", "send_hns", "", "{}", "{}").unwrap();
-        update_tx_draft_status(&conn, "d_bcast", "broadcasted", None, Some("txid1")).unwrap();
+        update_tx_draft_status(
+            &conn,
+            "d_bcast",
+            DraftStatus::Broadcasted,
+            None,
+            Some("txid1"),
+        )
+        .unwrap();
         // Confirmed with txid, shallow (well within finality depth) → should appear.
         insert_tx_draft(&conn, "d_conf", "p1", "send_hns", "", "{}", "{}").unwrap();
-        update_tx_draft_status(&conn, "d_conf", "confirmed", None, Some("txid2")).unwrap();
+        update_tx_draft_status(&conn, "d_conf", DraftStatus::Confirmed, None, Some("txid2"))
+            .unwrap();
         update_tx_draft_confirmation(&conn, "d_conf", 990, None).unwrap();
         // Broadcasted but NO txid → should NOT appear.
         insert_tx_draft(&conn, "d_notx", "p1", "send_hns", "", "{}", "{}").unwrap();
-        update_tx_draft_status(&conn, "d_notx", "broadcasted", None, None).unwrap();
+        update_tx_draft_status(&conn, "d_notx", DraftStatus::Broadcasted, None, None).unwrap();
         // broadcast_pending (no txid yet — it's only known locally) → should appear.
         insert_tx_draft(&conn, "d_pending", "p1", "send_hns", "", "{}", "{}").unwrap();
-        update_tx_draft_status(&conn, "d_pending", "broadcast_pending", None, None).unwrap();
+        update_tx_draft_status(
+            &conn,
+            "d_pending",
+            DraftStatus::BroadcastPending,
+            None,
+            None,
+        )
+        .unwrap();
         // Confirmed, deeply buried (>= finality depth) → should NOT appear.
         insert_tx_draft(&conn, "d_buried", "p1", "send_hns", "", "{}", "{}").unwrap();
-        update_tx_draft_status(&conn, "d_buried", "confirmed", None, Some("txid3")).unwrap();
+        update_tx_draft_status(
+            &conn,
+            "d_buried",
+            DraftStatus::Confirmed,
+            None,
+            Some("txid3"),
+        )
+        .unwrap();
         update_tx_draft_confirmation(&conn, "d_buried", 100, None).unwrap();
 
         // tip = 1000, finality depth = 12: d_conf has 1000-990+1=11 confs (< 12,
@@ -6686,12 +7031,12 @@ mod noncustodial_query_tests {
         assert!(!has_pending_bid_draft_for_name(&conn, "p1", "beta").unwrap());
 
         // Once dropped/failed, it no longer blocks a retry.
-        update_tx_draft_status(&conn, "d1", "dropped", None, None).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Dropped, None, None).unwrap();
         assert!(!has_pending_bid_draft_for_name(&conn, "p1", "alpha").unwrap());
 
         // signed / broadcast_pending / broadcasted all still count as pending.
         for status in ["signed", "broadcast_pending", "broadcasted"] {
-            update_tx_draft_status(&conn, "d1", status, None, None).unwrap();
+            update_tx_draft_status(&conn, "d1", status.parse().unwrap(), None, None).unwrap();
             assert!(
                 has_pending_bid_draft_for_name(&conn, "p1", "alpha").unwrap(),
                 "status {status} should still be considered pending"
@@ -6699,7 +7044,7 @@ mod noncustodial_query_tests {
         }
 
         // A non-bid action for the same name never counts, even in `draft`.
-        update_tx_draft_status(&conn, "d1", "draft", None, None).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Draft, None, None).unwrap();
         insert_tx_draft(
             &conn,
             "d2",
@@ -6739,7 +7084,7 @@ mod noncustodial_query_tests {
         assert!(!has_pending_bid_draft_for_name(&conn, "p1", "gamma").unwrap());
 
         // Dropping the batch draft frees all its names for a retry.
-        update_tx_draft_status(&conn, "db1", "dropped", None, None).unwrap();
+        update_tx_draft_status(&conn, "db1", DraftStatus::Dropped, None, None).unwrap();
         assert!(!has_pending_bid_draft_for_name(&conn, "p1", "alpha").unwrap());
         assert!(!has_pending_bid_draft_for_name(&conn, "p1", "beta").unwrap());
 
@@ -6784,7 +7129,7 @@ mod noncustodial_query_tests {
         // A different name is unaffected.
         assert!(!has_pending_draft_for_name(&conn, "p1", "open", "beta").unwrap());
 
-        update_tx_draft_status(&conn, "d1", "dropped", None, None).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Dropped, None, None).unwrap();
         assert!(!has_pending_draft_for_name(&conn, "p1", "open", "alpha").unwrap());
     }
 
@@ -6811,18 +7156,18 @@ mod noncustodial_query_tests {
         // Built but not sent — nothing is in flight.
         assert_eq!(pending("alpha"), None);
 
-        update_tx_draft_status(&conn, "d1", "signed", None, None).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Signed, None, None).unwrap();
         assert_eq!(pending("alpha"), None, "signed is still on this device");
 
-        update_tx_draft_status(&conn, "d1", "broadcasted", None, None).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Broadcasted, None, None).unwrap();
         assert_eq!(pending("alpha"), Some("reveal".to_string()));
         // Scoped to the name.
         assert_eq!(pending("beta"), None);
 
-        update_tx_draft_status(&conn, "d1", "confirmed", None, None).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Confirmed, None, None).unwrap();
         assert_eq!(pending("alpha"), None, "confirmed has settled");
 
-        update_tx_draft_status(&conn, "d1", "dropped", None, None).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Dropped, None, None).unwrap();
         assert_eq!(pending("alpha"), None, "dropped has settled");
     }
 
@@ -7298,6 +7643,38 @@ mod noncustodial_query_tests {
         // A no-op update against a non-existent id still succeeds because the
         // early return fires before any SQL runs.
         update_asset(&conn, 999, None, None, None, None, None, None, None).unwrap();
+    }
+
+    /// The auction a covenant commits to is `items[1]` as a u32 LE, as hsd
+    /// writes it (`rules.js`); anything but four bytes there is unknown.
+    #[test]
+    fn covenant_auction_start_reads_items_1_as_u32_le() {
+        let coin = |items: serde_json::Value| NameCoin {
+            txid: "t".into(),
+            vout: 0,
+            value: 0,
+            address: "a".into(),
+            branch: 0,
+            child_index: 0,
+            covenant_type: 4,
+            covenant_json: Some(serde_json::json!({ "type": 4, "items": items }).to_string()),
+            name_height: None,
+        };
+        let c = coin(serde_json::json!(["aa", "0b030000", "00"]));
+        assert_eq!(c.covenant_auction_start(), Some(779));
+        assert!(c.belongs_to_auction(Some(779)));
+        assert!(!c.belongs_to_auction(Some(111)));
+        assert!(c.belongs_to_auction(None));
+        let short = coin(serde_json::json!(["aa", "0b0300"]));
+        assert_eq!(short.covenant_auction_start(), None);
+        assert!(
+            short.belongs_to_auction(Some(111)),
+            "unknown is not excluded"
+        );
+        assert_eq!(
+            coin(serde_json::json!(["aa"])).covenant_auction_start(),
+            None
+        );
     }
 
     /// Item 4 (queries.rs:2113): `covenant_item_hex` returns `None` when the
@@ -8013,7 +8390,7 @@ mod noncustodial_query_tests {
 
         // Cannot delete a broadcasted draft
         insert_tx_draft(&conn, "d2", "p1", "send_hns", "", "{}", "{}").unwrap();
-        update_tx_draft_status(&conn, "d2", "broadcasted", None, Some("txid1")).unwrap();
+        update_tx_draft_status(&conn, "d2", DraftStatus::Broadcasted, None, Some("txid1")).unwrap();
         let err = delete_tx_draft(&conn, "d2").unwrap_err();
         match err {
             AppError::InvalidInput(msg) => assert!(msg.contains("broadcast")),
@@ -8362,7 +8739,7 @@ mod noncustodial_query_tests {
             r#"{"action":"bid","name":"bidname"}"#,
         )
         .unwrap();
-        update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("txid1")).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Broadcasted, None, Some("txid1")).unwrap();
 
         // Insert a signed open draft
         insert_tx_draft(
@@ -8375,7 +8752,7 @@ mod noncustodial_query_tests {
             r#"{"action":"open","name":"openname"}"#,
         )
         .unwrap();
-        update_tx_draft_status(&conn, "d2", "signed", None, None).unwrap();
+        update_tx_draft_status(&conn, "d2", DraftStatus::Signed, None, None).unwrap();
 
         // Insert a draft-status (not in-flight) — should be excluded
         insert_tx_draft(
@@ -8418,7 +8795,14 @@ mod noncustodial_query_tests {
             r#"{"action":"open","name":"vmp3rt3"}"#,
         )
         .unwrap();
-        update_tx_draft_status(&conn, "open3", "confirmed", None, Some("txid_open3")).unwrap();
+        update_tx_draft_status(
+            &conn,
+            "open3",
+            DraftStatus::Confirmed,
+            None,
+            Some("txid_open3"),
+        )
+        .unwrap();
 
         // vmp3rt3: bid draft also confirmed — reinforces the position.
         insert_tx_draft(
@@ -8431,7 +8815,14 @@ mod noncustodial_query_tests {
             r#"{"action":"bid","name":"vmp3rt3"}"#,
         )
         .unwrap();
-        update_tx_draft_status(&conn, "bid3", "confirmed", None, Some("txid_bid3")).unwrap();
+        update_tx_draft_status(
+            &conn,
+            "bid3",
+            DraftStatus::Confirmed,
+            None,
+            Some("txid_bid3"),
+        )
+        .unwrap();
 
         // vmp3rt4: open draft was broadcast then judged `dropped` (evicted /
         // reorg'd out, never landed). Not an in-flight status → must be excluded.
@@ -8445,7 +8836,14 @@ mod noncustodial_query_tests {
             r#"{"action":"open","name":"vmp3rt4"}"#,
         )
         .unwrap();
-        update_tx_draft_status(&conn, "open4", "dropped", None, Some("txid_open4")).unwrap();
+        update_tx_draft_status(
+            &conn,
+            "open4",
+            DraftStatus::Dropped,
+            None,
+            Some("txid_open4"),
+        )
+        .unwrap();
 
         let positions = auction_position_names(&conn, "p1").unwrap();
         assert!(
@@ -8482,7 +8880,8 @@ mod noncustodial_query_tests {
             .unwrap();
             // `draft` is the default; the others are set explicitly.
             if *status != "draft" {
-                update_tx_draft_status(&conn, &id, status, None, Some("txid")).unwrap();
+                update_tx_draft_status(&conn, &id, status.parse().unwrap(), None, Some("txid"))
+                    .unwrap();
             }
             let positions = auction_position_names(&conn, "p1").unwrap();
             assert!(
@@ -8657,7 +9056,7 @@ mod noncustodial_query_tests {
             r#"{"action":"batch-bid","nameList":["name1","name2"]}"#,
         )
         .unwrap();
-        update_tx_draft_status(&conn, "batch_d1", "signed", None, None).unwrap();
+        update_tx_draft_status(&conn, "batch_d1", DraftStatus::Signed, None, None).unwrap();
 
         // Now the check should return true (batch-bid draft exists)
         assert!(has_pending_bid_draft_for_name(&conn, "p1", "name1").unwrap());
@@ -8743,7 +9142,7 @@ mod noncustodial_query_tests {
 
         // Insert a broadcasted draft (should be included)
         insert_tx_draft(&conn, "d1", "p1", "bid", "", "{}", r#"{"action":"bid"}"#).unwrap();
-        update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("txid1")).unwrap();
+        update_tx_draft_status(&conn, "d1", DraftStatus::Broadcasted, None, Some("txid1")).unwrap();
 
         // Insert a draft-status draft (should NOT be included)
         insert_tx_draft(&conn, "d2", "p1", "bid", "", "{}", r#"{"action":"bid"}"#).unwrap();

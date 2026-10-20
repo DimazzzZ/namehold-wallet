@@ -307,10 +307,10 @@ async fn export_returns_all_fields_for_every_commitment() {
         id
     };
 
-    let app = mock_app_with(state);
-    let json = bids::export_bid_commitments(app.state(), Some(profile_id))
-        .await
-        .expect("export should succeed");
+    let json = {
+        let conn = state.db.lock().unwrap();
+        bids::bid_backup_json(&conn, &profile_id).expect("export should succeed")
+    };
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     let arr = v.as_array().expect("export must be a JSON array");
     assert_eq!(arr.len(), 2);
@@ -342,10 +342,10 @@ async fn export_empty_for_profile_with_no_commitments() {
         let conn = state.db.lock().unwrap();
         insert_valid_profile(&conn, "regtest")
     };
-    let app = mock_app_with(state);
-    let json = bids::export_bid_commitments(app.state(), Some(profile_id))
-        .await
-        .unwrap();
+    let json = {
+        let conn = state.db.lock().unwrap();
+        bids::bid_backup_json(&conn, &profile_id).unwrap()
+    };
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(v.as_array().unwrap().len(), 0);
 }
@@ -1138,4 +1138,208 @@ async fn brute_force_skips_coin_with_non_20_byte_program() {
         .await
         .expect("should skip P2WSH coin");
     assert_eq!(result.address, good_addr);
+}
+
+// --- bid backup saved by the backend ------------------------------------------
+
+fn backup_path(tag: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    std::env::temp_dir().join(format!(
+        "namehold_bid_backup_{tag}_{}_{}.json",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ))
+}
+
+#[tokio::test]
+async fn save_bid_backup_writes_the_exact_exported_json() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        db::queries::insert_bid_commitment(
+            &conn,
+            &id,
+            "namea",
+            "aabb",
+            "rs1qaddrA",
+            0,
+            0,
+            1000,
+            2000,
+            &"11".repeat(32),
+            &"22".repeat(32),
+        )
+        .unwrap();
+        id
+    };
+    let path = backup_path("ok");
+    let app = mock_app_with(state);
+
+    bids::save_bid_backup(
+        app.state(),
+        Some(profile_id.clone()),
+        path.to_string_lossy().into_owned(),
+    )
+    .await
+    .expect("save should succeed");
+
+    let expected = {
+        let state = app.state::<crate::AppState>();
+        let conn = state.db.lock().unwrap();
+        bids::bid_backup_json(&conn, &profile_id).unwrap()
+    };
+    let written = std::fs::read_to_string(&path).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "the backup holds secrets: owner only");
+    }
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(written, expected);
+    assert!(written.contains(&"22".repeat(32)));
+}
+
+#[tokio::test]
+async fn save_bid_backup_to_an_unwritable_path_is_an_error() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest")
+    };
+    let path = backup_path("bad").join("no-such-dir").join("backup.json");
+    let app = mock_app_with(state);
+
+    let err = bids::save_bid_backup(
+        app.state(),
+        Some(profile_id),
+        path.to_string_lossy().into_owned(),
+    )
+    .await
+    .expect_err("an unwritable path must fail");
+    assert!(matches!(err, crate::error::AppError::Io(_)), "{err:?}");
+    assert!(!path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn save_bid_backup_over_an_existing_file_makes_it_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        db::queries::insert_bid_commitment(
+            &conn,
+            &id,
+            "namea",
+            "aabb",
+            "rs1qaddrA",
+            0,
+            0,
+            1000,
+            2000,
+            &"11".repeat(32),
+            &"22".repeat(32),
+        )
+        .unwrap();
+        id
+    };
+    let path = backup_path("existing");
+    std::fs::write(
+        &path,
+        "an older, longer file that is world readable ....................",
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let expected = {
+        let conn = state.db.lock().unwrap();
+        bids::bid_backup_json(&conn, &profile_id).unwrap()
+    };
+    let app = mock_app_with(state);
+
+    bids::save_bid_backup(
+        app.state(),
+        Some(profile_id),
+        path.to_string_lossy().into_owned(),
+    )
+    .await
+    .expect("save should succeed");
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    let written = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        mode & 0o777,
+        0o600,
+        "an existing file must become owner only"
+    );
+    assert_eq!(written, expected);
+}
+
+/// F3: the path comes from the webview (SECURITY.md §1). A symbolic link
+/// there is refused, and the file it points to keeps its bytes and its mode.
+#[cfg(unix)]
+#[tokio::test]
+async fn save_bid_backup_to_a_symlink_is_refused_and_its_target_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest")
+    };
+    let target = backup_path("target");
+    std::fs::write(&target, "the user's own file").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let link = backup_path("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let app = mock_app_with(state);
+
+    let err = bids::save_bid_backup(
+        app.state(),
+        Some(profile_id),
+        link.to_string_lossy().into_owned(),
+    )
+    .await
+    .expect_err("a symlink must be refused");
+    let content = std::fs::read_to_string(&target).unwrap();
+    let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+    std::fs::remove_file(&link).unwrap();
+    std::fs::remove_file(&target).unwrap();
+    assert!(
+        err.to_string()
+            .contains(crate::commands::user_file::SAVE_TO_SYMLINK),
+        "{err:?}"
+    );
+    assert_eq!(content, "the user's own file");
+    assert_eq!(mode & 0o777, 0o644, "the link's target keeps its mode");
+}
+
+/// F3: a path that is not a regular file (here a directory) is refused.
+#[tokio::test]
+async fn save_bid_backup_to_a_directory_is_refused() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest")
+    };
+    let dir = backup_path("dir");
+    std::fs::create_dir(&dir).unwrap();
+    let app = mock_app_with(state);
+
+    let err = bids::save_bid_backup(
+        app.state(),
+        Some(profile_id),
+        dir.to_string_lossy().into_owned(),
+    )
+    .await
+    .expect_err("a directory must be refused");
+    std::fs::remove_dir(&dir).unwrap();
+    assert!(
+        err.to_string()
+            .contains(crate::commands::user_file::SAVE_TO_NON_FILE),
+        "{err:?}"
+    );
 }

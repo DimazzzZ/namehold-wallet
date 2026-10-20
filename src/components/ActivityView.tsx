@@ -1,7 +1,9 @@
+import { isSignerUnlockedFor } from "../lib/signer";
 import { explorerCoversNetwork } from "../lib/openExternal";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useActionHistory } from "../queries/read";
+import { invalidatePurchaseViews, PURCHASE_ACTION } from "../queries/shakedex";
 import {
   useActiveProfile,
   useTxDrafts,
@@ -448,10 +450,11 @@ export function ActivityRow({
   const { data: signer } = useSignerSession();
   const execDraft = useExecuteDraft();
   const deleteDraft = useDeleteTxDraft();
+  const qc = useQueryClient();
   const showToast = useUiStore((s) => s.showToast);
   const [actionBusy, setActionBusy] = useState(false);
 
-  const unlocked = signer?.unlocked ?? false;
+  const unlocked = isSignerUnlockedFor(signer, profileId);
   const draftActions = draftActionsForStatus(row.status);
   const canAct = enableDraftActions && row.draftId != null;
 
@@ -466,6 +469,8 @@ export function ActivityRow({
       const prefix = stage === "broadcast" ? "Broadcast failed" : "Signing failed";
       showToast(`${prefix}: ${mapError(e)}`, "error");
     } finally {
+      // A purchase's send, whichever way it ended, moves its purchase record.
+      if (row.action === PURCHASE_ACTION) invalidatePurchaseViews(qc);
       setActionBusy(false);
     }
   };
@@ -486,6 +491,8 @@ export function ActivityRow({
     } catch (e) {
       showToast(mapError(e), "error");
     } finally {
+      // The discard deleted the purchase record Owned Names and the market read.
+      if (row.action === PURCHASE_ACTION) invalidatePurchaseViews(qc);
       setActionBusy(false);
     }
   };

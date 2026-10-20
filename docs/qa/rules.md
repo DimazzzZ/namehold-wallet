@@ -21,7 +21,7 @@ These rules apply to every run of every case in this library. A case never relax
 - **Never reset the chain without asking the maintainer** (`scripts/regtest.sh reset` wipes it). Stopping and restarting the node keeps it.
 - **Never use `invalidateblock`, `reconsiderblock` or `setmocktime`** on the shared node: a reorg or a forward clock offset changes the chain for every later run. Where the median time must move, wait in real time, then mine 11 blocks ([mine-and-sync](procedures/mine-and-sync.md)).
 - **Mining budget.** Regtest halves the block subsidy every 2 500 blocks; funding the hsd wallet, the CLI and the app by mining starts to hurt near height 25 000, and the Shakedex buyer refuses a chain past 30 000. Every case states the blocks it mines; record the height at the start and end of every case. **If the height passes 24 000, stop and ask.** The live Rust test suites mine about 12 000 blocks per full run: never run them as part of a GUI run.
-- **Don't buy a listing the app itself locked**, from any profile of the same recovery phrase. Buying your own listing is not refused (a known issue, [ui](ui.md#known-issues-not-to-report-again)) and wastes fees and blocks.
+- **A listing the app itself locked is not bought**, from any profile of the same recovery phrase: its Buy is disabled with "this is your own listing: cancel it instead (My listings), buying it would only cost you network fees" ([B17](scenarios/shakedex/buying.md)). Never work around that refusal (by editing a listing file, say): such a purchase only wastes fees and blocks.
 
 ## Tooling
 

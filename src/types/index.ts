@@ -622,6 +622,8 @@ export type AuctionTaskState =
   | "revealDoneWaitingForClose"
   | "wonNeedsRegister"
   | "lostNeedsRedeem"
+  | "lostUnrevealed"
+  | "closedResultUnknown"
   | "transferPendingFinalize"
   | "ownedNoUrgentAction"
   | "expiringSoon"
@@ -708,12 +710,25 @@ export interface NameActionCapabilities {
   pendingBroadcastAction: string | null;
   /**
    * Bids placed in an EARLIER auction of the same name whose lockup is
-   * stranded — the auction closed without a reveal, so it can be neither
-   * revealed nor redeemed. Scoping the bids panel by auction hid these, which
-   * leaves money missing with nothing on screen to explain it.
+   * stranded: never revealed, or revealed and never redeemed, and the name has
+   * moved on to another auction, so it can be neither revealed nor redeemed.
+   * Scoping the bids panel by auction hid these, which leaves money missing
+   * with nothing on screen to explain it.
    */
   strandedBidCount: number;
   strandedLockupDoos: number;
+  /**
+   * Candidates for a stranded lockup that no node could be asked about
+   * (offline, an unsynced node, or one that did not answer): neither stranded
+   * nor cleared. Not a loss verdict; the UI says it could not check them.
+   */
+  strandedUncheckedCount: number;
+  /**
+   * Our losing reveals can no longer be redeemed: the name expires with the
+   * next block and nothing else of ours sets a task. `nextActionReason` says
+   * why; the modal shows it on this flag.
+   */
+  redeemWindowClosing: boolean;
   /**
    * Losing reveals a REDEEM would reclaim on this name, and what they are
    * worth. "Redeem" is a covenant name, not an explanation — the button says
@@ -859,6 +874,8 @@ export interface MarketRow {
   floorPrice: number;
   steps: PriceStepView[];
   expiresAt: number | null;
+  /** Locked to one of this device's own lock addresses (R33): Buy shows disabled, with `OWN_LISTING`. */
+  own: boolean;
 }
 
 export interface HiddenCounts {

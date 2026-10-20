@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -17,7 +17,6 @@ vi.mock("../../lib/invoke", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
-vi.mock("@tauri-apps/plugin-fs", () => ({ readTextFile: vi.fn(), writeTextFile: vi.fn() }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn(),
   readText: vi.fn().mockResolvedValue(""),
@@ -26,6 +25,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 import { WalletView } from "../WalletView";
 import { AuctionsView } from "../AuctionsView";
 import { NameActionsModal } from "../NameActionsModal";
+import { makeCapabilities, refused } from "../../test/fixtures/capabilities";
 
 const profile = {
   id: "p1",
@@ -521,9 +521,157 @@ describe("NameActionsModal — guided acquisition flow", () => {
     render(<NameActionsModal name="reopened" open onClose={() => {}} />, { wrapper: wrapper() });
 
     const notice = await screen.findByTestId("stranded-bids");
-    expect(notice).toHaveTextContent("1 bid from an earlier auction of this name");
+    expect(notice).toHaveTextContent("1 bid of yours from an auction that is over");
     expect(notice).toHaveTextContent("100 HNS is still locked");
     expect(notice).toHaveTextContent(/cannot be recovered/i);
+  });
+
+  it("names the lockup stranded on an expired name with no later auction", async () => {
+    // Nobody revealed, so the name expired as the auction closed and reads
+    // Available again: there is no later auction, and the stranded coin is a
+    // bid never revealed, not a losing reveal.
+    invokeMock.mockImplementation(
+      routeModal(
+        { name: "lapsedname", state: "AVAILABLE", height: null, stats: null },
+        {
+          capabilities: makeCapabilities({
+            name: "lapsedname",
+            phase: "AVAILABLE",
+            taskState: "availableToOpen",
+            canOpen: { allowed: true, reason: null },
+            nextActionKey: "OPEN",
+            nextActionLabel: "Open Auction",
+            strandedBidCount: 2,
+            strandedLockupDoos: 3_000_000,
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="lapsedname" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    const notice = await screen.findByTestId("stranded-bids");
+    expect(notice).toHaveTextContent("2 bids of yours from auctions that are over");
+    expect(notice).toHaveTextContent("3 HNS is still locked in them");
+    expect(notice).not.toHaveTextContent(/earlier auction/i);
+    expect(notice).not.toHaveTextContent(/losing reveal/i);
+    expect(notice).toHaveTextContent(/cannot be recovered/i);
+  });
+
+  it("says the bids could not be checked when no node confirmed the stranded candidates", async () => {
+    // Offline on an expired name: our bid of the lapsed auction is a candidate
+    // no node could be asked about. Not a loss verdict, and not "nothing
+    // stranded" either.
+    invokeMock.mockImplementation(
+      routeModal(
+        { name: "offlinelapsed", state: "AVAILABLE", height: null, stats: null },
+        {
+          capabilities: makeCapabilities({
+            name: "offlinelapsed",
+            phase: "AVAILABLE",
+            taskState: "availableToOpen",
+            canOpen: { allowed: true, reason: null },
+            nextActionKey: "OPEN",
+            nextActionLabel: "Open Auction",
+            strandedUncheckedCount: 1,
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="offlinelapsed" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    const line = await screen.findByTestId("stranded-unchecked");
+    expect(line).toHaveTextContent(
+      "Some of your bids on this name could not be checked — sync with your node to see whether a lockup was lost.",
+    );
+    expect(screen.queryByTestId("stranded-bids")).toBeNull();
+    expect(line).not.toHaveTextContent(/cannot be recovered/i);
+  });
+
+  it("says nothing about unchecked bids when every candidate was checked", async () => {
+    invokeMock.mockImplementation(
+      routeModal(
+        { name: "checked", state: "AVAILABLE", height: null, stats: null },
+        {
+          capabilities: makeCapabilities({
+            name: "checked",
+            phase: "AVAILABLE",
+            taskState: "availableToOpen",
+            canOpen: { allowed: true, reason: null },
+            nextActionKey: "OPEN",
+            nextActionLabel: "Open Auction",
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="checked" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    expect(await screen.findByText("Open Auction")).toBeInTheDocument();
+    expect(screen.queryByTestId("stranded-unchecked")).toBeNull();
+  });
+
+  it("says why our losing reveals have no redeem in the last block before expiry", async () => {
+    // One block of the name left: hsd takes no redeem in the block it expires
+    // in, so the backend reports no task, with the reason. No "Redeem" urgency
+    // and no "nothing to do here" either.
+    const reason =
+      "Your losing bids on this name can no longer be redeemed: the name expires with the next block, and hsd takes no redeem of it from then on.";
+    invokeMock.mockImplementation(
+      routeModal(
+        {
+          name: "lastblock",
+          state: "CLOSED",
+          height: 100,
+          stats: { blocksUntilExpire: 1, daysUntilExpire: 0.01 },
+        },
+        {
+          capabilities: makeCapabilities({
+            name: "lastblock",
+            phase: "CLOSED",
+            taskState: "unavailableOther",
+            hasRevealCoin: true,
+            redeemableRevealCount: 1,
+            redeemableValueDoos: 2_000_000,
+            canRedeem: refused(
+              "the name expires with the next block, and hsd takes no redeem of it from then on",
+            ),
+            nextActionReason: reason,
+            redeemWindowClosing: true,
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="lastblock" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    expect(await screen.findByTestId("no-task-reason")).toHaveTextContent(reason);
+    expect(screen.queryByText(/No auction actions are needed/)).toBeNull();
+    expect(screen.queryByTestId("guided-redeem")).toBeNull();
+  });
+
+  it("shows no fallback reason for a name without a task", async () => {
+    // The backend's fallback capabilities (node unreachable, no profile) have
+    // no task and an internal reason; it is not shown as the name's status.
+    invokeMock.mockImplementation(
+      routeModal(
+        { name: "fallback", state: "CLOSED", height: 100, stats: null },
+        {
+          capabilities: makeCapabilities({
+            name: "fallback",
+            phase: "UNKNOWN",
+            taskState: "unavailableOther",
+            nextActionReason: "node unreachable",
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="fallback" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    expect(await screen.findByText(/No auction actions are needed/)).toBeInTheDocument();
+    expect(screen.queryByTestId("no-task-reason")).toBeNull();
+    expect(screen.queryByText("node unreachable")).toBeNull();
   });
 
   it("shows Bid for a BIDDING name", async () => {
@@ -805,6 +953,135 @@ describe("NameActionsModal — guided acquisition flow", () => {
     expect(
       screen.queryByText(/This name is already registered\. No auction actions are needed/i),
     ).not.toBeInTheDocument();
+  });
+
+  it("says a bid never revealed lost its lockup, not that the name is someone else's", async () => {
+    const reason =
+      "You did not reveal this bid in time; its lockup is lost and cannot be redeemed.";
+    invokeMock.mockImplementation(
+      routeModal(
+        {
+          name: "unrevealedname",
+          state: "CLOSED",
+          height: 100,
+          renewal: 200,
+          owner: { hash: "ab".repeat(32), index: 0 },
+          registered: false,
+          value: 800_000,
+          highest: 800_000,
+          stats: { blocksUntilExpire: 100 },
+        },
+        {
+          capabilities: makeCapabilities({
+            name: "unrevealedname",
+            phase: "CLOSED",
+            taskState: "lostUnrevealed",
+            ownsName: false,
+            hasBidCommitment: true,
+            hasBidCoin: true,
+            canRedeem: refused("no unspent reveal coin to redeem"),
+            nextActionKey: null,
+            nextActionLabel: "Lost — Not Revealed",
+            nextActionReason: reason,
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="unrevealedname" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    expect(await screen.findByTestId("lost-unrevealed")).toHaveTextContent(reason);
+    expect(
+      screen.queryByText(/This name is already registered\. No auction actions are needed/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Redeem$/i })).not.toBeInTheDocument();
+  });
+
+  it("says a closed auction's bid is not settled yet offline, not that the name is owned or someone else's", async () => {
+    const reason =
+      "This auction closed with a bid of yours the wallet cannot settle yet. Sync with your node, then Refresh to see whether it was revealed in time.";
+    invokeMock.mockImplementation(
+      routeModal(
+        {
+          name: "unsettledname",
+          state: "CLOSED",
+          height: 100,
+          renewal: 200,
+          owner: { hash: "ab".repeat(32), index: 0 },
+          registered: false,
+          value: 800_000,
+          highest: 800_000,
+          stats: { blocksUntilExpire: 100 },
+        },
+        {
+          capabilities: makeCapabilities({
+            name: "unsettledname",
+            phase: "CLOSED",
+            taskState: "closedResultUnknown",
+            ownsName: false,
+            hasBidCommitment: true,
+            hasBidCoin: true,
+            canRedeem: refused("no unspent reveal coin to redeem"),
+            nextActionKey: null,
+            nextActionLabel: "Closed — Sync to See Result",
+            nextActionReason: reason,
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="unsettledname" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    expect(await screen.findByTestId("closed-result-unknown")).toHaveTextContent(reason);
+    expect(screen.getByTestId("name-phase")).toHaveTextContent("Closed — Sync to See Result");
+    expect(screen.queryByText(/^Owned$/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/already registered/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Redeem$/i })).not.toBeInTheDocument();
+  });
+
+  it("offers Redeem on a revoked name holding a losing reveal of ours", async () => {
+    // hsd lets an auction's losers redeem "even in a revoked state" until the
+    // revoked name expires, so a rival's revoke must not hide the button.
+    const reason = "Your bid lost. Redeem your reveal coin to reclaim the funds.";
+    invokeMock.mockImplementation(
+      routeModal(
+        {
+          name: "revokedname",
+          state: "REVOKED",
+          height: 100,
+          renewal: 140,
+          owner: { hash: "ab".repeat(32), index: 0 },
+          registered: true,
+          value: 800_000,
+          highest: 800_000,
+          stats: { revokePeriodStart: 150, revokePeriodEnd: 215, blocksUntilReopen: 30 },
+        },
+        {
+          capabilities: makeCapabilities({
+            name: "revokedname",
+            phase: "REVOKED",
+            taskState: "lostNeedsRedeem",
+            ownsName: false,
+            hasRevealCoin: true,
+            redeemableRevealCount: 1,
+            redeemableValueDoos: 300_000,
+            canRedeem: { allowed: true, reason: null },
+            nextActionKey: "REDEEM",
+            nextActionLabel: "Redeem Lockup",
+            nextActionReason: reason,
+          }),
+        },
+      ),
+    );
+    render(<NameActionsModal name="revokedname" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    const panel = await screen.findByTestId("guided-redeem");
+    expect(panel).toHaveTextContent(reason);
+    expect(within(panel).getByRole("button", { name: /^Redeem$/i })).toBeEnabled();
   });
 
   it("auto-expands the management section for an owned name without clicking the toggle", async () => {

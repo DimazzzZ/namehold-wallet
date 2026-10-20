@@ -10,7 +10,6 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
-vi.mock("@tauri-apps/plugin-fs", () => ({ readTextFile: vi.fn(), writeTextFile: vi.fn() }));
 
 import { AuctionsView } from "../AuctionsView";
 
@@ -235,6 +234,30 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
     await screen.findByText(/No active auctions/i);
     expect(screen.queryByText(".donename")).not.toBeInTheDocument();
     expect(screen.getByText(/Active Auctions \(0\)/i)).toBeInTheDocument();
+  });
+
+  it("keeps a position whose closed auction has a bid of ours not settled yet (offline)", async () => {
+    invokeMock.mockImplementation(
+      baseRoutes({
+        positions: ["unsettled"],
+        names: [],
+        capsByName: {
+          unsettled: baseCaps("unsettled", {
+            phase: "CLOSED",
+            taskState: "closedResultUnknown",
+            hasBidCommitment: true,
+            hasBidCoin: true,
+            nextActionKey: null,
+            nextActionLabel: "Closed — Sync to See Result",
+          }),
+        },
+      }),
+    );
+    render(<AuctionsView />, { wrapper: wrapper() });
+
+    // The lockup is ours and its outcome unknown: the row must not vanish.
+    expect(await screen.findByText(".unsettled")).toBeInTheDocument();
+    expect(screen.getByText(/Active Auctions \(1\)/i)).toBeInTheDocument();
   });
 
   it("a confirmed open whose caps are still availableToOpen shows 'In auction' / 'View' — never invites a re-open", async () => {

@@ -37,7 +37,7 @@ credentials.*
 .vscode/
 .idea/
 .mimocode/
-# Agent working files (plans, specs drafts): kept locally, like .mimocode/
+# Agent working files (plans, specs drafts): kept locally
 docs/superpowers/
 .clinerules/
 .cline/

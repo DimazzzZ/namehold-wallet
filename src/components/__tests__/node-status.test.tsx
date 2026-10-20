@@ -4,11 +4,11 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
+import settingsSource from "../Settings.tsx?raw";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
-vi.mock("@tauri-apps/plugin-fs", () => ({ readTextFile: vi.fn(), writeTextFile: vi.fn() }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn(),
   readText: vi.fn().mockResolvedValue(""),
@@ -427,9 +427,8 @@ describe("Node status (truthful, RPC-based)", () => {
 });
 
 describe("Settings — bid backup export (Task 2 / C2)", () => {
-  it("shows a warning to back up alongside the seed, calls export_bid_commitments, and writes the file", async () => {
+  it("shows a warning to back up alongside the seed, has the backend write the file at the chosen path", async () => {
     const { save } = await import("@tauri-apps/plugin-dialog");
-    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     (save as unknown as ReturnType<typeof vi.fn>).mockResolvedValue("/tmp/bid-backup.json");
 
     invokeMock.mockImplementation((cmd: string) => {
@@ -451,8 +450,8 @@ describe("Settings — bid backup export (Task 2 / C2)", () => {
             canWrite: false,
             reason: null,
           });
-        case "export_bid_commitments":
-          return Promise.resolve('[{"name":"example"}]');
+        case "save_bid_backup":
+          return Promise.resolve(null);
         default:
           return Promise.resolve(null);
       }
@@ -468,18 +467,22 @@ describe("Settings — bid backup export (Task 2 / C2)", () => {
     fireEvent.click(button);
 
     await waitFor(() => {
-      expect(invokeMock.mock.calls.map((c) => c[0])).toContain("export_bid_commitments");
+      expect(invokeMock).toHaveBeenCalledWith("save_bid_backup", {
+        walletProfileId: profile.id,
+        path: "/tmp/bid-backup.json",
+      });
     });
-    await waitFor(() => {
-      expect(writeTextFile).toHaveBeenCalledWith("/tmp/bid-backup.json", '[{"name":"example"}]');
-    });
+    // The file is written by the backend: the webview has no fs permission.
+    expect(invokeMock.mock.calls.map((c) => c[0])).not.toContain("export_bid_commitments");
+  });
+
+  it("does not import the fs plugin", () => {
+    expect(settingsSource).not.toContain("plugin-fs");
   });
 
   it("does nothing when the save dialog is cancelled", async () => {
     const { save } = await import("@tauri-apps/plugin-dialog");
-    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     (save as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(null);
-    (writeTextFile as unknown as ReturnType<typeof vi.fn>).mockClear();
 
     invokeMock.mockImplementation((cmd: string) => {
       switch (cmd) {
@@ -500,8 +503,8 @@ describe("Settings — bid backup export (Task 2 / C2)", () => {
             canWrite: false,
             reason: null,
           });
-        case "export_bid_commitments":
-          return Promise.resolve("[]");
+        case "save_bid_backup":
+          return Promise.resolve(null);
         default:
           return Promise.resolve(null);
       }
@@ -512,10 +515,8 @@ describe("Settings — bid backup export (Task 2 / C2)", () => {
     await waitFor(() => expect(button).not.toBeDisabled());
     fireEvent.click(button);
 
-    await waitFor(() => {
-      expect(invokeMock.mock.calls.map((c) => c[0])).toContain("export_bid_commitments");
-    });
-    expect(writeTextFile).not.toHaveBeenCalled();
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(invokeMock.mock.calls.map((c) => c[0])).not.toContain("save_bid_backup");
   });
 });
 

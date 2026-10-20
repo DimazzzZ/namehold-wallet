@@ -13,7 +13,6 @@ import { screen, waitFor, fireEvent } from "@testing-library/react";
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
-vi.mock("@tauri-apps/plugin-fs", () => ({ readTextFile: vi.fn(), writeTextFile: vi.fn() }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn(),
   readText: vi.fn().mockResolvedValue(""),
@@ -60,7 +59,7 @@ describe("Settings — Autostart HSD checkbox", () => {
     fireEvent.click(box); // "true" -> "false"
     expect(box).not.toBeChecked();
 
-    const save = await screen.findByRole("button", { name: /Save settings/i });
+    const save = await screen.findByTestId("settings-save");
     fireEvent.click(save);
 
     await waitFor(() => {

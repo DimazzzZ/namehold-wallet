@@ -8,6 +8,7 @@ use rusqlite::Connection;
 use serde_json::json;
 
 use crate::db::queries::{self, ListingMode, ListingState, MarketStatus, ShakedexListing};
+use crate::db::sync_lock::LockLost;
 use crate::market::learnhns::LearnHnsClient;
 use crate::noncustodial::derivation;
 use crate::noncustodial::hd::ExtendedPrivKey;
@@ -73,8 +74,14 @@ fn fx_at(state: ListingState, publish: bool, mtp: u64) -> Fx {
         .unwrap()
         .address;
     queries::insert_tx_draft(&conn, "lockd", PROFILE, sell::LOCK_ACTION, "00", "{}", "{}").unwrap();
-    queries::update_tx_draft_status(&conn, "lockd", "broadcasted", None, Some(&txid("e1")))
-        .unwrap();
+    queries::update_tx_draft_status(
+        &conn,
+        "lockd",
+        queries::DraftStatus::Broadcasted,
+        None,
+        Some(&txid("e1")),
+    )
+    .unwrap();
     let locked = !matches!(state, ListingState::Locking | ListingState::ReadyToFinalize);
     let (steps_json, file) = if locked {
         let step = signed_step(&key, &payment, PRICE, sell::buy_now_lock_time(mtp));
@@ -235,9 +242,16 @@ fn client(s: &ServerGuard) -> LearnHnsClient {
 }
 
 async fn publish(f: &Fx, node: &MockNodeRpc, s: &ServerGuard, now: i64) {
-    publish_listings_with_client(&f.conn, node, &client(s), PROFILE, now)
-        .await
-        .unwrap();
+    publish_listings_with_client(
+        &f.conn,
+        node,
+        &client(s),
+        PROFILE,
+        now,
+        &LockLost::default(),
+    )
+    .await
+    .unwrap();
 }
 
 /// The market's upload acceptance (`UPLOAD_ACCEPTED`, MKT's shape) for
@@ -271,11 +285,18 @@ async fn publishes_pending_on_day_zero() {
     let m = m.expect(1).create_async().await;
     let n = MockNodeRpc::new();
     // The day-0 draft not sent yet: nothing.
-    queries::update_tx_draft_status(&f.conn, "lockd", "signed", None, None).unwrap();
+    queries::update_tx_draft_status(&f.conn, "lockd", queries::DraftStatus::Signed, None, None)
+        .unwrap();
     publish(&f, &n, &s, NOW).await;
     assert!(seen.lock().unwrap().is_empty());
-    queries::update_tx_draft_status(&f.conn, "lockd", "broadcasted", None, Some(&txid("e1")))
-        .unwrap();
+    queries::update_tx_draft_status(
+        &f.conn,
+        "lockd",
+        queries::DraftStatus::Broadcasted,
+        None,
+        Some(&txid("e1")),
+    )
+    .unwrap();
     publish(&f, &n, &s, NOW).await;
     publish(&f, &n, &s, NOW + 7_200).await;
     m.assert_async().await;
@@ -397,7 +418,7 @@ async fn nothing_published_when_the_box_is_off() {
         let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
         let n = node(&f, TIP);
         publish(&f, &n, &s, NOW).await;
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW)
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
             .await
             .unwrap();
         any.assert_async().await;
@@ -477,7 +498,7 @@ async fn nothing_published_off_mainnet() {
         let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
         let n = node(&f, TIP);
         publish(&f, &n, &s, NOW).await;
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW)
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
             .await
             .unwrap();
         any.assert_async().await;
@@ -1107,9 +1128,16 @@ fn listing_file_market_copy(stored: &str) -> String {
 }
 
 async fn keep(f: &Fx, s: &ServerGuard, now: i64) {
-    keep_listed_with_client(&f.conn, &node(f, TIP), &client(s), PROFILE, now)
-        .await
-        .unwrap();
+    keep_listed_with_client(
+        &f.conn,
+        &node(f, TIP),
+        &client(s),
+        PROFILE,
+        now,
+        &LockLost::default(),
+    )
+    .await
+    .unwrap();
 }
 
 /// The market serves `body` (200) as its copy of NAME.
@@ -1148,9 +1176,16 @@ async fn reuploads_when_replaced() {
 }
 
 async fn keep_at(f: &Fx, s: &ServerGuard, now: i64, mtp: u64) {
-    keep_listed_with_client(&f.conn, &node_at(f, TIP, mtp), &client(s), PROFILE, now)
-        .await
-        .unwrap();
+    keep_listed_with_client(
+        &f.conn,
+        &node_at(f, TIP, mtp),
+        &client(s),
+        PROFILE,
+        now,
+        &LockLost::default(),
+    )
+    .await
+    .unwrap();
 }
 
 /// [`uploads_current_step_only`]'s first upload: a reverse auction of
@@ -1255,9 +1290,16 @@ async fn foreign_copy_after_the_step_moved_is_replaced() {
 }
 
 async fn advance(f: &Fx, node: &MockNodeRpc, s: &ServerGuard, now: i64) {
-    advance_reverse_auctions_with_client(&f.conn, node, &client(s), PROFILE, now)
-        .await
-        .unwrap();
+    advance_reverse_auctions_with_client(
+        &f.conn,
+        node,
+        &client(s),
+        PROFILE,
+        now,
+        &LockLost::default(),
+    )
+    .await
+    .unwrap();
 }
 
 /// A Listed reverse auction on [`schedule`] whose current step at MTP
@@ -1462,9 +1504,16 @@ async fn our_earlier_step_on_the_market_is_not_a_replacement() {
     let mut s = market().await;
     let _get = copy_mock(&mut s, earlier, 1).await;
     let (m, seen) = upload_mock(&mut s, 1).await;
-    keep_listed_with_client(&f.conn, &node_at(&f, TIP, mtp), &client(&s), PROFILE, retry)
-        .await
-        .unwrap();
+    keep_listed_with_client(
+        &f.conn,
+        &node_at(&f, TIP, mtp),
+        &client(&s),
+        PROFILE,
+        retry,
+        &LockLost::default(),
+    )
+    .await
+    .unwrap();
     m.assert_async().await;
     let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
     assert_eq!(
@@ -1555,9 +1604,16 @@ async fn never_taken_auction_does_not_claim_the_markets_copy() {
     let mut s = market().await;
     let _get = copy_mock(&mut s, theirs, 1).await;
     let (m, seen) = upload_mock(&mut s, 1).await;
-    keep_listed_with_client(&f.conn, &node_at(&f, TIP, mtp), &client(&s), PROFILE, retry)
-        .await
-        .unwrap();
+    keep_listed_with_client(
+        &f.conn,
+        &node_at(&f, TIP, mtp),
+        &client(&s),
+        PROFILE,
+        retry,
+        &LockLost::default(),
+    )
+    .await
+    .unwrap();
     m.assert_async().await;
     let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
     assert_eq!(
@@ -2026,7 +2082,7 @@ async fn refused_listing_near_expiry_is_refreshed_without_a_market_call() {
     let any = s.mock("GET", Matcher::Any).expect(0).create_async().await;
     let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
     let n = node(&g, TIP);
-    keep_listed_with_client(&g.conn, &n, &client(&s), PROFILE, NOW)
+    keep_listed_with_client(&g.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
         .await
         .unwrap();
     any.assert_async().await;
@@ -2050,7 +2106,7 @@ async fn refused_listing_near_expiry_is_refreshed_without_a_market_call() {
     let any = s.mock("GET", Matcher::Any).expect(0).create_async().await;
     let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
     let n = node(&h, TIP);
-    keep_listed_with_client(&h.conn, &n, &client(&s), PROFILE, NOW)
+    keep_listed_with_client(&h.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
         .await
         .unwrap();
     any.assert_async().await;
@@ -2077,7 +2133,7 @@ async fn refused_listing_expiry_is_read_from_its_file_once_due() {
     let s = market().await;
     let n = node(&f, TIP);
     for at in [NOW, NOW + 3_600] {
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at)
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at, &LockLost::default())
             .await
             .unwrap();
     }
@@ -2122,7 +2178,7 @@ async fn refused_listing_expiry_is_read_from_its_file_once_due() {
         .unwrap();
     let s = market().await;
     let n = node(&h, TIP);
-    keep_listed_with_client(&h.conn, &n, &client(&s), PROFILE, NOW)
+    keep_listed_with_client(&h.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
         .await
         .unwrap();
     assert_eq!(n.call_count(), 0, "not due: nothing read");
@@ -2145,7 +2201,7 @@ async fn nothing_kept_off_mainnet() {
     let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
     let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
     let n = node(&f, TIP);
-    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW)
+    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
         .await
         .unwrap();
     any.assert_async().await;
@@ -2271,7 +2327,7 @@ async fn only_listings_the_market_took_are_kept() {
         let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
         let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
         let n = node(&f, TIP);
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW)
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
             .await
             .unwrap();
         get.assert_async().await;
@@ -2292,7 +2348,8 @@ async fn cancelling_listing_is_kept_until_its_cancel_is_sent() {
     ] {
         let f = listed_on_market(MarketStatus::Listed);
         queries::insert_tx_draft(&f.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
-        queries::update_tx_draft_status(&f.conn, "cd", "signed", None, None).unwrap();
+        queries::update_tx_draft_status(&f.conn, "cd", queries::DraftStatus::Signed, None, None)
+            .unwrap();
         f.conn
             .execute(
                 "UPDATE shakedex_listings SET state = 'cancelling', cancel_draft_id = 'cd'",
@@ -2327,15 +2384,28 @@ async fn cancelling_listing_is_kept_until_its_cancel_is_sent() {
         );
 
         // The cancel sent: nothing is asked of the market, however long after.
-        queries::update_tx_draft_status(&f.conn, "cd", "broadcasted", None, Some(&txid("c1")))
-            .unwrap();
+        queries::update_tx_draft_status(
+            &f.conn,
+            "cd",
+            queries::DraftStatus::Broadcasted,
+            None,
+            Some(&txid("c1")),
+        )
+        .unwrap();
         let mut s = market().await;
         let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
         let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
         let n = node(&f, TIP);
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW + 86_400)
-            .await
-            .unwrap();
+        keep_listed_with_client(
+            &f.conn,
+            &n,
+            &client(&s),
+            PROFILE,
+            NOW + 86_400,
+            &LockLost::default(),
+        )
+        .await
+        .unwrap();
         get.assert_async().await;
         post.assert_async().await;
         assert_eq!(n.call_count(), 0);
@@ -2356,7 +2426,14 @@ async fn cancelling_listing_reset_by_a_reorg_is_kept() {
     for (status, kept) in [("signed", true), ("broadcasted", false)] {
         let f = listed_on_market(MarketStatus::Reported);
         queries::insert_tx_draft(&f.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
-        queries::update_tx_draft_status(&f.conn, "cd", status, None, Some(&txid("c1"))).unwrap();
+        queries::update_tx_draft_status(
+            &f.conn,
+            "cd",
+            status.parse().unwrap(),
+            None,
+            Some(&txid("c1")),
+        )
+        .unwrap();
         f.conn
             .execute(
                 "UPDATE shakedex_listings SET state = 'cancel_awaiting_finalize',
@@ -2509,10 +2586,16 @@ fn cancelling(f: &Fx, status: &str) {
         "{}",
     )
     .unwrap();
-    let sent = !queries::never_sent(status);
+    let sent = !queries::never_sent(status.parse().unwrap());
     let c1 = txid("c1");
-    queries::update_tx_draft_status(&f.conn, "cd", status, None, sent.then_some(c1.as_str()))
-        .unwrap();
+    queries::update_tx_draft_status(
+        &f.conn,
+        "cd",
+        status.parse().unwrap(),
+        None,
+        sent.then_some(c1.as_str()),
+    )
+    .unwrap();
     f.conn
         .execute(
             "UPDATE shakedex_listings SET state = 'cancelling', cancel_draft_id = 'cd',
@@ -2525,7 +2608,14 @@ fn cancelling(f: &Fx, status: &str) {
 /// `f`'s cancel `c1…` mined: the after-lock job's CancelAwaitingFinalize
 /// (`queries::mark_listing_cancel_mined`), then `state` as given.
 fn cancel_mined(f: &Fx, state: ListingState) {
-    queries::update_tx_draft_status(&f.conn, "cd", "confirmed", None, Some(&txid("c1"))).unwrap();
+    queries::update_tx_draft_status(
+        &f.conn,
+        "cd",
+        queries::DraftStatus::Confirmed,
+        None,
+        Some(&txid("c1")),
+    )
+    .unwrap();
     assert_eq!(
         queries::mark_listing_cancel_mined(&f.conn, &f.id, (&txid("c1"), 0), (&txid("f1"), 0))
             .unwrap(),
@@ -2571,7 +2661,7 @@ async fn cancelled_listing_reports_and_stops() {
     let (up, _) = upload_mock(&mut s, 0).await;
     let n = node(&f, TIP);
     // Unsent: still kept, checked like any listed one, not reported.
-    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW)
+    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
         .await
         .unwrap();
     publish(&f, &n, &s, NOW).await;
@@ -2581,10 +2671,17 @@ async fn cancelled_listing_reports_and_stops() {
         "an unsent cancel is not reported"
     );
     // Sent, not mined: the jobs stop, nothing is reported yet.
-    queries::update_tx_draft_status(&f.conn, "cd", "broadcasted", None, Some(&txid("c1"))).unwrap();
+    queries::update_tx_draft_status(
+        &f.conn,
+        "cd",
+        queries::DraftStatus::Broadcasted,
+        None,
+        Some(&txid("c1")),
+    )
+    .unwrap();
     for at in [NOW + 3_600, NOW + 7_200] {
         publish(&f, &n, &s, at).await;
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at)
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at, &LockLost::default())
             .await
             .unwrap();
     }
@@ -2596,7 +2693,7 @@ async fn cancelled_listing_reports_and_stops() {
     cancel_mined(&f, ListingState::CancelAwaitingFinalize);
     for at in [NOW + 10_800, NOW + 86_400, NOW + 7 * 86_400] {
         publish(&f, &n, &s, at).await;
-        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at)
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at, &LockLost::default())
             .await
             .unwrap();
     }
@@ -3303,7 +3400,14 @@ async fn lowered_listing_is_kept_while_cancelling_and_then_reported() {
         (ListingState::Cancelling, Some(MarketStatus::Listed))
     );
     // Sent, then mined: reported.
-    queries::update_tx_draft_status(&f.conn, "cd", "broadcasted", None, Some(&txid("c1"))).unwrap();
+    queries::update_tx_draft_status(
+        &f.conn,
+        "cd",
+        queries::DraftStatus::Broadcasted,
+        None,
+        Some(&txid("c1")),
+    )
+    .unwrap();
     cancel_mined(&f, ListingState::CancelAwaitingFinalize);
     let (report, body) = report_mock(&mut s, 200, CANCEL_RECORDED, 1).await;
     publish(&f, &node(&f, TIP), &s, NOW + 60).await;
@@ -3594,7 +3698,14 @@ async fn reorg_reset_listing_reads_a_differing_copy_by_its_flag() {
     for flag in [true, false] {
         let f = listed_on_market(MarketStatus::Reported);
         queries::insert_tx_draft(&f.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
-        queries::update_tx_draft_status(&f.conn, "cd", "signed", None, Some(&txid("c1"))).unwrap();
+        queries::update_tx_draft_status(
+            &f.conn,
+            "cd",
+            queries::DraftStatus::Signed,
+            None,
+            Some(&txid("c1")),
+        )
+        .unwrap();
         f.conn
             .execute(
                 "UPDATE shakedex_listings SET state = 'cancel_awaiting_finalize',
@@ -3631,5 +3742,218 @@ async fn reorg_reset_listing_reads_a_differing_copy_by_its_flag() {
             (ListingState::Cancelling, Some(want), false),
             "flag {flag}"
         );
+    }
+}
+
+/// The market check sites of the three jobs (`market_lock_lost`), one
+/// listing each would send otherwise.
+#[derive(Clone, Copy, Debug)]
+enum Job {
+    /// Publish: a mined sale reported.
+    Report,
+    /// Publish: the day-0 pending listing.
+    Announce,
+    /// Publish: the first upload of a Listed listing.
+    FirstUpload,
+    /// Advance: a reverse auction whose step moved.
+    Advance,
+    /// Keep listed: the hourly check of the market's copy.
+    Keep,
+    /// Keep listed: a Refused listing's expiry refresh (no market call, a
+    /// bookkeeping write).
+    RefreshRefused,
+}
+
+impl Job {
+    const ALL: [Job; 6] = [
+        Job::Report,
+        Job::Announce,
+        Job::FirstUpload,
+        Job::Advance,
+        Job::Keep,
+        Job::RefreshRefused,
+    ];
+
+    /// The method of the market request the job sends; `None` for one that
+    /// only writes its bookkeeping.
+    fn method(self) -> Option<&'static str> {
+        match self {
+            Job::Keep => Some("GET"),
+            Job::RefreshRefused => None,
+            _ => Some("POST"),
+        }
+    }
+
+    /// A listing the job acts on, and the wall clock and median time it
+    /// runs at.
+    async fn fixture(self) -> (Fx, i64, u64) {
+        match self {
+            Job::Report => {
+                let f = listed_on_market(MarketStatus::Listed);
+                f.conn
+                    .execute(
+                        "UPDATE shakedex_listings SET state = 'sold', sold_txid = ?1",
+                        [txid("b1")],
+                    )
+                    .unwrap();
+                (f, NOW, MTP)
+            }
+            Job::Announce => {
+                let f = fx(ListingState::Locking, true);
+                queries::update_tx_draft_status(
+                    &f.conn,
+                    "lockd",
+                    queries::DraftStatus::Broadcasted,
+                    None,
+                    Some(&txid("e1")),
+                )
+                .unwrap();
+                (f, NOW, MTP)
+            }
+            Job::FirstUpload => (fx(ListingState::Listed, true), NOW, MTP),
+            Job::Advance => {
+                let (f, _) = auction_on_market().await;
+                let (mtp, later) = moved();
+                (f, later, mtp)
+            }
+            Job::Keep => (listed_on_market(MarketStatus::Listed), NOW, MTP),
+            Job::RefreshRefused => {
+                let f = listed_on_market(MarketStatus::Refused);
+                f.conn
+                    .execute("UPDATE shakedex_listings SET market_retry_at = NULL", [])
+                    .unwrap();
+                set_expiry(&f, (NOW + 86_400) as u64);
+                (f, NOW, MTP)
+            }
+        }
+    }
+
+    async fn run(self, f: &Fx, s: &ServerGuard, now: i64, mtp: u64, lock: &LockLost) {
+        let n = node_at(f, TIP, mtp);
+        let m = client(s);
+        match self {
+            Job::Report | Job::Announce | Job::FirstUpload => {
+                publish_listings_with_client(&f.conn, &n, &m, PROFILE, now, lock).await
+            }
+            Job::Advance => {
+                advance_reverse_auctions_with_client(&f.conn, &n, &m, PROFILE, now, lock).await
+            }
+            Job::Keep | Job::RefreshRefused => {
+                keep_listed_with_client(&f.conn, &n, &m, PROFILE, now, lock).await
+            }
+        }
+        .unwrap();
+    }
+}
+
+/// The market bookkeeping of `f`'s listing.
+fn bookkeeping(f: &Fx) -> (Option<MarketStatus>, Option<String>, Option<String>) {
+    let l = listing(f);
+    (l.market_status, l.market_retry_at, l.market_sent_step)
+}
+
+/// How a run's sync lock stands.
+#[derive(Clone, Copy, Debug)]
+enum Lock {
+    /// Ours (no row: the job runs outside a sync).
+    Held,
+    /// The heartbeat raised `LockLost`.
+    Raised,
+    /// Another process's row, the heartbeat not run yet.
+    OtherOwner,
+    /// This process's own row: held, as a sync holds it.
+    OwnRow,
+    /// The lock row cannot be read (the table is gone).
+    Unreadable,
+}
+
+/// One market job under `lock`: whether the market saw a request of the
+/// job's method, and whether its bookkeeping changed. The market answers
+/// every request with a 502 (no answer): a request is counted, not taken.
+async fn job_under(job: Job, lock: Lock) -> (bool, bool, LockLost) {
+    let (f, now, mtp) = job.fixture().await;
+    let flag = LockLost::default();
+    match lock {
+        Lock::Held => {}
+        Lock::Raised => flag.raise(),
+        Lock::OtherOwner => {
+            f.conn
+                .execute(
+                    "INSERT INTO sync_locks (profile_id, owner_pid, owner_type, acquired_at, heartbeat_at)
+                     VALUES (?1, 99999, 'app', 0, 0)",
+                    [PROFILE],
+                )
+                .unwrap();
+        }
+        Lock::OwnRow => {
+            f.conn
+                .execute(
+                    "INSERT INTO sync_locks (profile_id, owner_pid, owner_type, acquired_at, heartbeat_at)
+                     VALUES (?1, ?2, 'app', 0, 0)",
+                    rusqlite::params![PROFILE, std::process::id()],
+                )
+                .unwrap();
+        }
+        Lock::Unreadable => {
+            f.conn.execute_batch("DROP TABLE sync_locks").unwrap();
+        }
+    }
+    let before = bookkeeping(&f);
+    let mut s = market().await;
+    // Counted by hand: mockito's `matched()` is "exactly one hit".
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let _seen = match job.method() {
+        Some(method) => {
+            let hits = hits.clone();
+            Some(
+                s.mock(method, Matcher::Any)
+                    .with_status(502)
+                    .with_body_from_request(move |_| {
+                        hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        b"<html>502 Bad Gateway</html>".to_vec()
+                    })
+                    .create_async()
+                    .await,
+            )
+        }
+        None => None,
+    };
+    job.run(&f, &s, now, mtp, &flag).await;
+    let called = hits.load(std::sync::atomic::Ordering::SeqCst) > 0;
+    (called, bookkeeping(&f) != before, flag)
+}
+
+/// A sync whose lock another process took over makes no market call and
+/// writes no market bookkeeping, at every check site of the three jobs:
+/// each stops before the listing it would otherwise send, and leaves it to
+/// the process that holds the lock. Lost is the heartbeat's flag, or the
+/// lock row naming another process before the heartbeat has seen it (which
+/// raises the flag, so the rest of the sync stops too). A lock row that
+/// cannot be read stops the job the same way but is no takeover: the flag
+/// stays down. Each site's controls, with the lock ours (no row, or our own
+/// row), do reach the market (or, for the expiry refresh, write its
+/// bookkeeping) and leave the flag down.
+#[tokio::test]
+async fn market_jobs_stop_before_a_listing_once_the_sync_lock_is_lost() {
+    for job in Job::ALL {
+        for lock in [Lock::Held, Lock::OwnRow] {
+            let (called, changed, flag) = job_under(job, lock).await;
+            assert!(
+                called || (job.method().is_none() && changed),
+                "{job:?} {lock:?}: the control acts"
+            );
+            assert!(!flag.is_lost(), "{job:?} {lock:?}: still ours");
+        }
+        for lock in [Lock::Raised, Lock::OtherOwner, Lock::Unreadable] {
+            let (called, changed, flag) = job_under(job, lock).await;
+            assert!(!called, "{job:?} {lock:?}: no market call");
+            assert!(!changed, "{job:?} {lock:?}: no bookkeeping written");
+            let takeover = !matches!(lock, Lock::Unreadable);
+            assert_eq!(
+                flag.is_lost(),
+                takeover,
+                "{job:?} {lock:?}: only a takeover stops the sync"
+            );
+        }
     }
 }

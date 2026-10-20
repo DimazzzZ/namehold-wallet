@@ -33,5 +33,6 @@ pub mod tx;
 pub mod update_notify;
 #[cfg(desktop)]
 pub mod updates;
+pub mod user_file;
 pub mod watched_states;
 pub mod watchlist;

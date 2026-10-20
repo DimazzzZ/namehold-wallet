@@ -108,8 +108,10 @@ function setup(o: Opts = {}) {
   });
 }
 
-function renderIt(onClose = vi.fn()) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderIt(
+  onClose = vi.fn(),
+  qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   );
@@ -389,6 +391,35 @@ describe("PurchaseConfirm", () => {
     fireEvent.click(screen.getByTestId("purchase-buy"));
     expect(await screen.findByText(/bad-txns/)).toBeInTheDocument();
     expect(calls("delete_tx_draft")).toHaveLength(0);
+  });
+
+  // A failed send may have deleted the purchase draft and its record (a
+  // refusal before sending, a cancelled window) or kept it broadcast_pending:
+  // Owned Names and the market page read both, so they are refreshed now, not
+  // at the next poll.
+  it.each([
+    [
+      "a broadcast failure",
+      { broadcast: () => Promise.reject("TX rejected: bad-txns") },
+      /bad-txns/,
+    ],
+    [
+      "a refusal before broadcast",
+      { sign: () => Promise.reject("cancelled by user") },
+      /cancelled/,
+    ],
+  ])("%s refreshes Owned Names and the market", async (_label, opts, shown) => {
+    setup(opts);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    renderIt(vi.fn(), qc);
+    const box = await screen.findByTestId("purchase-market-fee-pay");
+    await waitFor(() => expect(box).toBeChecked());
+    await waitFor(() => expect(screen.getByTestId("purchase-buy")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("purchase-buy"));
+    expect(await screen.findByText(shown)).toBeInTheDocument();
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: ["read"] }));
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["shakedex"] });
   });
 
   it("cancelling the secure window discards the prepared purchase", async () => {

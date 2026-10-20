@@ -68,6 +68,7 @@ Instead of running hsd locally, you can point the wallet at an existing hsd RPC:
   the onboarding Remote step and in Settings → Connections). This sets the
   `allow_remote_broadcast` flag, which gates the broadcast path. Your recovery phrase
   never leaves this device — remote is a privacy/trust tradeoff, not custody.
+- **A full node, not SPV:** the remote hsd must be a full node with the same indexes as a local one (`--index-tx --index-address`). An hsd started with `--spv` keeps no name state and no coins: it answers `getnameinfo` with no state for every name and cannot answer a coin lookup, so the wallet sees no auction on any name and cannot confirm a stranded lockup, an unrevealed bid or a balance against it.
 - **Plaintext-key guard:** the app refuses to send an API key over plaintext HTTP to a
   non-loopback host (e.g., `http://example.com`). Use `https://` for remote nodes or
   `http://127.0.0.1` for local testing.
@@ -93,9 +94,7 @@ When "Sync in background" is enabled (Settings → Connections, default ON):
 - hsd stays running after the app closes (not killed). The daemon keeps it alive
   so it can sync in the background.
 - The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market.
-- A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync
-  and the daemon, using heartbeats (every 10 seconds) and stale-lock takeover
-  (after 30 seconds) to prevent conflicts.
+- A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync and the daemon, using heartbeats (every 10 seconds) and stale-lock takeover (after 30 seconds) to prevent conflicts. The app's Sync takes the lock from a daemon run; a run whose lock is taken over sees it at its next heartbeat (within 10 seconds) and stops at its next check; the LearnHNS Market jobs read the lock row before each listing, so they stop at once.
 - The daemon writes its PID to `~/.namehold/syncd.pid`.
 - **Crash recovery:** if the daemon dies, the app respawns it on startup (if the
   toggle is ON).

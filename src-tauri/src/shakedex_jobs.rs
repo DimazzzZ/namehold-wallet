@@ -69,7 +69,10 @@
 
 use std::collections::HashSet;
 
-use crate::db::queries::{self, PurchaseProgress, PurchaseState, ShakedexPurchase, TxDraftRow};
+use crate::db::queries::{
+    self, DraftStatus, PurchaseProgress, PurchaseState, ShakedexPurchase, TxDraftRow,
+};
+use crate::db::sync_lock::LockLost;
 use crate::error::AppError;
 use crate::market::learnhns::{
     LearnHnsClient, ListingKind, MarketReply, PendingListing, ProofCopy, StatusRecorded,
@@ -114,9 +117,11 @@ pub(crate) const SEND_GRACE_SECS: i64 = 600;
 /// reorg.
 pub const REVIVE_WINDOW_DAYS: u32 = 7;
 
-/// How long a Sold listing is looked at again for a reorg that takes its
-/// purchase out of the chain, the same window as a lost purchase's revival.
-pub const SOLD_RECHECK_DAYS: u32 = REVIVE_WINDOW_DAYS;
+/// How long a listing that ended after its lock is looked at again for a
+/// reorg: a Sold one for a reorg that takes its purchase out of the chain, a
+/// Cancelled one for a reorg that takes its FINALIZE home (or its cancel) out.
+/// The same window as a lost purchase's revival.
+pub const AFTER_LOCK_RECHECK_DAYS: u32 = REVIVE_WINDOW_DAYS;
 
 /// hsd's own JSON-RPC error to the broadcast. hsd 8.0.0 answers
 /// `sendrawtransaction` with the txid whatever its mempool does (it relays
@@ -309,9 +314,9 @@ impl Job<'_> {
             // The draft was discarded, which is only possible before broadcast.
             return queries::delete_shakedex_purchase(self.conn, &p.id);
         };
-        match draft.status.as_str() {
-            "failed" => self.lose_unless_traced(p, REFUSED, None).await,
-            "draft" | "signed" => {
+        match draft.status {
+            DraftStatus::Failed => self.lose_unless_traced(p, REFUSED, None).await,
+            DraftStatus::Draft | DraftStatus::Signed => {
                 // Deletes only if the draft is still unsent and past the TTL
                 // and the send grace.
                 queries::delete_abandoned_shakedex_purchase(
@@ -323,7 +328,10 @@ impl Job<'_> {
                 Ok(())
             }
             // Sent, or possibly sent: only the chain can tell what happened.
-            _ => self.refresh_from_chain(p, &draft).await,
+            DraftStatus::BroadcastPending
+            | DraftStatus::Broadcasted
+            | DraftStatus::Confirmed
+            | DraftStatus::Dropped => self.refresh_from_chain(p, &draft).await,
         }
     }
 
@@ -380,7 +388,7 @@ impl Job<'_> {
         }
         // A dropped draft's coins were already released and may be spent
         // elsewhere since: never resend it.
-        if p.rebroadcast_count > 0 || draft.status == "dropped" {
+        if p.rebroadcast_count > 0 || draft.status == DraftStatus::Dropped {
             return self.lose_unless_traced(p, NEVER_CONFIRMED, None).await;
         }
         let Some(signed) = draft.signed_tx_hex.as_deref() else {
@@ -503,7 +511,7 @@ impl Job<'_> {
             queries::update_tx_draft_status(
                 &tx,
                 &p.purchase_draft_id,
-                "broadcasted",
+                DraftStatus::Broadcasted,
                 None,
                 Some(&p.purchase_txid),
             )?;
@@ -803,10 +811,14 @@ impl Job<'_> {
             None
         };
         if let Some(draft) = draft {
-            let status = match draft.status.as_str() {
-                "confirmed" => None,
-                "failed" => Some("failed"),
-                _ => Some("dropped"),
+            let status = match draft.status {
+                DraftStatus::Confirmed => None,
+                DraftStatus::Failed => Some(DraftStatus::Failed),
+                DraftStatus::Draft
+                | DraftStatus::Signed
+                | DraftStatus::BroadcastPending
+                | DraftStatus::Broadcasted
+                | DraftStatus::Dropped => Some(DraftStatus::Dropped),
             };
             if let Some(status) = status {
                 queries::update_tx_draft_status(
@@ -1223,7 +1235,7 @@ async fn settle_left_lock(
         }
     }
     let status = queries::lock_draft_status(conn, l)?;
-    if !status.is_some_and(|s| queries::draft_may_still_land(&s)) {
+    if !status.is_some_and(queries::draft_may_still_land) {
         queries::abort_shakedex_listing(conn, &l.id)?;
     }
     Ok(())
@@ -1404,7 +1416,8 @@ pub async fn refresh_listings_with_client(
     profile_id: &str,
 ) -> Result<(), AppError> {
     let before = queries::list_shakedex_listings_before_lock(conn, profile_id, ABORT_RECHECK_DAYS)?;
-    let after = queries::list_shakedex_listings_after_lock(conn, profile_id, SOLD_RECHECK_DAYS)?;
+    let after =
+        queries::list_shakedex_listings_after_lock(conn, profile_id, AFTER_LOCK_RECHECK_DAYS)?;
     if before.is_empty() && after.is_empty() {
         return Ok(());
     }
@@ -1423,9 +1436,9 @@ pub async fn refresh_listings_with_client(
 }
 
 /// The after-lock job of [`refresh_listings_with_client`] (R19, R22, R28),
-/// for one listing of [`queries::ListingState::AFTER_LOCK_JOB`] (a Sold one
-/// within [`SOLD_RECHECK_DAYS`]), from hsd's `GET /coin` of its lock outpoint
-/// `(lock_txid, lock_vout)`:
+/// for one listing of [`queries::ListingState::AFTER_LOCK_JOB`] (a Sold or
+/// Cancelled one within [`AFTER_LOCK_RECHECK_DAYS`]), from hsd's
+/// `GET /coin` of its lock outpoint `(lock_txid, lock_vout)`:
 ///
 /// - a FINALIZE of the name at the listing's lock address mined in a block → a
 ///   Finalizing listing Listed; in the mempool (`height: -1`) → a Listed one
@@ -1479,7 +1492,8 @@ pub async fn refresh_listings_with_client(
 /// ([`queries::ListingState::CANCEL_MINED`]) is followed from that TRANSFER
 /// instead ([`cancel_on_its_way_home`]); one this sync has just made
 /// CancelAwaitingFinalize gets its lockup count at once while that TRANSFER
-/// is a coin ([`cancel_transfer_held`]).
+/// is a coin ([`cancel_transfer_held`]). A Cancelled listing is read only
+/// for a reorg that took its FINALIZE home out ([`cancelled_home_undone`]).
 ///
 /// Sends nothing. An error leaves the listing for the next sync (the caller
 /// logs it).
@@ -1491,6 +1505,9 @@ async fn refresh_after_lock(
 ) -> Result<(), AppError> {
     if queries::ListingState::CANCEL_MINED.contains(&l.state) {
         return cancel_on_its_way_home(conn, client, network, l).await;
+    }
+    if l.state == queries::ListingState::Cancelled {
+        return cancelled_home_undone(conn, client, network, l).await;
     }
     let Some((lock_txid, lock_vout)) = stored_lock(l)? else {
         return Ok(());
@@ -1723,7 +1740,7 @@ async fn lock_coin_spent(
         return Ok(());
     };
     let owner = owner_of(info)?;
-    let owner_is_lock = owner.0 == lock.0 && owner.1 == lock.1;
+    let owner_is_lock = rpc::same_outpoint((&owner.0, owner.1), lock);
     // R28: a mined TRANSFER out of this lock coin to an address of ours is
     // a cancel (ours, another device's, or our own purchase), judged before
     // any sale: the sale rule says "not ours" of it.
@@ -1837,16 +1854,9 @@ enum Sale {
 /// The name's owner outpoint from `info`; a reply without `owner.hash` or
 /// `owner.index` is not hsd's whole answer.
 fn owner_of(info: &serde_json::Value) -> Result<(String, u32), AppError> {
-    let owner = info.get("owner");
-    let hash = owner.and_then(|o| o.get("hash")).and_then(|h| h.as_str());
-    let index = owner
-        .and_then(|o| o.get("index"))
-        .and_then(|i| i.as_u64())
-        .and_then(|i| u32::try_from(i).ok());
-    match (hash, index) {
-        (Some(h), Some(i)) => Ok((h.to_string(), i)),
-        _ => Err(AppError::Rpc("node did not report the name's owner".into())),
-    }
+    rpc::name_owner_outpoint(info)
+        .map(|(h, i)| (h.to_string(), i))
+        .ok_or_else(|| AppError::Rpc("node did not report the name's owner".into()))
 }
 
 /// hsd's view of transaction `txid`: `GET /tx` (the mempool always, a block
@@ -2066,7 +2076,7 @@ fn draft_dead(conn: &rusqlite::Connection, id: Option<&str>) -> Result<bool, App
         Some(id) => queries::get_tx_draft(conn, id)?.map(|d| d.status),
         None => None,
     };
-    Ok(!status.is_some_and(|s| queries::draft_alive(&s)))
+    Ok(!status.is_some_and(queries::draft_alive))
 }
 
 /// Every derived address of the profile: what "ours" means for a TRANSFER's
@@ -2104,7 +2114,7 @@ async fn cancel_of_lock(
     owner: &(String, u32),
     lock: (&str, u32),
 ) -> Result<Option<(String, u32)>, AppError> {
-    if owner.0 == lock.0 && owner.1 == lock.1 {
+    if rpc::same_outpoint((&owner.0, owner.1), lock) {
         return Ok(None);
     }
     let Some(coin) = client.get_coin(&owner.0, owner.1).await? else {
@@ -2308,6 +2318,60 @@ async fn cancel_on_its_way_home(
     cancel_replaced(conn, client, network, l, &owner, lock, cancel).await
 }
 
+/// R28 with R22's reorg rule, for a Cancelled listing within
+/// [`AFTER_LOCK_RECHECK_DAYS`], from the name's owner hsd names (a coin is the
+/// owner only once its block is connected):
+///
+/// - the listing's cancel TRANSFER (a reorg took the FINALIZE home out) →
+///   CancelAwaitingFinalize ([`queries::mark_listing_cancel_undone`]), so
+///   the FINALIZE home is offered again, its lockup counted in the same sync
+///   while that TRANSFER is a coin ([`cancel_transfer_held`]; with the
+///   FINALIZE back in the mempool hsd answers 404 for it, and
+///   [`cancel_on_its_way_home`] ends the listing again once that FINALIZE
+///   is mined);
+/// - the listing's stored lock coin (the reorg took the cancel's TRANSFER
+///   out too, so the listing's signed steps can buy the name again) →
+///   Cancelling ([`queries::mark_cancelled_listing_unmined`]); the
+///   after-lock job then follows it as any Cancelling listing: the cancel
+///   mined again → CancelAwaitingFinalize, a mined purchase → Sold, a dead
+///   cancel → Listed;
+/// - any other owner (the FINALIZE home, or a coin the name moved on to),
+///   or no live name → unchanged and not written, so the listing leaves the
+///   after-lock set once the window passes.
+///
+/// The verdict rests on the owner hsd names, never on a coin's absence.
+/// Sends nothing.
+async fn cancelled_home_undone(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    network: Network,
+    l: &queries::ShakedexListing,
+) -> Result<(), AppError> {
+    let cancel = stored_cancel(l)?;
+    let reply = client.get_name_info(&l.name).await?;
+    let Some(info) = name_info(&reply)? else {
+        return Ok(());
+    };
+    let owner = owner_of(info)?;
+    let is = |o: (&str, u32)| rpc::same_outpoint((&owner.0, owner.1), o);
+    if !is(cancel) {
+        if stored_lock(l)?.is_some_and(is) {
+            queries::mark_cancelled_listing_unmined(conn, &l.id, cancel.0)?;
+        }
+        return Ok(());
+    }
+    if queries::mark_listing_cancel_undone(conn, &l.id, cancel)? != 1 {
+        return Ok(());
+    }
+    let Some(now) = queries::get_shakedex_listing(conn, &l.id)? else {
+        return Ok(());
+    };
+    match client.get_coin(cancel.0, cancel.1).await? {
+        Some(coin) => cancel_transfer_held(conn, client, network, &now, cancel, &coin).await,
+        None => Ok(()),
+    }
+}
+
 /// R28, the first rule of [`cancel_on_its_way_home`]: the mined cancel
 /// `cancel`'s TRANSFER is the coin `coin` hsd reports. In the mempool → back
 /// to Cancelling; mined with the registration gone → Expired; mined and the
@@ -2357,7 +2421,7 @@ async fn cancel_transfer_held(
         return Ok(());
     };
     let owner = owner_of(info)?;
-    if !(owner.0.eq_ignore_ascii_case(cancel.0) && owner.1 == cancel.1) {
+    if !rpc::same_outpoint((&owner.0, owner.1), cancel) {
         // hsd names a coin the owner once its block is connected: a
         // mined cancel that is not the owner is no consistent answer.
         return Ok(());
@@ -2402,7 +2466,7 @@ async fn cancel_replaced(
     cancel: (&str, u32),
 ) -> Result<(), AppError> {
     if let Some(c) = cancel_of_lock(conn, client, network, l, owner, lock).await? {
-        if !(c.0.eq_ignore_ascii_case(cancel.0) && c.1 == cancel.1) {
+        if !rpc::same_outpoint((&c.0, c.1), cancel) {
             let release = replaced_cancel_release(conn, client, l).await?;
             cancel_mined(conn, l, (&c.0, c.1), lock, release)?;
         }
@@ -2415,7 +2479,7 @@ async fn cancel_replaced(
         }
         return Ok(());
     }
-    let owner_is_lock = owner.0 == lock.0 && owner.1 == lock.1;
+    let owner_is_lock = rpc::same_outpoint((&owner.0, owner.1), lock);
     if let (Sale::Mined { txid, lock }, false) = (
         find_sale(conn, client, network, l, owner).await?,
         owner_is_lock,
@@ -2445,7 +2509,7 @@ async fn replaced_cancel_release(
         Some(id) => queries::get_tx_draft(conn, id)?,
         None => None,
     };
-    let Some(d) = draft.filter(|d| d.status == queries::CONFIRMED_STATUS) else {
+    let Some(d) = draft.filter(|d| d.status == DraftStatus::Confirmed) else {
         return Ok(queries::release_replaced_cancel);
     };
     let Some(txid) = d.txid.as_deref() else {
@@ -2959,12 +3023,13 @@ fn row_for_market(
 /// the daemon's sync). Silent when the database, the profile or a client
 /// cannot be opened; a failed run is logged.
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn publish_listings_step(db_path: &str, profile_id: &str) {
+pub async fn publish_listings_step(db_path: &str, profile_id: &str, lock: &LockLost) {
     let Some((conn, node, market)) = market_job_clients(db_path, profile_id) else {
         return;
     };
     let now = chrono::Utc::now().timestamp();
-    if let Err(e) = publish_listings_with_client(&conn, &node, &market, profile_id, now).await {
+    if let Err(e) = publish_listings_with_client(&conn, &node, &market, profile_id, now, lock).await
+    {
         eprintln!("shakedex market: publish failed for {profile_id}: {e}");
     }
 }
@@ -2973,12 +3038,12 @@ pub async fn publish_listings_step(db_path: &str, profile_id: &str) {
 /// sync; the IO shell of [`keep_listed_with_client`], like
 /// [`publish_listings_step`].
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn keep_listed_step(db_path: &str, profile_id: &str) {
+pub async fn keep_listed_step(db_path: &str, profile_id: &str, lock: &LockLost) {
     let Some((conn, node, market)) = market_job_clients(db_path, profile_id) else {
         return;
     };
     let now = chrono::Utc::now().timestamp();
-    if let Err(e) = keep_listed_with_client(&conn, &node, &market, profile_id, now).await {
+    if let Err(e) = keep_listed_with_client(&conn, &node, &market, profile_id, now, lock).await {
         eprintln!("shakedex market: keep listed failed for {profile_id}: {e}");
     }
 }
@@ -2987,13 +3052,13 @@ pub async fn keep_listed_step(db_path: &str, profile_id: &str) {
 /// moved past the one the market was sent; the IO shell of
 /// [`advance_reverse_auctions_with_client`], like [`publish_listings_step`].
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn advance_reverse_auctions_step(db_path: &str, profile_id: &str) {
+pub async fn advance_reverse_auctions_step(db_path: &str, profile_id: &str, lock: &LockLost) {
     let Some((conn, node, market)) = market_job_clients(db_path, profile_id) else {
         return;
     };
     let now = chrono::Utc::now().timestamp();
     if let Err(e) =
-        advance_reverse_auctions_with_client(&conn, &node, &market, profile_id, now).await
+        advance_reverse_auctions_with_client(&conn, &node, &market, profile_id, now, lock).await
     {
         eprintln!("shakedex market: advance failed for {profile_id}: {e}");
     }
@@ -3030,6 +3095,7 @@ pub async fn advance_reverse_auctions_with_client(
     market: &LearnHnsClient,
     profile_id: &str,
     now: i64,
+    lock: &LockLost,
 ) -> Result<(), AppError> {
     use queries::MarketStatus as S;
     if queries::profile_network(conn, profile_id)? != Network::Main {
@@ -3053,6 +3119,9 @@ pub async fn advance_reverse_auctions_with_client(
         return Ok(());
     };
     for l in auctions {
+        if market_lock_lost(conn, lock, profile_id) {
+            return Ok(());
+        }
         if let Err(e) = advance_one(conn, node, market, &l, mtp, now).await {
             eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
         }
@@ -3088,6 +3157,46 @@ async fn advance_one(
     } else {
         Ok(())
     }
+}
+
+/// Whether a market job must stop before its next listing: another process
+/// took the profile's sync lock over, and the market calls and the
+/// bookkeeping writes are now that process's to make. Lost when the
+/// heartbeat said so (`lock`), or when the lock row, read here, names
+/// another process: the heartbeat runs every ten seconds, and a market call
+/// inside that window would be the double upload the lock exists to
+/// prevent. A row of another process raises `lock`, so the rest of the sync
+/// stops too; our own row is not lost. No row is not lost: nothing else
+/// claims the profile (and a job run outside a sync holds none). A lock row
+/// that cannot be read stops this job (no market call is made that the lock
+/// cannot be shown to allow) without raising `lock`: that is no takeover,
+/// and the log says the read failed.
+/// Checked per listing, not between one listing's calls: a listing whose
+/// exchange with the market has begun records its answer, so the
+/// bookkeeping matches what was sent. Logs the stop.
+fn market_lock_lost(conn: &rusqlite::Connection, lock: &LockLost, profile_id: &str) -> bool {
+    if !lock.is_lost() {
+        match crate::db::sync_lock::get_lock_info(conn, profile_id) {
+            Ok(row) => {
+                if row.is_some_and(|r| r.owner_pid != std::process::id()) {
+                    lock.raise();
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "shakedex market: the sync lock of {profile_id} could not be read ({e}); stopping before the next listing"
+                );
+                return true;
+            }
+        }
+    }
+    let lost = lock.is_lost();
+    if lost {
+        eprintln!(
+            "shakedex market: the sync lock of {profile_id} was taken over by another process; stopping before the next listing"
+        );
+    }
+    lost
 }
 
 /// The database, node client and market client of a market job, on a
@@ -3132,6 +3241,7 @@ pub async fn publish_listings_with_client(
     market: &LearnHnsClient,
     profile_id: &str,
     now: i64,
+    lock: &LockLost,
 ) -> Result<(), AppError> {
     if queries::profile_network(conn, profile_id)? != Network::Main {
         return Ok(());
@@ -3140,6 +3250,9 @@ pub async fn publish_listings_with_client(
     // in two of these sets: their states differ).
     for l in queries::list_listings_to_report(conn, profile_id)? {
         if due(&l, now) {
+            if market_lock_lost(conn, lock, profile_id) {
+                return Ok(());
+            }
             if let Err(e) = report(conn, market, &l, now).await {
                 eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
             }
@@ -3147,6 +3260,9 @@ pub async fn publish_listings_with_client(
     }
     for l in queries::list_listings_to_announce(conn, profile_id)? {
         if due(&l, now) {
+            if market_lock_lost(conn, lock, profile_id) {
+                return Ok(());
+            }
             if let Err(e) = announce(conn, market, &l, now).await {
                 eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
             }
@@ -3163,6 +3279,9 @@ pub async fn publish_listings_with_client(
         // Cancelling one whose cancel is not sent yet.
         let listed = l.state == queries::ListingState::Listed;
         if first && listed && due(&l, now) {
+            if market_lock_lost(conn, lock, profile_id) {
+                return Ok(());
+            }
             if let Err(e) = upload_current(conn, node, market, &l, now, None).await {
                 eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
             }
@@ -3414,6 +3533,7 @@ pub async fn keep_listed_with_client(
     market: &LearnHnsClient,
     profile_id: &str,
     now: i64,
+    lock: &LockLost,
 ) -> Result<(), AppError> {
     use queries::MarketStatus as S;
     if queries::profile_network(conn, profile_id)? != Network::Main {
@@ -3426,9 +3546,15 @@ pub async fn keep_listed_with_client(
                 if !due(&l, now) {
                     continue;
                 }
+                if market_lock_lost(conn, lock, profile_id) {
+                    return Ok(());
+                }
                 keep_listed(conn, node, market, &l, now).await
             }
             Some(S::Refused) if listed && due(&l, now) && stored_file_near_expiry(&l, now) => {
+                if market_lock_lost(conn, lock, profile_id) {
+                    return Ok(());
+                }
                 refresh_refused(conn, node, &l, now).await
             }
             _ => continue,

@@ -47,15 +47,21 @@ fn ctx(
         stranded_lockup_doos: 0,
         redeemable_reveal_count: 0,
         redeemable_value_doos: 0,
+        reveal_coins: Vec::new(),
+        owner_reveal_by_node: false,
         owner_spend_in_flight: false,
         transfer_height: None,
         current_height: None,
         renewal_height: None,
         reveal_txid,
-        reveal_draft_status,
+        reveal_draft_status: reveal_draft_status.map(|s| s.parse().unwrap()),
         bid_value_doos,
         lockup_value_doos: None,
         listing_state: None,
+        unrevealed_bid_coins: Vec::new(),
+        unrevealed_bid_on_node: false,
+        stranded_candidates: Vec::new(),
+        stranded_unchecked_count: 0,
     }
 }
 
@@ -165,7 +171,7 @@ fn task_state_reveal_with_broadcasted_draft() {
         &NameActionContext {
             has_bid_commitment: true,
             has_bid_coin: true,
-            reveal_draft_status: Some("broadcasted".to_string()),
+            reveal_draft_status: Some(crate::db::queries::DraftStatus::Broadcasted),
             ..Default::default()
         },
         "REVEAL",
@@ -182,7 +188,7 @@ fn task_state_reveal_with_broadcast_pending_draft() {
         &NameActionContext {
             has_bid_commitment: true,
             has_bid_coin: true,
-            reveal_draft_status: Some("broadcast_pending".to_string()),
+            reveal_draft_status: Some(crate::db::queries::DraftStatus::BroadcastPending),
             ..Default::default()
         },
         "REVEAL",
@@ -199,7 +205,7 @@ fn task_state_reveal_with_confirmed_draft() {
         &NameActionContext {
             has_bid_commitment: true,
             has_bid_coin: true,
-            reveal_draft_status: Some("confirmed".to_string()),
+            reveal_draft_status: Some(crate::db::queries::DraftStatus::Confirmed),
             ..Default::default()
         },
         "REVEAL",
@@ -218,7 +224,7 @@ fn task_state_reveal_with_dropped_draft_and_unspent_bid_coin() {
             has_bid_commitment: true,
             has_bid_coin: true,
             has_reveal_coin: false,
-            reveal_draft_status: Some("dropped".to_string()),
+            reveal_draft_status: Some(crate::db::queries::DraftStatus::Dropped),
             ..Default::default()
         },
         "REVEAL",
@@ -321,6 +327,7 @@ fn task_state_closed_lost_has_reveal_coin() {
         &NameActionContext {
             has_bid_commitment: false,
             has_reveal_coin: true,
+            redeemable_reveal_count: 1,
             has_owner_coin: false,
             ..Default::default()
         },
@@ -1179,4 +1186,203 @@ fn only_a_register_or_later_covenant_counts_as_registered() {
     }
     // No owner coin is not registered either — the conservative answer.
     assert!(!is_registered_owner_covenant(None));
+}
+
+// ============================================================================
+// Redeem while REVOKED, and not in the block the name expires in
+// ============================================================================
+
+/// A losing reveal on a name a rival revoked, as `getnameinfo` reports it:
+/// REVOKED, with `blocksUntilReopen` blocks of the revoke period left at the
+/// node's tip (`namestate.js` `toStats`).
+fn revoked_caps(blocks_until_reopen: i64) -> crate::commands::names::NameActionCapabilities {
+    let stats = serde_json::json!({
+        "revokePeriodStart": 900,
+        "revokePeriodEnd": 965,
+        "blocksUntilReopen": blocks_until_reopen,
+        "hoursUntilReopen": blocks_until_reopen as f64 / 6.0,
+    });
+    let action_ctx = NameActionContext {
+        has_reveal_coin: true,
+        redeemable_reveal_count: 1,
+        redeemable_value_doos: 300_000,
+        ..Default::default()
+    };
+    build_name_action_capabilities(
+        "example".into(),
+        "REVOKED".into(),
+        "REVOKED",
+        Some(&stats),
+        &action_ctx,
+        false,
+        true,
+        None,
+        Network::Regtest,
+    )
+}
+
+/// hsd lets the auction's losers redeem "even in a revoked state" (`chain.js`,
+/// REDEEM), until the revoked name expires `auctionMaturity` blocks after the
+/// revoke. A rival's revoke must not leave a redeemable lockup with no button.
+#[test]
+fn cap_revoked_phase_offers_redeem_of_a_losing_reveal() {
+    let caps = revoked_caps(30);
+    assert!(caps.can_redeem.allowed, "{:?}", caps.can_redeem.reason);
+    assert_eq!(caps.task_state, AuctionTaskState::LostNeedsRedeem);
+    assert_eq!(caps.next_action_key.as_deref(), Some("REDEEM"));
+    assert!(
+        !caps
+            .next_action_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("You own this name"),
+        "{:?}",
+        caps.next_action_reason
+    );
+}
+
+/// A transaction is judged at `tip + 1`. With one block of the name left, a
+/// REDEEM would be mined on an expired name, which hsd resets to a new
+/// auction: refused, in REVOKED and in CLOSED alike, and offered again with
+/// two blocks left.
+#[test]
+fn cap_redeem_is_refused_when_the_name_expires_with_the_next_block() {
+    let caps = revoked_caps(1);
+    assert!(!caps.can_redeem.allowed);
+    assert!(
+        caps.can_redeem
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("next block"),
+        "{:?}",
+        caps.can_redeem.reason
+    );
+    assert!(revoked_caps(2).can_redeem.allowed);
+
+    let closed = |blocks_until_expire: i64| {
+        let stats = serde_json::json!({
+            "renewalPeriodStart": 100,
+            "renewalPeriodEnd": 2600,
+            "blocksUntilExpire": blocks_until_expire,
+            "daysUntilExpire": 0.01,
+        });
+        build_name_action_capabilities(
+            "example".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            Some(&stats),
+            &NameActionContext {
+                has_reveal_coin: true,
+                redeemable_reveal_count: 1,
+                ..Default::default()
+            },
+            false,
+            true,
+            None,
+            Network::Regtest,
+        )
+    };
+    assert!(!closed(1).can_redeem.allowed, "{:?}", closed(1).can_redeem);
+    assert!(closed(2).can_redeem.allowed, "{:?}", closed(2).can_redeem);
+}
+
+/// In the last block before expiry the task agrees with the refused button:
+/// no "Redeem Lockup" task (which drives the Wallet's lost banner and the
+/// Auctions row's Redeem urgency), and the reason says why. With two blocks
+/// left the task is a redeem again. CLOSED and REVOKED alike.
+#[test]
+fn no_redeem_task_when_the_name_expires_with_the_next_block() {
+    let closed = |blocks_until_expire: i64| {
+        let stats = serde_json::json!({
+            "renewalPeriodStart": 100,
+            "renewalPeriodEnd": 2600,
+            "blocksUntilExpire": blocks_until_expire,
+            "daysUntilExpire": 0.01,
+        });
+        build_name_action_capabilities(
+            "example".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            Some(&stats),
+            &NameActionContext {
+                has_reveal_coin: true,
+                redeemable_reveal_count: 1,
+                ..Default::default()
+            },
+            false,
+            true,
+            None,
+            Network::Regtest,
+        )
+    };
+    for (what, caps) in [("revoked", revoked_caps(1)), ("closed", closed(1))] {
+        assert_eq!(
+            caps.task_state,
+            AuctionTaskState::UnavailableOther,
+            "{what}"
+        );
+        assert_eq!(caps.next_action_key, None, "{what}");
+        assert_eq!(
+            caps.next_action_reason.as_deref(),
+            Some(crate::commands::names::REDEEM_WINDOW_CLOSING_REASON),
+            "{what}"
+        );
+        assert!(caps.redeem_window_closing, "{what}");
+        assert!(!caps.can_redeem.allowed, "{what}");
+    }
+    for (what, caps) in [("revoked", revoked_caps(2)), ("closed", closed(2))] {
+        assert_eq!(caps.task_state, AuctionTaskState::LostNeedsRedeem, "{what}");
+        assert_eq!(caps.next_action_key.as_deref(), Some("REDEEM"), "{what}");
+        assert!(!caps.redeem_window_closing, "{what}");
+    }
+}
+
+/// In the last block before expiry the state is read again as if no reveal
+/// were redeemable, not set to "no task": a bid of this auction the node
+/// says was never revealed still reads "Lost — Not Revealed", with its own
+/// reason, and the closed-redeem flag is not raised for it.
+#[test]
+fn the_last_block_still_reads_a_bid_lost_unrevealed() {
+    let stats = serde_json::json!({
+        "renewalPeriodStart": 100,
+        "renewalPeriodEnd": 2600,
+        "blocksUntilExpire": 1,
+        "daysUntilExpire": 0.01,
+    });
+    let caps = build_name_action_capabilities(
+        "example".into(),
+        "CLOSED".into(),
+        "CLOSED",
+        Some(&stats),
+        &NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            unrevealed_bid_on_node: true,
+            has_reveal_coin: true,
+            redeemable_reveal_count: 1,
+            ..Default::default()
+        },
+        false,
+        true,
+        None,
+        Network::Regtest,
+    );
+    assert_eq!(caps.task_state, AuctionTaskState::LostUnrevealed);
+    assert!(!caps.redeem_window_closing);
+    assert_ne!(
+        caps.next_action_reason.as_deref(),
+        Some(crate::commands::names::REDEEM_WINDOW_CLOSING_REASON)
+    );
+    assert!(!caps.can_redeem.allowed);
+}
+
+/// The fallback capabilities (no profile, node unreachable) carry an
+/// internal reason with no task; they never raise the closed-redeem flag,
+/// which is what the UI shows a reason on.
+#[test]
+fn conservative_capabilities_raise_no_closed_redeem_flag() {
+    let caps = crate::commands::names::conservative_capabilities("example", "node unreachable");
+    assert_eq!(caps.task_state, AuctionTaskState::UnavailableOther);
+    assert!(!caps.redeem_window_closing);
 }

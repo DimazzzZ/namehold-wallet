@@ -12,8 +12,8 @@ use tauri::State;
 
 use crate::commands::draft_ctx::{self, random_id, Ctx};
 use crate::db::queries::{
-    self, ListingMode, ListingState, MarketStatus, NameCoin, PurchaseState, ShakedexListing,
-    ShakedexPurchase,
+    self, DraftStatus, ListingMode, ListingState, MarketStatus, NameCoin, PurchaseState,
+    ShakedexListing, ShakedexPurchase,
 };
 use crate::error::AppError;
 use crate::market::learnhns::{
@@ -90,6 +90,9 @@ pub struct MarketRow {
     pub floor_price: u64,
     pub steps: Vec<PriceStepView>,
     pub expires_at: Option<u64>,
+    /// The listing is locked to one of this device's own lock addresses (R33):
+    /// its Buy shows disabled, with [`OWN_LISTING`].
+    pub own: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -281,6 +284,7 @@ fn market_row(listing_json: String, l: &ListingFile, verdict: Verdict) -> Market
             })
             .collect(),
         expires_at: l.expires_at,
+        own: false,
         verdict,
     }
 }
@@ -409,6 +413,12 @@ fn software_writer_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
     Ok(ctx)
 }
 
+/// What buying a listing locked by this device is refused with (R33). The
+/// Market row of such a listing shows its Buy disabled with the same
+/// sentence (`marketText.ts::OWN_LISTING`).
+pub const OWN_LISTING: &str = "this is your own listing: cancel it instead (My listings), \
+                           buying it would only cost you network fees";
+
 /// R15/R29: a new purchase or a new listing on mainnet needs the
 /// `shakedex_experimental` setting; testnet and regtest need nothing.
 /// Actions on what already exists never ask.
@@ -419,6 +429,62 @@ fn new_trade_allowed(ctx: &Ctx) -> bool {
             .get("shakedex_experimental")
             .map(String::as_str)
             == Some("true")
+}
+
+/// R33: a listing locked to this device's own lock address is not bought.
+/// The TRANSFER would commit to an address of ours, so the buyer would pay
+/// the fees of a purchase and a FINALIZE for a name that comes home anyway,
+/// and the cancel path would offer a second FINALIZE of the same TRANSFER.
+fn refuse_own_listing(
+    state: &State<'_, AppState>,
+    ctx: &Ctx,
+    listing: &ListingFile,
+) -> Result<(), AppError> {
+    let own = own_lock_addresses(state, ctx.network)?;
+    if own.contains(&lock_address(ctx.network, &listing.public_key)?) {
+        return Err(AppError::InvalidInput(OWN_LISTING.into()));
+    }
+    Ok(())
+}
+
+/// The lock addresses, on `network`, of every listing row on this device
+/// (any profile, any state).
+fn own_lock_addresses(
+    state: &State<'_, AppState>,
+    network: Network,
+) -> Result<std::collections::HashSet<String>, AppError> {
+    let keys = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        queries::shakedex_lock_pubkeys(&conn)?
+    };
+    Ok(keys
+        .iter()
+        .filter_map(|hex_key| {
+            // A stored key that does not decode is skipped: it can name no
+            // address. This fails OPEN: a listing locked with that key is not
+            // recognised as ours and may be bought (R33's gate is a fee
+            // saver, not a safety check; the name comes home either way).
+            // Every row's key is written from one this wallet derived or a
+            // file it parsed, so an undecodable one is a corrupted row.
+            let key = <[u8; 33]>::try_from(hex::decode(hex_key).ok()?).ok()?;
+            lock_address(network, &key).ok()
+        })
+        .collect())
+}
+
+/// `row` marked as ours (R33) when its lock address is in `own`.
+fn mark_own(
+    mut row: MarketRow,
+    l: &ListingFile,
+    network: Network,
+    own: &std::collections::HashSet<String>,
+) -> MarketRow {
+    // Why `is_ok_and`: `lock_address` only hashes the parsed 33-byte key and
+    // encodes the program, so it does not fail here; if it ever did, the row
+    // is shown as anyone's and the purchase gate (`refuse_own_listing`)
+    // returns that error instead of building.
+    row.own = lock_address(network, &l.public_key).is_ok_and(|a| own.contains(&a));
+    row
 }
 
 /// Run the purchase gates in order, verify the listing on the node and
@@ -438,6 +504,7 @@ async fn prepare(
         ));
     }
     let listing = ListingFile::parse(listing_json, ctx.network)?;
+    refuse_own_listing(state, &ctx, &listing)?;
     let buyable = match verify::verify_listing(&ctx.node, ctx.network, &listing).await {
         Verdict::Buyable(b) => b,
         Verdict::Hidden(h) => return Err(hidden_to_error(h)),
@@ -1096,7 +1163,7 @@ fn lockup_left(conn: &rusqlite::Connection, l: &ShakedexListing) -> Result<Optio
     let tip = crate::noncustodial::sync::get_sync_height(conn, &l.wallet_profile_id)?;
     Ok(queries::locking_blocks_until_finalize(
         l.state,
-        Some(draft.status.as_str()),
+        Some(draft.status),
         draft.confirmation_height,
         params,
         tip,
@@ -1300,7 +1367,7 @@ pub(crate) fn abort_may_still_land(
     let Some(id) = l.abort_draft_id.as_deref() else {
         return Ok(false);
     };
-    Ok(queries::get_tx_draft(conn, id)?.is_some_and(|d| queries::draft_may_still_land(&d.status)))
+    Ok(queries::get_tx_draft(conn, id)?.is_some_and(|d| queries::draft_may_still_land(d.status)))
 }
 
 /// Why the cancel's FINALIZE cannot be built for a listing in `state`
@@ -2140,10 +2207,10 @@ fn pending_send(
     };
     let Some(id) = id else { return Ok(None) };
     Ok(queries::get_tx_draft(conn, id)?
-        .filter(|d| queries::never_sent(&d.status) || d.status == queries::BROADCAST_PENDING_STATUS)
+        .filter(|d| queries::never_sent(d.status) || d.status == DraftStatus::BroadcastPending)
         .map(|d| PendingSend {
             signed: d.signed_tx_hex.is_some(),
-            discardable: queries::never_sent(&d.status),
+            discardable: queries::never_sent(d.status),
             draft_id: d.id,
             action: d.action,
         }))
@@ -2352,7 +2419,9 @@ pub(crate) fn publish_listing_from_conn(
 
 /// R23: write the saved listing file of one of the profile's listings to
 /// `path` (chosen in the native save dialog), as written; refused as the
-/// export is ([`export_listing_file_from_conn`]), writing nothing.
+/// export is ([`export_listing_file_from_conn`]), writing nothing, and
+/// refused for a symbolic link or a path that is not a regular file
+/// ([`super::user_file::write_chosen_file`]).
 pub(crate) fn save_listing_file_from_conn(
     conn: &rusqlite::Connection,
     profile_id: &str,
@@ -2360,8 +2429,8 @@ pub(crate) fn save_listing_file_from_conn(
     path: &std::path::Path,
 ) -> Result<(), AppError> {
     let text = export_listing_file_from_conn(conn, profile_id, listing_id)?;
-    std::fs::write(path, text)?;
-    Ok(())
+    // The file holds no secret (it is meant to be shared): not owner-only.
+    super::user_file::write_chosen_file(path, text.as_bytes(), false)
 }
 
 /// What a restore by name (R32) decides from: every node read, and the lock
@@ -2614,6 +2683,7 @@ pub async fn shakedex_list_market(
     let page_count = u32::try_from(total.div_ceil(u64::from(MARKET_PER_PAGE)))
         .unwrap_or(u32::MAX)
         .max(1);
+    let own = own_lock_addresses(&state, ctx.network)?;
     let mut rows = Vec::new();
     let mut hidden = HiddenCounts::default();
     let mut hidden_rows = Vec::new();
@@ -2644,14 +2714,24 @@ pub async fn shakedex_list_market(
         };
         let verdict = match &at {
             None => {
-                rows.push(market_row(text, &listing, unverified()));
+                rows.push(mark_own(
+                    market_row(text, &listing, unverified()),
+                    &listing,
+                    ctx.network,
+                    &own,
+                ));
                 continue;
             }
             Some(Err(h)) => Verdict::Hidden(h.clone()),
             Some(Ok(at)) => verify::verify_listing_at(&ctx.node, ctx.network, &listing, *at).await,
         };
         match verdict {
-            v @ Verdict::Buyable(_) => rows.push(market_row(text, &listing, v)),
+            v @ Verdict::Buyable(_) => rows.push(mark_own(
+                market_row(text, &listing, v),
+                &listing,
+                ctx.network,
+                &own,
+            )),
             Verdict::Hidden(h) => {
                 hidden.count(&h);
                 hidden_rows.push(HiddenRow {
@@ -2711,7 +2791,13 @@ pub async fn shakedex_import_listing(
         )));
     }
     let verdict = verdict_for(&ctx, &listing).await;
-    Ok(market_row(text, &listing, verdict))
+    let own = own_lock_addresses(&state, ctx.network)?;
+    Ok(mark_own(
+        market_row(text, &listing, verdict),
+        &listing,
+        ctx.network,
+        &own,
+    ))
 }
 
 /// Price, market fee, network fee and total of buying `listing_json` at its
@@ -2908,13 +2994,13 @@ pub async fn shakedex_build_purchase_finalize_draft(
             Some(old) => queries::get_tx_draft(&conn, old)?.map(|d| d.status),
             None => None,
         };
-        let replaces = match old_status.as_deref() {
+        let replaces = match old_status {
             Some(s) if queries::may_have_reached_chain(s) => {
                 return Err(AppError::InvalidInput(
                     "a finalize of this purchase is already sent".into(),
                 ));
             }
-            Some("draft" | "signed") => p.finalize_draft_id.clone(),
+            Some(DraftStatus::Draft | DraftStatus::Signed) => p.finalize_draft_id.clone(),
             _ => None,
         };
         if let Some(old) = replaces.as_deref() {

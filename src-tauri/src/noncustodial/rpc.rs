@@ -1045,6 +1045,25 @@ pub struct NodeCoin {
     pub covenant: Option<NodeCovenant>,
 }
 
+/// The name's owner coin in a `getnameinfo.info` reply (`owner.hash`,
+/// `owner.index`). `None` when the reply names none, or names an index that
+/// is no output index (above `u32`). The one reading of it: the redeem
+/// builder and the Redeem button (`commands::draft_ctx`) and the Shakedex
+/// jobs (`shakedex_jobs::owner_of`, which refuses a `None`) all go through
+/// it, so they cannot disagree on a malformed reply.
+pub(crate) fn name_owner_outpoint(info: &serde_json::Value) -> Option<(&str, u32)> {
+    let owner = info.get("owner")?;
+    let hash = owner.get("hash")?.as_str()?;
+    let index = u32::try_from(owner.get("index")?.as_u64()?).ok()?;
+    Some((hash, index))
+}
+
+/// Whether `a` and `b` are one outpoint. hsd's hashes are lowercase hex; the
+/// comparison does not rest on it.
+pub(crate) fn same_outpoint(a: (&str, u32), b: (&str, u32)) -> bool {
+    a.0.eq_ignore_ascii_case(b.0) && a.1 == b.1
+}
+
 impl NodeCoin {
     /// The block the coin was mined in, `None` in the mempool. hsd always
     /// sends `height`, -1 for a mempool coin (`Coin.getJSON`): a reply
@@ -2402,6 +2421,30 @@ mod tests {
             assert!(err.to_string().contains("refused the API key"), "{err}");
             assert!(err.to_string().contains("Settings"), "{err}");
         }
+    }
+
+    /// F7: the one reading of `getnameinfo.info.owner`, and the outpoint
+    /// comparison every caller uses.
+    #[test]
+    fn name_owner_outpoint_reads_hash_and_a_u32_index() {
+        let info = |owner: serde_json::Value| serde_json::json!({ "owner": owner });
+        assert_eq!(
+            name_owner_outpoint(&info(serde_json::json!({ "hash": "AB", "index": 3 }))),
+            Some(("AB", 3))
+        );
+        for bad in [
+            serde_json::json!({ "hash": "ab" }),
+            serde_json::json!({ "index": 3 }),
+            serde_json::json!({ "hash": "ab", "index": 4_294_967_296u64 }),
+            serde_json::json!({ "hash": "ab", "index": -1 }),
+            serde_json::json!(null),
+        ] {
+            assert_eq!(name_owner_outpoint(&info(bad.clone())), None, "{bad}");
+        }
+        assert_eq!(name_owner_outpoint(&serde_json::json!({})), None);
+        assert!(same_outpoint(("AB", 1), ("ab", 1)));
+        assert!(!same_outpoint(("ab", 1), ("ab", 2)));
+        assert!(!same_outpoint(("ab", 1), ("ac", 1)));
     }
 
     #[tokio::test]

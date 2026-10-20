@@ -1104,7 +1104,10 @@ pub(crate) async fn mock_names_rpc(
 /// `NameState.getJSON` shape (`lib/covenants/namestate.js`): a registered name
 /// last renewed at 120 and transferred at 900, both far enough behind the
 /// mocked tip (1000) for a RENEW or FINALIZE to be accepted, whose owner coin
-/// is none a test seeds — so a reveal coin a test seeds is a losing one.
+/// is none a test seeds — so a reveal coin a test seeds is a losing one. Its
+/// `stats` are the ones hsd's `toStats` writes for that CLOSED name at the
+/// mocked tip (regtest: a 2500-block renewal window, a 10-block transfer
+/// lockup), which the redeem builders read the name's expiry from.
 pub(crate) fn names_rpc_info() -> serde_json::Value {
     serde_json::json!({
         "name": "alpha",
@@ -1123,7 +1126,16 @@ pub(crate) fn names_rpc_info() -> serde_json::Value {
         "registered": true,
         "expired": false,
         "weak": false,
-        "stats": null
+        "stats": {
+            "renewalPeriodStart": 120,
+            "renewalPeriodEnd": 2620,
+            "blocksUntilExpire": 1620,
+            "daysUntilExpire": 11.25,
+            "transferLockupStart": 900,
+            "transferLockupEnd": 910,
+            "blocksUntilValidFinalize": -90,
+            "hoursUntilValidFinalize": -15
+        }
     })
 }
 
@@ -2003,6 +2015,173 @@ async fn capabilities_closed_loser_with_reveal_coin_allows_redeem() {
         "redeem must be allowed for a losing reveal coin, got reason: {:?}",
         caps.can_redeem.reason
     );
+}
+
+/// A synced node reporting `name` CLOSED with `owner` as its owner coin, the
+/// shape hsd 8.0.0's `getnameinfo` gives (`info.owner` is `{hash, index}`).
+async fn mock_closed_with_owner(
+    server: &mut mockito::Server,
+    name: &str,
+    owner_hash: &str,
+    owner_index: u32,
+) -> Vec<mockito::Mock> {
+    let mut mocks = mock_blockchain_and_name(server, 1.0, None).await;
+    let body = serde_json::json!({
+        "result": {"info": {
+            "name": name, "state": "CLOSED", "height": 100,
+            "owner": {"hash": owner_hash, "index": owner_index},
+            "value": 1000, "highest": 1000, "stats": {}
+        }},
+        "error": null, "id": 1
+    });
+    mocks.push(
+        server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+            .with_body(body.to_string())
+            .expect_at_least(1)
+            .create_async()
+            .await,
+    );
+    mocks
+}
+
+/// The wallet's only reveal won, on a name it never tracked: no
+/// `tracked_name_states` row, so the local database cannot tell the reveal is
+/// the owner coin. The node can (`getnameinfo.info.owner`), and the redeem
+/// builder already asks it (`draft_ctx::exclude_owner_reveal`), so the button
+/// must not offer what the builder refuses — nor call the auction lost.
+#[tokio::test]
+async fn capabilities_untracked_winner_only_reveal_offers_no_redeem() {
+    let reveal_txid = "dd".repeat(32);
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_closed_with_owner(&mut server, "wonname", &reveal_txid, 0).await;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "wonname",
+            &reveal_txid,
+            crate::noncustodial::sync::COV_REVEAL,
+        );
+        id
+    };
+    let app = mock_app_with(state);
+    let caps = names::get_name_action_capabilities(app.state(), "wonname".into(), Some(profile_id))
+        .await
+        .expect("capabilities should resolve");
+
+    assert!(caps.has_reveal_coin);
+    assert!(
+        !caps.can_redeem.allowed,
+        "the node's owner coin is not redeemable, got {:?}",
+        caps.can_redeem
+    );
+    assert_eq!(
+        caps.can_redeem.reason.as_deref(),
+        Some("your only reveal here won the auction (nothing to redeem)")
+    );
+    assert_eq!(caps.redeemable_reveal_count, 0);
+    assert_ne!(
+        caps.task_state,
+        names::AuctionTaskState::LostNeedsRedeem,
+        "a won auction is not a lost one"
+    );
+    // The node is connected: what Register waits for is the wallet tracking
+    // the name, and the refusal says so.
+    assert!(caps.owns_name);
+    assert!(!caps.can_register.allowed);
+    assert_eq!(
+        caps.can_register.reason.as_deref(),
+        Some("you won this name, but the wallet does not track it yet — Refresh to sync it, then manage")
+    );
+}
+
+/// Won with one reveal and lost with another, on a name never tracked: the
+/// node names one reveal as the owner, so the name is ours and the other
+/// reveal is redeemable — the state must say so rather than "no urgent
+/// action", which is how such a lockup stayed put.
+#[tokio::test]
+async fn capabilities_untracked_win_with_a_losing_reveal_offers_redeem() {
+    let won = "dd".repeat(32);
+    let lost = "ee".repeat(32);
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_closed_with_owner(&mut server, "twobids", &won, 0).await;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "twobids",
+            &won,
+            crate::noncustodial::sync::COV_REVEAL,
+        );
+        let addr = first_derived_address(&conn, &id);
+        let cov = covenant_json_for("twobids", crate::noncustodial::sync::COV_REVEAL, "REVEAL");
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &lost,
+            &addr,
+            crate::noncustodial::sync::COV_REVEAL,
+            700,
+            Some(&cov),
+        );
+        id
+    };
+    let app = mock_app_with(state);
+    let caps = names::get_name_action_capabilities(app.state(), "twobids".into(), Some(profile_id))
+        .await
+        .expect("capabilities should resolve");
+
+    assert!(caps.owns_name, "the node's owner coin is ours");
+    assert!(caps.can_redeem.allowed, "{:?}", caps.can_redeem);
+    assert_eq!(caps.redeemable_reveal_count, 1);
+    assert_eq!(caps.redeemable_value_doos, 700);
+    assert_eq!(caps.task_state, names::AuctionTaskState::LostNeedsRedeem);
+}
+
+/// The same untracked name, but the node names another bidder's reveal as
+/// the owner: ours lost and is redeemable.
+#[tokio::test]
+async fn capabilities_untracked_loser_reveal_offers_redeem() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_closed_with_owner(&mut server, "lostname", &"ee".repeat(32), 0).await;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "lostname",
+            &"dd".repeat(32),
+            crate::noncustodial::sync::COV_REVEAL,
+        );
+        id
+    };
+    let app = mock_app_with(state);
+    let caps =
+        names::get_name_action_capabilities(app.state(), "lostname".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve");
+
+    assert!(
+        caps.can_redeem.allowed,
+        "a losing reveal is redeemable, got {:?}",
+        caps.can_redeem
+    );
+    assert_eq!(caps.redeemable_reveal_count, 1);
+    assert_eq!(caps.redeemable_value_doos, 2000);
+    assert_eq!(caps.task_state, names::AuctionTaskState::LostNeedsRedeem);
 }
 
 #[tokio::test]
@@ -3433,6 +3612,192 @@ async fn build_batch_reveal_draft_wrapper_happy_path() {
     assert_eq!(summary.action, "batch-reveal");
 }
 
+/// A BID covenant of `name` committing to the auction that opened at
+/// `auction_start` (`items[1]`, u32 LE).
+fn bid_covenant_of_auction(name: &str, auction_start: u32) -> String {
+    let nh = hex::encode(crate::noncustodial::names::hash_name(name).unwrap());
+    let raw = hex::encode(crate::noncustodial::names::raw_name(name).unwrap());
+    serde_json::json!({
+        "type": crate::noncustodial::sync::COV_BID,
+        "action": "BID",
+        "items": [nh, hex::encode(auction_start.to_le_bytes()), raw, "aa".repeat(32)],
+    })
+    .to_string()
+}
+
+/// An address reused across auctions of `name`: our unrevealed BID coin of
+/// an earlier auction (opened at 50) and this auction's (100, the mocked
+/// `getnameinfo` height) sit at one address, with this auction's commitment
+/// there (its auction recorded when `recorded`; a commitment recovered from
+/// the chain has none). Returns the two txids (earlier, this auction's).
+fn reused_address_bids(
+    conn: &rusqlite::Connection,
+    id: &str,
+    name: &str,
+    recorded: bool,
+) -> (String, String) {
+    let old = "e1".repeat(32);
+    let new = "e2".repeat(32);
+    let addr = first_derived_address(conn, id);
+    for (txid, start) in [(&old, 50), (&new, 100)] {
+        seed_covenant_coin(
+            conn,
+            id,
+            txid,
+            &addr,
+            crate::noncustodial::sync::COV_BID,
+            2000,
+            Some(&bid_covenant_of_auction(name, start)),
+        );
+    }
+    seed_bid_commitment(conn, id, name, &addr);
+    if recorded {
+        db::queries::set_auction_heights(conn, id, &format!("blind-{name}"), 100, 121).unwrap();
+    }
+    (old, new)
+}
+
+/// The Reveal builders pick this auction's BID coin at the commitment's
+/// address, not refuse because an earlier auction's BID coin of the name
+/// sits there too (which can never be revealed: `bad-reveal-nonlocal`).
+#[tokio::test]
+async fn reveal_uses_this_auctions_bid_coin_beside_an_earlier_auctions_at_one_address() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    let (old, new) = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"34".repeat(32));
+        reused_address_bids(&conn, &id, "namea", true)
+    };
+    let app = mock_app_with(state);
+    let draft = names::build_reveal_draft(app.state(), "namea".into(), None)
+        .await
+        .expect("the reveal builds from this auction's coin");
+    let inputs = draft_signing_inputs(&app, &draft.id);
+    assert!(inputs.contains(&new), "this auction's coin: {inputs}");
+    assert!(
+        !inputs.contains(&old),
+        "never the earlier auction's: {inputs}"
+    );
+}
+
+/// The same with a commitment recovered from the chain, which records no
+/// auction: the builder keeps it (`same_auction` is permissive) and still
+/// takes the coin of the auction the node reports, by the coin's covenant.
+#[tokio::test]
+async fn reveal_of_a_commitment_with_no_recorded_auction_uses_this_auctions_coin() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    let (old, new) = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"34".repeat(32));
+        reused_address_bids(&conn, &id, "namea", false)
+    };
+    let app = mock_app_with(state);
+    let draft = names::build_reveal_draft(app.state(), "namea".into(), None)
+        .await
+        .expect("the reveal builds from this auction's coin");
+    let inputs = draft_signing_inputs(&app, &draft.id);
+    assert!(inputs.contains(&new), "this auction's coin: {inputs}");
+    assert!(
+        !inputs.contains(&old),
+        "never the earlier auction's: {inputs}"
+    );
+}
+
+/// The batch Reveal builder, the same way.
+#[tokio::test]
+async fn batch_reveal_uses_this_auctions_bid_coin_beside_an_earlier_auctions_at_one_address() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    let (old, new) = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"34".repeat(32));
+        reused_address_bids(&conn, &id, "namea", true)
+    };
+    let app = mock_app_with(state);
+    let batch = names::build_batch_reveal_draft(app.state(), vec!["namea".into()], None)
+        .await
+        .expect("the batch reveal builds from this auction's coin");
+    let inputs = draft_signing_inputs(&app, &batch.id);
+    assert!(
+        inputs.contains(&new),
+        "batch, this auction's coin: {inputs}"
+    );
+    assert!(
+        !inputs.contains(&old),
+        "batch, never the earlier one: {inputs}"
+    );
+}
+
+/// Two BID coins of THIS auction at one address are still refused: each
+/// pairs with its own stored nonce, and picking one could reveal it with the
+/// other's.
+#[tokio::test]
+async fn reveal_refuses_two_bid_coins_of_this_auction_at_one_address() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        let addr = first_derived_address(&conn, &id);
+        for txid in ["e3".repeat(32), "e4".repeat(32)] {
+            seed_covenant_coin(
+                &conn,
+                &id,
+                &txid,
+                &addr,
+                crate::noncustodial::sync::COV_BID,
+                2000,
+                Some(&bid_covenant_of_auction("namea", 100)),
+            );
+        }
+        seed_bid_commitment(&conn, &id, "namea", &addr);
+    }
+    let app = mock_app_with(state);
+    let err = names::build_reveal_draft(app.state(), "namea".into(), None)
+        .await
+        .expect_err("an ambiguity of this auction is refused");
+    assert!(
+        matches!(&err, AppError::InvalidInput(m) if m.contains("cannot pick one safely")),
+        "{err:?}"
+    );
+}
+
+/// The capabilities read the same way: in REVEAL, this auction's BID coin
+/// beside an earlier auction's at one address offers Reveal instead of
+/// failing the whole read, and the earlier coin is the stranded candidate.
+#[tokio::test]
+async fn capabilities_reveal_this_auctions_bid_beside_an_earlier_auctions_at_one_address() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_blockchain_and_name(&mut server, 1.0, Some("REVEAL")).await;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        reused_address_bids(&conn, &id, "namea", true);
+        id
+    };
+    let app = mock_app_with(state);
+    let caps = names::get_name_action_capabilities(app.state(), "namea".into(), Some(profile_id))
+        .await
+        .expect("an earlier auction's coin at the address is no error");
+    assert!(caps.has_bid_coin, "{caps:?}");
+    assert!(caps.can_reveal.allowed, "{:?}", caps.can_reveal.reason);
+}
+
 #[tokio::test]
 async fn build_batch_reveal_draft_wrapper_rejects_missing_commitment() {
     let mut server = mockito::Server::new_async().await;
@@ -4121,7 +4486,8 @@ fn seed_locking_listing(
             &summary,
         )
         .unwrap();
-        db::queries::update_tx_draft_status(conn, "d-lock", status, None, None).unwrap();
+        db::queries::update_tx_draft_status(conn, "d-lock", status.parse().unwrap(), None, None)
+            .unwrap();
     }
     conn.execute(
         "INSERT INTO shakedex_listings
@@ -4313,7 +4679,14 @@ async fn locked_name_offers_no_owner_actions() {
         .unwrap();
         // The lock TRANSFER is long mined: no spend of ours in flight
         // keeps the name counted as ours.
-        db::queries::update_tx_draft_status(&conn, "d-lock", "confirmed", None, None).unwrap();
+        db::queries::update_tx_draft_status(
+            &conn,
+            "d-lock",
+            db::queries::DraftStatus::Confirmed,
+            None,
+            None,
+        )
+        .unwrap();
     }
     set_listing_state("listed");
     let c = caps().await.unwrap();
@@ -4461,4 +4834,171 @@ async fn dead_lock_draft_does_not_freeze_the_name() {
             }
         }
     }
+}
+
+// ============================================================================
+// An expired name: the capabilities command asks the node, and offline the
+// cached answer still names the auction lapsed
+// ============================================================================
+
+/// hsd's `GET /coin` answer for our BID coin `txid`:0 of `name` at `addr`,
+/// holding `value`, in `NodeCoin`'s wire shape (`lib/primitives/coin.js`
+/// `getJSON`).
+fn node_bid_coin_json(txid: &str, addr: &str, name: &str, value: i64) -> String {
+    let nh = hex::encode(crate::noncustodial::names::hash_name(name).unwrap());
+    serde_json::json!({
+        "version": 0, "height": 120, "value": value, "address": addr,
+        "coinbase": false, "hash": txid, "index": 0,
+        "covenant": { "type": crate::noncustodial::sync::COV_BID, "action": "BID",
+                      "items": [nh, "64000000", hex::encode(name.as_bytes()), "blindaa"] }
+    })
+    .to_string()
+}
+
+/// The capabilities command, not only the context it builds on, asks the node
+/// about an expired name's coins: `getnameinfo` answers `info: null`, `GET
+/// /coin` that our BID coin is still unspent at our address, and the stranded
+/// lockup is reported. Without that step the count would stay at zero.
+#[tokio::test]
+async fn capabilities_of_an_expired_name_count_the_lockup_the_node_still_holds() {
+    let txid = "ab".repeat(32);
+    let mut server = mockito::Server::new_async().await;
+    let mut mocks = mock_blockchain_and_name(&mut server, 1.0, None).await;
+    mocks.push(
+        server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+            .with_body(
+                r#"{"result":{"start":{"reserved":false,"week":17,"start":34},"info":null},"error":null,"id":1}"#,
+            )
+            .expect_at_least(1)
+            .create_async()
+            .await,
+    );
+    let state = create_full_test_state();
+    let (profile_id, addr) = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        let addr = seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "lapsedname",
+            &txid,
+            crate::noncustodial::sync::COV_BID,
+        );
+        (id, addr)
+    };
+    let coin = server
+        .mock("GET", format!("/coin/{txid}/0").as_str())
+        .with_body(node_bid_coin_json(&txid, &addr, "lapsedname", 2000))
+        .expect(1)
+        .create_async()
+        .await;
+    let app = mock_app_with(state);
+    let caps =
+        names::get_name_action_capabilities(app.state(), "lapsedname".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve");
+    coin.assert_async().await;
+    assert_eq!(caps.stranded_bid_count, 1, "{caps:?}");
+    assert_eq!(caps.stranded_lockup_doos, 2000);
+    assert_eq!(caps.stranded_unchecked_count, 0, "the node answered");
+    assert_eq!(caps.my_bid_count, 0, "no live auction to have bid in");
+    assert!(!caps.can_reveal.allowed);
+}
+
+/// Offline, the cached `getnameinfo` (`raw_json`) is the evidence of the
+/// auction. `upsert_name_state` records the node's `info: null` there on
+/// purpose, and an expiry never undoes itself (only a new OPEN starts another
+/// auction, which no cache sees either), so the name reads lapsed as on the
+/// node path: our bid is not counted as one of a live auction.
+#[tokio::test]
+async fn capabilities_node_down_read_a_cached_expiry_as_a_lapsed_auction() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_unreachable_node(&conn);
+        seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "lapsedoffline",
+            &"ac".repeat(32),
+            crate::noncustodial::sync::COV_BID,
+        );
+        crate::noncustodial::sync::upsert_name_state(
+            &conn,
+            &id,
+            "lapsedoffline",
+            &serde_json::json!({ "start": {}, "info": null }),
+        )
+        .unwrap();
+        id
+    };
+    let app = mock_app_with(state);
+    let caps =
+        names::get_name_action_capabilities(app.state(), "lapsedoffline".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve via local evidence");
+    assert_eq!(caps.my_bid_count, 0, "{caps:?}");
+    assert!(!caps.has_bid_commitment);
+    assert!(!caps.has_bid_coin);
+    assert_eq!(
+        caps.stranded_bid_count, 0,
+        "no node to confirm the coin: nothing claimed"
+    );
+    assert_eq!(
+        caps.stranded_unchecked_count, 1,
+        "the candidate is reported as not checked, not as nothing stranded"
+    );
+}
+
+/// The node answers `getnameinfo` but not `GET /coin` for our BID coin of
+/// the expired name: nothing is claimed stranded, and the candidate is
+/// reported as not checked, so the UI does not read "nothing stranded".
+#[tokio::test]
+async fn capabilities_report_a_stranded_candidate_the_node_could_not_answer_for() {
+    let txid = "ad".repeat(32);
+    let mut server = mockito::Server::new_async().await;
+    let mut mocks = mock_blockchain_and_name(&mut server, 1.0, None).await;
+    mocks.push(
+        server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+            .with_body(
+                r#"{"result":{"start":{"reserved":false,"week":17,"start":34},"info":null},"error":null,"id":1}"#,
+            )
+            .expect_at_least(1)
+            .create_async()
+            .await,
+    );
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "uncheckable",
+            &txid,
+            crate::noncustodial::sync::COV_BID,
+        );
+        id
+    };
+    let coin = server
+        .mock("GET", format!("/coin/{txid}/0").as_str())
+        .with_status(500)
+        .expect(1)
+        .create_async()
+        .await;
+    let app = mock_app_with(state);
+    let caps =
+        names::get_name_action_capabilities(app.state(), "uncheckable".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve");
+    coin.assert_async().await;
+    assert_eq!(caps.stranded_bid_count, 0, "{caps:?}");
+    assert_eq!(caps.stranded_unchecked_count, 1);
 }

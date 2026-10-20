@@ -1,3 +1,4 @@
+import { isSignerUnlockedFor } from "../lib/signer";
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -73,7 +74,7 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
   const biddableNames = allCaps.filter((c) => c.canBid.allowed).map((c) => c.name);
   const notBiddableNames = allCaps.filter((c) => !c.canBid.allowed);
 
-  const unlocked = signer?.unlocked ?? false;
+  const unlocked = isSignerUnlockedFor(signer, activeProfileId);
 
   const handleCheckNames = () => {
     if (names.length === 0 || !bidFormValid) return;

@@ -232,7 +232,7 @@ fn reveal_state(
             has_bid_commitment: true,
             has_bid_coin,
             reveal_txid: reveal_txid.map(str::to_string),
-            reveal_draft_status: reveal_draft_status.map(str::to_string),
+            reveal_draft_status: reveal_draft_status.map(|s| s.parse().unwrap()),
             ..Default::default()
         },
         "REVEAL",
@@ -331,15 +331,176 @@ fn closed_with_owner_registered_yields_owned_no_urgent_action() {
 #[test]
 fn closed_with_reveal_coin_yields_lost_needs_redeem() {
     // Post-auction: no more bid coin (it was spent by the reveal), an unspent
-    // REVEAL coin is what signals "lost, redeemable".
-    let state = state_no_owner("CLOSED", false, false, false, true);
+    // REVEAL coin that is not the owner coin is what signals "lost,
+    // redeemable".
+    let state = derive_auction_task_state(
+        &NameActionContext {
+            has_reveal_coin: true,
+            redeemable_reveal_count: 1,
+            ..Default::default()
+        },
+        "CLOSED",
+        false,
+        None,
+        Network::Main,
+    );
     assert_eq!(state, AuctionTaskState::LostNeedsRedeem);
 }
 
 #[test]
-fn closed_without_owner_or_reveal_yields_owned_no_urgent_action() {
+fn closed_without_owner_or_reveal_yields_unavailable() {
+    // No bid of ours at all (no commitment, no BID coin, no reveal), and the
+    // name is not ours: someone else's name. "Owned" here was a claim the
+    // wallet had no evidence for. A bid of ours left unrevealed is not this
+    // case, see `closed_with_unrevealed_bid_yields_lost_unrevealed`.
     let state = state_no_owner("CLOSED", false, false, false, false);
+    assert_eq!(state, AuctionTaskState::UnavailableOther);
+    // A bid of ours that was revealed and redeemed leaves nothing either.
+    let state = state_no_owner("CLOSED", false, true, false, false);
+    assert_eq!(state, AuctionTaskState::UnavailableOther);
+}
+
+#[test]
+fn closed_with_an_unrevealed_bid_and_no_node_answer_is_unknown_not_owned() {
+    // No synced node (or it did not answer): a BID coin of this auction is
+    // unspent in the local coin set, which can be behind a reveal made
+    // elsewhere. Not a loss without the node, and not "Owned" or
+    // "Unavailable": the bid is ours and its outcome is not known yet.
+    let state = state_no_owner("CLOSED", false, true, true, false);
+    assert_eq!(state, AuctionTaskState::ClosedResultUnknown);
+    let (key, label, reason) = next_action_for_task(&state);
+    assert!(key.is_none());
+    assert_eq!(
+        label.as_deref(),
+        Some(crate::commands::names::CLOSED_RESULT_UNKNOWN_LABEL)
+    );
+    assert!(reason.unwrap().contains("Refresh"));
+}
+
+#[test]
+fn closed_result_unknown_serializes_camel_case() {
+    let json = serde_json::to_string(&AuctionTaskState::ClosedResultUnknown).unwrap();
+    assert_eq!(json, "\"closedResultUnknown\"");
+}
+
+/// One spelling of the closedResultUnknown label, as for lostUnrevealed.
+#[test]
+fn closed_result_unknown_label_matches_the_uis() {
+    const UI: &str = include_str!("../../../src/lib/auction.ts");
+    let decl = format!(
+        "case \"closedResultUnknown\":\n      return {:?};",
+        crate::commands::names::CLOSED_RESULT_UNKNOWN_LABEL
+    );
+    assert!(UI.contains(&decl), "auction.ts lacks `{decl}`");
+}
+
+/// The closedResultUnknown reason is shown also when a synced node did answer
+/// (a 404, an error, a reply that does not match): telling that user to
+/// "connect a synced node" is wrong. The sentence lives in the backend only;
+/// the guided panel shows its reason as it is.
+#[test]
+fn closed_result_unknown_reason_asks_to_sync_not_to_connect_a_node() {
+    let (_, _, reason) = next_action_for_task(&AuctionTaskState::ClosedResultUnknown);
+    let reason = reason.expect("a reason");
+    assert!(
+        reason.contains("Sync with your node, then Refresh"),
+        "{reason}"
+    );
+    assert!(!reason.contains("Connect a synced node"), "{reason}");
+    const UI: &str = include_str!("../../../src/components/name-actions/GuidedAction.tsx");
+    assert!(
+        !UI.contains("This auction closed with a bid of yours"),
+        "GuidedAction.tsx keeps its own copy of the sentence"
+    );
+}
+
+#[test]
+fn reveal_sent_or_mined_reads_the_draft_then_the_stamped_txid() {
+    // A reveal in flight or mined (by draft, or stamped by the chain scan
+    // with no draft) is sent; one that failed or was dropped never happened.
+    use crate::commands::names::reveal_sent_or_mined;
+    use crate::db::queries::DraftStatus;
+    for status in [
+        DraftStatus::Broadcasted,
+        DraftStatus::BroadcastPending,
+        DraftStatus::Confirmed,
+    ] {
+        assert!(reveal_sent_or_mined(Some(status), Some("aa")), "{status:?}");
+    }
+    assert!(reveal_sent_or_mined(None, Some("aa")));
+    for status in [
+        DraftStatus::Draft,
+        DraftStatus::Signed,
+        DraftStatus::Failed,
+        DraftStatus::Dropped,
+    ] {
+        assert!(
+            !reveal_sent_or_mined(Some(status), Some("aa")),
+            "{status:?}"
+        );
+    }
+    assert!(!reveal_sent_or_mined(None, None));
+}
+
+#[test]
+fn offline_owned_name_with_reveals_is_not_called_lost() {
+    // Node unreachable: owned by explorer evidence, no owner coin of ours, and
+    // the reveal coins counted against no owner at all. Without the node's
+    // word one of them may be the winner, so this is no "Lost — Redeem Now".
+    let ctx = NameActionContext {
+        has_reveal_coin: true,
+        redeemable_reveal_count: 1,
+        ..Default::default()
+    };
+    let state = derive_auction_task_state(&ctx, "CLOSED", true, None, Network::Main);
     assert_eq!(state, AuctionTaskState::OwnedNoUrgentAction);
+    // With the node naming one of our reveals the owner, the other is a loss.
+    let ctx = NameActionContext {
+        owner_reveal_by_node: true,
+        ..ctx
+    };
+    let state = derive_auction_task_state(&ctx, "CLOSED", true, None, Network::Main);
+    assert_eq!(state, AuctionTaskState::LostNeedsRedeem);
+}
+
+#[test]
+fn closed_with_unrevealed_bid_yields_lost_unrevealed() {
+    // R10a: the node says a BID coin of this auction is still unspent after
+    // the reveal window: never revealed, the lockup is lost, not "Owned".
+    let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            unrevealed_bid_on_node: true,
+            ..Default::default()
+        },
+        "CLOSED",
+        false,
+        None,
+        Network::Main,
+    );
+    assert_eq!(state, AuctionTaskState::LostUnrevealed);
+    // The local coin set alone (no node answer) is no verdict: it can be
+    // behind a reveal made on another device. The outcome is unknown.
+    let state = state_no_owner("CLOSED", false, true, true, false);
+    assert_ne!(state, AuctionTaskState::LostUnrevealed);
+    assert_eq!(state, AuctionTaskState::ClosedResultUnknown);
+    // A losing reveal beside it is still the thing to act on.
+    let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            has_reveal_coin: true,
+            redeemable_reveal_count: 1,
+            unrevealed_bid_on_node: true,
+            ..Default::default()
+        },
+        "CLOSED",
+        false,
+        None,
+        Network::Main,
+    );
+    assert_eq!(state, AuctionTaskState::LostNeedsRedeem);
 }
 
 #[test]
@@ -460,7 +621,7 @@ fn unowned_closed_within_threshold_is_not_expiring_soon() {
         Some(5.0),
         Network::Main,
     );
-    assert_eq!(state, AuctionTaskState::OwnedNoUrgentAction);
+    assert_eq!(state, AuctionTaskState::UnavailableOther);
 }
 
 #[test]
@@ -544,4 +705,22 @@ fn unavailable_other_next_action_is_none() {
     assert!(key.is_none());
     assert!(label.is_none());
     assert!(reason.is_none());
+}
+
+/// F7: one spelling of the lostUnrevealed label: the backend's next-action
+/// label (the Auctions row) is the UI's task label (the modal's badge).
+#[test]
+fn lost_unrevealed_label_matches_the_uis() {
+    const UI: &str = include_str!("../../../src/lib/auction.ts");
+    let decl = format!(
+        "case \"lostUnrevealed\":\n      return {:?};",
+        crate::commands::names::LOST_UNREVEALED_LABEL
+    );
+    assert!(UI.contains(&decl), "auction.ts lacks `{decl}`");
+    let (_, label, _) =
+        crate::commands::names::next_action_for_task(&AuctionTaskState::LostUnrevealed);
+    assert_eq!(
+        label.as_deref(),
+        Some(crate::commands::names::LOST_UNREVEALED_LABEL)
+    );
 }

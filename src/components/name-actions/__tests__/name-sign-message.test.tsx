@@ -70,6 +70,8 @@ function capsFor(name: string, ownsName: boolean): NameActionCapabilities {
     pendingBroadcastAction: null,
     strandedBidCount: 0,
     strandedLockupDoos: 0,
+    strandedUncheckedCount: 0,
+    redeemWindowClosing: false,
     lockedForSale: false,
   };
 }

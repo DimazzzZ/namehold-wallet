@@ -1,7 +1,6 @@
 # Path-based auto-labeling for pull requests.
 # Consumed by actions/labeler (see .github/workflows/labeler.yml).
-# Applies `domain:` labels based on which files a PR touches. Mirrors the
-# module -> domain mapping in .mimocode/docs/triage-labels.md.
+# Applies `domain:` labels based on which files a PR touches.
 #
 # Note: `type:` / `priority:` / triage labels are NOT auto-applied — those are
 # judgement calls left to the author / triager.

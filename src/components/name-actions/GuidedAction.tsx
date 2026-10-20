@@ -122,6 +122,27 @@ export function GuidedAction({
   // them to do it again. Say what is actually happening instead.
   const pendingText = pendingBroadcastText(caps?.pendingBroadcastAction);
 
+  const redeemPanel = (): ReactNode => (
+    <div className="space-y-2" data-testid="guided-redeem">
+      {/* Red and "your bid lost" are wrong for a wallet that outbid
+          itself: it owns the name and is reclaiming its own losing
+          bids. The backend refines the reason; the tone follows. */}
+      <div className={caps?.ownsName ? "text-sm text-gray-700" : "text-sm text-red-800"}>
+        {caps?.nextActionReason ??
+          (caps?.ownsName
+            ? "You own this name. Redeem your own losing bids to reclaim the lockup."
+            : "Your bid lost. Redeem your reveal coin to reclaim the funds.")}
+      </div>
+      <Button
+        variant="primary"
+        disabled={actionDisabled("REDEEM", caps?.canRedeem)}
+        onClick={onRedeem}
+      >
+        {busy === "REDEEM" ? "…" : "Redeem"}
+      </Button>
+    </div>
+  );
+
   const content = ((): ReactNode => {
     if (pendingText) {
       const auctionWindow = auctionWindowText(
@@ -441,25 +462,25 @@ export function GuidedAction({
             </div>
           );
         }
-        if (caps?.taskState === "lostNeedsRedeem") {
+        if (caps?.taskState === "lostNeedsRedeem") return redeemPanel();
+        // A bid of ours never revealed: no action exists, and saying nothing
+        // (or "registered by another wallet") hides that the lockup is gone.
+        if (caps?.taskState === "lostUnrevealed") {
           return (
-            <div className="space-y-2">
-              {/* Red and "your bid lost" are wrong for a wallet that outbid
-                  itself: it owns the name and is reclaiming its own losing
-                  bids. The backend refines the reason; the tone follows. */}
-              <div className={caps.ownsName ? "text-sm text-gray-700" : "text-sm text-red-800"}>
-                {caps.nextActionReason ??
-                  (caps.ownsName
-                    ? "You own this name. Redeem your own losing bids to reclaim the lockup."
-                    : "Your bid lost. Redeem your reveal coin to reclaim the funds.")}
-              </div>
-              <Button
-                variant="primary"
-                disabled={actionDisabled("REDEEM", caps?.canRedeem)}
-                onClick={onRedeem}
-              >
-                {busy === "REDEEM" ? "…" : "Redeem"}
-              </Button>
+            <div className="text-sm text-red-800" data-testid="lost-unrevealed">
+              {caps.nextActionReason ??
+                "You did not reveal this bid in time; its lockup is lost and cannot be redeemed."}
+            </div>
+          );
+        }
+        // A bid of ours the wallet cannot settle yet (no synced node, or one
+        // that could not tell): no verdict, so neither "lost" nor "registered
+        // by another wallet". The sentence is the backend's reason alone
+        // (`next_action_for_task`), so the two cannot drift apart.
+        if (caps?.taskState === "closedResultUnknown") {
+          return (
+            <div className="text-sm text-gray-700" data-testid="closed-result-unknown">
+              {caps.nextActionReason}
             </div>
           );
         }
@@ -511,6 +532,11 @@ export function GuidedAction({
             </div>
           </div>
         );
+
+      // A revoked name: nothing to manage, but a losing reveal of ours is
+      // redeemable until the name expires.
+      case "REVOKED":
+        return caps?.taskState === "lostNeedsRedeem" ? redeemPanel() : null;
 
       default:
         return null;

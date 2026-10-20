@@ -28,7 +28,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
-tauri-plugin-fs = "2"
 # Only new dependency for I1 (OS notifications + deadline scanner).
 tauri-plugin-notification = "2"
 # Auto-updater (desktop only) — checks GitHub Releases for latest.json.
