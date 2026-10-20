@@ -26,7 +26,7 @@ Procedures: [mine-and-sync](procedures/mine-and-sync.md), [switch-profile](proce
 | [shakedex/restore-and-import.md](scenarios/shakedex/restore-and-import.md) | restore a lock by name, own-file import, second device | R1 … R6, C4 | P1–P3 | 80 |
 | [shakedex/gates-and-refusals.md](scenarios/shakedex/gates-and-refusals.md) | profile kind, sending, experimental flag, locked signer, input refusals | G1 G2 G3 S8 S12 X4 | P1–P3 | 2 |
 | [shakedex/persistence-and-recovery.md](scenarios/shakedex/persistence-and-recovery.md) | restarts, unsent drafts, node outages, background jobs | X1 X2 X3 X5 J1 J2 J3 | P1–P3 | 15 |
-| [shakedex/activity-and-history.md](scenarios/shakedex/activity-and-history.md) | Activity labels and amounts, consistency, balance | C1 C2 A1 | P1–P2 | 0 |
+| [shakedex/activity-and-history.md](scenarios/shakedex/activity-and-history.md) | Activity labels and amounts, consistency, balance, no paid swap entry point | C1 C2 A1 A2 | P1–P3 | 0 |
 | [shakedex/profiles.md](scenarios/shakedex/profiles.md) | per-profile reads and signing | R7 X6 | P2–P3 | 0 |
 | [shakedex/mainnet-absence.md](scenarios/shakedex/mainnet-absence.md) | mainnet-only parts checked by absence; not checkable on regtest | M1 M2 M3 C5 | P1–P3 | 0 |
 
@@ -44,7 +44,7 @@ Case ids are unique across all files. Setup ([environment](environment.md#test-n
 1. Build, install, record ([environment](environment.md#build-and-install-from-the-branch-head)); start the node; record the height. Setup: names and CLI listings, funding (~90 blocks).
 2. P1: B1, B2, B9, B7, B8 (11); B12 (1+); S2 with M1, X1(a)(b) and X4 folded in (22); S3 (12); R1 with S1 and R4(c) folded in (22); R2 (12); G1; X1(c) (2); X2 (≤ 10); then C1 and C2 over everything mined.
 3. P2: B3–B6, then B11 before B10 (≤ 23); S4 (12); S5 (23); S6, S7, S12 (2); R3 (22); R4, R5; C4 with R7 inside it (22); G2, G3; J1; X3, X4, X5; A1.
-4. P3: B13 (13), B14 (11, or 0 if later cases mine enough), B15, B16, B17; S8, S9, S10, S11; R6; J2, J3; X6; M2, M3; record C5.
+4. P3: B13 (13), B14 (11, or 0 if later cases mine enough), B15, B16, B17; S8, S9, S10, S11; R6; J2, J3; X6; M2, M3; A2; record C5.
 
 About 365 blocks in all, about 550 in the worst case with retries.
 
