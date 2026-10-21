@@ -273,6 +273,33 @@ describe("ActivityView", () => {
     expect(screen.queryByText(/Failed to load activity/)).not.toBeInTheDocument();
   });
 
+  // `read_action_history` names exactly the index the node lacks; the banner
+  // names that flag, and its remedy still restarts hsd with both.
+  it.each([
+    [
+      "Node RPC error: address index not enabled on this hsd node: restart hsd with --index-address and --index-tx",
+      "Your node does not have --index-address enabled.",
+    ],
+    [
+      "Node RPC error: transaction index not enabled on this hsd node: restart hsd with --index-address and --index-tx",
+      "Your node does not have --index-tx enabled.",
+    ],
+    [
+      "Node RPC error: address and transaction indexes not enabled on this hsd node: restart hsd with --index-address and --index-tx",
+      "Your node does not have --index-address or --index-tx enabled.",
+    ],
+  ])("the index banner for %s names the missing flag", async (rejection, names) => {
+    const base = routes([]);
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "read_action_history" ? Promise.reject(rejection) : base(cmd),
+    );
+    render(<ActivityView />, { wrapper: wrapper() });
+    const banner = await screen.findByTestId("activity-index-banner");
+    expect(banner.textContent).toContain(names);
+    expect(banner.textContent).toContain("Restart it with --index-address --index-tx");
+    expect(screen.queryByText(/Failed to load activity/)).not.toBeInTheDocument();
+  });
+
   it("shows the backend's string rejection in the generic error banner", async () => {
     const base = routes([]);
     invokeMock.mockImplementation((cmd: string) =>

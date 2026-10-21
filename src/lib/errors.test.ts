@@ -45,6 +45,22 @@ describe("mapError (non-custodial)", () => {
     expect(mapError(probe)).toBe(probe);
   });
 
+  it("names the index the node lacks", () => {
+    const remedy = "restart hsd with --index-address and --index-tx";
+    expect(
+      mapError(`Node RPC error: address index not enabled on this hsd node: ${remedy}`),
+    ).toMatch(/isn't address-indexed/);
+    const tx = mapError(
+      `Node RPC error: transaction index not enabled on this hsd node: ${remedy}`,
+    );
+    expect(tx).toMatch(/no transaction index/);
+    expect(tx).not.toMatch(/address-indexed/);
+    const both = mapError(
+      `Node RPC error: address and transaction indexes not enabled on this hsd node: ${remedy}`,
+    );
+    expect(both).toMatch(/neither the address nor the transaction index/);
+  });
+
   it("returns original for unknown errors", () => {
     expect(mapError("something completely unknown")).toBe("something completely unknown");
   });

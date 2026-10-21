@@ -326,8 +326,8 @@ pub(crate) fn load_wallet_addresses(
 /// Full wallet action history from the local hsd node.
 ///
 /// - Requires `--index-tx` + `--index-address` on the node, as its `GET /`
-///   reports them (refuses with the "address index not enabled" sentence
-///   otherwise; the UI gates its "enable address index" banner on it).
+///   reports them (refuses otherwise with the sentence naming the index the
+///   node lacks; Activity's banner names that flag from it).
 /// - Iterates each derived address, calls `/tx/address` per address, dedupes
 ///   by txid.
 /// - Classifies each tx via [`classify_tx`] using the wallet's own-address set.
@@ -362,21 +362,32 @@ pub async fn read_action_history(
 ///
 /// hsd answers `GET /tx/address` with an empty list, never an error, without
 /// `--index-address`, and with the mempool alone without `--index-tx`: such a
-/// node is refused with [`NEEDS_ADDRESS_INDEX`] (Activity's banner) before
-/// any per-address read, whose failures [`fetch_and_dedup_txs_with_client`]
-/// skips. A node whose indexes cannot be read is an error too. Testable
-/// against a mock.
+/// node is refused, before any per-address read whose failures
+/// [`fetch_and_dedup_txs_with_client`] skips, with the sentence naming the
+/// missing index ([`NEEDS_ADDRESS_INDEX`], [`NEEDS_TX_INDEX`] or
+/// [`NEEDS_ADDRESS_AND_TX_INDEX`]; Activity's banner names the flag from it).
+/// A node whose indexes cannot be read is an error too. Testable against a
+/// mock.
 ///
 /// [`NEEDS_ADDRESS_INDEX`]: crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX
+/// [`NEEDS_TX_INDEX`]: crate::noncustodial::node_rpc::NEEDS_TX_INDEX
+/// [`NEEDS_ADDRESS_AND_TX_INDEX`]: crate::noncustodial::node_rpc::NEEDS_ADDRESS_AND_TX_INDEX
 pub(crate) async fn read_action_history_with_client(
     node: &dyn crate::noncustodial::node_rpc::NodeRpc,
     addresses: &[String],
 ) -> Result<Vec<ActionRow>, AppError> {
+    use crate::noncustodial::node_rpc::{
+        NEEDS_ADDRESS_AND_TX_INDEX, NEEDS_ADDRESS_INDEX, NEEDS_TX_INDEX,
+    };
     let indexes = crate::noncustodial::node_rpc::node_indexes(node).await?;
-    if !(indexes.tx && indexes.address) {
-        return Err(AppError::Rpc(
-            crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX.into(),
-        ));
+    let missing = match (indexes.tx, indexes.address) {
+        (true, true) => None,
+        (true, false) => Some(NEEDS_ADDRESS_INDEX),
+        (false, true) => Some(NEEDS_TX_INDEX),
+        (false, false) => Some(NEEDS_ADDRESS_AND_TX_INDEX),
+    };
+    if let Some(sentence) = missing {
+        return Err(AppError::Rpc(sentence.into()));
     }
     let our: HashSet<String> = addresses.iter().cloned().collect();
 

@@ -26,6 +26,13 @@ const ERROR_MAP: Record<string, string> = {
   "handshake app": "Open the Handshake app on your Ledger and try again.",
   "no ledger device found":
     "No Ledger detected. Plug it in, unlock it, and open the Handshake app.",
+  // Activity's history refusals that name the tx index (NEEDS_TX_INDEX,
+  // NEEDS_ADDRESS_AND_TX_INDEX): listed before "index-address", which their
+  // remedy also contains.
+  "address and transaction indexes not enabled":
+    "Your node has neither the address nor the transaction index. Restart hsd with --index-address and --index-tx (Settings → Start hsd) and let it finish syncing.",
+  "transaction index not enabled":
+    "Your node has no transaction index. Restart hsd with --index-address and --index-tx (Settings → Start hsd) and let it finish syncing.",
   // Node not address-indexed (getcoinsbyaddress unavailable) — blocks all spends.
   getcoinsbyaddress:
     "Your node isn't address-indexed. Restart hsd with address indexing (Settings → Start hsd) and let it finish syncing.",

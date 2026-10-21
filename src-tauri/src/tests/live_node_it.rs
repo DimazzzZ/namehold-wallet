@@ -10041,8 +10041,9 @@ async fn live_noindex_history_refuses_without_the_tx_index() {
         .await
         .expect_err("no history from a node without the tx index");
     assert!(
-        err.to_string().contains("address index not enabled"),
-        "{err}"
+        err.to_string()
+            .contains(crate::noncustodial::node_rpc::NEEDS_TX_INDEX),
+        "the refusal names the tx index, not the address index: {err}"
     );
 }
 
@@ -10181,8 +10182,9 @@ async fn live_noindex_address_sync_keeps_the_balance_and_says_why() {
         .await
         .expect_err("no history from a node without the address index");
     assert!(
-        err.to_string().contains("address index not enabled"),
-        "{err}"
+        err.to_string()
+            .contains(crate::noncustodial::node_rpc::NEEDS_ADDRESS_AND_TX_INDEX),
+        "the refusal names both indexes the node lacks: {err}"
     );
 
     drop(app);

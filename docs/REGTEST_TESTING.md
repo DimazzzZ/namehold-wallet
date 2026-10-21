@@ -331,7 +331,7 @@ HNS_IT_NOINDEX_NODE_URL=http://127.0.0.1:24037 HNS_IT_NOINDEX_NODE_API_KEY=test 
 | `live_noindex_coins_spent_by_another_tx_give_no_verdict` | A draft whose coin another transaction spent is not sent and stays `broadcast_pending`: without the index the wallet cannot tell that from a mined one |
 | `live_noindex_dropped_send_mined_after_all_is_confirmed` | A send judged `dropped` that is then mined is `confirmed`, found by its outputs |
 | `live_noindex_listing_sold_is_detected` | Namehold sells, a second Namehold profile buys; with the purchase not found by txid, the listing is Sold through the name's owner (the purchase's TRANSFER out of our lock) and our payment coin; a database copy that syncs only after the buyer's FINALIZE is Sold from the block its payment coin was mined in |
-| `live_noindex_history_refuses_without_the_tx_index` | hsd lists the coins but not the mined history; `sync_wallet_state` still syncs (the address index is enough), and Activity (`read_action_history`) refuses with "address index not enabled" instead of an empty list |
+| `live_noindex_history_refuses_without_the_tx_index` | hsd lists the coins but not the mined history; `sync_wallet_state` still syncs (the address index is enough), and Activity (`read_action_history`) refuses with "transaction index not enabled", naming the index the node lacks, instead of an empty list |
 
 ### A node without the address index (third node)
 
@@ -348,7 +348,7 @@ scripts/regtest.sh stop-noaddrindex     # `reset` stops it and wipes its data to
 
 | Test | Asserts |
 |------|---------|
-| `live_noindex_address_sync_keeps_the_balance_and_says_why` | The index-less node reports both indexes off and lists neither the coin nor the history of an address it mined a coinbase to, although `getcoin` finds the coin; a profile funded and synced on the indexed node, then pointed at the index-less one: `sync_wallet_state` refuses with "address index not enabled", a full sync run (`run_sync_steps`) leaves every tracked coin unspent and the balance as it was and lists the reason among its errors, `get_write_capability` refuses to send ("isn't address-indexed"), and Activity refuses with the banner's sentence |
+| `live_noindex_address_sync_keeps_the_balance_and_says_why` | The index-less node reports both indexes off and lists neither the coin nor the history of an address it mined a coinbase to, although `getcoin` finds the coin; a profile funded and synced on the indexed node, then pointed at the index-less one: `sync_wallet_state` refuses with "address index not enabled", a full sync run (`run_sync_steps`) leaves every tracked coin unspent and the balance as it was and lists the reason among its errors, `get_write_capability` refuses to send ("isn't address-indexed"), and Activity refuses naming both indexes ("address and transaction indexes not enabled") |
 
 ### Covenant actions (Group D)
 

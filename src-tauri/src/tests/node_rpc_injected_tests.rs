@@ -1904,12 +1904,21 @@ async fn node_indexes_on_hsd_before_7_says_the_node_does_not_report_them() {
 
 // ------- read_action_history_with_client -----------------------------------
 
-/// hsd answers `GET /tx/address` with an empty list when either index is off:
-/// the history refuses with the sentence Activity's banner keys on, before
-/// any per-address read can swallow it, instead of an empty Activity.
+/// hsd answers `GET /tx/address` with an empty list when either index is off
+/// (`ChainDB.getMetaByAddress` needs both): the history refuses with the
+/// sentence naming exactly the missing index, which Activity's banner keys
+/// on, before any per-address read can swallow it, instead of an empty
+/// Activity.
 #[tokio::test]
 async fn history_refuses_a_node_without_the_indexes() {
-    for (tx, address) in [(false, false), (true, false), (false, true)] {
+    use crate::noncustodial::node_rpc::{
+        NEEDS_ADDRESS_AND_TX_INDEX, NEEDS_ADDRESS_INDEX, NEEDS_TX_INDEX,
+    };
+    for (tx, address, sentence) in [
+        (false, false, NEEDS_ADDRESS_AND_TX_INDEX),
+        (true, false, NEEDS_ADDRESS_INDEX),
+        (false, true, NEEDS_TX_INDEX),
+    ] {
         let mock = MockNodeRpc::new()
             .with_node_status(node_status_with_indexes(tx, address))
             .with_txs_by_address(vec![]);
@@ -1920,7 +1929,7 @@ async fn history_refuses_a_node_without_the_indexes() {
         .await
         .expect_err("no history from an index-less node");
         assert!(
-            matches!(&err, AppError::Rpc(m) if m == crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX),
+            matches!(&err, AppError::Rpc(m) if m == sentence),
             "tx {tx} address {address}: {err:?}"
         );
         assert!(

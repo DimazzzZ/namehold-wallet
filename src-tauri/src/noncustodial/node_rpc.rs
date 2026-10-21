@@ -32,10 +32,25 @@ use crate::noncustodial::rpc::{BlockchainInfo, ChainSource, NodeCoin, NodeRpcCli
 /// Why a command refuses a node without the address index. hsd answers
 /// `GET /coin/address` and `GET /tx/address` with an empty list, never an
 /// error, when its indexes are off, so a wallet read through such a node
-/// would look empty. Activity's banner and the error mapper both key on this
-/// sentence ("address index not enabled", "index-address").
+/// would look empty. Activity's banner ("not enabled on this hsd node", the
+/// flag named from "address index") and the error mapper ("index-address")
+/// key on this sentence. The history, which also needs the tx index, refuses
+/// with [`NEEDS_TX_INDEX`] or [`NEEDS_ADDRESS_AND_TX_INDEX`] when that is
+/// what the node lacks.
 pub const NEEDS_ADDRESS_INDEX: &str =
     "address index not enabled on this hsd node: restart hsd with --index-address and --index-tx";
+
+/// Why the history refuses a node with the address index but without the tx
+/// index: hsd's `GET /tx/address` needs both (`ChainDB.getMetaByAddress`
+/// returns nothing unless `indexTX` and `indexAddress` are on), and answers
+/// with the mempool alone otherwise. Activity's banner keys on "not enabled
+/// on this hsd node" and names the flag from the sentence.
+pub const NEEDS_TX_INDEX: &str =
+    "transaction index not enabled on this hsd node: restart hsd with --index-address and --index-tx";
+
+/// Why the history refuses a node with neither index.
+pub const NEEDS_ADDRESS_AND_TX_INDEX: &str =
+    "address and transaction indexes not enabled on this hsd node: restart hsd with --index-address and --index-tx";
 
 /// Why a command refuses an hsd older than 7.0: `chain.indexers` came to its
 /// `GET /` reply in v7.0.0, so an older node cannot say whether it has the

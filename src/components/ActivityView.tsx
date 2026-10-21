@@ -191,7 +191,15 @@ export function ActivityView() {
   // Tauri rejects with the command's error as a plain string; a test or a
   // wrapper may hand an `Error`.
   const errorText = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  const isIndexError = isError && errorText.includes("address index not enabled");
+  // `read_action_history` refuses an index-less node with a sentence naming
+  // exactly the index it lacks ("address index", "transaction index", or
+  // both); the banner names that flag.
+  const isIndexError = isError && errorText.includes("not enabled on this hsd node");
+  const missingFlags = errorText.includes("address and transaction indexes not enabled")
+    ? ["--index-address", "--index-tx"]
+    : errorText.includes("transaction index not enabled")
+      ? ["--index-tx"]
+      : ["--index-address"];
 
   return (
     <div>
@@ -247,10 +255,19 @@ export function ActivityView() {
 
       {/* Error states */}
       {isIndexError && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded p-4 mb-4 text-sm text-yellow-800">
-          Your node does not have <code className="font-mono">--index-address</code> enabled.
-          Restart it with <code className="font-mono">--index-address --index-tx</code> to enable
-          full history. App-managed nodes already have both enabled.
+        <div
+          className="bg-yellow-50 border border-yellow-200 rounded p-4 mb-4 text-sm text-yellow-800"
+          data-testid="activity-index-banner"
+        >
+          Your node does not have{" "}
+          {missingFlags.map((flag, i) => (
+            <span key={flag}>
+              {i > 0 && " or "}
+              <code className="font-mono">{flag}</code>
+            </span>
+          ))}{" "}
+          enabled. Restart it with <code className="font-mono">--index-address --index-tx</code> to
+          enable full history. App-managed nodes already have both enabled.
         </div>
       )}
       {isError && !isIndexError && (
