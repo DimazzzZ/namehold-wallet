@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
-import { LOCK_SEARCH_STATUS_KEY } from "./shakedex";
 
 export interface SyncStatus {
   running: boolean;
@@ -72,7 +71,9 @@ export function useCancelFullSync() {
  * Poll the current sync status (persistent across navigation). When a
  * background sync run finishes (`running` transitions true -> false), the
  * read/wallet caches are invalidated so the Owned Names / Active Auctions
- * lists refresh automatically without a manual reload.
+ * lists refresh automatically without a manual reload. The lock-search
+ * status is refreshed at the same edge by `useLockDiscovery`, which knows
+ * whether its own search is about to do it.
  */
 export function useSyncStatus() {
   const qc = useQueryClient();
@@ -93,8 +94,6 @@ export function useSyncStatus() {
     if (wasRunning.current && !running) {
       qc.invalidateQueries({ queryKey: ["read"] });
       qc.invalidateQueries({ queryKey: ["wallet"] });
-      // The sync may have grown the address window or found new history.
-      qc.invalidateQueries({ queryKey: LOCK_SEARCH_STATUS_KEY });
     }
     wasRunning.current = running;
   }, [query.data?.running, qc]);

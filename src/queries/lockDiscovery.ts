@@ -1,9 +1,10 @@
 import { useEffect, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { foundLocksText } from "../components/market/marketText";
 import { isSignerUnlockedFor } from "../lib/signer";
 import { useUiStore } from "../stores/ui";
 import { useNodeLive } from "./node";
-import { useFindLocks } from "./shakedex";
+import { LOCK_SEARCH_STATUS_KEY, useFindLocks } from "./shakedex";
 import { useSyncStatus } from "./sync";
 import { useActiveProfile, useSignerSession } from "./wallet";
 
@@ -15,7 +16,9 @@ import { useActiveProfile, useSignerSession } from "./wallet";
  * until one search has read every address and judged every candidate, and
  * answers `ran: false` after that). Names it adopted are announced in one
  * toast, and My listings is refreshed by the command's own invalidation.
- * Errors are silent: the next sync tries again.
+ * Errors are silent: the next sync tries again. This hook also owns the
+ * sync-end refresh of the lock-search status: a search that ran refreshes it
+ * itself, and when none starts the refresh is done here, so it is read once.
  */
 export function useLockDiscovery(): void {
   const running = useSyncStatus().data?.running ?? false;
@@ -24,6 +27,7 @@ export function useLockDiscovery(): void {
   const { data: signer } = useSignerSession();
   const showToast = useUiStore((s) => s.showToast);
   const find = useFindLocks();
+  const qc = useQueryClient();
 
   // What the effect reads at the edge, without re-arming it on every change.
   const ready =
@@ -36,7 +40,13 @@ export function useLockDiscovery(): void {
   useEffect(() => {
     const ended = wasRunning.current && !running;
     wasRunning.current = running;
-    if (!ended || !readyRef.current || searching.current) return;
+    if (!ended) return;
+    if (!readyRef.current || searching.current) {
+      // No search starts for this edge, so nothing else refreshes the
+      // status; the sync may have grown the address window or found history.
+      qc.invalidateQueries({ queryKey: LOCK_SEARCH_STATUS_KEY });
+      return;
+    }
     searching.current = true;
     find
       .mutateAsync(false)
