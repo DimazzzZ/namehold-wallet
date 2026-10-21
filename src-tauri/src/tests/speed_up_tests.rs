@@ -277,6 +277,42 @@ fn signed_child_over_the_absurd_cap_or_below_dust_is_refused() {
     assert!(err.contains("more in fee than your node accepts"), "{err}");
 }
 
+/// A signed child whose one output is dust, or that leaves the package
+/// below its target, is refused as signed.
+#[test]
+fn signed_child_below_dust_or_below_its_target_is_refused() {
+    let coin = change(1_000_000);
+    let e = entry();
+    let addr = change_address();
+    let child = plan_child(&request(&coin, &e, &addr, 10)).unwrap();
+    let mut session = SignerSession::unlock("p".into(), Network::Regtest, master(), 60_000);
+
+    // The package's target raised past what the fee pays.
+    let (hex, _) = sign_plan(&mut session, &child.plan).unwrap();
+    let mut s = child.summary.clone();
+    s.target_rate_per_vbyte += 1;
+    let err = invalid_input(recheck_signed_child(&hex, &s).unwrap_err());
+    assert!(err.contains("below the target rate"), "{err}");
+
+    // The same child paying all but 500 doos of its input as fee.
+    let mut plan = child.plan.clone();
+    plan.outputs[0].value = 500;
+    let (hex, txid) = sign_plan(&mut session, &plan).unwrap();
+    let mut s = child.summary.clone();
+    s.txid = txid;
+    s.fee_doos = 1_000_000 - 500;
+    s.change_doos = 500;
+    s.target_rate_per_vbyte = 1;
+    let err = invalid_input(recheck_signed_child(&hex, &s).unwrap_err());
+    assert!(err.contains("too small"), "{err}");
+}
+
+#[test]
+fn mempool_entry_whose_package_is_smaller_than_itself_is_not_hsds() {
+    let err = parse_mempool_entry(&entry_json(140, 0.00014, NOW, 139, 140)).unwrap_err();
+    assert!(matches!(err, AppError::Rpc(_)), "{err:?}");
+}
+
 // --- R5, R6: the parent's entry -----------------------------------------------
 
 #[test]

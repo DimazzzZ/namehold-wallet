@@ -832,3 +832,168 @@ async fn a_dead_childs_note_names_its_parent() {
     let parent = queries::get_tx_draft(&conn, PARENT).unwrap().unwrap();
     assert_eq!(spent_elsewhere_note(&parent), SPENT_ELSEWHERE);
 }
+
+// --- R7: the database checks again inside the build's transaction ------------------
+
+#[tokio::test]
+async fn a_draft_that_takes_the_change_while_the_node_is_asked_refuses_the_build() {
+    let m = std::sync::Arc::new(Mutex::new(seeded()));
+    let during = m.clone();
+    // While the build waits for the node, another draft takes the change.
+    let rpc = MockNodeRpc::new()
+        .with_blockchain_info(regtest_tip())
+        .with_mempool_entry_fn(move |_| {
+            let conn = during.lock().unwrap();
+            if queries::get_tx_draft(&conn, "other").unwrap().is_none() {
+                queries::insert_tx_draft(&conn, "other", PROFILE, "send_hns", "", "{}", "{}")
+                    .unwrap();
+                conn.execute(
+                    "UPDATE tracked_utxos SET reserved_by_draft_id = 'other' WHERE txid = ?1",
+                    params![PARENT_TXID],
+                )
+                .unwrap();
+            }
+            Ok(entry())
+        });
+    let err = build_with(&m, &rpc, PARENT, Some(10), NOW)
+        .await
+        .unwrap_err();
+    assert_eq!(refusal(err), su::CHANGE_HELD);
+    let n: i64 = m
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM wallet_tx_drafts WHERE action = ?1",
+            params![SPEED_UP_ACTION],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 0, "no child was stored");
+}
+
+// --- the commands' own call sites: signing (R8, R10) and broadcast (R14) -----------
+
+fn app_with(conn: Connection) -> tauri::App<tauri::test::MockRuntime> {
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    mock_builder()
+        .manage(crate::AppState {
+            db: Mutex::new(conn),
+            signer: Mutex::new(None),
+            secure_prompts: Mutex::new(std::collections::HashMap::new()),
+            hsd_child: Mutex::new(None),
+            node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
+            sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::commands::sync::SyncStatus::default(),
+            )),
+        })
+        .build(mock_context(noop_assets()))
+        .expect("mock app")
+}
+
+fn unlock(app: &tauri::App<tauri::test::MockRuntime>) {
+    use tauri::Manager;
+    let state = app.state::<crate::AppState>();
+    *state.signer.lock().unwrap() = Some(crate::noncustodial::session::SignerSession::unlock(
+        PROFILE.to_string(),
+        Network::Regtest,
+        ExtendedPrivKey::from_seed(&seed()).unwrap(),
+        600_000,
+    ));
+}
+
+/// An app whose profile's node is `url`, holding a child built against the
+/// mocked node; the child's id.
+async fn app_with_child(url: &str) -> (tauri::App<tauri::test::MockRuntime>, String) {
+    use tauri::Manager;
+    let conn = seeded();
+    queries::set_setting(&conn, "node_rpc_url", url).unwrap();
+    let app = app_with(conn);
+    let id = {
+        let state = app.state::<crate::AppState>();
+        build_with(&state.db, &node(), PARENT, Some(10), NOW)
+            .await
+            .unwrap()
+            .id
+    };
+    (app, id)
+}
+
+fn app_status(app: &tauri::App<tauri::test::MockRuntime>, id: &str) -> queries::TxDraftRow {
+    use tauri::Manager;
+    let state = app.state::<crate::AppState>();
+    let conn = state.db.lock().unwrap();
+    queries::get_tx_draft(&conn, id).unwrap().unwrap()
+}
+
+#[tokio::test]
+async fn signing_checks_the_signed_child_against_its_summary() {
+    use tauri::Manager;
+    let (app, id) = app_with_child("http://127.0.0.1:9").await;
+    unlock(&app);
+    {
+        let state = app.state::<crate::AppState>();
+        let conn = state.db.lock().unwrap();
+        let mut s: SpeedUpSummary = serde_json::from_str(
+            &queries::get_tx_draft(&conn, &id)
+                .unwrap()
+                .unwrap()
+                .summary_json,
+        )
+        .unwrap();
+        s.fee_doos += 1;
+        conn.execute(
+            "UPDATE wallet_tx_drafts SET summary_json = ?2 WHERE id = ?1",
+            params![id, serde_json::to_string(&s).unwrap()],
+        )
+        .unwrap();
+    }
+    let err = crate::commands::tx::sign_tx_draft_inner(&app.state(), &id)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("fee is not the one reviewed"),
+        "{err}"
+    );
+    assert_eq!(app_status(&app, &id).status, queries::DraftStatus::Draft);
+}
+
+#[tokio::test]
+async fn broadcast_of_a_child_whose_parent_left_the_mempool_sends_nothing() {
+    let mut server = mockito::Server::new_async().await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"regtest","blocks":120},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    // hsd 8.0.0 `getMempoolEntry`: RPCError(MISC_ERROR, 'Transaction not in mempool.').
+    let _entry = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getmempoolentry".into()))
+        .with_body(
+            r#"{"result":null,"error":{"message":"Transaction not in mempool.","code":-1},"id":1}"#,
+        )
+        .create_async()
+        .await;
+    let send = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("sendrawtransaction".into()))
+        .with_body(r#"{"result":"00","error":null,"id":1}"#)
+        .expect(0)
+        .create_async()
+        .await;
+    let (app, id) = app_with_child(&server.url()).await;
+    unlock(&app);
+    use tauri::Manager;
+    crate::commands::tx::sign_tx_draft_inner(&app.state(), &id)
+        .await
+        .unwrap();
+    let err = crate::commands::tx::broadcast_tx_draft(app.state(), id.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(refusal(err), su::PARENT_GONE);
+    send.assert_async().await;
+    let row = app_status(&app, &id);
+    assert_eq!(row.status, queries::DraftStatus::Dropped);
+    assert_eq!(row.error_message.as_deref(), Some(su::PARENT_GONE));
+}

@@ -332,7 +332,8 @@ describe("Speed up on the Market's Your purchases (R16)", () => {
       name: "nameholdtest",
       shakedex: {
         state,
-        blocksRemaining: state === "unconfirmed" ? null : 100,
+        // Not counted yet: the column falls through to the Speed up slot.
+        blocksRemaining: null,
         purchaseId: "pur1",
         purchaseDraftId: "pdraft1",
         priceDoos: 5_000_000,
