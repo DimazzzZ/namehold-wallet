@@ -1487,11 +1487,13 @@ async fn write_capability_blocks_when_not_address_indexed() {
         .with_body(bi_body(0.9999))
         .create_async()
         .await;
-    // Synced, but the node's REST coin route rejects (address index disabled).
+    // Synced, but started without `--index-address`: hsd reports it in its
+    // `GET /` reply, and answers `GET /coin/address` with `200 []`, never an
+    // error, so the probe goes by that report.
+    let _indexes = crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, false).await;
     let _coins = server
         .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
-        .with_status(400)
-        .with_body(r#"{"error":{"message":"Address indexing not available."}}"#)
+        .with_body("[]")
         .create_async()
         .await;
 
@@ -1501,13 +1503,12 @@ async fn write_capability_blocks_when_not_address_indexed() {
 
     let cap = get_write_capability(app.state()).await.expect("cap");
     assert!(!cap.can_write, "un-indexed node must block writes");
+    let reason = cap.reason.unwrap_or_default();
     assert!(
-        cap.reason
-            .unwrap_or_default()
-            .to_lowercase()
-            .contains("address-index"),
-        "reason should mention address indexing",
+        reason.starts_with("Your node isn't address-indexed"),
+        "reason should be the address-index one: {reason}",
     );
+    _indexes.assert_async().await;
 }
 
 #[tokio::test]
