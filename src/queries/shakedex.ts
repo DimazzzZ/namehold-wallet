@@ -240,7 +240,7 @@ export const useRestoreLock = () =>
  * The lock search status's query key, outside `["shakedex"]`: reading it
  * reads every derived address's history on the node, so it is not refetched
  * by every selling mutation's invalidation, only after a lock search ran
- * (`useFindLocks`) and at the end of a sync (`useSyncStatus`).
+ * (`useFindLocks`) and at the end of a sync (`useLockDiscovery`).
  */
 export const LOCK_SEARCH_STATUS_KEY = ["lockSearchStatus"] as const;
 

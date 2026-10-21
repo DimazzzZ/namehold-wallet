@@ -48,10 +48,21 @@ export function nodeCoinsNotSyncedReason(status: SyncStatus | undefined): string
 
 /**
  * Which profile the sync status describes. `SyncStatus` carries no profile
- * id, so `useSyncStatus` records the active one at the end of a run (or when
- * the first status arrives, for a run that ended before this session read it).
+ * id, so `useSyncStatus` records the profile active when a run is first seen
+ * running (the backend takes its profile at start; a switch mid-run does not
+ * change it) and keeps that at the run's end. A run that ended before this
+ * session read the status has no start to see: the first status read is
+ * attributed to the profile active at first load. That is inherent, since
+ * `SyncStatus` has no profile id.
  */
 const SYNC_RAN_FOR_KEY = ["sync", "ranFor"] as const;
+
+/** The profile active when the run (told apart by `startedAt`) was first seen running. */
+const SYNC_STARTED_FOR_KEY = ["sync", "startedFor"] as const;
+interface StartedFor {
+  startedAt: string | null;
+  profileId: string | null;
+}
 
 /**
  * `nodeCoinsNotSyncedReason` of the last sync, only while the profile that
@@ -119,15 +130,27 @@ export function useSyncStatus() {
 
   useEffect(() => {
     const running = query.data?.running ?? false;
+    if (running) {
+      // Several mounts see the same run: the first one to write wins.
+      const startedAt = query.data?.startedAt ?? null;
+      const seen = qc.getQueryData<StartedFor>(SYNC_STARTED_FOR_KEY);
+      if (seen === undefined || seen.startedAt !== startedAt) {
+        qc.setQueryData<StartedFor>(SYNC_STARTED_FOR_KEY, {
+          startedAt,
+          profileId: activeIdRef.current,
+        });
+      }
+    }
     if (wasRunning.current && !running) {
       qc.invalidateQueries({ queryKey: ["read"] });
       qc.invalidateQueries({ queryKey: ["wallet"] });
-      qc.setQueryData(SYNC_RAN_FOR_KEY, activeIdRef.current);
+      const started = qc.getQueryData<StartedFor>(SYNC_STARTED_FOR_KEY);
+      qc.setQueryData(SYNC_RAN_FOR_KEY, started?.profileId ?? activeIdRef.current);
     }
     wasRunning.current = running;
-  }, [query.data?.running, qc]);
+  }, [query.data?.running, query.data?.startedAt, qc]);
 
-  // A run that ended before this session read the status has no edge to
+  // A run that ended before this session read the status has no start to
   // record: the first status read belongs to the profile active then.
   const loaded = query.data != null;
   useEffect(() => {
