@@ -148,7 +148,13 @@ mod tests {
             &own,
             NET,
         );
-        assert_eq!(p2wpkh.len(), 1);
+        assert_eq!(
+            p2wpkh,
+            vec![LockCandidate {
+                name_hash: NAME.into(),
+                committed: address::encode_p2wpkh(NET, &[2; 20]).unwrap(),
+            }]
+        );
     }
 
     #[test]
@@ -184,6 +190,35 @@ mod tests {
         let t = tx(vec![transfer(&me, "00", &"07".repeat(32))]);
         let got = lock_candidates(&[t.clone(), t], &own, NET);
         assert_eq!(got.len(), 1);
+    }
+
+    /// The same name committed to the same address by two different
+    /// transactions (a lock, cancelled, then locked again) is one candidate,
+    /// and distinct candidates keep the order they were first seen in.
+    #[test]
+    fn candidates_are_deduplicated_across_transactions_in_first_seen_order() {
+        const OTHER: &str = "bb00000000000000000000000000000000000000000000000000000000000022";
+        let (me, own) = ours();
+        let lock = "07".repeat(32);
+        let first = json!({"hash": "01".repeat(32), "outputs": [transfer(&me, "00", &lock)]});
+        let other = json!({"hash": "02".repeat(32), "outputs": [
+            output(&me, 9, json!([OTHER, "01000000", "00", "08".repeat(32)]))
+        ]});
+        let again = json!({"hash": "03".repeat(32), "outputs": [transfer(&me, "00", &lock)]});
+        let got = lock_candidates(&[first, other, again], &own, NET);
+        assert_eq!(
+            got,
+            vec![
+                LockCandidate {
+                    name_hash: NAME.into(),
+                    committed: address::encode_p2wsh(NET, &[7; 32]).unwrap(),
+                },
+                LockCandidate {
+                    name_hash: OTHER.into(),
+                    committed: address::encode_p2wsh(NET, &[8; 32]).unwrap(),
+                },
+            ]
+        );
     }
 
     #[test]

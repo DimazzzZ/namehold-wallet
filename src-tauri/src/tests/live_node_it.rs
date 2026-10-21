@@ -7707,7 +7707,9 @@ async fn shakedex_find_locks_after_a_restore() {
 
     let r = find(false).await;
     assert!(r.ran && r.done, "the search ran against the live node");
-    assert_eq!(r.adopted, vec![name.clone()]);
+    // A reused chain may hold other locks of this account: the search adopts
+    // them too, so only this run's name is asserted.
+    assert!(r.adopted.contains(&name), "{:?}", r.adopted);
     let l = open_listing(&fresh, &name).expect("the adopted listing");
     assert_eq!(l.state, ListingState::Restored);
     let owner = name_owner(&cl, &name).await;

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 const invokeMock = vi.fn();
@@ -24,17 +24,27 @@ function setup() {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   );
-  const hook = renderHook(() => useLockDiscovery(), { wrapper });
+  // The hook under test, beside the status query it reads, so a test can
+  // wait for a render that has seen a new status.
+  const hook = renderHook(
+    () => {
+      useLockDiscovery();
+      return useQueryClient().getQueryData<{ running: boolean }>(["sync", "status"]);
+    },
+    { wrapper },
+  );
   return { qc, spy, hook };
 }
 
-/** Flip `running` and let the status poll and the hook see it. */
-async function setRunning(qc: QueryClient, running: boolean) {
+type Hook = ReturnType<typeof setup>["hook"];
+
+/** Flip `running` and wait until the hook has rendered with it. */
+async function setRunning(qc: QueryClient, hook: Hook, running: boolean) {
   state.running = running;
   await act(async () => {
     await qc.invalidateQueries({ queryKey: ["sync", "status"] });
-    await new Promise((r) => setTimeout(r, 20));
   });
+  await waitFor(() => expect(hook.result.current?.running).toBe(running));
 }
 
 beforeEach(() => {
@@ -64,23 +74,26 @@ beforeEach(() => {
 });
 
 /** Run one sync to its end, with the queries it reads settled first. */
-async function oneSync(qc: QueryClient) {
-  await setRunning(qc, true);
-  await setRunning(qc, false);
+async function oneSync({ qc, hook }: { qc: QueryClient; hook: Hook }) {
+  await setRunning(qc, hook, true);
+  await setRunning(qc, hook, false);
 }
 
 describe("useLockDiscovery", () => {
-  it("searches once when a sync ends with the signer unlocked", async () => {
-    const { qc } = setup();
+  it("searches once when a sync ends, not when it starts, with the signer unlocked", async () => {
+    const t = setup();
     await waitFor(() => expect(calls("get_signer_session")).toHaveLength(1));
     await waitFor(() => expect(calls("node_status")).toHaveLength(1));
     await act(async () => {});
-    await oneSync(qc);
+    await setRunning(t.qc, t.hook, true);
+    await act(async () => {});
+    expect(calls("shakedex_find_locks")).toHaveLength(0);
+    await setRunning(t.qc, t.hook, false);
     await waitFor(() => expect(calls("shakedex_find_locks")).toHaveLength(1));
     expect(calls("shakedex_find_locks")[0]).toEqual(["shakedex_find_locks", { force: false }]);
     await act(async () => {});
     expect(calls("shakedex_find_locks")).toHaveLength(1);
-    await oneSync(qc);
+    await oneSync(t);
     await waitFor(() => expect(calls("shakedex_find_locks")).toHaveLength(2));
   });
 
@@ -88,7 +101,7 @@ describe("useLockDiscovery", () => {
     state.unlocked = false;
     const first = setup();
     await act(async () => {});
-    await oneSync(first.qc);
+    await oneSync(first);
     await act(async () => {});
     expect(calls("shakedex_find_locks")).toHaveLength(0);
     first.hook.unmount();
@@ -97,7 +110,7 @@ describe("useLockDiscovery", () => {
     state.live = false;
     const second = setup();
     await act(async () => {});
-    await oneSync(second.qc);
+    await oneSync(second);
     await act(async () => {});
     expect(calls("shakedex_find_locks")).toHaveLength(0);
     second.hook.unmount();
@@ -106,20 +119,20 @@ describe("useLockDiscovery", () => {
     state.kind = "watch_only";
     const third = setup();
     await act(async () => {});
-    await oneSync(third.qc);
+    await oneSync(third);
     await act(async () => {});
     expect(calls("shakedex_find_locks")).toHaveLength(0);
   });
 
   it("toasts and refreshes My listings when it restored a name", async () => {
     report = { ran: true, adopted: ["dexsale", "other"], done: true, complete: true };
-    const { qc, spy } = setup();
+    const t = setup();
     await act(async () => {});
-    await oneSync(qc);
+    await oneSync(t);
     await waitFor(() =>
       expect(toasts()).toContain("Found 2 names locked for sale · restored in My listings"),
     );
-    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["shakedex"] }));
+    expect(t.spy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["shakedex"] }));
   });
 
   it("stays silent when the search is refused", async () => {
@@ -131,9 +144,9 @@ describe("useLockDiscovery", () => {
       if (cmd === "get_sync_status") return Promise.resolve({ running: state.running });
       return Promise.resolve(null);
     });
-    const { qc } = setup();
+    const t = setup();
     await act(async () => {});
-    await oneSync(qc);
+    await oneSync(t);
     await waitFor(() => expect(calls("shakedex_find_locks")).toHaveLength(1));
     expect(toasts()).toEqual([]);
   });
