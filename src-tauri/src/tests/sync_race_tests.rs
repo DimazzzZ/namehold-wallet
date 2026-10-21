@@ -1076,6 +1076,40 @@ mod coverage_tests {
         assert_eq!(tracked_coin_and_cursor(&path), (None, 50));
     }
 
+    /// An hsd older than 7.0 does not report its indexes: nothing is
+    /// applied, and the run's error says why and names the version.
+    #[tokio::test]
+    async fn node_step_on_hsd_before_7_says_the_node_does_not_report_its_indexes() {
+        let path = seeded_db();
+        let _guard = TempDbGuard(path.clone());
+        seed_address(&path, PROFILE_A, MYADDR);
+        seed_tracked_coin(&path);
+        let node = synced_node()
+            .with_node_status(crate::tests::mock_node_rpc::node_status_before_hsd_7())
+            .with_coins_by_address(vec![])
+            .with_txs_by_address(vec![]);
+
+        let step = crate::commands::sync::sync_node_step_with_client(
+            &node,
+            path.to_str().unwrap(),
+            PROFILE_A,
+            &crate::db::sync_lock::LockLost::default(),
+        )
+        .await;
+
+        match &step {
+            crate::commands::sync::NodeStep::NotAuthoritative(why) => {
+                assert!(
+                    why.contains(crate::noncustodial::node_rpc::NODE_INDEXES_UNREPORTED),
+                    "{why}"
+                );
+                assert!(!why.contains("index-address"), "{why}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(tracked_coin_and_cursor(&path), (None, 50));
+    }
+
     /// With the address index on, a coin the node no longer lists was spent:
     /// the step marks it so and moves the cursor, as before. The tx index is
     /// not needed for the coins.

@@ -102,6 +102,23 @@ pub fn node_status_with_indexes(tx: bool, address: bool) -> serde_json::Value {
     })
 }
 
+/// hsd's `GET /` reply before v7.0.0, which added `chain.indexers` (hsd
+/// CHANGELOG, v7.0.0, Node HTTP API): the chain part as hsd 6.x sends it, with
+/// no word on its indexes whatever flags it was started with.
+pub fn node_status_before_hsd_7() -> serde_json::Value {
+    serde_json::json!({
+        "version": "6.1.1",
+        "network": "regtest",
+        "chain": {
+            "height": 100,
+            "tip": "0000000000000000000000000000000000000000000000000000000000000000",
+            "treeRoot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "progress": 1,
+            "state": { "tx": 101, "coin": 101, "value": 0, "burned": 0 }
+        }
+    })
+}
+
 /// A mockito node's `GET /` ([`node_status_with_indexes`]): the route every
 /// command that reads address-indexed routes asks first. Keep the returned
 /// mock alive for the test (dropping it removes it).

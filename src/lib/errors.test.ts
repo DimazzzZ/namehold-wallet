@@ -35,6 +35,16 @@ describe("mapError (non-custodial)", () => {
     expect(result).toBe("some error");
   });
 
+  it("leaves the reason of an hsd older than 7.0 as it is, not the address-index hint", () => {
+    const sync =
+      "the node's coins were not synced: Node RPC error: this hsd node does not report its indexes (hsd older than 7.0): update hsd to 7.0 or newer";
+    expect(mapError(sync)).toContain("hsd older than 7.0");
+    expect(mapError(sync)).not.toMatch(/address-indexed/);
+    const probe =
+      "Your node doesn't report its indexes (hsd older than 7.0) — update hsd to 7.0 or newer to send.";
+    expect(mapError(probe)).toBe(probe);
+  });
+
   it("returns original for unknown errors", () => {
     expect(mapError("something completely unknown")).toBe("something completely unknown");
   });

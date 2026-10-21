@@ -194,7 +194,8 @@ You can write when **all** of these hold:
    header it knows about; `verification_progress` only corroborates that (see
    "When the wallet calls a node synced" in [NODE_SETUP.md](NODE_SETUP.md)).
 4. **Address-indexed** — hsd was started with `--index-address` (required to
-   discover your unspent coins).
+   discover your unspent coins). The wallet asks hsd which indexes it runs,
+   which hsd reports from version 7.0, so the node must be hsd 7.0 or newer.
 
 When any condition fails, the reason is shown in plain text (e.g. "Node not
 synced (12%)", "hsd not address-indexed — re-sync required", "Signer locked").
@@ -763,6 +764,9 @@ ones:
 - **"hsd not address-indexed"** — hsd was started without `--index-address`.
   Restart hsd from Settings → Connections; the app adds the flag. If your
   chain was already synced without it, use **Re-sync node data**.
+- **"Your node doesn't report its indexes (hsd older than 7.0)"** — the node is
+  an hsd older than 7.0, which cannot say whether it has the address index.
+  Update hsd to 7.0 or newer.
 - **"Node unreachable"** — check that hsd is running (Settings shows a red dot)
   and the RPC URL/API key match.
 

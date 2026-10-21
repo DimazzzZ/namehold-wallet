@@ -22,7 +22,9 @@ use crate::commands::read::{
 use crate::error::AppError;
 use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::{BlockchainInfo, NodeCoin};
-use crate::tests::mock_node_rpc::{node_status_with_indexes, MockNodeRpc, RpcCall};
+use crate::tests::mock_node_rpc::{
+    node_status_before_hsd_7, node_status_with_indexes, MockNodeRpc, RpcCall,
+};
 
 // ------- read_block_info_with_client --------------------------------------
 
@@ -1151,6 +1153,32 @@ async fn write_probe_synced_without_the_address_index_downgrades() {
     }
 }
 
+/// An hsd older than 7.0 does not report its indexes: the probe blocks
+/// sends with that reason and the version to update to, not the
+/// address-index hint (such a node may well have `--index-address`).
+#[tokio::test]
+async fn write_probe_synced_on_hsd_before_7_names_the_version() {
+    let mock = MockNodeRpc::new()
+        .with_blockchain_info(BlockchainInfo {
+            chain: Some("regtest".to_string()),
+            blocks: 100,
+            headers: Some(100),
+            verification_progress: Some(1.0),
+            bestblockhash: None,
+            mediantime: None,
+        })
+        .with_coins_by_address(vec![])
+        .with_node_status(node_status_before_hsd_7());
+    let mut cap = writable_cap();
+    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
+        .await;
+    assert!(!cap.can_write);
+    let reason = cap.reason.as_deref().unwrap();
+    assert!(reason.contains("doesn't report its indexes"), "{reason}");
+    assert!(reason.contains("7.0"), "{reason}");
+    assert!(!reason.contains("address-indexed"), "{reason}");
+}
+
 #[tokio::test]
 async fn write_probe_synced_and_indexed_keeps_write_capable() {
     let mock = MockNodeRpc::new()
@@ -1851,6 +1879,27 @@ async fn node_indexes_missing_or_non_boolean_is_an_error() {
         .await
         .expect_err("a failed read");
     assert!(err.to_string().contains("connection refused"), "{err}");
+}
+
+/// hsd added `chain.indexers` to `GET /` in v7.0.0: an older node reports
+/// no indexes even when it has them, and the error says so and names the
+/// version to update to, not a missing `--index-address`.
+#[tokio::test]
+async fn node_indexes_on_hsd_before_7_says_the_node_does_not_report_them() {
+    let mock = MockNodeRpc::new().with_node_status(node_status_before_hsd_7());
+    let err = crate::noncustodial::node_rpc::node_indexes(&mock)
+        .await
+        .expect_err("hsd 6.x reports no indexes");
+    match &err {
+        AppError::Rpc(msg) => assert_eq!(
+            msg,
+            crate::noncustodial::node_rpc::NODE_INDEXES_UNREPORTED,
+            "{err:?}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert!(err.to_string().contains("7.0"), "{err}");
+    assert!(!err.to_string().contains("index-address"), "{err}");
 }
 
 // ------- read_action_history_with_client -----------------------------------

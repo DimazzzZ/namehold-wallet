@@ -2503,18 +2503,30 @@ pub(crate) async fn apply_node_write_probe_with_client(
                 cap.reason = Some(format!(
                     "Your local node is still syncing ({pct}%). On-chain sends and transfers need a fully-synced node."
                 ));
-            } else if !crate::noncustodial::node_rpc::node_indexes(client)
-                .await
-                .is_ok_and(|indexes| indexes.address)
-            {
+            } else {
                 // hsd without `--index-address` lists no coins and never says
                 // so, so the node's own report decides; one that cannot be
-                // read is not known to have the index.
-                cap.can_write = false;
-                cap.reason = Some(
-                    "Your node isn't address-indexed — restart hsd with address indexing (Settings → Start hsd) and let it finish syncing."
-                        .to_string(),
-                );
+                // read is not known to have the index. An hsd older than 7.0
+                // reports no indexes at all: its remedy is the update.
+                match crate::noncustodial::node_rpc::node_indexes(client).await {
+                    Ok(indexes) if indexes.address => {}
+                    Err(AppError::Rpc(msg))
+                        if msg == crate::noncustodial::node_rpc::NODE_INDEXES_UNREPORTED =>
+                    {
+                        cap.can_write = false;
+                        cap.reason = Some(
+                            "Your node doesn't report its indexes (hsd older than 7.0) — update hsd to 7.0 or newer to send."
+                                .to_string(),
+                        );
+                    }
+                    _ => {
+                        cap.can_write = false;
+                        cap.reason = Some(
+                            "Your node isn't address-indexed — restart hsd with address indexing (Settings → Start hsd) and let it finish syncing."
+                                .to_string(),
+                        );
+                    }
+                }
             }
         }
     }

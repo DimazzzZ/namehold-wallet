@@ -37,6 +37,14 @@ use crate::noncustodial::rpc::{BlockchainInfo, ChainSource, NodeCoin, NodeRpcCli
 pub const NEEDS_ADDRESS_INDEX: &str =
     "address index not enabled on this hsd node: restart hsd with --index-address and --index-tx";
 
+/// Why a command refuses an hsd older than 7.0: `chain.indexers` came to its
+/// `GET /` reply in v7.0.0, so an older node cannot say whether it has the
+/// address index, and its empty coin lists cannot be told from an index that
+/// is off. The remedy is the update, not `--index-address` (such a node may
+/// well have it); the error mapper leaves this sentence as it is.
+pub const NODE_INDEXES_UNREPORTED: &str =
+    "this hsd node does not report its indexes (hsd older than 7.0): update hsd to 7.0 or newer";
+
 /// The indexes hsd was started with (`--index-tx`, `--index-address`), as its
 /// REST `GET /` reports them. Read once per command or sync run: never
 /// cached, as the user may restart the node with other flags.
@@ -48,9 +56,18 @@ pub(crate) struct NodeIndexes {
 
 /// Read the node's indexes from `chain.indexers.indexTX` and
 /// `chain.indexers.indexAddress` of its `GET /` reply. A reply without both
-/// as booleans is an [`AppError::Rpc`]: never taken as "on".
+/// as booleans is an [`AppError::Rpc`]: never taken as "on". A `chain` with
+/// no `indexers` at all is an hsd older than 7.0, and its error is
+/// [`NODE_INDEXES_UNREPORTED`].
 pub(crate) async fn node_indexes(node: &dyn NodeRpc) -> Result<NodeIndexes, AppError> {
     let status = node.get_node_status().await?;
+    if status
+        .get("chain")
+        .is_some_and(serde_json::Value::is_object)
+        && status.pointer("/chain/indexers").is_none()
+    {
+        return Err(AppError::Rpc(NODE_INDEXES_UNREPORTED.into()));
+    }
     let flag = |name: &str| {
         status
             .pointer(&format!("/chain/indexers/{name}"))
