@@ -4668,6 +4668,31 @@ async fn a_listing_managed_elsewhere_is_still_sold_from_the_chain() {
     let l = listing(&f);
     assert_eq!(l.state, ListingState::Sold);
     assert_eq!(l.sold_txid.as_deref(), Some(buy.as_str()));
+    // R42: an ended listing is not shown as managed elsewhere, nor its
+    // other device's price as buyable.
+    let row = crate::commands::shakedex::my_listing_from_conn(&f.conn, NET, &l, None).unwrap();
+    assert!(!row.managed_elsewhere);
+    assert_eq!(row.foreign_step_price_doos, None);
+}
+
+/// R38: the mark belongs to the lock coin and steps it was seen over: a
+/// reorg that takes the FINALIZE into the lock away and the listing back to
+/// Ready to Finalize & sign (its lock coin, steps and file dropped) drops
+/// the mark too, so a listing finalized into a new lock coin starts
+/// unmarked.
+#[test]
+fn a_listing_back_before_its_lock_loses_its_mark() {
+    let f = fx(ListingState::Listed);
+    assert_eq!(mark_elsewhere(&f), 1);
+    assert_eq!(
+        queries::mark_listing_finalizing_again(&f.conn, &f.id).unwrap(),
+        1
+    );
+    assert!(listing(&f).managed_elsewhere_at.is_some(), "still the coin");
+    assert_eq!(queries::revert_listing_to_ready(&f.conn, &f.id).unwrap(), 1);
+    let l = listing(&f);
+    assert_eq!(l.state, ListingState::ReadyToFinalize);
+    assert_eq!((l.managed_elsewhere_at, l.foreign_step_json), (None, None));
 }
 
 /// R43: My listings words a sale paid at a price none of this device's

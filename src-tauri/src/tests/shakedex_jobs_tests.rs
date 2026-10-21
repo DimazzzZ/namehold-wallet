@@ -4133,9 +4133,10 @@ async fn copies_without_a_foreign_step_are_never_flagged() {
         }
         let mut s = market().await;
         let get = copy_mock(&mut s, copy.to_string(), 1).await;
-        let (_up, _) = upload_mock(&mut s, usize::from(case != "later expiry")).await;
+        let (up, _) = upload_mock(&mut s, usize::from(case != "later expiry")).await;
         keep(&f, &s, NOW).await;
         get.assert_async().await;
+        up.assert_async().await;
         let l = listing(&f);
         assert_eq!(l.managed_elsewhere_at, None, "{case}");
         assert_eq!(l.foreign_step_json, None, "{case}");
@@ -4144,12 +4145,23 @@ async fn copies_without_a_foreign_step_are_never_flagged() {
 
 /// R41 with R25: our own offer with a **later** `expiresAt` hides nothing:
 /// it is left on the market as our copy (Listed, the step recorded as
-/// held); one with an earlier `expiresAt` is uploaded over
-/// (ReplacedReuploaded).
+/// held), up to one refresh period past the expiry a refresh at the node's
+/// median time would write (`latest_own_expiry`); one later than that, or
+/// with an earlier `expiresAt`, is uploaded over (ReplacedReuploaded).
 #[tokio::test]
 async fn later_expiry_on_the_market_is_kept_and_an_earlier_one_replaced() {
+    // Our file expires at MTP + 365 days, what a refresh at MTP writes: the
+    // bound is one refresh period past it.
+    let slack = i64::try_from(crate::shakedex_jobs::LATER_EXPIRY_SLACK_SECS).unwrap();
+    assert_eq!(
+        crate::shakedex_jobs::latest_own_expiry(MTP),
+        MTP + sell::LISTING_LIFETIME_SECS + crate::shakedex_jobs::LATER_EXPIRY_SLACK_SECS
+    );
     for (delta, uploads, status) in [
         (86_400_i64, 0, MarketStatus::Listed),
+        (slack, 0, MarketStatus::Listed),
+        // Past the bound: no device's refresh, replaced.
+        (slack + 1, 1, MarketStatus::ReplacedReuploaded),
         (-86_400, 1, MarketStatus::ReplacedReuploaded),
     ] {
         let f = listed_on_market(MarketStatus::Listed);

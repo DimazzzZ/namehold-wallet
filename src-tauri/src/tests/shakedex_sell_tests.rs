@@ -9434,10 +9434,11 @@ async fn other_devices_file_takes_a_listing_managed_elsewhere_over() {
 
 /// R45: the other device's file is refused, nothing written and the mark
 /// kept, when it leaves out a price this device signed, carries a step not
-/// signed by the lock over the lock coin, or pays another address.
+/// signed by the lock over the lock coin, or pays another address, and when
+/// hsd reports the lock coin spent (nothing to verify its steps over).
 #[tokio::test]
 async fn other_devices_file_that_is_not_this_listings_is_refused() {
-    let l = listed_fixture().await;
+    let mut l = listed_fixture().await;
     let step = marked_listed(&l);
     let pay = l.r.listing().payment_address.unwrap();
     let before = l.r.listing();
@@ -9469,4 +9470,20 @@ async fn other_devices_file_that_is_not_this_listings_is_refused() {
         assert_eq!(after.listing_file_json, before.listing_file_json, "{case}");
         assert!(after.managed_elsewhere_at.is_some(), "{case}");
     }
+    // A good file while hsd reports the lock coin spent: its steps cannot be
+    // verified, so it takes nothing over (unlike R32's Restored lock).
+    let good = other_devices_file(&l, &[other_devices_step(&l, 2_000_000, NAME_VALUE, &pay)]);
+    let (info, lock) = (l.info(), l.lock.clone());
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info,
+        vec![(lock.0, lock.1, None)],
+    )
+    .await;
+    let e = err_text(import(&l.r.app, good).await.expect_err("spent"));
+    assert!(e.contains(TAKE_OVER_LOCK_COIN_SPENT), "{e}");
+    let after = l.r.listing();
+    assert_eq!(after.steps_json, before.steps_json);
+    assert!(after.managed_elsewhere_at.is_some());
 }

@@ -2803,8 +2803,11 @@ fn ends_before_lock_sql(w: ListingWrite) -> String {
 /// What a listing ended from Finalizing loses of its dead FINALIZE: the
 /// draft link, the steps and file signed over a lock coin that never
 /// existed, and their expiry. Already so for a listing before the lock.
+/// R38: the mark of a listing managed elsewhere belongs to its lock coin and
+/// steps, so it goes with them.
 const DROP_DEAD_FINALIZE_SET: &str = "lock_finalize_draft_id = NULL, steps_json = '[]', \
-     listing_file_json = NULL, expires_at = NULL";
+     listing_file_json = NULL, expires_at = NULL, managed_elsewhere_at = NULL, \
+     foreign_step_json = NULL";
 
 /// R19: a reorg took an Aborted listing's abort out of the chain (its lock
 /// TRANSFER is a coin or the owner again), so the listing is Locking again — unless another listing of the name is
@@ -2830,6 +2833,7 @@ fn revert_to_ready_set() -> String {
     format!(
         "state = '{}', lock_finalize_draft_id = NULL, lock_txid = NULL, lock_vout = NULL, \
          steps_json = '[]', listing_file_json = NULL, expires_at = NULL, \
+         managed_elsewhere_at = NULL, foreign_step_json = NULL, \
          updated_at = datetime('now')",
         ListingWrite::RevertToReady.target().as_str()
     )

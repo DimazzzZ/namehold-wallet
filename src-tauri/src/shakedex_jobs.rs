@@ -2587,6 +2587,20 @@ pub const RETRY_BASE_SECS: i64 = 300;
 pub const RETRY_MAX_SECS: i64 = 6 * 3_600;
 /// R23: `expiresAt` is moved ahead once it is this close.
 pub const EXPIRY_REFRESH_MARGIN_SECS: i64 = 30 * 86_400;
+/// R41: how far past the expiry the R23 refresh would write now (MTP +
+/// [`sell::LISTING_LIFETIME_SECS`]) a copy of ours may expire and still be
+/// left on the market: one refresh period, the most two devices' refreshes
+/// of the same step can differ by. A copy expiring later than that is no
+/// device's refresh and is replaced, so nobody freezes our uploads with an
+/// absurd `expiresAt`.
+pub const LATER_EXPIRY_SLACK_SECS: u64 = EXPIRY_REFRESH_MARGIN_SECS as u64;
+
+/// R41: the latest `expiresAt` a copy of ours may carry at the median time
+/// `mtp` and still be left on the market ([`LATER_EXPIRY_SLACK_SECS`]).
+pub(crate) fn latest_own_expiry(mtp: u64) -> u64 {
+    mtp.saturating_add(sell::LISTING_LIFETIME_SECS)
+        .saturating_add(LATER_EXPIRY_SLACK_SECS)
+}
 
 /// R25: the wait before try `attempts + 1` after `attempts` failures in a row.
 pub(crate) fn retry_delay_secs(attempts: i64) -> i64 {
@@ -2785,6 +2799,8 @@ pub(crate) enum MarketCopy {
         /// verified over it: a market copy's foreign step is verified over
         /// it too (R36).
         lock_value: u64,
+        /// The node's median time the copy was cut at.
+        mtp: u64,
     },
     /// A step of the stored file does not verify over the lock coin hsd
     /// reports, the file is not this listing's, the row does not read (its
@@ -2916,6 +2932,7 @@ async fn market_copy_at(
         copy: Box::new(parsed),
         listing: Box::new(listing),
         lock_value: value,
+        mtp,
     })
 }
 
@@ -3623,6 +3640,7 @@ async fn upload_current(
             copy,
             listing,
             lock_value,
+            ..
         } => {
             let Some(step) = step_or_record(conn, &listing, &copy, now)? else {
                 return Ok(());
@@ -3889,7 +3907,7 @@ async fn keep_listed(
     now: i64,
 ) -> Result<(), AppError> {
     use queries::MarketStatus as S;
-    let (file, ours, listing, lock_value) =
+    let (file, ours, listing, lock_value, mtp) =
         match market_copy(conn, node, Network::Main, l, now).await? {
             MarketCopy::NotNow(why) => {
                 not_now(l, &why);
@@ -3903,8 +3921,12 @@ async fn keep_listed(
                 copy,
                 listing,
                 lock_value,
-            } => (file, copy, listing, lock_value),
+                mtp,
+            } => (file, copy, listing, lock_value, mtp),
         };
+    // R41: the latest expiry this wallet could have written itself, one
+    // refresh period of slack included; a copy expiring later is replaced.
+    let latest_expiry = latest_own_expiry(mtp);
     let Some(step) = step_or_record(conn, &listing, &ours, now)? else {
         return Ok(());
     };
@@ -3924,7 +3946,7 @@ async fn keep_listed(
             // R41: our offer with a later expiry hides nothing: it is ours.
             let same = theirs.as_ref().is_some_and(|theirs| {
                 listing_file::same_market_listing(theirs, &ours)
-                    || listing_file::same_offer_expiring_later(theirs, &ours)
+                    || listing_file::same_offer_expiring_later(theirs, &ours, latest_expiry)
             });
             if refreshed && !same {
                 return upload(conn, market, &file, &step, &listing, S::Listed, now).await;

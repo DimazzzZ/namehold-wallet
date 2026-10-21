@@ -2099,6 +2099,14 @@ fn rows_own_file(
     Ok(stored_file)
 }
 
+/// R42: whether My listings shows `l` as managed elsewhere: marked, and in
+/// a state the mark means something in (Listed, or Cancelling while the
+/// other device's price is still buyable); an ended listing is not shown so.
+fn shown_managed_elsewhere(l: &ShakedexListing) -> bool {
+    l.managed_elsewhere_at.is_some()
+        && matches!(l.state, ListingState::Listed | ListingState::Cancelling)
+}
+
 /// R38: the foreign step stored on `l` while it is managed elsewhere;
 /// `None` when it is not marked or the step stored does not read.
 pub(crate) fn foreign_step_of(l: &ShakedexListing) -> Option<sell::ForeignStep> {
@@ -2255,7 +2263,11 @@ pub(crate) async fn take_over_confirmed(
         &queries::TakenOver {
             lock: (&lock_txid, lock_vout),
             old_steps_json: &listing.steps_json,
-            old_foreign_step_json: listing.foreign_step_json.as_deref().unwrap_or_default(),
+            // `take_over_refusal` read the step from this column.
+            old_foreign_step_json: listing
+                .foreign_step_json
+                .as_deref()
+                .ok_or_else(|| AppError::InvalidInput(TAKE_OVER_NOT_MARKED.into()))?,
             steps_json: &serde_json::to_string(&stored_new)?,
             listing_file_json: &file,
             expires_at: Some(i64::try_from(expires_at).map_err(|_| corrupted("readable expiry"))?),
@@ -2527,8 +2539,10 @@ pub(crate) fn my_listing_from_conn(
                     reason: e.to_string(),
                 },
                 pending_send: None,
-                managed_elsewhere: l.managed_elsewhere_at.is_some(),
-                foreign_step_price_doos: foreign_step_of(l).map(|s| s.price),
+                managed_elsewhere: shown_managed_elsewhere(l),
+                foreign_step_price_doos: shown_managed_elsewhere(l)
+                    .then(|| foreign_step_of(l).map(|s| s.price))
+                    .flatten(),
                 sold_elsewhere: false,
                 cancelled_elsewhere: false,
             });
@@ -2566,8 +2580,10 @@ pub(crate) fn my_listing_from_conn(
         },
         prices,
         pending_send: pending_send(conn, l)?,
-        managed_elsewhere: l.managed_elsewhere_at.is_some(),
-        foreign_step_price_doos: foreign_step_of(l).map(|s| s.price),
+        managed_elsewhere: shown_managed_elsewhere(l),
+        foreign_step_price_doos: shown_managed_elsewhere(l)
+            .then(|| foreign_step_of(l).map(|s| s.price))
+            .flatten(),
         sold_elsewhere: sold_elsewhere(conn, l, &listing.steps)?,
         cancelled_elsewhere: cancelled_elsewhere(conn, l)?,
         listing,
@@ -2918,15 +2934,22 @@ pub(crate) fn take_over_with_file_inner(
     {
         return Err(AppError::InvalidInput(IMPORT_DROPS_OUR_STEP.into()));
     }
-    if let Some(coin) = i.coin {
-        let lock_value = sell::lock_coin_value(coin, file, &i.key.address)?;
-        sell::verify_file_steps(file, lock_value, i.network)?;
-    }
+    // Unlike R32's Restored lock, a take-over needs the lock coin unspent:
+    // steps that cannot be verified are never stored over verified ones.
+    let coin = i
+        .coin
+        .ok_or_else(|| AppError::InvalidInput(TAKE_OVER_LOCK_COIN_SPENT.into()))?;
+    let lock_value = sell::lock_coin_value(coin, file, &i.key.address)?;
+    sell::verify_file_steps(file, lock_value, i.network)?;
     let expires_at = file
         .expires_at
         .map(i64::try_from)
         .transpose()
         .map_err(|_| AppError::InvalidInput("the listing file's expiry is out of range".into()))?;
+    let old_foreign = l
+        .foreign_step_json
+        .as_deref()
+        .ok_or_else(|| AppError::InvalidInput(TAKE_OVER_NOT_MARKED.into()))?;
     let (lock_txid, lock_vout) = shakedex_jobs::stored_lock(l)?
         .ok_or_else(|| AppError::Other("corrupted listing: no lock coin".into()))?;
     let n = queries::take_over_listing(
@@ -2935,7 +2958,7 @@ pub(crate) fn take_over_with_file_inner(
         &queries::TakenOver {
             lock: (lock_txid, lock_vout),
             old_steps_json: &l.steps_json,
-            old_foreign_step_json: l.foreign_step_json.as_deref().unwrap_or_default(),
+            old_foreign_step_json: old_foreign,
             steps_json: &serde_json::to_string(&theirs)?,
             listing_file_json: &file.to_json()?,
             expires_at,
