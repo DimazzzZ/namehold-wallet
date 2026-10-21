@@ -7654,6 +7654,81 @@ async fn shakedex_restore_lock_by_name_after_a_fresh_profile() {
     );
 }
 
+/// R34 on hsd: a fresh profile from the same recovery phrase finds the lock
+/// the first one made without being told its name. The search reads the
+/// node's indexes through the REST root (its first meeting with a real hsd),
+/// then the fresh profile's address history; the name is adopted as a
+/// Restored lock at the outpoint hsd names as the owner and the search is
+/// done. A second search runs nothing; a forced one adopts nothing more (the
+/// lock is already tracked) and is still done.
+#[tokio::test]
+async fn shakedex_find_locks_after_a_restore() {
+    let Some((url, key)) = shakedex_node_env("shakedex_find_locks_after_a_restore") else {
+        return;
+    };
+    let (app, cl, addr, name, id) = ready_to_finalize_on_chain(&url, &key, "nhfindlock").await;
+    let s = finalize_and_sign_on_chain(&app, &cl, &addr, &id, "3", 1).await;
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+
+    let gap = crate::commands::secure_wallet::gap_limit(&std::collections::HashMap::new());
+    let fresh_conn = seeded_conn_acct(&url, &key, test_acct());
+    crate::commands::secure_wallet::provision_addresses(
+        &fresh_conn,
+        PROFILE,
+        NET,
+        &account_xpub_at(test_acct()),
+        gap,
+    )
+    .expect("the restore's address window");
+    let fresh = app_with(fresh_conn);
+    sync_wallet_state(fresh.state(), None).await.expect("sync");
+    assert!(open_listing(&fresh, &name).is_none());
+
+    let master = master();
+    let acct = test_acct();
+    let derive = move |n: &str| {
+        crate::noncustodial::shakedex::lock_key::derive_lock_key(&master, NET, acct, n)
+    };
+    let find = |force: bool| {
+        let state = fresh.state::<AppState>();
+        let cl = &cl;
+        let derive = &derive;
+        async move {
+            crate::commands::shakedex_discover::find_locks_with(
+                cl, &state.db, PROFILE, NET, force, derive,
+            )
+            .await
+            .expect("find locks")
+        }
+    };
+
+    let r = find(false).await;
+    assert!(r.ran && r.done, "the search ran against the live node");
+    assert_eq!(r.adopted, vec![name.clone()]);
+    let l = open_listing(&fresh, &name).expect("the adopted listing");
+    assert_eq!(l.state, ListingState::Restored);
+    let owner = name_owner(&cl, &name).await;
+    assert_eq!(
+        (
+            l.lock_txid.clone().unwrap(),
+            u32::try_from(l.lock_vout.unwrap()).unwrap()
+        ),
+        owner
+    );
+    assert_eq!(l.lock_txid, s.lock_txid);
+
+    let again = find(false).await;
+    assert!(!again.ran && again.done && again.adopted.is_empty());
+    let forced = find(true).await;
+    assert!(forced.ran && forced.done && forced.adopted.is_empty());
+    assert_eq!(
+        open_listing(&fresh, &name).unwrap().id,
+        l.id,
+        "the forced search leaves the tracked listing alone"
+    );
+}
+
 /// R22 for a lock restored by name (R32), which knows no payment address: a
 /// fresh profile from the same phrase restores the Listed lock by name, and
 /// a Namehold buyer buys the first device's file. While the purchase is in
