@@ -9,7 +9,9 @@ import {
 import { invoke } from "../lib/invoke";
 import { useActiveProfile } from "./wallet";
 import type {
+  FindLocksReport,
   ImportSource,
+  LockSearchStatus,
   MarketPage,
   MarketRow,
   PurchasePreview,
@@ -233,6 +235,27 @@ export const useRestoreLock = () =>
   useSellingMutation((name: string) =>
     invoke<ShakedexListingSummary>("shakedex_restore_lock", { name }),
   );
+
+/**
+ * Find our own locks in the address history (R34). `force` runs a search
+ * already done ("Find my locks"); the automatic one after a sync does not.
+ */
+export const useFindLocks = () =>
+  useSellingMutation((force: boolean) => invoke<FindLocksReport>("shakedex_find_locks", { force }));
+
+/**
+ * Where the search stands, read without the signer (R34). A rejected read
+ * (the node could not be read) is no data: the caller shows nothing.
+ */
+export function useLockSearchStatus(enabled: boolean) {
+  const profileId = useActiveProfile().data?.id ?? null;
+  return useQuery({
+    queryKey: ["shakedex", "lockSearchStatus", profileId],
+    enabled: enabled && profileId != null,
+    queryFn: () => invoke<LockSearchStatus>("shakedex_lock_search_status"),
+    retry: false,
+  });
+}
 
 /** Import our own listing file, pasted or by its path (the backend reads the file). */
 export const useImportOwnListing = () =>

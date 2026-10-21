@@ -971,6 +971,25 @@ export interface ShakedexNameListing {
   blocksUntilFinalize: number | null;
 }
 
+/** What one search for our own locks did (R34). */
+export interface FindLocksReport {
+  /** False when it did not run: done already and not forced, or the node still syncing. */
+  ran: boolean;
+  /** The names adopted as Restored locks. */
+  adopted: string[];
+  /** Whether the search is now done for the profile. */
+  done: boolean;
+}
+
+/** What My listings needs to offer the search while the signer is locked (R34). */
+export interface LockSearchStatus {
+  done: boolean;
+  /** False on a node without the address index: no search can run. */
+  addressIndex: boolean;
+  /** Candidates in the address history, read from the xpub alone. */
+  candidates: number;
+}
+
 export interface ShakedexListingSummary {
   id: string;
   name: string;

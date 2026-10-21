@@ -33,7 +33,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useUiStore } from "../../stores/ui";
 import type { ShakedexMyListing } from "../../types";
 import { FinalizeAndSign } from "./FinalizeAndSign";
-import { OwnFileImport, RestoreLock } from "./RestoreLock";
+import { FindLocks, OwnFileImport, RestoreLock } from "./RestoreLock";
 import {
   CANCEL_MARKET_TOLD,
   CANCEL_MEMPOOL_PURCHASE,
@@ -111,6 +111,7 @@ export function MyListings() {
           ))}
         </ul>
       )}
+      <FindLocks />
       <RestoreLock />
     </div>
   );
