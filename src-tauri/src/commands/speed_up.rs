@@ -283,10 +283,7 @@ pub(crate) async fn build_with(
     let child = plan(&parent, &entry, target, now)?;
     let conn = lock(db)?;
     let tx = conn.unchecked_transaction()?;
-    let again = load_parent(&tx, parent_draft_id)?;
-    if again.change != parent.change {
-        return Err(refuse(su::CHANGE_HELD));
-    }
+    load_parent(&tx, parent_draft_id)?;
     let id = random_id();
     queries::insert_tx_draft_reserving_coins_in_tx(
         &tx,

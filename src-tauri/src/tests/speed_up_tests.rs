@@ -255,6 +255,10 @@ fn signed_child_that_differs_from_its_summary_is_refused() {
     );
     let err = recheck_signed_child(&hex, &s).unwrap_err();
     assert!(matches!(err, AppError::InvalidInput(_)), "{err:?}");
+    // A summary naming another transaction.
+    let mut s = child.summary.clone();
+    s.txid = "00".repeat(32);
+    assert!(recheck_signed_child(&hex, &s).is_err());
     // Not a transaction.
     assert!(recheck_signed_child("zz", &child.summary).is_err());
 }
