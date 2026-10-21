@@ -1280,10 +1280,12 @@ pub(crate) async fn explorer_window_step(
 /// Client-injected coin-fetch phase for [`sync_node_step`], with the
 /// "false everything-spent cascade" guard. Fetches coins per address; returns
 /// `Some(all_coins)` on success, or `None` when the wallet HAS addresses but
-/// EVERY per-address query errored (the node momentarily unreachable). hsd
-/// 8.0.0 without `--index-address` does not error but lists nothing:
-/// [`sync_node_step`] checks the node's indexes before calling this. Applying an empty set in that case would make
-/// `mark_missing_as_spent` wipe every tracked UTXO — so the caller must bail.
+/// EVERY per-address query errored (the node momentarily failing). Applying
+/// an empty set in that case would make `mark_missing_as_spent` wipe every
+/// tracked UTXO — so the caller must bail. The guard covers a node that
+/// errors; a node without `--index-address` does not error but lists
+/// nothing, and is handled before this by `node_indexes` in
+/// [`sync_node_step`].
 ///
 /// An empty address list returns `Some(vec![])` (nothing to fetch, nothing to
 /// wipe). Testable against a mock.
@@ -2207,7 +2209,7 @@ mod db_hardening_tests {
         );
     }
 
-    /// When every per-address coin query errors (e.g. node lacks `--index-address`),
+    /// When every per-address coin query errors (the node momentarily failing),
     /// `sync_node_step` must bail out and NOT call `apply_node_sync_batch` with an
     /// empty coin set — that would falsely mark every tracked UTXO as spent.
     #[tokio::test]
@@ -2231,7 +2233,8 @@ mod db_hardening_tests {
             .create_async()
             .await;
 
-        // Mock /coin/address/* → all error (simulating --index-address disabled).
+        // Mock /coin/address/* → all error (simulating the node momentarily
+        // failing; without the index hsd answers `200 []` instead).
         let _m_coins = server
             .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
             .with_status(400)
