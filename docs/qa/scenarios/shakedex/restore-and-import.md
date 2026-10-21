@@ -14,7 +14,7 @@ last_verified: "eec6b2d (same tree as 150d58a) for C4; bc8cd4d for R1–R6; 2026
 
 # Restore and import
 
-A wallet restored from its recovery phrase does not find its locks on its own (spec §5): the seller restores each one by name, and imports its saved listing file to get the prices back. These cases use the second-device profile ([environment](../../environment.md#profiles)) as the restored wallet.
+A wallet restored from its recovery phrase does not find its locks on its own (spec §5): the seller restores each one by name, and imports its saved listing file to get the prices back. Since R34 the wallet also looks for its locks once by itself: the first sync of a restored profile that ends with the signer unlocked adopts every name still in its lock, so a profile that is unlocked and synced before a case restores by name may already hold the row ([R8](#r8--a-restored-profile-finds-its-own-locks-after-the-first-sync)); keep the signer locked until the restore step. These cases use the second-device profile ([environment](../../environment.md#profiles)) as the restored wallet.
 
 ## R1 — Restore by name, import the seller's file, cancel and bring the name home from the second device
 
@@ -171,6 +171,32 @@ Expected:
 - **Blocks mined:** 0
 - **Evidence:** screenshot `R6-1-expired`.
 - **Cleanup / end state:** nothing changed.
+
+## R8 — A restored profile finds its own locks after the first sync
+
+- **Priority:** P2
+- **Covers:** R32, R34
+- **Preconditions:** SE an ordinary owned name of the seller profile; a second-device profile that has not been synced with its signer unlocked (create it fresh from the same recovery phrase, or use one whose lock search has not run); the node started with `--index-tx` and `--index-address`.
+
+Steps:
+
+1. Seller: [lock-and-list](../../procedures/lock-and-list.md) SE, Buy Now 5, no export.
+2. [switch-profile](../../procedures/switch-profile.md) to the second device → Market › My listings → read the line under the list and `Find my locks`; the signer is locked.
+3. `Unlock` in the line, or in the top bar, → passphrase in the secure window → confirm; wait for the next sync to end (or `Sync` once), then read the toast and My listings.
+4. `Sync` again; read My listings and the toast area.
+5. `Find my locks`.
+
+Expected:
+
+- Step 2: while the signer is locked the line reads "Names this recovery phrase may have locked for sale were found. Unlock the wallet to restore them." with an `Unlock` button (only when the search has a candidate); no SE row yet.
+- Step 3: toast "Found 1 name locked for sale · restored in My listings"; the row of SE reads `Locked — listing details unknown`, no mode, buttons `Cancel listing` and `Import its listing file`; the unlock line is gone.
+- Step 4: no toast and no second row: the search is done and does not run again.
+- Step 5: toast "No locked names found"; still one SE row, unchanged.
+- Passes if the first sync after the unlock restores SE once, the second sync searches nothing, and the button finds nothing new. On a node without the address index the line reads "Finding your locks needs a node run with --index-tx and --index-address; Restore a lock by name works without them." and no SE row appears (then restore it by name, [R1](#r1--restore-by-name-import-the-sellers-file-cancel-and-bring-the-name-home-from-the-second-device)).
+
+- **Blocks mined:** 11
+- **Evidence:** screenshots `R8-1-unlock-line`, `R8-2-found`, `R8-3-nothing-new`.
+- **Cleanup / end state:** SE a Restored lock of the second device and a Listed listing of the seller; [R3](#r3--cancel-a-lock-restored-without-its-file-relisting-reuses-the-lock) or [R1](#r1--restore-by-name-import-the-sellers-file-cancel-and-bring-the-name-home-from-the-second-device) can continue from here.
 
 ## C4 — A lowered Buy Now imported in a second device stays Buy Now
 
