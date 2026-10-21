@@ -103,8 +103,14 @@ pub(crate) fn load_parent(
     )?
     .ok_or_else(|| refuse(su::NO_CHANGE))?;
     let vout = u32::try_from(index).map_err(|_| refuse(su::NO_CHANGE))?;
-    if queries::find_live_speed_up_child(conn, &draft.wallet_profile_id, &txid)?.is_some() {
-        return Err(refuse(su::ALREADY_SPED_UP));
+    if let Some(child) = queries::find_live_speed_up_child(conn, &draft.wallet_profile_id, &txid)? {
+        // A child never sent still holds the change: say where to discard it,
+        // never pass it by.
+        return Err(refuse(if queries::never_sent(child.status) {
+            su::UNSENT_CHILD
+        } else {
+            su::ALREADY_SPED_UP
+        }));
     }
     send::release_stale_reservations(conn, &draft.wallet_profile_id)?;
     let out = queries::get_tracked_output(conn, &draft.wallet_profile_id, &txid, vout)?

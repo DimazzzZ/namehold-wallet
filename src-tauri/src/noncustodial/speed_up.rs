@@ -69,6 +69,9 @@ pub const CHANGE_NOT_SYNCED: &str =
     "Its change is not in your wallet yet; refresh your wallet and try again.";
 /// R3: a live child already spends or holds the change.
 pub const ALREADY_SPED_UP: &str = "This transaction is already being sped up.";
+/// R3: the live child was never sent (a declined signature, or the app closed
+/// mid-prompt); it still holds the change until discarded.
+pub const UNSENT_CHILD: &str = "This transaction already has a Speed up that was never sent; discard it in Activity (its row offers Discard) to speed this one up again.";
 /// R3: a child is not sped up itself.
 pub const IS_CHILD: &str = "This transaction speeds up another one and cannot be sped up itself.";
 /// R4: a purchase is sped up only while it is an Unconfirmed purchase.

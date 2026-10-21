@@ -395,13 +395,13 @@ async fn one_child_per_parent_and_a_child_is_not_sped_up() {
     let child = build_with(&m, &rpc, PARENT, Some(10), NOW).await.unwrap();
     assert_eq!(
         reason(&m, &rpc).await.as_deref(),
-        Some(su::ALREADY_SPED_UP),
+        Some(su::UNSENT_CHILD),
         "a second child is refused"
     );
     let err = build_with(&m, &rpc, PARENT, Some(10), NOW)
         .await
         .unwrap_err();
-    assert_eq!(refusal(err), su::ALREADY_SPED_UP);
+    assert_eq!(refusal(err), su::UNSENT_CHILD);
     let r = speed_up_check_with(&m, &rpc, &child.id, NOW).await.reason;
     assert_eq!(r.as_deref(), Some(su::IS_CHILD));
 
