@@ -162,3 +162,50 @@ fn shakedex_jobs_hold_no_signing_call() {
         .count();
     assert_eq!(child_resends, 2, "its definition and its one call");
 }
+
+/// Where the market jobs' two sends are (spec 2026-10-21 R15): one in
+/// `refresh_missing`, after its `may_broadcast()` gate, and one in
+/// `rebroadcast_child`, whose only call is in `refresh_missing` after that
+/// same gate. Read lexically, by the function each code line falls in.
+#[test]
+fn shakedex_jobs_send_only_behind_may_broadcast() {
+    const SEND: &str = "match self.client.send_raw_transaction(signed).await {";
+    let mut current = String::new();
+    let mut gate_seen_in = None::<String>;
+    let mut sends = Vec::new();
+    let mut calls = Vec::new();
+    for line in code_lines(include_str!("../shakedex_jobs.rs")) {
+        if let Some(rest) = line
+            .strip_prefix("async fn ")
+            .or_else(|| line.strip_prefix("fn "))
+            .or_else(|| line.strip_prefix("pub(crate) async fn "))
+            .or_else(|| line.strip_prefix("pub async fn "))
+            .or_else(|| line.strip_prefix("pub fn "))
+        {
+            current = rest.split(['(', '<']).next().unwrap_or("").to_string();
+        }
+        if line.contains("self.may_broadcast()") {
+            gate_seen_in = Some(current.clone());
+        }
+        let gated = gate_seen_in.as_deref() == Some(current.as_str());
+        if line.trim_end() == SEND {
+            sends.push((current.clone(), gated));
+        }
+        if line.contains("self.rebroadcast_child(") {
+            calls.push((current.clone(), gated));
+        }
+    }
+    assert_eq!(
+        sends,
+        vec![
+            ("refresh_missing".to_string(), true),
+            ("rebroadcast_child".to_string(), false)
+        ],
+        "the purchase's send after the gate, the child's in its own function"
+    );
+    assert_eq!(
+        calls,
+        vec![("refresh_missing".to_string(), true)],
+        "the child's resend is called once, after the gate"
+    );
+}
