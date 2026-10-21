@@ -207,7 +207,7 @@ A mined purchase whose TRANSFER is spent on chain is never lost: only our FINALI
 - **An expired listing is not reported to LearnHNS Market.** `refresh-status` knows only a sale and a cancel, and the market drops a listing at its own `expiresAt` (`GET /listing/<name>/proof.json` answers 404 once it is past). Nothing is sent for an Expired listing.
 - **A reorg after the market was told is not corrected there.** Once LearnHNS Market has recorded a sale or a cancel, a reorg that swaps the winning transaction (a purchase for our cancel, one cancel for another, or a mined sale back to the mempool) is not corrected there: its refresh-status only changes active or sale-pending listings. A reorg that returns the listing to Listed resets the market bookkeeping, and the listing is uploaded afresh.
 - **Shared lock key on a 31-bit hash collision.** Harmless for funds; listing state is keyed by name and outpoint, never by address. It links the two names publicly.
-- **One market.** Only LearnHNS Market. Other Shakedex channels, and a censorship-resistant fallback (Nostr relays), are roadmap items.
+- **One market.** Only LearnHNS Market is used. Other Shakedex channels, including a Nostr relay fallback, are not planned.
 
 ## 6. Pointers
 
