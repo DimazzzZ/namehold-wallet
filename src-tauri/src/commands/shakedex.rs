@@ -2210,8 +2210,8 @@ pub struct MyListing {
     pub prices: ListingPrices,
     pub pending_send: Option<PendingSend>,
     /// R35: the window within which `listing.blocks_until_unbuyable` is
-    /// shown, R9's 30 days in the network's blocks
-    /// (`NameParams::expiry_warn_blocks`).
+    /// shown, R9's 30 days, at most half the renewal window, in blocks
+    /// (`NameParams::unbuyable_warn_blocks`).
     pub unbuyable_warn_blocks: u32,
     /// Whether blocks keep time on the profile's network, so that count may
     /// be shown as days (`Network::has_wall_clock_block_timing`).
@@ -2251,7 +2251,7 @@ pub(crate) fn my_listing_from_conn(
     chain: Option<&Result<u64, String>>,
     buyable: &HashMap<String, i64>,
 ) -> Result<MyListing, AppError> {
-    let unbuyable_warn_blocks = network.name_params().expiry_warn_blocks();
+    let unbuyable_warn_blocks = network.name_params().unbuyable_warn_blocks();
     let wall_clock_timing = network.has_wall_clock_block_timing();
     let steps = match readable_steps(l) {
         Ok(steps) => steps,

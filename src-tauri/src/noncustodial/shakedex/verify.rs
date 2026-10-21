@@ -79,8 +79,9 @@ fn name_expiry_end(params: &NameParams, ni: &serde_json::Value) -> Result<u32, H
 
 /// R35: for each of `names` (one `getnameinfo` per distinct name), the
 /// blocks until a listing of it stops being buyable at `tip`
-/// (`NameParams::blocks_until_unbuyable`), 0 once it is not. A name the node
-/// did not answer for, or answered without its expiry, is left out: unknown.
+/// (`NameParams::blocks_until_unbuyable`), 0 once it is not, as for a name
+/// the node reports expired (`info: null`). A name the node did not answer
+/// for, or answered without its expiry, is left out: unknown.
 pub async fn buyable_blocks_by_name(
     client: &dyn NodeRpc,
     network: Network,
@@ -96,9 +97,15 @@ pub async fn buyable_blocks_by_name(
         let Ok(reply) = client.get_name_info(name).await else {
             continue;
         };
-        let Some(ni) = reply.get("info").filter(|ni| !ni.is_null()) else {
+        let Some(ni) = reply.get("info") else {
             continue;
         };
+        // hsd answers `info: null` for an expired name, which R9 hides
+        // (`ExpiresBeforeFinalize`): buyers no longer see the listing.
+        if ni.is_null() {
+            out.insert(name.clone(), 0);
+            continue;
+        }
         if let Ok(end) = name_expiry_end(&params, ni) {
             out.insert(
                 name.clone(),

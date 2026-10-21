@@ -1095,7 +1095,7 @@ export interface ShakedexMyListing {
   actions: ShakedexListingActions;
   prices: ShakedexListingPrices;
   pendingSend: ShakedexPendingSend | null;
-  /** R35: the window, in the network's blocks, within which `listing.blocksUntilUnbuyable` is shown (R9's 30 days: 4320 on mainnet, 300 on regtest). */
+  /** R35: the window, in the network's blocks, within which `listing.blocksUntilUnbuyable` is shown (R9's 30 days, at most half the renewal window: 4320 on mainnet, 2160 on testnet, 300 on regtest). */
   unbuyableWarnBlocks: number;
   /** Blocks keep time on this network, so that count may be shown as days; false on regtest and simnet. */
   wallClockTiming: boolean;

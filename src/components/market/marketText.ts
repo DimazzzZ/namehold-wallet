@@ -273,9 +273,9 @@ export function lockupLeftText(blocks: number, wallClockTiming: boolean): string
  * R35: a Listed or Restored row's warning that buyers stop seeing it, as
  * the name gets too close to expiring for a purchase to be finalized (R9):
  * shown once `blocks` (`blocksUntilUnbuyable`) falls within `warnBlocks`
- * (R9's 30 days in the network's blocks), "in ~12 days" where blocks keep
- * time (`wallClockTiming`, R10) and "in 42 blocks" where they are mined on
- * demand. A name in a lock cannot be renewed, so the way out is Cancel.
+ * (R9's 30 days, at most half the renewal window), "in ~12 days" where
+ * blocks keep time (`wallClockTiming`, R10) and "in 42 blocks" where they
+ * are mined on demand. A name in a lock cannot be renewed, so the way out is Cancel.
  * `null`: nothing to say, or not known.
  */
 export function unbuyableText(

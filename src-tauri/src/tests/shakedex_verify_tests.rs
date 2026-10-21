@@ -738,6 +738,21 @@ fn blocks_until_unbuyable_counts_down_to_r9s_margin() {
     assert_eq!(Network::Regtest.name_params().expiry_warn_blocks(), 300);
 }
 
+/// R35's window is R9's 30 days, or half the renewal window where that is
+/// shorter: testnet renews every 4320 blocks, so 30 days of 144 would warn
+/// for the whole life of every testnet listing. R9's own warning is not
+/// shortened (`expiry_warn_blocks`).
+#[test]
+fn unbuyable_warn_window_is_at_most_half_the_renewal_window() {
+    assert_eq!(Network::Main.name_params().unbuyable_warn_blocks(), 4_320);
+    assert_eq!(Network::Testnet.name_params().unbuyable_warn_blocks(), 2_160);
+    assert_eq!(Network::Testnet.name_params().expiry_warn_blocks(), 4_320);
+    assert_eq!(Network::Regtest.name_params().unbuyable_warn_blocks(), 300);
+    let mut small = Network::Main.name_params();
+    small.renewal_window = 1_000;
+    assert_eq!(small.unbuyable_warn_blocks(), 500);
+}
+
 /// R35: My listings' count, one `getnameinfo` per name against the tip
 /// already read: blocks left from the name's claim-aware expiry end, 0 past
 /// it, and absent when the node did not answer for the name.
@@ -771,10 +786,9 @@ async fn buyable_blocks_by_name_reads_each_names_expiry_once() {
             .await
             .is_empty()
     );
+    // hsd answers `info: null` for an expired name: R9 hides its listing
+    // (ExpiresBeforeFinalize), so buyers no longer see it.
     let m = MockNodeRpc::new().with_name_info(serde_json::json!({ "info": null }));
-    assert!(
-        verify::buyable_blocks_by_name(&m, Network::Main, &names, 440_000)
-            .await
-            .is_empty()
-    );
+    let expired = verify::buyable_blocks_by_name(&m, Network::Main, &names, 440_000).await;
+    assert_eq!(expired.get("dexreviews"), Some(&0));
 }
