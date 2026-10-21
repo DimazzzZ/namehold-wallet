@@ -42,7 +42,7 @@ import type { ShakedexListingPrices, ShakedexListingState } from "../../types";
 describe("listedUntilText", () => {
   it("dates the seller's expiresAt in UTC, and says the date does not end the listing", () => {
     expect(listedUntilText(1815232480)).toBe(
-      "Listed until July 10, 2027 · stays buyable until sold or cancelled",
+      "Listed until July 10, 2027 · this date does not end the listing",
     );
   });
 

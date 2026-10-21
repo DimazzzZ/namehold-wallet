@@ -96,7 +96,7 @@ export function hiddenReasonText(r: ShakedexHidden): string {
 }
 
 /**
- * "Listed until July 10, 2027 · stays buyable until sold or cancelled": the
+ * "Listed until July 10, 2027 · this date does not end the listing": the
  * seller's own `expiresAt` (unix seconds). Shown, never enforced: the signed
  * price steps stay valid on chain until the lock coin is spent, whatever the
  * date says (R2), and the spec has the wallet say so wherever the date is
@@ -106,7 +106,7 @@ export function hiddenReasonText(r: ShakedexHidden): string {
 export function listedUntilText(expiresAt: number): string | null {
   const d = new Date(expiresAt * 1000);
   if (Number.isNaN(d.getTime())) return null;
-  return `Listed until ${formatDate(d.toISOString().slice(0, 10))} · stays buyable until sold or cancelled`;
+  return `Listed until ${formatDate(d.toISOString().slice(0, 10))} · this date does not end the listing`;
 }
 
 /**
