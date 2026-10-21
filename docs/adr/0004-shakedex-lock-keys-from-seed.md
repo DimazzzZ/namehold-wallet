@@ -21,3 +21,7 @@ The branch is hardened end to end so that lock keys can never be computed from t
 ## Amendment 2026-10-08
 
 The selling stage does not add the address-history scan. A lock is recovered by hand after a restore: the seller types the name, the wallet derives its lock key and adopts the lock only if the name's current owner coin sits at that key's lock address and carries FINALIZE at the name's height (spec R32), or the seller imports the saved listing file. Finding locks on its own, by deriving lock addresses from the names in the wallet's address history, is deferred to a roadmap item. The decision itself is unchanged: the path, the index and the hardening stay as above, and so does every consequence except the timing of the automatic recovery.
+
+## Amendment 2026-10-21
+
+The address-history scan is specified as spec R34, not implemented yet. It reads the TRANSFER outputs at the profile's derived addresses from the node's address index, derives the lock key of each such name and adopts the name when the TRANSFER commits to that key's lock address and the name is still in its lock (R32's checks). It runs once per profile, at the first sync that ends with the signer unlocked, and afterwards only on the seller's request, so locks made later from another device of the same phrase are not adopted on their own. The path, the index and the hardening stay as above.
