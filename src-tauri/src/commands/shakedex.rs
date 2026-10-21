@@ -2897,10 +2897,11 @@ pub const IMPORT_DROPS_OUR_STEP: &str = "this listing file leaves out a price th
 /// own listing file, already matched to it ([`restored_lock_for_file`]:
 /// the same lock outpoint, public key and payment address). The file's
 /// public key must be the lock key this wallet derives for the name; every
-/// stored step of ours must be in it (price, lock time, signature); while
-/// the lock coin is a coin, every step of it must verify over that coin at
-/// hsd's value ([`sell::verify_file_steps`], R32's check unchanged; a
-/// spent coin leaves the outpoint and key, as R32). The steps and file
+/// stored step of ours must be in it (price, lock time, signature); the
+/// lock coin must still be a coin (a spent one is refused with
+/// `TAKE_OVER_LOCK_COIN_SPENT`, unlike R32's import), and every step of the
+/// file must verify over it at hsd's value ([`sell::verify_file_steps`]).
+/// The steps and file
 /// become the file's (kept as parsed, unknown fields included), the mark is
 /// cleared and `market_changed` set (`queries::take_over_listing`: still
 /// Listed on that lock coin with the steps and foreign step read). Writes
