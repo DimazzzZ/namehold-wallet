@@ -48,6 +48,7 @@ pub enum RpcCall {
     TxsByAddress(String),
     RawTransaction(String),
     TxByHash(String),
+    MempoolEntry(String),
     BlockHash(i64),
     Block(String),
     GenerateToAddress(u32, String),
@@ -75,6 +76,7 @@ pub struct MockNodeRpc {
     txs_by_address: ResponseFn1<String, Vec<serde_json::Value>>,
     raw_transaction: ResponseFn<serde_json::Value>,
     tx_by_hash: ResponseFn1<String, serde_json::Value>,
+    mempool_entry: ResponseFn1<String, serde_json::Value>,
     block_hash: ResponseFn1<i64, String>,
     block: ResponseFn1<String, serde_json::Value>,
     generate_to_address: ResponseFn<serde_json::Value>,
@@ -155,6 +157,7 @@ impl MockNodeRpc {
             txs_by_address: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
             raw_transaction: err("not configured"),
             tx_by_hash: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
+            mempool_entry: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
             block_hash: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
             block: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
             generate_to_address: err("not configured"),
@@ -220,6 +223,31 @@ impl MockNodeRpc {
     pub fn with_tx_by_hash_err(mut self, msg: &'static str) -> Self {
         self.tx_by_hash = Box::new(move |_| Err(AppError::Rpc(msg.to_string())));
         self
+    }
+
+    /// `getmempoolentry` answered per txid by `f`.
+    pub fn with_mempool_entry_fn(
+        mut self,
+        f: impl Fn(String) -> Result<serde_json::Value, AppError> + Send + Sync + 'static,
+    ) -> Self {
+        self.mempool_entry = Box::new(f);
+        self
+    }
+
+    /// `getmempoolentry` answered with `v` for every txid.
+    pub fn with_mempool_entry(self, v: serde_json::Value) -> Self {
+        self.with_mempool_entry_fn(move |_| Ok(v.clone()))
+    }
+
+    /// hsd's own `getmempoolentry` answer for a transaction it does not hold:
+    /// `Transaction not in mempool.`, code -1, as `call` returns it.
+    pub fn with_mempool_entry_not_in_mempool(self) -> Self {
+        self.with_mempool_entry_fn(|_| {
+            Err(AppError::NodeRefused {
+                message: "Transaction not in mempool.".to_string(),
+                code: -1,
+            })
+        })
     }
 
     pub fn with_block_hash(mut self, hash: String) -> Self {
@@ -498,6 +526,11 @@ impl NodeRpc for MockNodeRpc {
     async fn get_tx_by_hash(&self, txid: &str) -> Result<serde_json::Value, AppError> {
         self.record(RpcCall::TxByHash(txid.to_string()));
         (self.tx_by_hash)(txid.to_string())
+    }
+
+    async fn get_mempool_entry(&self, txid: &str) -> Result<serde_json::Value, AppError> {
+        self.record(RpcCall::MempoolEntry(txid.to_string()));
+        (self.mempool_entry)(txid.to_string())
     }
 
     async fn get_block_hash(&self, height: i64) -> Result<String, AppError> {

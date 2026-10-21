@@ -25,7 +25,7 @@ const DUMMY_SIG_AND_PUBKEY: [usize; 2] = [65, 33];
 /// sighash byte, lock script.
 const DUMMY_SIG_AND_LOCK_SCRIPT: [usize; 2] = [65, LOCK_SCRIPT_LEN];
 
-pub(super) fn plain(value: u64, address: String) -> PlanOutput {
+pub(crate) fn plain(value: u64, address: String) -> PlanOutput {
     PlanOutput {
         value,
         address,
@@ -43,7 +43,7 @@ pub(super) fn cov_out(value: u64, address: String, c: &Covenant) -> PlanOutput {
     }
 }
 
-pub(super) fn own_input(c: &SpendableCoin) -> PlanInput {
+pub(crate) fn own_input(c: &SpendableCoin) -> PlanInput {
     PlanInput {
         txid: c.txid.clone(),
         vout: c.vout,
@@ -60,7 +60,7 @@ pub(super) fn own_input(c: &SpendableCoin) -> PlanInput {
 /// Exact vsize of `plan` once our inputs carry their witnesses (P2WPKH, or
 /// `[signature, lock script]` for a lock coin we sign); foreign inputs
 /// already carry their finished witnesses.
-fn signed_vsize(plan: &DraftPlan, network: Network) -> Result<u64, AppError> {
+pub(crate) fn signed_vsize(plan: &DraftPlan, network: Network) -> Result<u64, AppError> {
     let mut tx = rebuild_unsigned(plan, network)?;
     for (i, inp) in plan.inputs.iter().enumerate() {
         let sizes = if inp.foreign_witness_hex.is_some() {
