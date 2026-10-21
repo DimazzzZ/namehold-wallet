@@ -1897,6 +1897,66 @@ async fn unpaid_lost_purchase_finalized_since_is_owned() {
     assert_eq!(draft_status(&conn), ("broadcasted".to_string(), None));
 }
 
+/// A node without the tx index finds a mined transaction by hash only in its
+/// mempool, so whether a lost purchase whose name is at our destination was
+/// mined cannot be asked of it: the job does not read the purchase by hash,
+/// and the purchase keeps its state (the run's log says why). The mock
+/// would answer with the mined purchase, as an indexed node does.
+#[tokio::test]
+async fn unpaid_lost_purchase_on_a_node_without_the_tx_index_is_not_looked_up_by_hash() {
+    use crate::tests::mock_node_rpc::node_status_with_indexes;
+    let conn = lost_unpaid("-3 days");
+    let dest = destination();
+    let rpc = MockNodeRpc::new()
+        .with_blockchain_info(tip(1400))
+        .with_node_status(node_status_with_indexes(false, true))
+        .with_tx_by_hash(json!({"hash": PURCHASE_TXID, "height": 1000}))
+        .with_name_info(foreign_owner())
+        .with_get_coin(move |txid, vout| match (txid, vout) {
+            (PURCHASE_TXID, 0) => Ok(None),
+            (OTHER_TXID, 0) => Ok(Some(coin(
+                OTHER_TXID,
+                0,
+                &dest,
+                json!({"type": 10, "items": []}),
+            ))),
+            other => panic!("unexpected coin lookup {other:?}"),
+        });
+
+    run(&conn, &rpc).await;
+
+    assert_eq!(
+        rpc.count_matching(|c| matches!(c, RpcCall::TxByHash(_))),
+        0,
+        "{:?}",
+        rpc.calls()
+    );
+    let p = row(&conn);
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Lost);
+    assert_eq!(
+        p.lost_reason.as_deref(),
+        Some("the purchase never confirmed — nothing was paid")
+    );
+    assert_eq!(draft_status(&conn).0, "dropped");
+}
+
+/// The revival that needs no tx index still runs on such a node: a TRANSFER
+/// mined to us is read by its coin alone.
+#[tokio::test]
+async fn unpaid_lost_purchase_mined_later_awaits_finalize_also_without_the_tx_index() {
+    use crate::tests::mock_node_rpc::node_status_with_indexes;
+    let conn = lost_unpaid("-1 day");
+    let rpc = mined_and_committed(owned_by_purchase())
+        .with_node_status(node_status_with_indexes(false, true));
+
+    run(&conn, &rpc).await;
+
+    assert_eq!(
+        row(&conn).state,
+        crate::db::queries::PurchaseState::AwaitingFinalize
+    );
+}
+
 /// The name at our destination proves nothing about this purchase unless
 /// its own transaction is mined: a later purchase of the same listing may
 /// have been given the same unused address, and only one purchase of a lock
