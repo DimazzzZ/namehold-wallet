@@ -1897,3 +1897,49 @@ describe("WalletView — Owned Names State column", () => {
     expect(await screen.findByText(/waiting for a block/i)).toBeInTheDocument();
   });
 });
+
+describe("WalletView — balance card names a node that can't report the wallet's coins", () => {
+  // The reasons `run_sync_steps` records in `SyncStatus.errors` when the node
+  // step is not authoritative, as the backend writes them.
+  const NO_ADDRESS_INDEX =
+    "address index not enabled on this hsd node: restart hsd with --index-address and --index-tx (the node's coins were not synced, and nothing was marked spent)";
+  const BEFORE_HSD_7 =
+    "the node's coins were not synced: Node RPC error: this hsd node does not report its indexes (hsd older than 7.0): update hsd to 7.0 or newer";
+
+  function withSyncErrors(errors: string[]) {
+    const base = routeInvoke({ spendableDoos: 0 });
+    return (cmd: string) =>
+      cmd === "get_sync_status"
+        ? Promise.resolve(baseSyncStatus({ finishedAt: "2026-10-21T10:00:00Z", errors }))
+        : base(cmd);
+  }
+
+  it("shows the address-index reason next to the balance after an idle sync", async () => {
+    invokeMock.mockImplementation(withSyncErrors(["explorer: status 403", NO_ADDRESS_INDEX]));
+    render(<WalletView />, { wrapper: wrapper() });
+
+    const line = await screen.findByTestId("balance-node-not-authoritative");
+    expect(line.textContent).toBe(
+      `Your node can't report this wallet's coins: ${NO_ADDRESS_INDEX}`,
+    );
+  });
+
+  it("shows an hsd older than 7.0 as such", async () => {
+    invokeMock.mockImplementation(withSyncErrors([BEFORE_HSD_7]));
+    render(<WalletView />, { wrapper: wrapper() });
+
+    const line = await screen.findByTestId("balance-node-not-authoritative");
+    expect(line.textContent).toBe(`Your node can't report this wallet's coins: ${BEFORE_HSD_7}`);
+  });
+
+  it("shows no line when the run's errors are not about the node's coins", async () => {
+    invokeMock.mockImplementation(withSyncErrors(["explorer: status 403"]));
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some((c) => c[0] === "get_sync_status")).toBe(true),
+    );
+    expect(screen.queryByTestId("balance-node-not-authoritative")).toBeNull();
+  });
+});

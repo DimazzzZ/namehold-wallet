@@ -789,6 +789,11 @@ pub enum NodeStep {
     NotAuthoritative(String),
 }
 
+/// The phrase every [`NodeStep::NotAuthoritative`] reason carries. The Wallet
+/// page finds the reason in the run's errors by it and shows it next to the
+/// balance (`nodeCoinsNotSyncedReason` in `src/queries/sync.ts`).
+pub const NODE_COINS_NOT_SYNCED: &str = "the node's coins were not synced";
+
 /// Node UTXO sync: scan the profile's addresses, apply the batch, grow the
 /// address window ([`grow_address_window`]) and apply what it found. Writes
 /// nothing more once `lock` is raised (another process took the sync lock
@@ -846,13 +851,11 @@ pub(crate) async fn sync_node_step_with_client(
         Ok(indexes) if indexes.address => {}
         Ok(_) => {
             return NodeStep::NotAuthoritative(format!(
-                "{} (the node's coins were not synced, and nothing was marked spent)",
+                "{} ({NODE_COINS_NOT_SYNCED}, and nothing was marked spent)",
                 crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX
             ))
         }
-        Err(e) => {
-            return NodeStep::NotAuthoritative(format!("the node's coins were not synced: {e}"))
-        }
+        Err(e) => return NodeStep::NotAuthoritative(format!("{NODE_COINS_NOT_SYNCED}: {e}")),
     }
 
     let mut all_coins = match fetch_coins_with_guard_with_client(client, &addresses).await {

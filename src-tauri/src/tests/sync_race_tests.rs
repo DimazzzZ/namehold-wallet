@@ -1028,10 +1028,16 @@ mod coverage_tests {
                 "tx index {tx}: the coin stays unspent, the cursor stays"
             );
             match &step {
-                crate::commands::sync::NodeStep::NotAuthoritative(why) => assert!(
-                    why.contains(crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX),
-                    "{why}"
-                ),
+                crate::commands::sync::NodeStep::NotAuthoritative(why) => {
+                    assert!(
+                        why.contains(crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX),
+                        "{why}"
+                    );
+                    assert!(
+                        why.contains(crate::commands::sync::NODE_COINS_NOT_SYNCED),
+                        "the Wallet page finds the reason by this phrase: {why}"
+                    );
+                }
                 other => panic!("tx index {tx}: {other:?}"),
             }
             assert!(
@@ -1069,7 +1075,11 @@ mod coverage_tests {
 
         match &step {
             crate::commands::sync::NodeStep::NotAuthoritative(why) => {
-                assert!(why.contains("status read failed"), "{why}")
+                assert!(why.contains("status read failed"), "{why}");
+                assert!(
+                    why.contains(crate::commands::sync::NODE_COINS_NOT_SYNCED),
+                    "{why}"
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -1104,6 +1114,10 @@ mod coverage_tests {
                     "{why}"
                 );
                 assert!(!why.contains("index-address"), "{why}");
+                assert!(
+                    why.contains(crate::commands::sync::NODE_COINS_NOT_SYNCED),
+                    "{why}"
+                );
             }
             other => panic!("{other:?}"),
         }

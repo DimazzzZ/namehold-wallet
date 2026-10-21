@@ -25,7 +25,12 @@ import {
   useNamesActionCapabilities,
   useActionHistory,
 } from "../queries/read";
-import { useStartFullSync, useSyncStatus, useCancelFullSync } from "../queries/sync";
+import {
+  useStartFullSync,
+  useSyncStatus,
+  useCancelFullSync,
+  nodeCoinsNotSyncedReason,
+} from "../queries/sync";
 import { useNodeLive, useStartHsd } from "../queries/node";
 import { useSyncTriggerStore } from "../stores/syncTrigger";
 import {
@@ -218,6 +223,9 @@ export function WalletView() {
   const needsNodeSync = explorerBalance > 0 && spendable === 0;
 
   const isRunning = syncStatus.data?.running ?? false;
+  // The last sync could not read this wallet's coins from the node: the
+  // balance below is the cache, and this says why.
+  const nodeCoinsReason = nodeCoinsNotSyncedReason(syncStatus.data);
 
   // Reset manualSync flag when sync finishes (running transitions true → false).
   // Uses a ref to detect the transition edge, not the initial state.
@@ -897,6 +905,14 @@ export function WalletView() {
           </span>
           <span className="text-sm text-gray-500">HNS · spendable (from node sync)</span>
         </div>
+        {nodeCoinsReason && (
+          <div
+            className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
+            data-testid="balance-node-not-authoritative"
+          >
+            Your node can't report this wallet's coins: {nodeCoinsReason}
+          </div>
+        )}
         <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2 text-xs text-gray-500">
           <div>
             <div>Confirmed</div>

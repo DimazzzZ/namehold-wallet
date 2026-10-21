@@ -27,6 +27,24 @@ export interface SyncStatus {
   cancelRequested: boolean;
 }
 
+/**
+ * The phrase every reason carries that the backend's sync records when the
+ * node step was not authoritative for the wallet's coins (no address index,
+ * an hsd older than 7.0, or a node status it could not read): see
+ * `NODE_COINS_NOT_SYNCED` in `src-tauri/src/commands/sync.rs`.
+ */
+export const NODE_COINS_NOT_SYNCED = "the node's coins were not synced";
+
+/**
+ * Why the last sync could not read the wallet's coins from the node, or
+ * `null` when it could (or no run has recorded anything). A profile never
+ * synced through an indexed node then reads 0 from its cache, and this is
+ * the reason.
+ */
+export function nodeCoinsNotSyncedReason(status: SyncStatus | undefined): string | null {
+  return status?.errors?.find((e) => e.includes(NODE_COINS_NOT_SYNCED)) ?? null;
+}
+
 /** Start a full sync in a background thread. */
 export function useStartFullSync() {
   const qc = useQueryClient();
