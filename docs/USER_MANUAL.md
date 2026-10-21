@@ -767,8 +767,17 @@ ones:
 - **"Your node doesn't report its indexes (hsd older than 7.0)"** — the node is
   an hsd older than 7.0, which cannot say whether it has the address index.
   Update hsd to 7.0 or newer.
+- **"Your node's status couldn't be read"** — the node answered the sync check but not its status (`GET /`), so the wallet cannot tell whether it has the address index. Check that hsd is running and reachable at the RPC URL, then Refresh.
 - **"Node unreachable"** — check that hsd is running (Settings shows a red dot)
   and the RPC URL/API key match.
+
+### The balance shows 0 with "Your node can't report this wallet's coins"
+
+The last sync could not read this wallet's coins from your node, so the balance is what the wallet last stored, which is 0 for a wallet never synced through an indexed node. The line under the balance gives the reason the sync recorded: most often hsd was started without `--index-address` (restart it from Settings → Connections), or it is older than 7.0 and cannot say whether it has the index (update it). The next sync through a node that can report the coins removes the line.
+
+### Activity says "Your node does not have --index-tx enabled"
+
+Activity reads the history with hsd's address and transaction indexes, and the banner names the one your node lacks (`--index-address`, `--index-tx`, or both). Restart hsd with `--index-address --index-tx`; nodes the app starts already have both.
 
 ### The DNS editor opens empty for a name I know has records
 
