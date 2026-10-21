@@ -4,6 +4,7 @@
 //! exports speaks the CONTEXT.md vocabulary.
 
 pub mod cancel;
+pub mod discover;
 pub mod funding;
 pub mod listing_file;
 pub mod lock_key;
