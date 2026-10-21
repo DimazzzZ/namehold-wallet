@@ -542,6 +542,33 @@ impl NodeRpcClient {
             .await
     }
 
+    /// The node's status via the REST route `GET /` (not the `getinfo` RPC,
+    /// which says nothing of the indexes): hsd reports there, among others,
+    /// `chain.indexers.indexTX` and `chain.indexers.indexAddress`. hsd answers
+    /// `GET /tx/address` with an empty list, never an error, when either index
+    /// is off, so this is the only way to tell "no history" from "no index".
+    pub async fn get_node_status(&self) -> Result<serde_json::Value, AppError> {
+        let url = format!("{}/", self.node_url);
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth("x", Some(&self.api_key))
+            .send()
+            .await?;
+        let status = resp.status();
+        refuse_unauthorized(status)?;
+        let body: serde_json::Value = resp.json().await.map_err(|e| {
+            AppError::Rpc(format!(
+                "node returned non-JSON for its status (status {status}): {e}"
+            ))
+        })?;
+        if !status.is_success() {
+            let msg = rest_error_message(&body, "node status lookup failed");
+            return Err(AppError::Rpc(format!("{msg} (status {status})")));
+        }
+        Ok(body)
+    }
+
     /// UTXOs for an address via the node REST route `GET /coin/address/:addr`.
     /// (hsd has NO `getcoinsbyaddress` JSON-RPC on the node — it's wallet-only;
     /// the node serves address coins over REST when `--index-address` is enabled.)
@@ -1619,6 +1646,19 @@ mod tests {
         let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
         let txs = client.get_txs_by_address("hs1qnone").await.unwrap();
         assert!(txs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn node_status_is_read_from_the_rest_root() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/")
+            .with_body(r#"{"chain":{"indexers":{"indexTX":true,"indexAddress":false}}}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let v = client.get_node_status().await.unwrap();
+        assert_eq!(v["chain"]["indexers"]["indexAddress"], false);
     }
 
     #[tokio::test]

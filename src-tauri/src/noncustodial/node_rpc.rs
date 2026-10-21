@@ -47,6 +47,9 @@ pub trait NodeRpc: Send + Sync {
 
     async fn get_info(&self) -> Result<serde_json::Value, AppError>;
 
+    /// hsd's REST `GET /` (its indexes among others).
+    async fn get_node_status(&self) -> Result<serde_json::Value, AppError>;
+
     async fn get_name_info(&self, name: &str) -> Result<serde_json::Value, AppError>;
 
     async fn get_name_by_hash(&self, name_hash_hex: &str) -> Result<Option<String>, AppError>;
@@ -113,6 +116,10 @@ impl NodeRpc for NodeRpcClient {
 
     async fn get_info(&self) -> Result<serde_json::Value, AppError> {
         NodeRpcClient::get_info(self).await
+    }
+
+    async fn get_node_status(&self) -> Result<serde_json::Value, AppError> {
+        NodeRpcClient::get_node_status(self).await
     }
 
     async fn get_name_info(&self, name: &str) -> Result<serde_json::Value, AppError> {

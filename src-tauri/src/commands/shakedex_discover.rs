@@ -57,6 +57,26 @@ fn names_the_address_index(e: &AppError) -> bool {
     matches!(e, AppError::Rpc(m) if m.contains("address index not enabled"))
 }
 
+/// Whether hsd's `GET /` reply reports both indexes the search reads with
+/// (`chain.indexers.indexTX` and `.indexAddress`). hsd answers
+/// `GET /tx/address` with an empty list when either is off, so an empty
+/// history proves nothing until this says both are on. A reply without both
+/// flags as booleans is an error: never taken as "on".
+async fn address_index_on(node: &dyn NodeRpc) -> Result<bool, AppError> {
+    let status = node.get_node_status().await?;
+    let flag = |name: &str| {
+        status
+            .pointer(&format!("/chain/indexers/{name}"))
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                AppError::Rpc(format!(
+                    "node status did not report chain.indexers.{name}: could not check its indexes"
+                ))
+            })
+    };
+    Ok(flag("indexTX")? && flag("indexAddress")?)
+}
+
 fn lock_db(db: &Mutex<Connection>) -> Result<std::sync::MutexGuard<'_, Connection>, AppError> {
     db.lock().map_err(|e| AppError::Lock(e.to_string()))
 }
@@ -100,7 +120,11 @@ async fn adopt_candidate(
     let Some(name) = node.get_name_by_hash(&c.name_hash).await? else {
         return Ok(None);
     };
-    let key = derive(&name)?;
+    // Only R32's checks judge a candidate: a key not derived (the signer
+    // locked, or switched to another profile, mid-search) leaves it unjudged,
+    // whatever error the signer gave.
+    let key = derive(&name)
+        .map_err(|e| AppError::Other(format!("the lock key of '{name}' was not derived: {e}")))?;
     if !commits_to_lock(c, &key.program, network) {
         return Ok(None);
     }
@@ -154,6 +178,9 @@ pub(crate) async fn find_locks_with(
     if !node.get_blockchain_info().await?.is_synced(true) {
         return Ok(not_run(lock_search_done_in(db, profile_id)?));
     }
+    if !address_index_on(node).await? {
+        return Err(AppError::InvalidInput(LOCK_SEARCH_NEEDS_INDEX.into()));
+    }
     let (txs, mut all_judged) = read_history(node, &addresses).await?;
     let own: HashSet<String> = addresses.into_iter().collect();
     let mut adopted = Vec::new();
@@ -205,17 +232,19 @@ pub(crate) async fn lock_search_status_with(
         }
         queries::get_profile_addresses(&conn, profile_id)?
     };
+    let no_index = LockSearchStatus {
+        done: false,
+        address_index: false,
+        candidates: 0,
+    };
+    if !address_index_on(node).await? {
+        return Ok(no_index);
+    }
     let mut txs = Vec::new();
     for a in &addresses {
         match node.get_txs_by_address(a).await {
             Ok(mut t) => txs.append(&mut t),
-            Err(e) if names_the_address_index(&e) => {
-                return Ok(LockSearchStatus {
-                    done: false,
-                    address_index: false,
-                    candidates: 0,
-                });
-            }
+            Err(e) if names_the_address_index(&e) => return Ok(no_index),
             Err(e) => return Err(e),
         }
     }

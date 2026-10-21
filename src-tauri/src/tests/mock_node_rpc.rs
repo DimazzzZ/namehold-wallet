@@ -38,6 +38,7 @@ type ResponseFn1<A, T> = Box<dyn Fn(A) -> Result<T, AppError> + Send + Sync>;
 pub enum RpcCall {
     BlockchainInfo,
     Info,
+    NodeStatus,
     NameInfo(String),
     NameByHash(String),
     NameResource(String),
@@ -64,6 +65,7 @@ pub struct MockNodeRpc {
     pub source: ChainSource,
     blockchain_info: ResponseFn<BlockchainInfo>,
     info: ResponseFn<serde_json::Value>,
+    node_status: ResponseFn<serde_json::Value>,
     name_info: ResponseFn<serde_json::Value>,
     name_by_hash: ResponseFn<Option<String>>,
     name_resource: ResponseFn<serde_json::Value>,
@@ -96,6 +98,7 @@ impl MockNodeRpc {
             source: ChainSource::LocalNode,
             blockchain_info: err("not configured"),
             info: err("not configured"),
+            node_status: err("not configured"),
             name_info: err("not configured"),
             name_by_hash: err("not configured"),
             name_resource: err("not configured"),
@@ -123,6 +126,16 @@ impl MockNodeRpc {
     }
     pub fn with_blockchain_info_err(mut self, msg: &'static str) -> Self {
         self.blockchain_info = Box::new(move || Err(AppError::Rpc(msg.to_string())));
+        self
+    }
+
+    /// hsd's `GET /` reply (the node's status, its indexes among others).
+    pub fn with_node_status(mut self, v: serde_json::Value) -> Self {
+        self.node_status = Box::new(move || Ok(v.clone()));
+        self
+    }
+    pub fn with_node_status_err(mut self, msg: &'static str) -> Self {
+        self.node_status = Box::new(move || Err(AppError::Rpc(msg.to_string())));
         self
     }
 
@@ -384,6 +397,11 @@ impl NodeRpc for MockNodeRpc {
     async fn get_info(&self) -> Result<serde_json::Value, AppError> {
         self.record(RpcCall::Info);
         (self.info)()
+    }
+
+    async fn get_node_status(&self) -> Result<serde_json::Value, AppError> {
+        self.record(RpcCall::NodeStatus);
+        (self.node_status)()
     }
 
     async fn get_name_info(&self, name: &str) -> Result<serde_json::Value, AppError> {

@@ -91,15 +91,23 @@ fn synced() -> BlockchainInfo {
     }
 }
 
+/// hsd's `GET /` reply with its two indexes as given.
+fn node_status(index_tx: bool, index_address: bool) -> Value {
+    json!({ "version": "8.0.0", "network": "regtest",
+            "chain": { "height": QUIET_TIP,
+                       "indexers": { "indexTX": index_tx, "indexAddress": index_address } } })
+}
+
 fn lock_coin() -> NodeCoin {
     serde_json::from_value(our_lock_coin()).unwrap()
 }
 
-/// A synced node whose history holds `txs` at every address, naming NAME for
-/// its hash, and NAME's owner coin our lock's FINALIZE (the R32 fixture).
+/// A synced node with both indexes whose history holds `txs` at every
+/// address, naming NAME for its hash, and NAME's owner coin our lock's FINALIZE (the R32 fixture).
 fn node_with(txs: Vec<Value>) -> MockNodeRpc {
     MockNodeRpc::new()
         .with_blockchain_info(synced())
+        .with_node_status(node_status(true, true))
         .with_txs_by_address(txs)
         .with_name_by_hash(Some(NAME.into()))
         .with_name_info(restored_info())
@@ -329,13 +337,92 @@ async fn status_counts_candidates_without_the_seed() {
 #[tokio::test]
 async fn status_says_when_the_index_is_missing() {
     let db = store();
+    for (tx, address) in [(false, true), (true, false), (false, false)] {
+        let node = node_with(vec![our_lock_transfer()]).with_node_status(node_status(tx, address));
+        let s = lock_search_status_with(&node, &db, PROFILE, NET)
+            .await
+            .unwrap();
+        assert!(!s.done && !s.address_index, "{tx} {address}");
+        assert_eq!(s.candidates, 0);
+        assert_eq!(
+            node.count_matching(|c| matches!(c, RpcCall::TxsByAddress(_))),
+            0
+        );
+    }
     let node = MockNodeRpc::new()
+        .with_node_status(node_status(true, true))
         .with_txs_by_address_err("address index not enabled on this hsd node: x (status 400)");
     let s = lock_search_status_with(&node, &db, PROFILE, NET)
         .await
         .unwrap();
     assert!(!s.done && !s.address_index);
     assert_eq!(s.candidates, 0);
+}
+
+/// hsd answers `GET /tx/address` with an empty list, not an error, when an
+/// index is off: the indexes are read from `GET /` first, and a node without
+/// them is refused with the sentence, the profile left not done.
+#[tokio::test]
+async fn a_node_without_the_indexes_is_refused_though_its_histories_read_empty() {
+    let db = store();
+    for (tx, address) in [(false, true), (true, false), (false, false)] {
+        let node = node_with(vec![]).with_node_status(node_status(tx, address));
+        let e = find_locks_with(&node, &db, PROFILE, NET, false, &derive)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&e, AppError::InvalidInput(m) if m == LOCK_SEARCH_NEEDS_INDEX),
+            "{tx} {address}: {e:?}"
+        );
+        assert_eq!(
+            node.count_matching(|c| matches!(c, RpcCall::TxsByAddress(_))),
+            0
+        );
+        assert!(!done(&db));
+    }
+}
+
+/// A node status without its indexes (missing, or not booleans) is not
+/// "enabled": an error, the search not done, and the status line errs.
+#[tokio::test]
+async fn a_node_status_without_the_indexers_is_an_error() {
+    let db = store();
+    for reply in [
+        json!({ "chain": { "height": QUIET_TIP } }),
+        json!({ "chain": { "indexers": { "indexTX": true, "indexAddress": "yes" } } }),
+        json!({ "chain": { "indexers": { "indexAddress": true } } }),
+    ] {
+        let node = node_with(vec![our_lock_transfer()]).with_node_status(reply.clone());
+        let e = find_locks_with(&node, &db, PROFILE, NET, false, &derive)
+            .await
+            .unwrap_err();
+        assert!(!matches!(e, AppError::InvalidInput(_)), "{reply}: {e:?}");
+        assert!(!done(&db), "{reply}");
+        assert!(lock_search_status_with(&node, &db, PROFILE, NET)
+            .await
+            .is_err());
+        assert_eq!(listings(&db), 0);
+    }
+}
+
+/// A lock key that cannot be derived (the signer locked, or switched to
+/// another profile, mid-search) judges nothing: only R32's checks do. The
+/// candidate stays unjudged and the search not done.
+#[tokio::test]
+async fn a_failed_key_derivation_leaves_the_candidate_unjudged() {
+    let db = store();
+    let node = node_with(vec![our_lock_transfer()]);
+    let refuse = |_: &str| -> Result<LockKey, AppError> {
+        Err(AppError::InvalidInput(
+            "the unlocked signer is for a different wallet profile".into(),
+        ))
+    };
+    let r = find_locks_with(&node, &db, PROFILE, NET, false, &refuse)
+        .await
+        .unwrap();
+    assert!(r.ran && r.adopted.is_empty());
+    assert!(!r.done && !done(&db));
+    assert_eq!(listings(&db), 0);
 }
 
 // --- the commands' gates ------------------------------------------------------
