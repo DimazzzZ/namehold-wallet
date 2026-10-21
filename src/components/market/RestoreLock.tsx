@@ -27,6 +27,7 @@ import {
   FIND_LOCKS_LABEL,
   LOCKS_WAIT_FOR_UNLOCK,
   LOCK_SEARCH_NEEDS_INDEX,
+  LOCK_SEARCH_PARTIAL,
   NO_LOCKS_FOUND,
   RESTORED_LABEL,
   foundLocksText,
@@ -69,7 +70,7 @@ export function FindLocks() {
     try {
       const report = await withSigner.run(profile.id, () => find.mutateAsync(true));
       if (report.adopted.length > 0) showToast(foundLocksText(report.adopted.length));
-      else if (report.ran) showToast(NO_LOCKS_FOUND);
+      else if (report.ran) showToast(report.complete ? NO_LOCKS_FOUND : LOCK_SEARCH_PARTIAL);
     } catch (e) {
       // Tauri rejects with the error's Display string. The index refusal is
       // read before `mapError`, which words index errors its own way.

@@ -979,6 +979,12 @@ export interface FindLocksReport {
   adopted: string[];
   /** Whether the search is now done for the profile. */
   done: boolean;
+  /**
+   * Whether this run read every address, judged every candidate and saw no
+   * lookahead address with history: `done` stays once stamped, so only this
+   * tells a run that found nothing from one that could not look.
+   */
+  complete: boolean;
 }
 
 /** What My listings needs to offer the search while the signer is locked (R34). */

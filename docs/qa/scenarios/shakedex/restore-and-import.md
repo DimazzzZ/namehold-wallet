@@ -191,7 +191,7 @@ Expected:
 - Step 2: while the signer is locked the line reads "Names this recovery phrase may have locked for sale were found. Unlock the wallet to restore them." with an `Unlock` button (only when the search has a candidate); no SE row yet.
 - Step 3: toast "Found 1 name locked for sale · restored in My listings"; the row of SE reads `Locked — listing details unknown`, no mode, buttons `Cancel listing` and `Import its listing file`; the unlock line is gone.
 - Step 4: no toast and no second row: the search is done and does not run again.
-- Step 5: toast "No locked names found"; still one SE row, unchanged.
+- Step 5: toast "No locked names found"; still one SE row, unchanged. (A node that failed to answer for an address or a name gives "Some addresses or names could not be read from your node. Try again later." instead; press again once the node answers.)
 - Passes if the first sync after the unlock restores SE once, the second sync searches nothing, and the button finds nothing new. On a node without the address index the line reads "Finding your locks needs a node run with --index-tx and --index-address; Restore a lock by name works without them." and no SE row appears (then restore it by name, [R1](#r1--restore-by-name-import-the-sellers-file-cancel-and-bring-the-name-home-from-the-second-device)).
 
 - **Blocks mined:** 11

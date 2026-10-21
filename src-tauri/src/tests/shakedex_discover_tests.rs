@@ -32,30 +32,49 @@ use crate::AppState;
 
 const NET: Network = Network::Regtest;
 
-/// A fresh profile from the same phrase: its receive address 0/0 only, no
-/// listing, the search not done.
+/// A fresh profile from the same phrase: its receive address 0/0 only,
+/// marked used as the sync before the search leaves an address with history,
+/// no listing, the search not done.
 fn store() -> Mutex<Connection> {
-    Mutex::new(seeded("regtest", "mnemonic_hot", "http://127.0.0.1:1"))
+    let db = Mutex::new(seeded("regtest", "mnemonic_hot", "http://127.0.0.1:1"));
+    mark_used(&db, &addr00(NET).0);
+    db
 }
 
-/// Our change address 1/0, added to the profile's derived addresses.
-fn add_change_address(db: &Mutex<Connection>) -> String {
-    let (_sk, pk, addr) = hd::derive_address(NET, &seed(), 0, 1, 0).unwrap();
+fn mark_used(db: &Mutex<Connection>, address: &str) {
+    crate::noncustodial::sync::mark_address_used(&db.lock().unwrap(), PROFILE, address, None)
+        .unwrap();
+}
+
+/// Our address `branch/index`, added to the profile's derived addresses,
+/// unused: in the window's lookahead when above the branch's used ones.
+fn add_address(db: &Mutex<Connection>, branch: u32, index: u32) -> String {
+    let (_sk, pk, addr) = hd::derive_address(NET, &seed(), 0, branch, index).unwrap();
     db.lock()
         .unwrap()
         .execute(
             "INSERT INTO derived_addresses
                 (wallet_profile_id, account_index, branch, child_index,
                  address, script_pubkey_hex, public_key_hex)
-             VALUES (?1, 0, 1, 0, ?2, ?3, ?4)",
+             VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6)",
             params![
                 PROFILE,
+                branch,
+                index,
                 addr,
                 hex::encode(address::script_pubkey_from_pubkey(&pk).unwrap()),
                 hex::encode(pk)
             ],
         )
         .unwrap();
+    addr
+}
+
+/// Our change address 1/0, added to the profile's derived addresses and
+/// marked used, as a sync that saw its history leaves it.
+fn add_change_address(db: &Mutex<Connection>) -> String {
+    let addr = add_address(db, 1, 0);
+    mark_used(db, &addr);
     addr
 }
 
@@ -146,7 +165,7 @@ async fn finds_and_adopts_a_lock_still_in_it() {
     let r = find(&node, &db, false).await;
     assert!(r.ran);
     assert_eq!(r.adopted, vec![NAME.to_string()]);
-    assert!(r.done);
+    assert!(r.done && r.complete);
     assert!(done(&db));
     let l = queries::open_shakedex_listing_for_name(&db.lock().unwrap(), PROFILE, NAME)
         .unwrap()
@@ -231,8 +250,49 @@ async fn a_failed_history_read_keeps_the_search_not_done() {
     assert!(r.ran);
     assert_eq!(r.adopted, vec![NAME.to_string()]);
     assert!(!r.done);
+    assert!(!r.complete, "this run did not read every address");
     assert!(!done(&db));
     assert_eq!(listings(&db), 1);
+}
+
+/// An address of the window's lookahead with history means the window would
+/// still grow (a sync that read it as unused, or stopped at its round cap,
+/// left it so): addresses beyond it are not derived yet, so the search ran
+/// but is neither complete nor done, and the next search runs again. With
+/// that lookahead's history empty, it is done.
+#[tokio::test]
+async fn a_lookahead_address_with_history_keeps_the_search_not_done() {
+    let db = store();
+    let next = add_address(&db, 0, 1);
+    let at_next = next.clone();
+    let payment = json!({ "hash": "77".repeat(32), "height": QUIET_TIP - 3, "outputs": [{
+        "value": 1_000, "address": next,
+        "covenant": { "type": 0, "action": "NONE", "items": [] }
+    }]});
+    let node = node_with(vec![]).with_txs_by_address_fn(move |a| {
+        Ok(if a == at_next {
+            vec![payment.clone()]
+        } else {
+            vec![our_lock_transfer()]
+        })
+    });
+    let r = find(&node, &db, false).await;
+    assert!(r.ran);
+    assert_eq!(r.adopted, vec![NAME.to_string()]);
+    assert!(!r.complete && !r.done, "{r:?}");
+    assert!(!done(&db));
+
+    let at_next = next.clone();
+    let node = node_with(vec![]).with_txs_by_address_fn(move |a| {
+        Ok(if a == at_next {
+            vec![]
+        } else {
+            vec![our_lock_transfer()]
+        })
+    });
+    let r = find(&node, &db, false).await;
+    assert!(r.ran && r.adopted.is_empty());
+    assert!(r.complete && r.done && done(&db), "{r:?}");
 }
 
 /// A candidate whose name read fails is not judged: the search is not done,
@@ -244,6 +304,7 @@ async fn a_failed_name_read_keeps_the_search_not_done() {
     let r = find(&node, &db, false).await;
     assert!(r.ran && r.adopted.is_empty());
     assert!(!r.done && !done(&db));
+    assert!(!r.complete, "a candidate was not judged");
     let node = node_with(vec![our_lock_transfer()]).with_name_info_err("timeout");
     let r = find(&node, &db, false).await;
     assert!(r.ran && r.adopted.is_empty());
@@ -251,6 +312,40 @@ async fn a_failed_name_read_keeps_the_search_not_done() {
     let r = find(&node_with(vec![our_lock_transfer()]), &db, false).await;
     assert_eq!(r.adopted, vec![NAME.to_string()]);
     assert!(r.done);
+}
+
+/// R32 refusing the name for a reason of its own (here the name still on
+/// its way into the lock: its owner coin our TRANSFER committing to the
+/// lock) judges the candidate: skipped, nothing adopted, the search complete
+/// and done.
+#[tokio::test]
+async fn a_lock_still_on_its_way_in_is_judged() {
+    let db = store();
+    let mut locking = our_lock_coin();
+    let height = locking["covenant"]["items"][1].clone();
+    locking["address"] = json!(addr00(NET).0);
+    locking["covenant"] = json!({ "type": COV_TRANSFER, "action": "TRANSFER", "items": [
+        name_hash(), height, "00", hex::encode(derive(NAME).unwrap().program)
+    ]});
+    let coin: NodeCoin = serde_json::from_value(locking).unwrap();
+    let node =
+        node_with(vec![our_lock_transfer()]).with_get_coin(move |_, _| Ok(Some(coin.clone())));
+    let r = find(&node, &db, false).await;
+    assert!(r.ran && r.adopted.is_empty());
+    assert!(r.complete && r.done && done(&db), "{r:?}");
+    assert_eq!(listings(&db), 0);
+}
+
+/// hsd's 404 for the name's owner coin (`get_coin` is `None`) judges the
+/// candidate: skipped, the search complete and done.
+#[tokio::test]
+async fn an_owner_coin_the_node_does_not_have_is_judged() {
+    let db = store();
+    let node = node_with(vec![our_lock_transfer()]).with_get_coin(|_, _| Ok(None));
+    let r = find(&node, &db, false).await;
+    assert!(r.ran && r.adopted.is_empty());
+    assert!(r.complete && r.done && done(&db), "{r:?}");
+    assert_eq!(listings(&db), 0);
 }
 
 /// Once done, the search does not run again (not a single node call) unless

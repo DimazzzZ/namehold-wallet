@@ -895,7 +895,7 @@ const sellingHandlers: Record<string, Handler> = {
     return listingSummary(l);
   },
 
-  shakedex_find_locks: () => ({ ran: true, adopted: [], done: true }),
+  shakedex_find_locks: () => ({ ran: true, adopted: [], done: true, complete: true }),
 
   shakedex_lock_search_status: () => ({ done: true, addressIndex: true, candidates: 0 }),
 

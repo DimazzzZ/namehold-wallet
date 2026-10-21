@@ -11,7 +11,7 @@ import { useUiStore } from "../../stores/ui";
 import { makeProfile, makeSession } from "../../test/fixtures/wallet";
 
 const state = { running: false, live: true, unlocked: true, kind: "mnemonic_hot" as string };
-let report = { ran: true, adopted: [] as string[], done: true };
+let report = { ran: true, adopted: [] as string[], done: true, complete: true };
 
 const calls = (cmd: string) => invokeMock.mock.calls.filter((c) => c[0] === cmd);
 const toasts = () => useUiStore.getState().toastQueue.map((t) => t.message);
@@ -39,7 +39,7 @@ async function setRunning(qc: QueryClient, running: boolean) {
 
 beforeEach(() => {
   Object.assign(state, { running: false, live: true, unlocked: true, kind: "mnemonic_hot" });
-  report = { ran: true, adopted: [], done: true };
+  report = { ran: true, adopted: [], done: true, complete: true };
   useUiStore.setState({ toastQueue: [], toastMessage: null });
   invokeMock.mockReset();
   invokeMock.mockImplementation((cmd: string) => {
@@ -112,7 +112,7 @@ describe("useLockDiscovery", () => {
   });
 
   it("toasts and refreshes My listings when it restored a name", async () => {
-    report = { ran: true, adopted: ["dexsale", "other"], done: true };
+    report = { ran: true, adopted: ["dexsale", "other"], done: true, complete: true };
     const { qc, spy } = setup();
     await act(async () => {});
     await oneSync(qc);

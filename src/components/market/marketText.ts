@@ -379,6 +379,9 @@ export const RESTORED_LABEL = "Locked — listing details unknown";
 export const FIND_LOCKS_LABEL = "Find my locks";
 export const FIND_LOCKS_BUSY = "Searching…";
 export const NO_LOCKS_FOUND = "No locked names found";
+/** R34: a forced search that adopted nothing but could not read or judge everything. */
+export const LOCK_SEARCH_PARTIAL =
+  "Some addresses or names could not be read from your node. Try again later.";
 /** R34: the toast after a search restored `n` names. */
 export const foundLocksText = (n: number) =>
   `Found ${n} ${n === 1 ? "name" : "names"} locked for sale · restored in My listings`;

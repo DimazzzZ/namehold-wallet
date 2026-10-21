@@ -935,7 +935,8 @@ describe("MyListings", () => {
   it("Find my locks runs a forced search and says how many it restored", async () => {
     setup([], {
       answers: {
-        shakedex_find_locks: () => Promise.resolve({ ran: true, adopted: ["a", "b"], done: true }),
+        shakedex_find_locks: () =>
+          Promise.resolve({ ran: true, adopted: ["a", "b"], done: true, complete: true }),
       },
     });
     renderIt();
@@ -949,18 +950,38 @@ describe("MyListings", () => {
   });
 
   it("Find my locks says when it found none, and a single name in the singular", async () => {
-    let report = { ran: true, adopted: [] as string[], done: true };
+    let report = { ran: true, adopted: [] as string[], done: true, complete: true };
     setup([], { answers: { shakedex_find_locks: () => Promise.resolve(report) } });
     renderIt();
     const button = await screen.findByRole("button", { name: "Find my locks" });
     await waitFor(() => expect(button).toBeEnabled());
     fireEvent.click(button);
     await waitFor(() => expect(toasts()).toContain("No locked names found"));
-    report = { ran: true, adopted: ["a"], done: true };
+    report = { ran: true, adopted: ["a"], done: true, complete: true };
     fireEvent.click(button);
     await waitFor(() =>
       expect(toasts()).toContain("Found 1 name locked for sale · restored in My listings"),
     );
+  });
+
+  it("Find my locks does not say none were found after a run that could not read everything", async () => {
+    // `done` is stamped by an earlier complete run; this one read partially.
+    setup([], {
+      answers: {
+        shakedex_find_locks: () =>
+          Promise.resolve({ ran: true, adopted: [], done: true, complete: false }),
+      },
+    });
+    renderIt();
+    const button = await screen.findByRole("button", { name: "Find my locks" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(toasts()).toContain(
+        "Some addresses or names could not be read from your node. Try again later.",
+      ),
+    );
+    expect(toasts()).not.toContain("No locked names found");
   });
 
   it("shows the unlock line only while candidates wait and the search is not done", async () => {
