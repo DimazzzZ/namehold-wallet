@@ -150,4 +150,37 @@ describe("useLockDiscovery", () => {
     await waitFor(() => expect(calls("shakedex_find_locks")).toHaveLength(1));
     expect(toasts()).toEqual([]);
   });
+
+  describe("the lock-search status, refreshed once per edge", () => {
+    const statusInvalidations = (t: ReturnType<typeof setup>) =>
+      t.spy.mock.calls.filter(
+        (c) =>
+          JSON.stringify((c[0] as { queryKey?: unknown })?.queryKey) === '["lockSearchStatus"]',
+      );
+
+    it("is refreshed by the hook when the search answers ran: false", async () => {
+      report = { ran: false, adopted: [], done: true, complete: true };
+      const t = setup();
+      await act(async () => {});
+      await oneSync(t);
+      await waitFor(() => expect(calls("shakedex_find_locks")).toHaveLength(1));
+      await waitFor(() => expect(statusInvalidations(t)).toHaveLength(1));
+      await act(async () => {});
+      expect(statusInvalidations(t)).toHaveLength(1);
+    });
+
+    it("is refreshed by the hook when the search is refused", async () => {
+      const base = invokeMock.getMockImplementation()!;
+      invokeMock.mockImplementation((cmd: string, ...rest: unknown[]) =>
+        cmd === "shakedex_find_locks" ? Promise.reject("Wallet locked") : base(cmd, ...rest),
+      );
+      const t = setup();
+      await act(async () => {});
+      await oneSync(t);
+      await waitFor(() => expect(calls("shakedex_find_locks")).toHaveLength(1));
+      await waitFor(() => expect(statusInvalidations(t)).toHaveLength(1));
+      await act(async () => {});
+      expect(statusInvalidations(t)).toHaveLength(1);
+    });
+  });
 });

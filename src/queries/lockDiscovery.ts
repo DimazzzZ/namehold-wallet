@@ -54,8 +54,12 @@ export function useLockDiscovery(): void {
         if (report.ran && report.adopted.length > 0) {
           showToast(foundLocksText(report.adopted.length));
         }
+        // A search that ran refreshed the status itself.
+        if (!report.ran) qc.invalidateQueries({ queryKey: LOCK_SEARCH_STATUS_KEY });
       })
-      .catch(() => {})
+      .catch(() => {
+        qc.invalidateQueries({ queryKey: LOCK_SEARCH_STATUS_KEY });
+      })
       .finally(() => {
         searching.current = false;
       });
