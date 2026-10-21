@@ -406,9 +406,9 @@ pub fn run() {
             // so "on start" and "every 10 min" are the same loop, not two
             // mechanisms. It does not persist across a full app quit, but the
             // very next launch re-scans right away. The Shakedex finalize
-            // reminders are the exception: while the background daemon is
-            // alive it sends them (also with the window closed) and this
-            // loop skips them, so exactly one process sends each.
+            // reminders are the exception: while the background daemon's
+            // heartbeat is fresh it sends them (also with the window closed)
+            // and this loop skips them, so exactly one process sends each.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));

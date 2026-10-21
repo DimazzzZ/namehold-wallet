@@ -28,10 +28,11 @@
 //! The three finalize reminders (purchase, listing, cancel) go through one
 //! shared delivery shell, [`deliver_finalize_reminders`], which takes a
 //! connection and a notifier. The background daemon (`namehold-syncd`) runs
-//! it every cycle, so they arrive while the app window is closed; while the
-//! daemon is alive the app sends none of them. The shell claims its keys in
-//! `deadline_notify_state` before it sends, and each of the two writers of
-//! that setting replaces only its own kinds of key.
+//! it after every sync cycle, so they arrive while the app window is closed,
+//! and writes a heartbeat; while that heartbeat is fresh the app sends none
+//! of them. The shell claims its keys in `deadline_notify_state` before it
+//! sends, and each of the two writers of that setting replaces only its own
+//! kinds of key.
 
 use std::collections::BTreeSet;
 
@@ -644,15 +645,37 @@ pub async fn scan_deadline_notifications<R: tauri::Runtime>(
     scan_deadline_notifications_on_day(app, state, day).await
 }
 
-/// Whether the background daemon is running, and so sends the finalize
-/// reminders itself. Tests never see a daemon: a developer's own running
-/// `namehold-syncd` must not change what they assert;
-/// [`scan_deadline_notifications_with`] takes the answer as an argument.
-fn daemon_sends_finalize_reminders() -> bool {
-    #[cfg(not(test))]
-    return crate::commands::daemon_ctl::check_daemon_alive();
-    #[cfg(test)]
-    false
+/// Settings row the daemon writes, as unix seconds, at the end of every
+/// finalize-reminder step it runs ([`record_daemon_heartbeat`]), whether or
+/// not the reminders are on or anything was due.
+pub(crate) const SETTING_DAEMON_HEARTBEAT: &str = "finalize_reminders_daemon_at";
+
+/// How old the daemon's heartbeat may be for the app to leave the finalize
+/// reminders to it: three daemon cycles. A cycle is a full sync and then
+/// `SYNC_INTERVAL_SECS` of sleep, so a sync longer than two intervals lets
+/// the app send for a while; the claim in [`claim_episodes`] keeps that from
+/// becoming a duplicate.
+const DAEMON_HEARTBEAT_FRESH_SECS: i64 = 3 * crate::daemon::SYNC_INTERVAL_SECS as i64;
+
+/// Record that the daemon ran its finalize-reminder step at `now`.
+pub(crate) fn record_daemon_heartbeat(
+    conn: &rusqlite::Connection,
+    now: i64,
+) -> Result<(), AppError> {
+    queries::set_setting(conn, SETTING_DAEMON_HEARTBEAT, &now.to_string())
+}
+
+/// Whether the daemon sends the finalize reminders now: its heartbeat is
+/// younger than [`DAEMON_HEARTBEAT_FRESH_SECS`] at `now`. Not the PID file:
+/// a daemon from before this release (left running across an update), a PID
+/// reused after a crash, or a daemon hung in a long sync all look alive by
+/// their PID, and the reminders would then be sent by nobody. A missing or
+/// unreadable heartbeat, or one from the future, is not fresh.
+fn daemon_heartbeat_fresh(settings: &std::collections::HashMap<String, String>, now: i64) -> bool {
+    settings
+        .get(SETTING_DAEMON_HEARTBEAT)
+        .and_then(|v| v.parse::<i64>().ok())
+        .is_some_and(|at| at <= now && now - at < DAEMON_HEARTBEAT_FRESH_SECS)
 }
 
 /// [`scan_deadline_notifications`] with the unix day given, so a test can
@@ -662,19 +685,21 @@ pub(crate) async fn scan_deadline_notifications_on_day<R: tauri::Runtime>(
     state: State<'_, AppState>,
     day: i64,
 ) -> Result<ScanOutcome, AppError> {
-    scan_deadline_notifications_with(app, state, day, daemon_sends_finalize_reminders()).await
+    let now = chrono::Utc::now().timestamp();
+    scan_deadline_notifications_with(app, state, day, now).await
 }
 
-/// [`scan_deadline_notifications_on_day`] with the daemon's liveness given.
-/// While `daemon_alive`, the daemon sends the finalize reminders (purchase,
-/// listing, cancel), so this pass sends only the reveal and renewal ones and
-/// leaves the finalize keys to the daemon: exactly one process sends each
-/// reminder. When the daemon is off or dead, the app sends them as before.
+/// [`scan_deadline_notifications_on_day`] with the current unix time given,
+/// against which the daemon's heartbeat is judged. While it is fresh, the
+/// daemon sends the finalize reminders (purchase, listing, cancel), so this
+/// pass sends only the reveal and renewal ones and leaves the finalize keys
+/// to the daemon: exactly one process sends each reminder. Without a fresh
+/// heartbeat (no daemon, a stopped, hung or older one) the app sends them.
 pub(crate) async fn scan_deadline_notifications_with<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     day: i64,
-    daemon_alive: bool,
+    now: i64,
 ) -> Result<ScanOutcome, AppError> {
     // Finding 3: load config FIRST and bail out immediately when disabled —
     // BEFORE probing the node, collecting deadlines (a per-profile
@@ -685,9 +710,13 @@ pub(crate) async fn scan_deadline_notifications_with<R: tauri::Runtime>(
     // exactly as it was — not read, let alone rewritten — matching
     // `scan_deadlines`'s own disabled branch (state is frozen, never
     // cleared, so re-enabling later doesn't re-fire a notification storm).
-    let config = {
+    let (config, daemon_sends) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        load_config(&queries::get_settings(&conn)?)
+        let settings = queries::get_settings(&conn)?;
+        (
+            load_config(&settings),
+            daemon_heartbeat_fresh(&settings, now),
+        )
     };
     if !config.enabled {
         return Ok(ScanOutcome {
@@ -701,7 +730,13 @@ pub(crate) async fn scan_deadline_notifications_with<R: tauri::Runtime>(
     // same discipline as `read_renewals`).
     let live_height = crate::commands::node_readiness::node_tip_height_if_synced(&state).await;
 
-    // Reveal and renewal: claimed under the lock, sent after it.
+    // Reveal and renewal: claimed under the lock, sent after it. The claim's
+    // `BEGIN IMMEDIATE` (here and in `deliver_finalize_reminders` below) runs
+    // on this async task while it holds the `state.db` mutex, so a daemon
+    // write in progress can block this runtime thread for up to the
+    // connection's busy_timeout (5 s). Accepted: this pass runs every ten
+    // minutes, the daemon's writes are short, and every other command holds
+    // the same mutex for its own synchronous DB work the same way.
     let mut notified = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         claim_episodes(
@@ -729,7 +764,7 @@ pub(crate) async fn scan_deadline_notifications_with<R: tauri::Runtime>(
             delivery_error = Some(e);
         }
     }
-    if !daemon_alive {
+    if !daemon_sends {
         let finalize = {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
             deliver_finalize_reminders(&conn, day, &mut notify)?
