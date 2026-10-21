@@ -149,7 +149,7 @@ export function SpeedUpDialog({
     setBusy(true);
     let childId: string | null = null;
     try {
-      const child = await build.mutateAsync({ draftId, feeRate: rateValid ? rate : null });
+      const child = await build.mutateAsync({ draftId, feeRate: preview.settledRate });
       childId = child.id;
       const sent = await exec.run(child.id, profile.id, isSignerUnlockedFor(signer, profile.id));
       showToast(`Speed up sent ${sent.txid.slice(0, 12)}…`, "success");
@@ -209,7 +209,7 @@ export function SpeedUpDialog({
           <Button
             variant="primary"
             data-testid="speed-up-submit"
-            disabled={!preview.data || !rateValid || busy}
+            disabled={!preview.data || !rateValid || preview.settling || busy}
             loading={busy}
             onClick={() => void submit()}
           >

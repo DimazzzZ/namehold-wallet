@@ -258,6 +258,20 @@ describe("the Speed up form (R11, R16)", () => {
     expect(calls("preview_speed_up")[0]![1]).toEqual({ draftId: "parent1", feeRate: null });
   });
 
+  it("typing a rate asks the node once, for the rate typed, not per keystroke", async () => {
+    const dialog = await openForm();
+    await waitFor(() => expect(calls("preview_speed_up")).toHaveLength(1));
+    const input = within(dialog).getByTestId("speed-up-rate");
+    fireEvent.change(input, { target: { value: "2" } });
+    fireEvent.change(input, { target: { value: "25" } });
+    fireEvent.change(input, { target: { value: "250" } });
+    await waitFor(() =>
+      expect(calls("preview_speed_up").some((c) => c[1].feeRate === 250)).toBe(true),
+    );
+    const rates = calls("preview_speed_up").map((c) => c[1].feeRate);
+    expect(rates).toEqual([null, 250]);
+  });
+
   it("a typed rate is previewed and built at that rate", async () => {
     const dialog = await openForm();
     fireEvent.change(within(dialog).getByTestId("speed-up-rate"), { target: { value: "25" } });
