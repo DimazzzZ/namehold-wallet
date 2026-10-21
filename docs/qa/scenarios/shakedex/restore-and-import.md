@@ -22,7 +22,7 @@ A wallet restored from its recovery phrase does not find its locks on its own (s
 - **Was:** full QA R1; T7 S7; T7 recheck F7
 - **Covers:** R17, R21, R28, R32
 - **Regression of:** F7 (the second profile refused its own listing file: "payment address is not one of this wallet's addresses"), N1 (Cancel listing after a restore and own-file import failed with "corrupted listing: no cancel address")
-- **Preconditions:** SE an ordinary owned name of the seller profile.
+- **Preconditions:** SE an ordinary owned name of the seller profile. The second device's signer stays locked until the restore step (see the note under the title).
 
 Steps:
 
@@ -53,7 +53,7 @@ Expected:
 - **Priority:** P1
 - **Was:** full QA R2
 - **Covers:** R22, R32
-- **Preconditions:** SF an ordinary owned name of the seller profile.
+- **Preconditions:** SF an ordinary owned name of the seller profile. The second device's signer stays locked until the restore step (see the note under the title).
 
 Steps:
 
@@ -79,7 +79,7 @@ Expected:
 - **Priority:** P2
 - **Was:** full QA R3
 - **Covers:** R21, R28, R32
-- **Preconditions:** R1 done (SE home in both profiles).
+- **Preconditions:** R1 done (SE home in both profiles). The second device's signer stays locked until the restore step (see the note under the title).
 
 Steps:
 
@@ -182,7 +182,7 @@ Steps:
 
 1. Seller: [lock-and-list](../../procedures/lock-and-list.md) SE, Buy Now 5, no export.
 2. [switch-profile](../../procedures/switch-profile.md) to the second device → Market › My listings → read the line under the list and `Find my locks`; the signer is locked.
-3. `Unlock` in the line, or in the top bar, → passphrase in the secure window → confirm; wait for the next sync to end (or `Sync` once), then read the toast and My listings.
+3. `Unlock` in the line → passphrase in the secure window → confirm; wait for the next sync to end (or `Sync` once), then read the toast and My listings.
 4. `Sync` again; read My listings and the toast area.
 5. `Find my locks`.
 
@@ -196,7 +196,7 @@ Expected:
 
 - **Blocks mined:** 11
 - **Evidence:** screenshots `R8-1-unlock-line`, `R8-2-found`, `R8-3-nothing-new`.
-- **Cleanup / end state:** SE a Restored lock of the second device and a Listed listing of the seller; [R3](#r3--cancel-a-lock-restored-without-its-file-relisting-reuses-the-lock) or [R1](#r1--restore-by-name-import-the-sellers-file-cancel-and-bring-the-name-home-from-the-second-device) can continue from here.
+- **Cleanup / end state:** SE a Restored lock of the second device and a Listed listing of the seller; [R3](#r3--cancel-a-lock-restored-without-its-file-relisting-reuses-the-lock) can continue from here, and R1 from its step 3 (its Restore by name step would be refused as already tracked).
 
 ## C4 — A lowered Buy Now imported in a second device stays Buy Now
 
