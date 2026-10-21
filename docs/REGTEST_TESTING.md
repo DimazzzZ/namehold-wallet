@@ -350,6 +350,22 @@ scripts/regtest.sh stop-noaddrindex     # `reset` stops it and wipes its data to
 |------|---------|
 | `live_noindex_address_sync_keeps_the_balance_and_says_why` | The index-less node reports both indexes off and lists neither the coin nor the history of an address it mined a coinbase to, although `getcoin` finds the coin; a profile funded and synced on the indexed node, then pointed at the index-less one: `sync_wallet_state` refuses with "address index not enabled", a full sync run (`run_sync_steps`) leaves every tracked coin unspent and the balance as it was and lists the reason among its errors, `get_write_capability` refuses to send ("isn't address-indexed"), and Activity refuses naming both indexes ("address and transaction indexes not enabled") |
 
+### Speed up on full blocks (fourth node)
+
+Speed up only helps while blocks are full, which a regtest node never is unless its block template is capped. These tests need an indexed regtest node started with `--max-weight=5700` (hsd counts the 4000 weight units it reserves for the coinbase against it, which leaves room for three 1-in-2-out sends of 557 weight units each and not a fourth), on ports of its own (44037, 44038, 45449, 45450) with its data under `.regtest/cpfp`; they are skipped while `HNS_IT_CPFP_NODE_URL` is unset or empty. The node mines its own chain, a dozen blocks a run, and each test first mines until its mempool is empty, so a rerun starts clean. `live_cpfp_child_of_a_vanished_parent_says_so` restarts the node through the script (hsd keeps its mempool in memory only), so run the two tests against this node only:
+
+```bash
+scripts/regtest.sh start-cpfp
+HNS_IT_CPFP_NODE_URL=http://127.0.0.1:44037 HNS_IT_CPFP_NODE_API_KEY=test \
+  cargo test --manifest-path src-tauri/Cargo.toml live_cpfp -- --test-threads=1
+scripts/regtest.sh stop-cpfp            # `reset` stops it and wipes its data too
+```
+
+| Test | Asserts |
+|------|---------|
+| `live_cpfp_parent_and_child_confirm_together` | A 1 doo/vB send is left out of `getblocktemplate` while four sends at 20 doos/vB fill the block; after its Speed up child at 50 doos/vB, the parent's `getmempoolentry` counts the child in `descendantsize`, the template takes the parent then the child first, and the next block confirms both while three of the four others wait; a mined send is refused Speed up with hsd's own "not in mempool" answer; a child past hsd's absurd-fee cap is refused naming the cap (about 1.08 HNS) |
+| `live_cpfp_child_of_a_vanished_parent_says_so` | A parent and its child forgotten by the node (restarted, as its 72-hour expiry would): past the grace window the poll drops the parent and drops the child with "The transaction it sped up (…) did not confirm, so this one can never confirm. Nothing was paid by either.", its coin released |
+
 ### Covenant actions (Group D)
 
 | Test | Asserts |

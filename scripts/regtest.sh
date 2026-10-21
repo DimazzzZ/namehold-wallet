@@ -18,6 +18,9 @@
 #   scripts/regtest.sh start-noaddrindex  # an index-less node (no
 #                                         # --index-tx, no --index-address)
 #   scripts/regtest.sh stop-noaddrindex   # stop that node
+#   scripts/regtest.sh start-cpfp         # an indexed node whose blocks hold
+#                                         # only a few transactions (Speed up)
+#   scripts/regtest.sh stop-cpfp          # stop that node
 #
 # Requires: hsd + hsd-cli on PATH (brew install hsd, or npm i -g hsd).
 set -euo pipefail
@@ -44,6 +47,18 @@ NOADDR_DIR="$REGTEST_DIR/noaddrindex"
 NOADDR_PID_FILE="$NOADDR_DIR/hsd.pid"
 NOADDR_PORT="34037"
 NOADDR_URL="http://$RPC_HOST:$NOADDR_PORT"
+
+# An indexed node whose block template holds only a few transactions, for
+# the Speed up live test (live_cpfp_*): `--max-weight` caps the template
+# (hsd lib/node/fullnode.js passes it to the miner, lib/mining/miner.js),
+# whose weight starts at the 4000 reserved for the coinbase. 5700 leaves room
+# for three 1-in-2-out sends (557 weight units each) and not a fourth. Its own
+# ports and data dir, its own chain (it does not connect to the other nodes).
+CPFP_DIR="$REGTEST_DIR/cpfp"
+CPFP_PID_FILE="$CPFP_DIR/hsd.pid"
+CPFP_PORT="44037"
+CPFP_URL="http://$RPC_HOST:$CPFP_PORT"
+CPFP_MAX_WEIGHT="5700"
 
 log()  { printf '[regtest] %s\n' "$*" >&2; }
 die()  { printf '[regtest] error: %s\n' "$*" >&2; exit 1; }
@@ -191,8 +206,70 @@ cmd_stop_noaddrindex() {
   log "index-less node stopped"
 }
 
+# hsd-cli rpc against the Speed up node.
+cpfp_cli() {
+  need hsd-cli
+  hsd-cli --network="$NETWORK" --api-key="$API_KEY" --http-port="$CPFP_PORT" rpc "$@"
+}
+
+cpfp_alive() {
+  cpfp_cli getblockchaininfo >/dev/null 2>&1
+}
+
+cmd_start_cpfp() {
+  need hsd
+  assert_safe_regtest_dir
+  if cpfp_alive; then
+    log "Speed up node already responding on $CPFP_URL"
+    return 0
+  fi
+  mkdir -p "$CPFP_DIR"
+  log "starting Speed up hsd regtest node (prefix=$CPFP_DIR, max-weight=$CPFP_MAX_WEIGHT)"
+  hsd --network="$NETWORK" --no-wallet --listen=false \
+      --index-address --index-tx \
+      --max-weight="$CPFP_MAX_WEIGHT" \
+      --http-host="$RPC_HOST" --http-port="$CPFP_PORT" --port=44038 \
+      --ns-port=45449 --rs-port=45450 --api-key="$API_KEY" \
+      --prefix="$CPFP_DIR" \
+      --daemon > "$CPFP_PID_FILE"
+  # `--daemon` prints the node's pid; hsd renames its process to "hsd", so
+  # `pgrep -f` on the prefix finds nothing.
+  grep -qE '^[0-9]+$' "$CPFP_PID_FILE" || die "hsd --daemon printed no pid: $(cat "$CPFP_PID_FILE")"
+
+  local tries=0
+  until cpfp_alive; do
+    tries=$((tries + 1))
+    [ "$tries" -ge 30 ] && die "Speed up node did not answer RPC within ~15s"
+    sleep 0.5
+  done
+  log "Speed up node up on $CPFP_URL (api-key=$API_KEY)"
+}
+
+cmd_stop_cpfp() {
+  local pid=""
+  [ -f "$CPFP_PID_FILE" ] && pid="$(cat "$CPFP_PID_FILE" 2>/dev/null || true)"
+  if cpfp_alive; then
+    log "stopping Speed up node via RPC"
+    cpfp_cli stop >/dev/null 2>&1 || true
+  fi
+  # hsd answers RPC for a while after `stop`: wait for the process itself, so
+  # a start right after finds the data dir free (the live test restarts it).
+  local tries=0
+  while [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && [ "$tries" -lt 40 ]; do
+    sleep 0.5; tries=$((tries + 1))
+  done
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    log "pid $pid still alive; sending TERM"
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+  fi
+  rm -f "$CPFP_PID_FILE"
+  log "Speed up node stopped"
+}
+
 cmd_reset() {
   assert_safe_regtest_dir
+  cmd_stop_cpfp
   cmd_stop_noaddrindex
   cmd_stop
   if [ -d "$REGTEST_DIR" ]; then
@@ -257,10 +334,12 @@ main() {
     run-it)  cmd_run_it "$@" ;;
     start-noaddrindex) cmd_start_noaddrindex "$@" ;;
     stop-noaddrindex)  cmd_stop_noaddrindex "$@" ;;
+    start-cpfp)        cmd_start_cpfp "$@" ;;
+    stop-cpfp)         cmd_stop_cpfp "$@" ;;
     ""|-h|--help|help)
-      sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       ;;
-    *) die "unknown subcommand: '$sub' (try: start stop reset fund mine rpc run-it start-noaddrindex stop-noaddrindex)" ;;
+    *) die "unknown subcommand: '$sub' (try: start stop reset fund mine rpc run-it start-noaddrindex stop-noaddrindex start-cpfp stop-cpfp)" ;;
   esac
 }
 
