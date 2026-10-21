@@ -689,6 +689,7 @@ async fn the_confirmation_says_what_is_paid_and_what_is_not_changed() {
         "1.00 doos/vB now, 10.00 doos/vB with this fee (target 10 doos/vB, the rate you chose)"
     );
     assert_eq!(value("Paid to"), "The network only: nobody else is paid.");
+    assert_eq!(value("Back to your wallet"), "0.997660 HNS");
     assert_eq!(
         value("Original transaction"),
         "It keeps its transaction id."
@@ -996,4 +997,39 @@ async fn broadcast_of_a_child_whose_parent_left_the_mempool_sends_nothing() {
     let row = app_status(&app, &id);
     assert_eq!(row.status, queries::DraftStatus::Dropped);
     assert_eq!(row.error_message.as_deref(), Some(su::PARENT_GONE));
+}
+
+#[tokio::test]
+async fn signing_refuses_a_child_whose_plan_pays_elsewhere_than_our_change() {
+    use tauri::Manager;
+    let (app, id) = app_with_child("http://127.0.0.1:9").await;
+    unlock(&app);
+    {
+        // A plan and summary rewritten together to pay receive 0/1: the
+        // txid binding alone would pass it.
+        let state = app.state::<crate::AppState>();
+        let conn = state.db.lock().unwrap();
+        let row = queries::get_tx_draft(&conn, &id).unwrap().unwrap();
+        let mut plan: DraftPlan = serde_json::from_str(&row.signing_inputs_json).unwrap();
+        plan.outputs[0].address = leaf(0, 1).0;
+        let txid = crate::noncustodial::actions::rebuild_unsigned(&plan, Network::Regtest)
+            .unwrap()
+            .txid();
+        let mut s: SpeedUpSummary = serde_json::from_str(&row.summary_json).unwrap();
+        s.txid = txid;
+        conn.execute(
+            "UPDATE wallet_tx_drafts SET signing_inputs_json = ?2, summary_json = ?3 WHERE id = ?1",
+            params![
+                id,
+                serde_json::to_string(&plan).unwrap(),
+                serde_json::to_string(&s).unwrap()
+            ],
+        )
+        .unwrap();
+    }
+    let err = crate::commands::tx::sign_tx_draft_inner(&app.state(), &id)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not your change address"), "{err}");
+    assert_eq!(app_status(&app, &id).status, queries::DraftStatus::Draft);
 }

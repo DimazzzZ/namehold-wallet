@@ -428,7 +428,12 @@ pub fn plan_child(r: &ChildRequest<'_>) -> Result<ChildPlan, AppError> {
 /// R8, R10 on the signed child: one input and one output, the fee the summary
 /// says, a size no larger than the one it was priced on, the package at the
 /// target in hsd's arithmetic, no dust and no fee past the absurd cap.
-pub fn recheck_signed_child(signed_hex: &str, s: &SpeedUpSummary) -> Result<(), AppError> {
+pub fn recheck_signed_child(
+    signed_hex: &str,
+    s: &SpeedUpSummary,
+    network: Network,
+    change_address: &str,
+) -> Result<(), AppError> {
     let tx = hex::decode(signed_hex)
         .ok()
         .and_then(|b| crate::noncustodial::tx::Transaction::decode(&b).ok())
@@ -436,6 +441,19 @@ pub fn recheck_signed_child(signed_hex: &str, s: &SpeedUpSummary) -> Result<(), 
     if tx.inputs.len() != 1 || tx.outputs.len() != 1 || tx.txid() != s.txid {
         return Err(AppError::Other(
             "the signed child is not the one reviewed; nothing was sent".into(),
+        ));
+    }
+    // Whatever the summary and the plan say, the one output goes back to
+    // the account's own change address, with no covenant (R7).
+    let ours = crate::noncustodial::tx::output_address_from_string(network, change_address)?;
+    let paid = &tx.outputs[0];
+    if paid.address.version != ours.version
+        || paid.address.hash != ours.hash
+        || paid.covenant.covenant_type != 0
+    {
+        return Err(AppError::Other(
+            "the signed child pays something that is not your change address; nothing was sent"
+                .into(),
         ));
     }
     let out = tx.outputs[0].value;

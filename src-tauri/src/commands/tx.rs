@@ -256,6 +256,10 @@ fn confirm_details_for_speed_up(s: &SpeedUpSummary) -> serde_json::Value {
         }),
         serde_json::json!({ "label": "Paid to", "value": paid_to }),
         serde_json::json!({
+            "label": "Back to your wallet",
+            "value": doos_to_hns_string(s.change_doos),
+        }),
+        serde_json::json!({
             "label": "Original transaction",
             "value": "It keeps its transaction id.",
         }),
@@ -841,10 +845,18 @@ pub(crate) async fn sign_tx_draft_inner(
     };
 
     // A Speed up child is checked again as signed (spec 2026-10-21 R8, R10).
+    // Its one output must pay the account's own change address (branch 1,
+    // index 0), derived here from the profile's xpub, not read from the plan.
     if draft.action == SPEED_UP_ACTION {
+        let plan: crate::noncustodial::actions::DraftPlan =
+            serde_json::from_str(&draft.signing_inputs_json)?;
+        let network = Network::from_str_opt(&plan.network)
+            .ok_or_else(|| AppError::InvalidInput(format!("bad network '{}'", plan.network)))?;
         crate::noncustodial::speed_up::recheck_signed_child(
             &signed_hex,
             &read_summary(&draft.summary_json)?,
+            network,
+            &change_address(network, &account_xpub)?,
         )?;
     }
 

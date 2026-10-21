@@ -239,7 +239,7 @@ fn child_plan_signs_to_the_size_it_was_priced_on() {
     assert_eq!(txid, child.txid);
     let tx = crate::noncustodial::tx::Transaction::decode(&hex::decode(&hex).unwrap()).unwrap();
     assert_eq!(tx.vsize(), child.summary.child_size);
-    recheck_signed_child(&hex, &child.summary).unwrap();
+    recheck_signed_child(&hex, &child.summary, Network::Regtest, &addr).unwrap();
 }
 
 #[test]
@@ -254,7 +254,7 @@ fn signed_child_that_differs_from_its_summary_is_refused() {
     // A summary claiming a higher fee than the signed child pays.
     let mut s = child.summary.clone();
     s.fee_doos += 1;
-    assert!(recheck_signed_child(&hex, &s).is_err());
+    assert!(recheck_signed_child(&hex, &s, Network::Regtest, &addr).is_err());
     // The signed child larger than priced: below the target rate.
     let mut s = child.summary.clone();
     s.child_size -= 1;
@@ -262,14 +262,14 @@ fn signed_child_that_differs_from_its_summary_is_refused() {
         s.package_size + s.child_size,
         s.package_fees_doos + s.fee_doos as u64,
     );
-    let err = recheck_signed_child(&hex, &s).unwrap_err();
+    let err = recheck_signed_child(&hex, &s, Network::Regtest, &addr).unwrap_err();
     assert!(matches!(err, AppError::InvalidInput(_)), "{err:?}");
     // A summary naming another transaction.
     let mut s = child.summary.clone();
     s.txid = "00".repeat(32);
-    assert!(recheck_signed_child(&hex, &s).is_err());
+    assert!(recheck_signed_child(&hex, &s, Network::Regtest, &addr).is_err());
     // Not a transaction.
-    assert!(recheck_signed_child("zz", &child.summary).is_err());
+    assert!(recheck_signed_child("zz", &child.summary, Network::Regtest, &addr).is_err());
 }
 
 #[test]
@@ -286,7 +286,7 @@ fn signed_child_over_the_absurd_cap_or_below_dust_is_refused() {
     let mut s = child.summary.clone();
     s.input_total_doos += (get_min_fee(108) * ABSURD_FEE_FACTOR) as i64;
     s.fee_doos += (get_min_fee(108) * ABSURD_FEE_FACTOR) as i64;
-    let err = invalid_input(recheck_signed_child(&hex, &s).unwrap_err());
+    let err = invalid_input(recheck_signed_child(&hex, &s, Network::Regtest, &addr).unwrap_err());
     assert!(err.contains("more in fee than your node accepts"), "{err}");
 }
 
@@ -304,7 +304,7 @@ fn signed_child_below_dust_or_below_its_target_is_refused() {
     let (hex, _) = sign_plan(&mut session, &child.plan).unwrap();
     let mut s = child.summary.clone();
     s.target_rate_per_vbyte += 1;
-    let err = invalid_input(recheck_signed_child(&hex, &s).unwrap_err());
+    let err = invalid_input(recheck_signed_child(&hex, &s, Network::Regtest, &addr).unwrap_err());
     assert!(err.contains("below the target rate"), "{err}");
 
     // The same child paying all but 500 doos of its input as fee.
@@ -316,7 +316,7 @@ fn signed_child_below_dust_or_below_its_target_is_refused() {
     s.fee_doos = 1_000_000 - 500;
     s.change_doos = 500;
     s.target_rate_per_vbyte = 1;
-    let err = invalid_input(recheck_signed_child(&hex, &s).unwrap_err());
+    let err = invalid_input(recheck_signed_child(&hex, &s, Network::Regtest, &addr).unwrap_err());
     assert!(err.contains("too small"), "{err}");
 }
 
@@ -324,6 +324,42 @@ fn signed_child_below_dust_or_below_its_target_is_refused() {
 fn mempool_entry_whose_package_is_smaller_than_itself_is_not_hsds() {
     let err = parse_mempool_entry(&entry_json(140, 0.00014, NOW, 139, 140)).unwrap_err();
     assert!(matches!(err, AppError::Rpc(_)), "{err:?}");
+}
+
+/// Defense in depth at sign time: the one output pays the account's own
+/// change address (branch 1, index 0) with no covenant, whatever the summary
+/// says.
+#[test]
+fn signed_child_paying_anything_but_our_change_is_refused() {
+    let coin = change(1_000_000);
+    let e = entry();
+    let addr = change_address();
+    let child = plan_child(&request(&coin, &e, &addr, 10)).unwrap();
+    let mut session = SignerSession::unlock("p".into(), Network::Regtest, master(), 60_000);
+    let resign = |plan: &crate::noncustodial::actions::DraftPlan, session: &mut SignerSession| {
+        let (hex, txid) = sign_plan(session, plan).unwrap();
+        let mut s = child.summary.clone();
+        s.txid = txid;
+        (hex, s)
+    };
+
+    // Another address of ours (receive 0/1).
+    let seed = hd::seed_from_mnemonic(MNEMONIC, "").unwrap();
+    let other = hd::derive_address(Network::Regtest, &seed, 0, 0, 1)
+        .unwrap()
+        .2;
+    let mut plan = child.plan.clone();
+    plan.outputs[0].address = other;
+    let (hex, s) = resign(&plan, &mut session);
+    let err = recheck_signed_child(&hex, &s, Network::Regtest, &addr).unwrap_err();
+    assert!(err.to_string().contains("not your change address"), "{err}");
+
+    // Our change address, carrying a covenant.
+    let mut plan = child.plan.clone();
+    plan.outputs[0].covenant_type = 2;
+    let (hex, s) = resign(&plan, &mut session);
+    let err = recheck_signed_child(&hex, &s, Network::Regtest, &addr).unwrap_err();
+    assert!(err.to_string().contains("not your change address"), "{err}");
 }
 
 // --- R5, R6: the parent's entry -----------------------------------------------
