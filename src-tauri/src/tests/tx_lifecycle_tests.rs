@@ -1511,6 +1511,55 @@ async fn write_capability_blocks_when_not_address_indexed() {
     _indexes.assert_async().await;
 }
 
+/// A node whose `GET /` cannot be read, an HTTP error or a body that is not
+/// JSON, as hsd's HTTP server or a proxy in front of it answers: sends are
+/// blocked with the reason that the status was not read, not that the
+/// address index is off.
+#[tokio::test]
+async fn write_capability_says_when_the_node_status_could_not_be_read() {
+    for (code, body) in [
+        (
+            500,
+            r#"{"error":{"message":"Internal server error.","code":500}}"#,
+        ),
+        (502, "<html><body>Bad Gateway</body></html>"),
+        (200, "not json"),
+    ] {
+        let mut server = mockito::Server::new_async().await;
+        let _bi = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+            .with_body(bi_body(0.9999))
+            .create_async()
+            .await;
+        let _status = server
+            .mock("GET", "/")
+            .with_status(code)
+            .with_body(body)
+            .create_async()
+            .await;
+        let _coins = server
+            .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        let conn = seeded_conn(&server.url(), 2_000_000);
+        let app = app_with(conn);
+        unlock(&app, PROFILE);
+
+        let cap = get_write_capability(app.state()).await.expect("cap");
+        assert!(!cap.can_write, "{code}");
+        let reason = cap.reason.unwrap_or_default();
+        assert_eq!(
+            reason,
+            crate::commands::tx::NODE_STATUS_UNREAD_REASON,
+            "{code} {body}"
+        );
+        _status.assert_async().await;
+    }
+}
+
 #[tokio::test]
 async fn write_capability_allows_when_synced_indexed_and_unlocked() {
     let mut server = mockito::Server::new_async().await;
@@ -1975,14 +2024,15 @@ fn bi_full(blocks: i64, headers: i64, progress: f64) -> String {
 
 #[tokio::test]
 async fn write_capability_blocks_at_tip_with_low_progress() {
-    // blocks == headers but verification_progress is only 0.9997 — the node
-    // reports "tip reached" while still far behind the real chain. The progress
-    // gate must block writes in this case.
+    // blocks == headers but verification_progress is only 0.08 — the node
+    // reports "tip reached" while its headers are still far behind the real
+    // chain. The progress floor must block writes in this case. (0.9997 at
+    // the tip is synced: `chain_synced` lets the tip decide above 0.999.)
     let mut server = mockito::Server::new_async().await;
     let _bi = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(bi_full(317, 317, 0.9997))
+        .with_body(bi_full(317, 317, 0.08))
         .create_async()
         .await;
 

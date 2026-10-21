@@ -1102,26 +1102,44 @@ async fn write_probe_unsynced_downgrades_with_progress_pct() {
     assert!(reason.contains("still syncing"));
 }
 
-/// A synced node whose status cannot be read is not known to be
-/// address-indexed: no sends through it.
+/// A synced node whose status cannot be read (a failed read, or a reply
+/// without both index flags as booleans) is not known to be address-indexed:
+/// no sends through it, and the reason says the status was not read rather
+/// than that the index is off.
 #[tokio::test]
 async fn write_probe_synced_but_node_status_unreadable_downgrades() {
-    let mock = MockNodeRpc::new()
-        .with_blockchain_info(BlockchainInfo {
-            chain: Some("regtest".to_string()),
-            blocks: 100,
-            headers: Some(100),
-            verification_progress: Some(1.0),
-            bestblockhash: None,
-            mediantime: None,
-        })
-        .with_coins_by_address(vec![])
-        .with_node_status_err("status read failed");
-    let mut cap = writable_cap();
-    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
-        .await;
-    assert!(!cap.can_write);
-    assert!(cap.reason.as_deref().unwrap().contains("address-indexed"));
+    let synced = || {
+        MockNodeRpc::new()
+            .with_blockchain_info(BlockchainInfo {
+                chain: Some("regtest".to_string()),
+                blocks: 100,
+                headers: Some(100),
+                verification_progress: Some(1.0),
+                bestblockhash: None,
+                mediantime: None,
+            })
+            .with_coins_by_address(vec![])
+    };
+    let mocks = [
+        synced().with_node_status_err("status read failed"),
+        synced().with_node_status(json!({ "chain": { "indexers": { "indexTX": true } } })),
+        synced().with_node_status(
+            json!({ "chain": { "indexers": { "indexTX": true, "indexAddress": "yes" } } }),
+        ),
+    ];
+    for mock in mocks {
+        let mut cap = writable_cap();
+        crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
+            .await;
+        assert!(!cap.can_write);
+        let reason = cap.reason.as_deref().unwrap();
+        assert_eq!(
+            reason,
+            crate::commands::tx::NODE_STATUS_UNREAD_REASON,
+            "{reason}"
+        );
+        assert!(!reason.contains("address-indexed"), "{reason}");
+    }
 }
 
 /// hsd 8.0.0 without `--index-address` answers `GET /coin/address` with an

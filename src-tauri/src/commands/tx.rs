@@ -2506,8 +2506,9 @@ pub(crate) async fn apply_node_write_probe_with_client(
             } else {
                 // hsd without `--index-address` lists no coins and never says
                 // so, so the node's own report decides; one that cannot be
-                // read is not known to have the index. An hsd older than 7.0
-                // reports no indexes at all: its remedy is the update.
+                // read is not known to have the index, and the reason says
+                // the status was not read. An hsd older than 7.0 reports no
+                // indexes at all: its remedy is the update.
                 match crate::noncustodial::node_rpc::node_indexes(client).await {
                     Ok(indexes) if indexes.address => {}
                     Err(AppError::Rpc(msg))
@@ -2519,18 +2520,29 @@ pub(crate) async fn apply_node_write_probe_with_client(
                                 .to_string(),
                         );
                     }
-                    _ => {
+                    Ok(_) => {
                         cap.can_write = false;
                         cap.reason = Some(
                             "Your node isn't address-indexed — restart hsd with address indexing (Settings → Start hsd) and let it finish syncing."
                                 .to_string(),
                         );
                     }
+                    Err(e) => {
+                        eprintln!("write probe: the node's status was not read: {e}");
+                        cap.can_write = false;
+                        cap.reason = Some(NODE_STATUS_UNREAD_REASON.to_string());
+                    }
                 }
             }
         }
     }
 }
+
+/// The write probe's reason when the node's `GET /` could not be read (a
+/// transport error, an HTTP error, a body that is not JSON, or a reply
+/// without both index flags as booleans): whether it has the address index
+/// is unknown, so no sends.
+pub const NODE_STATUS_UNREAD_REASON: &str = "Your node's status couldn't be read, so whether it has the address index is unknown — check that hsd is running and reachable, then Refresh.";
 
 /// Discard a draft that hasn't been broadcast, releasing any coins it had
 /// reserved (I3) so a later draft can spend them. Refuses to delete a draft
