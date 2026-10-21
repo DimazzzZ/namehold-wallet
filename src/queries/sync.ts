@@ -134,7 +134,13 @@ export function useSyncStatus() {
       // Several mounts see the same run: the first one to write wins.
       const startedAt = query.data?.startedAt ?? null;
       const seen = qc.getQueryData<StartedFor>(SYNC_STARTED_FOR_KEY);
-      if (seen === undefined || seen.startedAt !== startedAt) {
+      // The profile list may still have been loading when the run was first
+      // seen: fill the profile in once it is known (same run).
+      if (
+        seen === undefined ||
+        seen.startedAt !== startedAt ||
+        (seen.profileId === null && activeIdRef.current !== null)
+      ) {
         qc.setQueryData<StartedFor>(SYNC_STARTED_FOR_KEY, {
           startedAt,
           profileId: activeIdRef.current,
@@ -148,7 +154,7 @@ export function useSyncStatus() {
       qc.setQueryData(SYNC_RAN_FOR_KEY, started?.profileId ?? activeIdRef.current);
     }
     wasRunning.current = running;
-  }, [query.data?.running, query.data?.startedAt, qc]);
+  }, [query.data?.running, query.data?.startedAt, activeId, qc]);
 
   // A run that ended before this session read the status has no start to
   // record: the first status read belongs to the profile active then.
