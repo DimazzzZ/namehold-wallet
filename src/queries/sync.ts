@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
+import { useActiveProfile } from "./wallet";
 
 export interface SyncStatus {
   running: boolean;
@@ -45,6 +46,30 @@ export function nodeCoinsNotSyncedReason(status: SyncStatus | undefined): string
   return status?.errors?.find((e) => e.includes(NODE_COINS_NOT_SYNCED)) ?? null;
 }
 
+/**
+ * Which profile the sync status describes. `SyncStatus` carries no profile
+ * id, so `useSyncStatus` records the active one at the end of a run (or when
+ * the first status arrives, for a run that ended before this session read it).
+ */
+const SYNC_RAN_FOR_KEY = ["sync", "ranFor"] as const;
+
+/**
+ * `nodeCoinsNotSyncedReason` of the last sync, only while the profile that
+ * sync ran for is still the active one: after a switch the reason belongs to
+ * the previous profile, and reads `null` until the next sync ends.
+ */
+export function useNodeCoinsNotSyncedReason(status: SyncStatus | undefined): string | null {
+  const activeId = useActiveProfile().data?.id ?? null;
+  const { data: ranFor } = useQuery<string | null>({
+    queryKey: SYNC_RAN_FOR_KEY,
+    queryFn: () => null,
+    enabled: false,
+    staleTime: Infinity,
+    gcTime: Infinity,
+  });
+  return activeId != null && ranFor === activeId ? nodeCoinsNotSyncedReason(status) : null;
+}
+
 /** Start a full sync in a background thread. */
 export function useStartFullSync() {
   const qc = useQueryClient();
@@ -78,6 +103,9 @@ export function useCancelFullSync() {
 export function useSyncStatus() {
   const qc = useQueryClient();
   const wasRunning = useRef(false);
+  const activeId = useActiveProfile().data?.id ?? null;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
   const query = useQuery<SyncStatus>({
     queryKey: ["sync", "status"],
     queryFn: () => invoke<SyncStatus>("get_sync_status"),
@@ -94,9 +122,19 @@ export function useSyncStatus() {
     if (wasRunning.current && !running) {
       qc.invalidateQueries({ queryKey: ["read"] });
       qc.invalidateQueries({ queryKey: ["wallet"] });
+      qc.setQueryData(SYNC_RAN_FOR_KEY, activeIdRef.current);
     }
     wasRunning.current = running;
   }, [query.data?.running, qc]);
+
+  // A run that ended before this session read the status has no edge to
+  // record: the first status read belongs to the profile active then.
+  const loaded = query.data != null;
+  useEffect(() => {
+    if (loaded && activeId != null && qc.getQueryData(SYNC_RAN_FOR_KEY) === undefined) {
+      qc.setQueryData(SYNC_RAN_FOR_KEY, activeId);
+    }
+  }, [loaded, activeId, qc]);
 
   return query;
 }
