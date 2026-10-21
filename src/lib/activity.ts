@@ -8,6 +8,17 @@ import type { ActionRow } from "./zod";
 import type { TxDraftSummary } from "../types";
 import { netSpendDoos } from "./utils";
 
+/** `speed_up.rs::SPEED_UP_ACTION`. */
+const SPEED_UP_ACTION = "speed_up";
+/** The statuses of a child still in play (`find_live_speed_up_child`). */
+const LIVE_CHILD = new Set<string>([
+  "draft",
+  "signed",
+  "broadcast_pending",
+  "broadcasted",
+  "confirmed",
+]);
+
 /** Draft lifecycle status values. */
 export type DraftStatus = TxDraftSummary["status"];
 
@@ -71,6 +82,10 @@ export interface MergedRow {
   /** Unix-seconds sort key (ActionRow.time when present, else createdAt parsed). */
   sortTs: number;
   counterparty: string | null;
+  /** For a Speed up child's row, the txid of the transaction it speeds up. */
+  speedsUp: string | null;
+  /** For a row a live Speed up child speeds up, that child's txid. */
+  spedUpBy: string | null;
 }
 
 /**
@@ -149,6 +164,8 @@ export function mergeActivity(rows: ActionRow[], drafts: TxDraftSummary[]): Merg
       height: row.height ?? null,
       sortTs: row.time ?? 0,
       counterparty: row.counterparty ?? null,
+      speedsUp: null,
+      spedUpBy: null,
       // For a self-homed covenant matched to a draft, expose the locked
       // name value so the UI can render its "222 HNS carried" tooltip.
       nameValueDoos:
@@ -172,7 +189,24 @@ export function mergeActivity(rows: ActionRow[], drafts: TxDraftSummary[]): Merg
     }
   }
 
-  // Step 4: sort newest-first.
+  // Step 4: link Speed up children and the transactions they speed up. A
+  // dropped or failed child speeds up nothing.
+  const draftById = new Map(safeDrafts.map((d) => [d.id, d]));
+  const childByParent = new Map<string, string>();
+  for (const d of safeDrafts) {
+    const parent = d.summary?.parentTxid;
+    const child = d.txid ?? d.summary?.txid;
+    if (d.action === SPEED_UP_ACTION && parent && child && LIVE_CHILD.has(d.status)) {
+      childByParent.set(parent, child);
+    }
+  }
+  for (const r of merged) {
+    const d = r.draftId ? draftById.get(r.draftId) : undefined;
+    if (d?.action === SPEED_UP_ACTION) r.speedsUp = d.summary?.parentTxid ?? null;
+    if (r.txid) r.spedUpBy = childByParent.get(r.txid) ?? null;
+  }
+
+  // Step 5: sort newest-first.
   merged.sort((a, b) => b.sortTs - a.sortTs);
   return merged;
 }
@@ -226,6 +260,8 @@ function draftToMergedRow(d: TxDraftSummary): MergedRow {
     height: d.confirmationHeight ?? null,
     sortTs: parseCreatedAt(d.createdAt),
     counterparty: summary?.recipientAddress ?? null,
+    speedsUp: null,
+    spedUpBy: null,
   };
 }
 

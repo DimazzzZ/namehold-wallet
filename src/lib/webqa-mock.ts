@@ -1070,6 +1070,7 @@ const DEMO_PURCHASES = [
     state: "awaitingFinalize",
     blocksRemaining,
     purchaseId: `purchase-${name}`,
+    purchaseDraftId: `draft-purchase-${name}`,
     priceDoos,
     lockupBlocks: 288,
     wallClockTiming: true,
@@ -1536,6 +1537,14 @@ const handlers: Record<string, Handler> = {
       createdAt: new Date().toISOString(),
     };
   },
+
+  // Speed up reads the node's mempool, which the browser preview has none of:
+  // the button shows, disabled with this reason (spec 2026-10-21 R16).
+  speed_up_check: () => ({
+    available: false,
+    reason: "Speeding up needs your node's mempool, which the browser preview does not have.",
+    expiresAt: null,
+  }),
 
   broadcast_tx_draft: (args) => {
     const id = (args?.draftId as string) ?? "draft-mock-001";

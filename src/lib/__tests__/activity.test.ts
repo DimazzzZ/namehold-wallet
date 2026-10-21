@@ -65,7 +65,65 @@ describe("mergeActivity", () => {
       height: 100,
       sortTs: 1000,
       counterparty: "hs1qrecipient",
+      speedsUp: null,
+      spedUpBy: null,
     });
+  });
+
+  // A Speed up child's draft as `build_speed_up_draft` stores it
+  // (`speed_up.rs::SpeedUpSummary`), trimmed to what the merge reads.
+  const child = (status: TxDraftSummary["status"]): TxDraftSummary => ({
+    id: "child1",
+    walletProfileId: "p1",
+    action: "speed_up",
+    status,
+    summary: {
+      action: "speed_up",
+      sendTotalDoos: 0,
+      feeDoos: 2_340,
+      changeDoos: 997_660,
+      inputTotalDoos: 1_000_000,
+      numInputs: 1,
+      recipientAddress: null,
+      txid: "c".repeat(64),
+      warnings: [],
+      parentTxid: "p".repeat(64),
+    },
+    errorMessage: null,
+    txid: status === "draft" ? null : "c".repeat(64),
+    confirmationHeight: null,
+    purchaseLostReason: null,
+    createdAt: "2026-10-21 12:00:00",
+  });
+  const parentRow: ActionRow = {
+    txid: "p".repeat(64),
+    action: "send",
+    name: null,
+    nameHash: null,
+    valueDoos: -100_000,
+    nameValueDoos: null,
+    direction: "send",
+    height: null,
+    time: 1000,
+    confirmed: false,
+    counterparty: null,
+  };
+
+  it("links a Speed up child and the transaction it speeds up (R16)", () => {
+    const merged = mergeActivity([parentRow], [child("broadcasted")]);
+    const parent = merged.find((r) => r.txid === parentRow.txid)!;
+    const kid = merged.find((r) => r.draftId === "child1")!;
+    expect(parent.spedUpBy).toBe("c".repeat(64));
+    expect(parent.speedsUp).toBeNull();
+    expect(kid.speedsUp).toBe("p".repeat(64));
+    // An unsent child is named by its build-time txid.
+    const unsent = mergeActivity([parentRow], [child("draft")]);
+    expect(unsent.find((r) => r.txid === parentRow.txid)!.spedUpBy).toBe("c".repeat(64));
+  });
+
+  it.each(["dropped", "failed"] as const)("a %s child speeds nothing up", (status) => {
+    const merged = mergeActivity([parentRow], [child(status)]);
+    expect(merged.find((r) => r.txid === parentRow.txid)!.spedUpBy).toBeNull();
   });
 
   it("a Shakedex draft keeps its own action once its tx is seen, not the covenant's", () => {
