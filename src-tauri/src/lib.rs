@@ -404,10 +404,11 @@ pub fn run() {
             // open (or whether any window is focused at all), and
             // `tokio::time::interval`'s first `tick()` resolves immediately,
             // so "on start" and "every 10 min" are the same loop, not two
-            // mechanisms. It does not persist across a full app quit (there is
-            // no OS-level background service), but the very next launch
-            // re-scans right away, so nothing missed while closed goes
-            // unnoticed for more than "until the user reopens the app".
+            // mechanisms. It does not persist across a full app quit, but the
+            // very next launch re-scans right away. The Shakedex finalize
+            // reminders are the exception: while the background daemon is
+            // alive it sends them (also with the window closed) and this
+            // loop skips them, so exactly one process sends each.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));

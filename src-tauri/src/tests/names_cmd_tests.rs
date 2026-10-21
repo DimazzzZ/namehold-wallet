@@ -24,7 +24,7 @@ fn test_xpub() -> crate::noncustodial::hd::ExtendedPubKey {
 /// this helper manually chained migrations 004..016 and silently drifted
 /// whenever a new migration landed — notably `profile_settings` in 027, which
 /// per-profile node override routing depends on).
-fn create_full_test_db() -> rusqlite::Connection {
+pub(crate) fn create_full_test_db() -> rusqlite::Connection {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
         .unwrap();

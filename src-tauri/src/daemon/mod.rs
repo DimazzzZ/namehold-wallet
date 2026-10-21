@@ -14,7 +14,9 @@
 //! `commands::sync` (which this module thinly wraps); the DB-lock coordination
 //! is covered inside `db::sync_lock`. What remains here is pure orchestration
 //! against a real filesystem + tokio runtime + hsd node, structurally out of
-//! scope for unit tests.
+//! scope for unit tests. The one exception is `send_finalize_reminders_with`,
+//! which takes a connection and an emitter and is tested in
+//! `tests::deadlines_cmd_tests`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -60,8 +62,49 @@ pub fn run(db_path: &str) -> Result<(), AppError> {
         // / highest-bid threshold. No-op unless the user opted in via Settings.
         rt.block_on(watched_names::run_watched_scan(db_path));
 
+        // Then the Shakedex finalize reminders (purchase, listing, cancel),
+        // so they reach the user while the app window is closed. The app
+        // sends none of them while this process is alive.
+        run_finalize_reminders(db_path);
+
         // Sleep 60 seconds before the next sync cycle.
         std::thread::sleep(Duration::from_secs(SYNC_INTERVAL_SECS));
+    }
+}
+
+/// One cycle's finalize reminders, sent as OS notifications through
+/// `notify-rust`. Errors are logged; the loop goes on.
+fn run_finalize_reminders(db_path: &str) {
+    let day = chrono::Utc::now().timestamp().div_euclid(86_400);
+    match sync_cmd::open_conn(db_path) {
+        Ok(conn) => send_finalize_reminders_with(&conn, day, &mut |summary, body| {
+            watched_names::emit_os_notification(summary, body)
+        }),
+        Err(e) => eprintln!("namehold-syncd: finalize reminders: {e}"),
+    }
+}
+
+/// The daemon's finalize-reminder step with its emitter given: the shared
+/// delivery shell (`commands::deadlines::deliver_finalize_reminders`, the
+/// same scanners, setting and dedup state as the app), handing each
+/// reminder's title and body to `emit`. `emit` logs its own failures, as the
+/// watchlist alerts do.
+pub(crate) fn send_finalize_reminders_with(
+    conn: &rusqlite::Connection,
+    day: i64,
+    emit: &mut dyn FnMut(&str, &str),
+) {
+    let mut notify = |n: &crate::commands::deadlines::PendingNotification| {
+        emit(&n.title, &n.body);
+        None
+    };
+    match crate::commands::deadlines::deliver_finalize_reminders(conn, day, &mut notify) {
+        Ok(outcome) if !outcome.notified.is_empty() => eprintln!(
+            "namehold-syncd: sent {} finalize reminder(s)",
+            outcome.notified.len()
+        ),
+        Ok(_) => {}
+        Err(e) => eprintln!("namehold-syncd: finalize reminders: {e}"),
     }
 }
 

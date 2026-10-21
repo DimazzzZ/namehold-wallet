@@ -24,6 +24,14 @@
 //! All IO (DB reads, settings, the actual OS notification call) lives in the
 //! `#[tauri::command]` shell below, which is what both the app-start call and
 //! the ~10-minute background timer (wired in `lib.rs`) invoke.
+//!
+//! The three finalize reminders (purchase, listing, cancel) go through one
+//! shared delivery shell, [`deliver_finalize_reminders`], which takes a
+//! connection and a notifier. The background daemon (`namehold-syncd`) runs
+//! it every cycle, so they arrive while the app window is closed; while the
+//! daemon is alive the app sends none of them. The shell claims its keys in
+//! `deadline_notify_state` before it sends, and each of the two writers of
+//! that setting replaces only its own kinds of key.
 
 use std::collections::BTreeSet;
 
@@ -489,6 +497,140 @@ pub struct ScanOutcome {
     pub delivery_error: Option<String>,
 }
 
+/// The finalize reminders' keys (purchase, listing, cancel). Their writer is
+/// [`deliver_finalize_reminders`]; every other key in `deadline_notify_state`
+/// (reveal, renewal) belongs to the app's own pass. Each writer replaces only
+/// its own keys, so the daemon sending the finalize reminders and the app
+/// sending the rest never drop each other's.
+fn is_finalize_key(key: &str) -> bool {
+    key.starts_with("purchase_finalize:")
+        || key.starts_with("listing_ready:")
+        || key.starts_with("cancel_finalize:")
+}
+
+/// Replace one writer's keys in the stored state with `active`, keeping the
+/// other writer's keys as they are.
+fn merge_state(
+    previous: BTreeSet<String>,
+    active: BTreeSet<String>,
+    own: impl Fn(&str) -> bool,
+) -> BTreeSet<String> {
+    previous
+        .into_iter()
+        .filter(|k| !own(k))
+        .chain(active)
+        .collect()
+}
+
+fn save_state(conn: &rusqlite::Connection, state: &BTreeSet<String>) -> Result<(), AppError> {
+    let state_json = serde_json::to_string(&state.iter().collect::<Vec<_>>())?;
+    queries::set_setting(conn, SETTING_STATE, &state_json)
+}
+
+/// Read the stored state, let `scan` decide, and write the new state back,
+/// all in one `BEGIN IMMEDIATE` transaction: the app and the daemon share the
+/// database, and a second process scanning at the same moment waits for this
+/// claim and then finds its keys taken. Returns what to send; the caller sends
+/// it only after this has committed (at most once: a failed send is not
+/// retried).
+fn claim_episodes(
+    conn: &rusqlite::Connection,
+    own: impl Fn(&str) -> bool,
+    scan: impl FnOnce(&rusqlite::Connection, &BTreeSet<String>) -> Result<ScanResult, AppError>,
+) -> Result<Vec<PendingNotification>, AppError> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let previous = load_state(&queries::get_settings(&tx)?);
+    let result = scan(&tx, &previous)?;
+    save_state(&tx, &merge_state(previous, result.active_episodes, own))?;
+    tx.commit()?;
+    Ok(result.notifications)
+}
+
+/// The three finalize scanners over the database's ready lists, merged.
+fn scan_finalize_reminders(
+    conn: &rusqlite::Connection,
+    config: &DeadlineNotifyConfig,
+    previously_notified: &BTreeSet<String>,
+    day: i64,
+) -> Result<ScanResult, AppError> {
+    let ready: Vec<PurchaseFinalizeDeadline> = queries::list_purchases_ready_to_finalize(conn)?
+        .into_iter()
+        .map(
+            |(wallet_profile_id, name, purchase_txid)| PurchaseFinalizeDeadline {
+                wallet_profile_id,
+                name,
+                purchase_txid,
+            },
+        )
+        .collect();
+    let listings: Vec<ListingReadyDeadline> = queries::list_listings_ready_to_finalize(conn)?
+        .into_iter()
+        .map(
+            |(wallet_profile_id, name, lock_transfer_txid)| ListingReadyDeadline {
+                wallet_profile_id,
+                name,
+                lock_transfer_txid,
+            },
+        )
+        .collect();
+    let cancels: Vec<CancelFinalizeDeadline> = queries::list_cancels_ready_to_finalize(conn)?
+        .into_iter()
+        .map(
+            |(wallet_profile_id, name, cancel_txid)| CancelFinalizeDeadline {
+                wallet_profile_id,
+                name,
+                cancel_txid,
+            },
+        )
+        .collect();
+
+    // The scans own disjoint key spaces, so their results merge by union.
+    let mut result = scan_purchase_deadlines(&ready, config, previously_notified);
+    let listings = scan_listing_ready_deadlines(&listings, config, previously_notified, day);
+    result.notifications.extend(listings.notifications);
+    result.active_episodes.extend(listings.active_episodes);
+    let cancels = scan_cancel_finalize_deadlines(&cancels, config, previously_notified);
+    result.notifications.extend(cancels.notifications);
+    result.active_episodes.extend(cancels.active_episodes);
+    Ok(result)
+}
+
+/// Send the finalize reminders (purchase, listing, cancel) that are due on
+/// `day` (days since the Unix epoch, UTC) through `notify`, which returns a
+/// delivery error or `None`. The one delivery path for both processes: the
+/// app passes its notification plugin, the daemon `notify-rust`. Gated by
+/// the same `deadline_notify_enabled` setting (off: nothing is sent and the
+/// stored state is left untouched), and the state is claimed before
+/// anything is sent (see [`claim_episodes`]).
+pub(crate) fn deliver_finalize_reminders(
+    conn: &rusqlite::Connection,
+    day: i64,
+    notify: &mut dyn FnMut(&PendingNotification) -> Option<String>,
+) -> Result<ScanOutcome, AppError> {
+    let config = load_config(&queries::get_settings(conn)?);
+    if !config.enabled {
+        return Ok(ScanOutcome {
+            enabled: false,
+            notified: Vec::new(),
+            delivery_error: None,
+        });
+    }
+    let notified = claim_episodes(conn, is_finalize_key, |c, previous| {
+        scan_finalize_reminders(c, &config, previous, day)
+    })?;
+    let mut delivery_error = None;
+    for n in &notified {
+        if let Some(e) = notify(n) {
+            delivery_error = Some(e);
+        }
+    }
+    Ok(ScanOutcome {
+        enabled: true,
+        notified,
+        delivery_error,
+    })
+}
+
 /// Run one scan pass: load config + dedup state, gather deadlines, decide
 /// what's newly imminent, dispatch OS notifications for it, and persist the
 /// updated dedup state. Called both by the ~10-minute background timer
@@ -502,12 +644,37 @@ pub async fn scan_deadline_notifications<R: tauri::Runtime>(
     scan_deadline_notifications_on_day(app, state, day).await
 }
 
+/// Whether the background daemon is running, and so sends the finalize
+/// reminders itself. Tests never see a daemon: a developer's own running
+/// `namehold-syncd` must not change what they assert;
+/// [`scan_deadline_notifications_with`] takes the answer as an argument.
+fn daemon_sends_finalize_reminders() -> bool {
+    #[cfg(not(test))]
+    return crate::commands::daemon_ctl::check_daemon_alive();
+    #[cfg(test)]
+    false
+}
+
 /// [`scan_deadline_notifications`] with the unix day given, so a test can
 /// scan two days without a clock.
 pub(crate) async fn scan_deadline_notifications_on_day<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     day: i64,
+) -> Result<ScanOutcome, AppError> {
+    scan_deadline_notifications_with(app, state, day, daemon_sends_finalize_reminders()).await
+}
+
+/// [`scan_deadline_notifications_on_day`] with the daemon's liveness given.
+/// While `daemon_alive`, the daemon sends the finalize reminders (purchase,
+/// listing, cancel), so this pass sends only the reveal and renewal ones and
+/// leaves the finalize keys to the daemon: exactly one process sends each
+/// reminder. When the daemon is off or dead, the app sends them as before.
+pub(crate) async fn scan_deadline_notifications_with<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    day: i64,
+    daemon_alive: bool,
 ) -> Result<ScanOutcome, AppError> {
     // Finding 3: load config FIRST and bail out immediately when disabled —
     // BEFORE probing the node, collecting deadlines (a per-profile
@@ -534,83 +701,46 @@ pub(crate) async fn scan_deadline_notifications_on_day<R: tauri::Runtime>(
     // same discipline as `read_renewals`).
     let live_height = crate::commands::node_readiness::node_tip_height_if_synced(&state).await;
 
-    let (previously_notified, reveal, renewal, ready, listings, cancels) = {
+    // Reveal and renewal: claimed under the lock, sent after it.
+    let mut notified = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let previously_notified = load_state(&queries::get_settings(&conn)?);
-        let (reveal, renewal) = collect_deadlines(&conn, live_height)?;
-        let ready: Vec<PurchaseFinalizeDeadline> =
-            queries::list_purchases_ready_to_finalize(&conn)?
-                .into_iter()
-                .map(
-                    |(wallet_profile_id, name, purchase_txid)| PurchaseFinalizeDeadline {
-                        wallet_profile_id,
-                        name,
-                        purchase_txid,
-                    },
-                )
-                .collect();
-        let listings: Vec<ListingReadyDeadline> = queries::list_listings_ready_to_finalize(&conn)?
-            .into_iter()
-            .map(
-                |(wallet_profile_id, name, lock_transfer_txid)| ListingReadyDeadline {
-                    wallet_profile_id,
-                    name,
-                    lock_transfer_txid,
-                },
-            )
-            .collect();
-        let cancels: Vec<CancelFinalizeDeadline> = queries::list_cancels_ready_to_finalize(&conn)?
-            .into_iter()
-            .map(
-                |(wallet_profile_id, name, cancel_txid)| CancelFinalizeDeadline {
-                    wallet_profile_id,
-                    name,
-                    cancel_txid,
-                },
-            )
-            .collect();
-        (
-            previously_notified,
-            reveal,
-            renewal,
-            ready,
-            listings,
-            cancels,
-        )
+        claim_episodes(
+            &conn,
+            |k| !is_finalize_key(k),
+            |c, previous| {
+                let (reveal, renewal) = collect_deadlines(c, live_height)?;
+                Ok(scan_deadlines(&reveal, &renewal, &config, previous))
+            },
+        )?
     };
 
-    // The scans own disjoint key spaces, so their results merge by union.
-    let mut result = scan_deadlines(&reveal, &renewal, &config, &previously_notified);
-    let purchases = scan_purchase_deadlines(&ready, &config, &previously_notified);
-    result.notifications.extend(purchases.notifications);
-    result.active_episodes.extend(purchases.active_episodes);
-    let listings = scan_listing_ready_deadlines(&listings, &config, &previously_notified, day);
-    result.notifications.extend(listings.notifications);
-    result.active_episodes.extend(listings.active_episodes);
-    let cancels = scan_cancel_finalize_deadlines(&cancels, &config, &previously_notified);
-    result.notifications.extend(cancels.notifications);
-    result.active_episodes.extend(cancels.active_episodes);
-
-    #[cfg_attr(test, allow(unused_mut))]
-    let mut delivery_error = None;
     #[cfg(not(test))]
-    for n in &result.notifications {
-        if let Some(e) = send_os_notification(&app, n) {
+    let mut notify = |n: &PendingNotification| send_os_notification(&app, n);
+    // Unit/integration test builds send no real OS notification.
+    #[cfg(test)]
+    let mut notify = {
+        let _ = &app;
+        |_: &PendingNotification| None
+    };
+
+    let mut delivery_error = None;
+    for n in &notified {
+        if let Some(e) = notify(n) {
             delivery_error = Some(e);
         }
     }
-    #[cfg(test)]
-    let _ = &app; // unused in unit/integration test builds (no real OS notification)
-
-    {
-        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let state_json = serde_json::to_string(&result.active_episodes.iter().collect::<Vec<_>>())?;
-        queries::set_setting(&conn, SETTING_STATE, &state_json)?;
+    if !daemon_alive {
+        let finalize = {
+            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+            deliver_finalize_reminders(&conn, day, &mut notify)?
+        };
+        notified.extend(finalize.notified);
+        delivery_error = finalize.delivery_error.or(delivery_error);
     }
 
     Ok(ScanOutcome {
         enabled: config.enabled,
-        notified: result.notifications,
+        notified,
         delivery_error,
     })
 }

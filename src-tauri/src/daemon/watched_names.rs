@@ -655,7 +655,7 @@ fn ensure_notify_identity() {
 }
 
 #[cfg(not(test))]
-fn emit_os_notification(summary: &str, body: &str) {
+pub(crate) fn emit_os_notification(summary: &str, body: &str) {
     #[cfg(target_os = "macos")]
     ensure_notify_identity();
     // notify-rust is cross-platform (macOS via mac-notification-sys, Linux via
@@ -671,7 +671,7 @@ fn emit_os_notification(summary: &str, body: &str) {
 }
 
 #[cfg(test)]
-fn emit_os_notification(_summary: &str, _body: &str) {
+pub(crate) fn emit_os_notification(_summary: &str, _body: &str) {
     // No-op in tests: the pure scanner is tested directly; the shell is not.
 }
 

@@ -9,9 +9,14 @@
 //! (which deadlines were newly notified) and the persisted state, not on any
 //! real system notification.
 
-use crate::commands::deadlines::{scan_deadline_notifications, scan_deadline_notifications_on_day};
+use crate::commands::deadlines::{
+    deliver_finalize_reminders, scan_deadline_notifications, scan_deadline_notifications_on_day,
+    scan_deadline_notifications_with, PendingNotification,
+};
 use crate::db;
-use crate::tests::names_cmd_tests::{create_full_test_state, insert_valid_profile, mock_app_with};
+use crate::tests::names_cmd_tests::{
+    create_full_test_db, create_full_test_state, insert_valid_profile, mock_app_with,
+};
 use tauri::Manager;
 
 const BLOCKS_PER_DAY: i64 = 144;
@@ -827,4 +832,221 @@ async fn cancel_finalize_reminder_follows_its_draft() {
     draft("failed");
     let d = scan(20_007).await.unwrap();
     assert!(!d.enabled && d.notified.is_empty(), "disabled");
+}
+
+// --- The shared finalize delivery shell (app and daemon) ---
+
+/// One of each finalize kind ready: a purchase, a listing, a cancel.
+fn seed_all_finalize_ready(conn: &rusqlite::Connection, profile_id: &str) {
+    seed_purchase(
+        conn,
+        profile_id,
+        "p1",
+        "bought",
+        "awaiting_finalize",
+        Some(0),
+    );
+    seed_listing(conn, profile_id, "l1", "forsale", "ready_to_finalize");
+    seed_listing(
+        conn,
+        profile_id,
+        "l2",
+        "homeward",
+        "cancel_awaiting_finalize",
+    );
+    conn.execute(
+        "UPDATE shakedex_listings
+         SET cancel_txid = 'c1-tx', cancel_vout = 0, cancel_blocks_remaining = 0
+         WHERE id = 'l2'",
+        [],
+    )
+    .unwrap();
+}
+
+fn stored_state(conn: &rusqlite::Connection) -> String {
+    db::queries::get_settings(conn)
+        .unwrap()
+        .get("deadline_notify_state")
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The claim is written before the OS is asked to show anything, so a second
+/// process scanning at the same moment finds the key already taken.
+#[test]
+fn finalize_shell_persists_the_state_before_it_sends() {
+    let conn = create_full_test_db();
+    let id = insert_valid_profile(&conn, "mainnet");
+    enable_notifications(&conn, "144", "30");
+    seed_purchase(&conn, &id, "p1", "bought", "awaiting_finalize", Some(0));
+    let key = format!("purchase_finalize:{id}:bought:p1-tx");
+    let mut seen_at_send = Vec::new();
+    let mut notify = |n: &PendingNotification| {
+        seen_at_send.push((n.key.clone(), stored_state(&conn)));
+        None
+    };
+    let outcome = deliver_finalize_reminders(&conn, 20_000, &mut notify).unwrap();
+    assert_eq!(outcome.notified.len(), 1);
+    assert_eq!(seen_at_send.len(), 1);
+    assert_eq!(seen_at_send[0].0, key);
+    assert!(
+        seen_at_send[0].1.contains(&key),
+        "state at send time: {}",
+        seen_at_send[0].1
+    );
+}
+
+/// Purchase and cancel once per txid, the listing once per unix day; a failed
+/// delivery is reported, not retried.
+#[test]
+fn finalize_shell_sends_each_key_once() {
+    let conn = create_full_test_db();
+    let id = insert_valid_profile(&conn, "mainnet");
+    enable_notifications(&conn, "144", "30");
+    seed_all_finalize_ready(&conn, &id);
+    let mut sent: Vec<String> = Vec::new();
+    let mut notify = |n: &PendingNotification| {
+        sent.push(n.key.clone());
+        Some("denied".to_string())
+    };
+    let first = deliver_finalize_reminders(&conn, 20_000, &mut notify).unwrap();
+    assert_eq!(first.delivery_error.as_deref(), Some("denied"));
+    deliver_finalize_reminders(&conn, 20_000, &mut notify).unwrap();
+    deliver_finalize_reminders(&conn, 20_001, &mut notify).unwrap();
+    assert_eq!(
+        sent,
+        vec![
+            format!("purchase_finalize:{id}:bought:p1-tx"),
+            format!("listing_ready:{id}:forsale:l1-tx:20000"),
+            format!("cancel_finalize:{id}:homeward:c1-tx"),
+            format!("listing_ready:{id}:forsale:l1-tx:20001"),
+        ]
+    );
+}
+
+/// Off, the shell neither sends nor touches the stored state.
+#[test]
+fn finalize_shell_respects_the_disabled_setting() {
+    let conn = create_full_test_db();
+    let id = insert_valid_profile(&conn, "mainnet");
+    seed_all_finalize_ready(&conn, &id);
+    db::queries::set_setting(&conn, "deadline_notify_state", "[\"x\"]").unwrap();
+    let mut calls = 0;
+    let mut notify = |_: &PendingNotification| {
+        calls += 1;
+        None
+    };
+    let outcome = deliver_finalize_reminders(&conn, 20_000, &mut notify).unwrap();
+    assert!(!outcome.enabled && outcome.notified.is_empty());
+    assert_eq!(calls, 0);
+    assert_eq!(stored_state(&conn), "[\"x\"]");
+}
+
+/// The two writers of `deadline_notify_state` each replace only their own
+/// kinds: the finalize shell keeps the reveal/renewal keys, and the app's
+/// reveal/renewal pass keeps the finalize keys while the daemon owns them.
+#[tokio::test]
+async fn each_writer_keeps_the_other_writers_keys() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "mainnet");
+        enable_notifications(&conn, "144", "30");
+        seed_current_height(&conn, &id, 1_000);
+        seed_pending_bid(&conn, &id, "closingsoon", 1_050);
+        seed_all_finalize_ready(&conn, &id);
+        id
+    };
+    let app = mock_app_with(state);
+    let reveal_key = format!("reveal:{profile_id}:closingsoon:1050");
+    let purchase_key = format!("purchase_finalize:{profile_id}:bought:p1-tx");
+
+    let app_pass =
+        scan_deadline_notifications_with(app.handle().clone(), app.state(), 20_000, true)
+            .await
+            .unwrap();
+    let keys: Vec<&str> = app_pass.notified.iter().map(|n| n.key.as_str()).collect();
+    assert_eq!(keys, vec![reveal_key.as_str()]);
+    {
+        let s: tauri::State<crate::AppState> = app.state();
+        let conn = s.db.lock().unwrap();
+        let mut notify = |_: &PendingNotification| None;
+        let daemon_pass = deliver_finalize_reminders(&conn, 20_000, &mut notify).unwrap();
+        assert_eq!(daemon_pass.notified.len(), 3);
+        let raw = stored_state(&conn);
+        assert!(raw.contains(&reveal_key), "{raw}");
+        assert!(raw.contains(&purchase_key), "{raw}");
+    }
+    let again = scan_deadline_notifications_with(app.handle().clone(), app.state(), 20_000, true)
+        .await
+        .unwrap();
+    assert!(again.notified.is_empty(), "{:?}", again.notified);
+    let s: tauri::State<crate::AppState> = app.state();
+    let conn = s.db.lock().unwrap();
+    let raw = stored_state(&conn);
+    assert!(raw.contains(&reveal_key), "{raw}");
+    assert!(raw.contains(&purchase_key), "{raw}");
+}
+
+/// While the daemon is alive the app sends no finalize reminder and claims
+/// none, so when the daemon stops the app still has them to send.
+#[tokio::test]
+async fn app_skips_finalize_reminders_while_the_daemon_is_alive() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "mainnet");
+        enable_notifications(&conn, "144", "30");
+        seed_all_finalize_ready(&conn, &id);
+    }
+    let app = mock_app_with(state);
+    let alive = scan_deadline_notifications_with(app.handle().clone(), app.state(), 20_000, true)
+        .await
+        .unwrap();
+    assert!(alive.enabled);
+    assert!(alive.notified.is_empty(), "{:?}", alive.notified);
+    {
+        let s: tauri::State<crate::AppState> = app.state();
+        let conn = s.db.lock().unwrap();
+        let raw = stored_state(&conn);
+        assert!(
+            !raw.contains("_finalize:") && !raw.contains("listing_ready:"),
+            "{raw}"
+        );
+    }
+    let gone = scan_deadline_notifications_with(app.handle().clone(), app.state(), 20_000, false)
+        .await
+        .unwrap();
+    assert_eq!(gone.notified.len(), 3, "{:?}", gone.notified);
+}
+
+/// The daemon's cycle step hands its notifier the same title and body the
+/// app shows for the same ready finalizes.
+#[tokio::test]
+async fn daemon_step_sends_the_same_text_as_the_app() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "mainnet");
+        enable_notifications(&conn, "144", "30");
+        seed_all_finalize_ready(&conn, &id);
+    }
+    let app = mock_app_with(state);
+    let app_sent =
+        scan_deadline_notifications_with(app.handle().clone(), app.state(), 20_000, false)
+            .await
+            .unwrap()
+            .notified;
+    let app_text: Vec<(String, String)> = app_sent.into_iter().map(|n| (n.title, n.body)).collect();
+    assert_eq!(app_text.len(), 3);
+
+    let conn = create_full_test_db();
+    let id = insert_valid_profile(&conn, "mainnet");
+    enable_notifications(&conn, "144", "30");
+    seed_all_finalize_ready(&conn, &id);
+    let mut daemon_sent: Vec<(String, String)> = Vec::new();
+    crate::daemon::send_finalize_reminders_with(&conn, 20_000, &mut |summary: &str, body: &str| {
+        daemon_sent.push((summary.to_string(), body.to_string()));
+    });
+    assert_eq!(daemon_sent, app_text);
 }
