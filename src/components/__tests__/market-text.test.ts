@@ -20,6 +20,7 @@ import {
   NEEDS_SENDING_NODE,
   RECOVERY_PHRASE_ONLY,
   listedUntilText,
+  unbuyableText,
   buyingGated,
   shakedexRefusal,
   parseStepPrice,
@@ -38,6 +39,21 @@ import {
   SCHEDULE_PAST_A_YEAR,
 } from "../market/marketText";
 import type { ShakedexListingPrices, ShakedexListingState } from "../../types";
+
+describe("unbuyableText (R35)", () => {
+  it("counts whole days down, as lockupLeftText does, and blocks where blocks are mined on demand", () => {
+    // 1400 blocks are 9.7 days: "~9", never a day more than is left.
+    expect(unbuyableText(1_400, 4_320, true)).toMatch(
+      /^Buyers stop seeing this listing in ~9 days,/,
+    );
+    expect(unbuyableText(144, 4_320, true)).toMatch(/ in ~1 day,/);
+    expect(unbuyableText(143, 4_320, true)).toMatch(/ in less than a day,/);
+    expect(unbuyableText(1, 300, false)).toMatch(/ in 1 block,/);
+    expect(unbuyableText(0, 300, false)).toMatch(/^Buyers no longer see this listing:/);
+    expect(unbuyableText(301, 300, false)).toBeNull();
+    expect(unbuyableText(null, 300, false)).toBeNull();
+  });
+});
 
 describe("listedUntilText", () => {
   it("dates the seller's expiresAt in UTC, and says the date does not end the listing", () => {

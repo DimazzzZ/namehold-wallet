@@ -291,7 +291,8 @@ export function unbuyableText(
   if (!wallClockTiming) {
     when = `in ${blocks} ${blocks === 1 ? "block" : "blocks"}`;
   } else {
-    const days = Math.round((blocks * SECS_PER_BLOCK) / 86_400);
+    // Whole days down, as `lockupLeftText` counts them: never a day more than is left.
+    const days = Math.floor((blocks * SECS_PER_BLOCK) / 86_400);
     when = days < 1 ? "in less than a day" : `in ~${days} ${days === 1 ? "day" : "days"}`;
   }
   return `Buyers stop seeing this listing ${when}, when the name gets too close to expiring to finalize a purchase. ${home}, then list it again.`;

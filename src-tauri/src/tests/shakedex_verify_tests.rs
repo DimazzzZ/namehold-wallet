@@ -745,7 +745,10 @@ fn blocks_until_unbuyable_counts_down_to_r9s_margin() {
 #[test]
 fn unbuyable_warn_window_is_at_most_half_the_renewal_window() {
     assert_eq!(Network::Main.name_params().unbuyable_warn_blocks(), 4_320);
-    assert_eq!(Network::Testnet.name_params().unbuyable_warn_blocks(), 2_160);
+    assert_eq!(
+        Network::Testnet.name_params().unbuyable_warn_blocks(),
+        2_160
+    );
     assert_eq!(Network::Testnet.name_params().expiry_warn_blocks(), 4_320);
     assert_eq!(Network::Regtest.name_params().unbuyable_warn_blocks(), 300);
     let mut small = Network::Main.name_params();

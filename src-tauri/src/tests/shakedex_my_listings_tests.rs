@@ -168,7 +168,10 @@ fn a_listed_row_says_how_long_buyers_still_see_it() {
     assert_eq!(regtest.unbuyable_warn_blocks, 300);
     let testnet = &rows_with(&conn, Network::Testnet, &HashMap::new())[0];
     assert!(testnet.wall_clock_timing);
-    assert_eq!(testnet.unbuyable_warn_blocks, 2_160, "half testnet's renewal window");
+    assert_eq!(
+        testnet.unbuyable_warn_blocks, 2_160,
+        "half testnet's renewal window"
+    );
 }
 
 /// Which state allows which action: Finalize & sign only ReadyToFinalize,

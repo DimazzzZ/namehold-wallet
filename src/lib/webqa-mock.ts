@@ -484,7 +484,9 @@ const NAME_EXPIRY_END: Record<string, number> = { example: 110_000, urgent: 101_
 /**
  * R35 (`NameParams::blocks_until_unbuyable`): blocks until a Listed or
  * Restored listing stops being buyable, past R9's margin of tip + 1 + the
- * lockup + a day (the lockup itself here, as on regtest); 0 once past it.
+ * lockup + a day; 0 once past it. The mock compresses the lockup to 10
+ * blocks on its mainnet profile, and R9's day is the lockup wherever that is
+ * shorter than 144 blocks, so the day here is 10 blocks too.
  */
 function blocksUntilUnbuyable(l: MockListing): number | null {
   const end = NAME_EXPIRY_END[l.name];
