@@ -20,8 +20,19 @@ import {
   CANCEL_STILL_BUYABLE,
   CANCEL_STILL_BUYABLE_AS_IT_FALLS,
   CANCEL_THEN_FINALIZE,
+  CANCELLED_ELSEWHERE,
+  EXPORT_THIS_DEVICE_ONLY,
   LISTING_BUTTONS,
   LOWER_DURING_CANCEL,
+  LOWER_MANAGED_ELSEWHERE,
+  MANAGED_ELSEWHERE,
+  MANAGE_HERE_LABEL,
+  MANAGE_HERE_TEXT,
+  ON_THIS_DEVICE,
+  SOLD_ELSEWHERE,
+  TAKE_OVER_OTHER_ADDRESS,
+  cancelElsewhereText,
+  managedElsewherePriceText,
   LOWER_PRICE_PERMANENCE,
   MAINNET_SELLING_EXPERIMENTAL,
   NEEDS_SENDING_NODE,
@@ -870,7 +881,8 @@ describe("MyListings", () => {
   });
 
   it("disables Import its listing file with the backend's reason when the row refuses it", async () => {
-    const why = "only a lock restored by name takes its saved listing file";
+    const why =
+      "only a lock restored by name, or a listing managed from another device, takes its saved listing file";
     setup([
       makeMyListing("restored", {
         actions: makeActions({ importFile: { allowed: false, reason: why } }),
@@ -896,6 +908,7 @@ describe("MyListings", () => {
           export: refused,
           publish: refused,
           importFile: { allowed: true, reason: null },
+          manageHere: refused,
         },
       }),
     ]);
@@ -1273,5 +1286,111 @@ describe("MyListings", () => {
     expect(await screen.findByTestId("own-file-error")).toHaveTextContent(
       "this listing file is for another lock coin",
     );
+  });
+});
+
+describe("MyListings: a listing another device manages (R40–R45)", () => {
+  /** A Listed, published row another device manages, its price there 3 HNS. */
+  const elsewhereRow = (over: Partial<ShakedexMyListing> = {}) =>
+    makeMyListing("listed", {
+      listing: makeListing({ state: "listed", publish: true, marketStatus: "listed" }),
+      prices: {
+        kind: "at",
+        currentPrice: 5,
+        nextPrice: null,
+        nextValidInSecs: null,
+        floorPrice: 5,
+      },
+      actions: makeActions({
+        lowerPrice: { allowed: false, reason: LOWER_MANAGED_ELSEWHERE },
+      }),
+      managedElsewhere: true,
+      foreignStepPriceDoos: 3,
+      ...over,
+    });
+
+  it("says so in place of the market status, with the other device's price, and labels this device's own", async () => {
+    setup([elsewhereRow()]);
+    renderIt();
+    expect(await screen.findByTestId("listing-market-status")).toHaveTextContent(MANAGED_ELSEWHERE);
+    expect(screen.getByTestId("listing-elsewhere-price")).toHaveTextContent(
+      managedElsewherePriceText(3),
+    );
+    expect(screen.getByTestId("listing-prices")).toHaveTextContent(`— ${ON_THIS_DEVICE}`);
+    expect(screen.getByText(EXPORT_THIS_DEVICE_ONLY)).toBeInTheDocument();
+    // Lower price is refused in the backend's words; Cancel and Export stay.
+    expect(screen.getByTestId("listing-lower-price")).toBeDisabled();
+    expect(screen.getByText(LOWER_MANAGED_ELSEWHERE)).toBeInTheDocument();
+    expect(screen.getByTestId("listing-cancel")).toBeEnabled();
+    expect(screen.getByTestId("listing-export")).toBeEnabled();
+    expect(screen.getByTestId("listing-manage-here")).toHaveTextContent(MANAGE_HERE_LABEL);
+    expect(screen.getByTestId("listing-import-file")).toBeEnabled();
+  });
+
+  it("offers neither the take-over nor the import on a listing this device manages", async () => {
+    setup([makeMyListing("listed")]);
+    renderIt();
+    await screen.findByTestId("listing-market-status");
+    expect(screen.queryByTestId("listing-manage-here")).toBeNull();
+    expect(screen.queryByTestId("listing-import-file")).toBeNull();
+    expect(screen.queryByTestId("listing-elsewhere-price")).toBeNull();
+  });
+
+  it("asks before taking over, then calls the backend once with the listing", async () => {
+    setup([elsewhereRow()], {
+      answers: {
+        shakedex_manage_listing_here: () => Promise.resolve(makeListing({ state: "listed" })),
+      },
+    });
+    renderIt();
+    fireEvent.click(await screen.findByTestId("listing-manage-here"));
+    expect(screen.getByTestId("manage-here-text")).toHaveTextContent(MANAGE_HERE_TEXT(3));
+    expect(calls("shakedex_manage_listing_here")).toHaveLength(0);
+    fireEvent.click(screen.getByTestId("manage-here-confirm"));
+    await waitFor(() =>
+      expect(calls("shakedex_manage_listing_here")).toEqual([
+        ["shakedex_manage_listing_here", { listingId: "l1" }],
+      ]),
+    );
+    await waitFor(() => expect(toasts().some((t) => t.includes("manages the listing"))).toBe(true));
+  });
+
+  it("shows the backend's refusal of the take-over in its words", async () => {
+    setup([elsewhereRow()], {
+      answers: {
+        shakedex_manage_listing_here: () =>
+          Promise.reject(`Invalid input: ${TAKE_OVER_OTHER_ADDRESS}`),
+      },
+    });
+    renderIt();
+    fireEvent.click(await screen.findByTestId("listing-manage-here"));
+    fireEvent.click(screen.getByTestId("manage-here-confirm"));
+    expect(await screen.findByTestId("manage-here-error")).toHaveTextContent(
+      TAKE_OVER_OTHER_ADDRESS,
+    );
+  });
+
+  it("the cancel dialog names the other device's price as buyable until the cancel is mined", async () => {
+    setup([elsewhereRow()]);
+    renderIt();
+    fireEvent.click(await screen.findByTestId("listing-cancel"));
+    expect(await screen.findByTestId("cancel-elsewhere")).toHaveTextContent(cancelElsewhereText(3));
+  });
+
+  it("words a sale at another device's price and a cancel from another device (R43)", async () => {
+    setup([
+      makeMyListing("sold", {
+        listing: makeListing({ id: "s1", state: "sold" }),
+        soldElsewhere: true,
+      }),
+      makeMyListing("cancelled", {
+        listing: makeListing({ id: "c1", state: "cancelled" }),
+        cancelledElsewhere: true,
+      }),
+      makeMyListing("sold", { listing: makeListing({ id: "s2", state: "sold" }) }),
+    ]);
+    renderIt();
+    const lines = await screen.findAllByTestId("listing-from-elsewhere");
+    expect(lines.map((l) => l.textContent)).toEqual([SOLD_ELSEWHERE, CANCELLED_ELSEWHERE]);
   });
 });

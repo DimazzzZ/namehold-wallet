@@ -341,6 +341,50 @@ export const LOWER_PRICE_PERMANENCE =
 export const LOWER_DURING_CANCEL =
   "a cancel of this listing is not mined yet: its price cannot be lowered";
 
+/** `commands/shakedex.rs::LOWER_MANAGED_ELSEWHERE` (R40): Lower price waits for a take-over. */
+export const LOWER_MANAGED_ELSEWHERE =
+  "another device or profile with your recovery phrase manages this listing: lower its price there, or manage it from this device first";
+
+/** `commands/shakedex.rs::TAKE_OVER_OTHER_ADDRESS` (R44): the other device's price pays another address. */
+export const TAKE_OVER_OTHER_ADDRESS =
+  "the price set on the other device pays an address this listing does not know: import that device's listing file, or cancel the listing and list it again";
+
+/** R42: a listing managed elsewhere, in place of its market status. */
+export const MANAGED_ELSEWHERE =
+  "Managed from another device: LearnHNS Market shows a price this device never signed, so this device no longer uploads the listing. It still follows the chain.";
+
+/** R42: the other device's price, under {@link MANAGED_ELSEWHERE}. */
+export function managedElsewherePriceText(price: number): string {
+  return `Price set on the other device: ${formatHns(price)} HNS. Anyone can buy at it until the listing is cancelled.`;
+}
+
+/** R42: this device's own prices of a listing managed elsewhere are labelled so. */
+export const ON_THIS_DEVICE = "on this device";
+
+/** R40: the export of a listing managed elsewhere holds only this device's prices. */
+export const EXPORT_THIS_DEVICE_ONLY =
+  "The listing file holds only this device's prices, not the one set on the other device.";
+
+/** R40: the cancel of a listing managed elsewhere: the other device's price stays buyable until it is mined. */
+export function cancelElsewhereText(price: number): string {
+  return `The price set on the other device (${formatHns(price)} HNS) can be bought too until this cancel is mined.`;
+}
+
+/** R44: the take-over's button. */
+export const MANAGE_HERE_LABEL = "Manage from this device";
+
+/** R44: the take-over's confirmation, with the other device's price. */
+export function MANAGE_HERE_TEXT(price: number): string {
+  return `This device will upload the listing to LearnHNS Market again, at the price set on the other device (${formatHns(price)} HNS), and keep it there. If the other device keeps publishing it too, the two now upload the same price and stop overwriting each other. To manage it only from the other device instead, leave this as it is.`;
+}
+
+/** R43: a sale at a price none of this device's steps names. */
+export const SOLD_ELSEWHERE = "Sold at a price set on another device";
+
+/** R43: a mined cancel this device has no draft of. */
+export const CANCELLED_ELSEWHERE =
+  "Cancelled from another device or profile with your recovery phrase";
+
 /** `commands/shakedex.rs::CANCEL_LOCKUP_NOT_COUNTED` (R28): Finalize home before any sync has counted the cancel's lockup. */
 export const CANCEL_LOCKUP_NOT_COUNTED =
   "the cancel is mined, but its transfer lockup is not counted yet: sync, then finalize it";
@@ -802,7 +846,15 @@ export const LISTING_BUTTON_LABEL: Record<ListingButton, string> = {
   export: "Export listing file",
   publish: "Publish on LearnHNS Market",
   importFile: "Import its listing file",
+  manageHere: MANAGE_HERE_LABEL,
 };
+
+/**
+ * R44, R45: the buttons a Listed row shows besides its own while another
+ * device or profile of the phrase manages it: take it over, or import that
+ * device's listing file.
+ */
+export const MANAGED_ELSEWHERE_BUTTONS: ListingButton[] = ["manageHere", "importFile"];
 
 /** The buttons each state shows in My listings; whether each is enabled is the backend's `actions`. */
 export const LISTING_BUTTONS: Record<ShakedexListingState, ListingButton[]> = {

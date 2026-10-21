@@ -96,7 +96,15 @@ pub struct CancelRows<'a> {
     /// current price (for a reverse auction with none valid yet, any step
     /// ahead) ([`still_buyable`]).
     pub cheaper_ahead: bool,
+    /// R40: the price of the foreign step seen while another device or
+    /// profile of the phrase manages the listing ([`CANCEL_ELSEWHERE_PRICE`]).
+    pub elsewhere_price: Option<u64>,
 }
+
+/// R40: the cancel prompt's row for a listing managed elsewhere, after the
+/// price (`N HNS`): that price stays buyable until the cancel is mined.
+pub const CANCEL_ELSEWHERE_PRICE: &str = "set on another device or profile with your recovery \
+     phrase: anyone can buy at it until this cancel is mined";
 
 /// The "Current price" row of the cancel's prompt (R3, R28).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +147,12 @@ pub fn cancel_rows(r: &CancelRows) -> serde_json::Value {
         row("Until it is mined", still_buyable(r.cheaper_ahead).into()),
         row("A purchase already sent", CANCEL_MEMPOOL_PURCHASE.into()),
     ];
+    if let Some(price) = r.elsewhere_price {
+        rows.push(row(
+            "Another device's price",
+            format!("{}, {CANCEL_ELSEWHERE_PRICE}", doos_to_hns_string(price)),
+        ));
+    }
     if r.published {
         rows.push(row("LearnHNS Market", CANCEL_MARKET_TOLD.into()));
     }
@@ -470,6 +484,7 @@ mod tests {
             current_price: CancelPrice::Step(5_000_000),
             published: false,
             cheaper_ahead: true,
+            elsewhere_price: None,
         });
         let until = r["rows"]
             .as_array()
@@ -504,6 +519,7 @@ mod tests {
                 current_price: price,
                 published: false,
                 cheaper_ahead: false,
+                elsewhere_price: None,
             })["rows"]
                 .as_array()
                 .unwrap()
@@ -626,6 +642,7 @@ mod tests {
                 current_price: CancelPrice::Step(5_000_000),
                 published,
                 cheaper_ahead: false,
+                elsewhere_price: None,
             })["rows"]
                 .as_array()
                 .unwrap()

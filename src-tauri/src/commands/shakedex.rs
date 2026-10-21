@@ -733,6 +733,8 @@ pub(crate) fn build_lock_draft_inner(
             cancel_vout: None,
             cancel_finalize_draft_id: None,
             cancel_blocks_remaining: None,
+            managed_elsewhere_at: None,
+            foreign_step_json: None,
             created_at: String::new(),
             updated_at: String::new(),
         },
@@ -1783,6 +1785,7 @@ pub(crate) async fn cancel_listing_confirmed<R: tauri::Runtime>(
             current_price: p.current_price,
             published: p.listing.publish,
             cheaper_ahead: p.cheaper_ahead,
+            elsewhere_price: foreign_step_of(&p.listing).map(|s| s.price),
         }),
     )
     .await?;
@@ -1851,6 +1854,10 @@ pub const LOWER_LOCK_COIN_SPENT: &str = "the lock coin is no longer unspent (bou
 /// R26: a listing without signed prices here has no current price.
 pub const LOWER_NO_PRICE_HERE: &str = "this listing has no signed prices here: import its \
      listing file first";
+/// R40: Lower price waits for a take-over while another device manages the
+/// listing (`marketText.ts` holds the UI's copy, word for word).
+pub const LOWER_MANAGED_ELSEWHERE: &str = "another device or profile with your recovery phrase \
+     manages this listing: lower its price there, or manage it from this device first";
 
 const LOWER_LOCK_WORDS: LockCoinWords = LockCoinWords {
     checked: "the price",
@@ -1860,10 +1867,16 @@ const LOWER_LOCK_WORDS: LockCoinWords = LockCoinWords {
 };
 
 /// Why Lower price refuses a listing in `state` (R26) whose stored steps
-/// are `no_steps` empty; `None` for Listed with signed steps here. The
-/// command and My listings ask this one function.
-pub(crate) fn lower_refusal(state: ListingState, no_steps: bool) -> Option<&'static str> {
+/// are `no_steps` empty, `managed_elsewhere` its mark (R40: refused until
+/// the seller takes it over); `None` for Listed with signed steps here, not
+/// marked. The command and My listings ask this one function.
+pub(crate) fn lower_refusal(
+    state: ListingState,
+    no_steps: bool,
+    managed_elsewhere: bool,
+) -> Option<&'static str> {
     match state {
+        ListingState::Listed if managed_elsewhere => Some(LOWER_MANAGED_ELSEWHERE),
         ListingState::Listed if no_steps => Some(LOWER_NO_PRICE_HERE),
         ListingState::Listed => None,
         ListingState::Cancelling => Some(LOWER_DURING_CANCEL),
@@ -1920,7 +1933,9 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
             .filter(|l| l.wallet_profile_id == ctx.profile_id)
             .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
         let stored = shakedex_jobs::stored_steps(&l)?;
-        if let Some(why) = lower_refusal(l.state, stored.is_empty()) {
+        if let Some(why) =
+            lower_refusal(l.state, stored.is_empty(), l.managed_elsewhere_at.is_some())
+        {
             return Err(AppError::InvalidInput(why.into()));
         }
         (l, stored)
@@ -1940,29 +1955,7 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
     let lock_addr = at.address.clone();
     // The step is added to the stored file as written (R26, R32): it must
     // be this row's file, its lock, key, payment address and steps.
-    let stored_file = listing
-        .listing_file_json
-        .clone()
-        .ok_or_else(|| corrupted("listing file"))?;
-    let file_is_the_rows = ListingFile::parse(&stored_file, ctx.network)
-        .ok()
-        .is_some_and(|f| {
-            hex::encode(f.lock_txid) == lock_txid
-                && f.lock_vout == lock_vout
-                && f.public_key == pubkey
-                && f.payment_addr == payment_address
-                && f.steps
-                    .iter()
-                    .map(|s| sell::StoredStep {
-                        price: s.price,
-                        lock_time: s.lock_time,
-                        signature: hex::encode(s.signature),
-                    })
-                    .eq(stored.iter().cloned())
-        });
-    if !file_is_the_rows {
-        return Err(corrupted("listing file matching its lock and steps"));
-    }
+    let stored_file = rows_own_file(&listing, ctx.network, &stored)?;
 
     let on_node = lock_on_node(
         &ctx,
@@ -2067,6 +2060,217 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
     ListingSummary::of(&conn, &l)
 }
 
+/// The stored listing file of `l`, whose readable stored steps are
+/// `stored`, once it is checked to be the row's own: its lock outpoint,
+/// public key, payment address and steps the stored ones (R26, R44: a step
+/// is added to it as written). A file that is not is a corrupted row.
+fn rows_own_file(
+    l: &ShakedexListing,
+    network: Network,
+    stored: &[sell::StoredStep],
+) -> Result<String, AppError> {
+    let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
+    let (lock_txid, lock_vout) =
+        shakedex_jobs::stored_lock(l)?.ok_or_else(|| corrupted("lock coin"))?;
+    let pubkey = shakedex_jobs::lock_pubkey(l)?;
+    let stored_file = l
+        .listing_file_json
+        .clone()
+        .ok_or_else(|| corrupted("listing file"))?;
+    let file_is_the_rows = ListingFile::parse(&stored_file, network)
+        .ok()
+        .is_some_and(|f| {
+            hex::encode(f.lock_txid) == lock_txid
+                && f.lock_vout == lock_vout
+                && f.public_key == pubkey
+                && Some(f.payment_addr.as_str()) == l.payment_address.as_deref()
+                && f.steps
+                    .iter()
+                    .map(|s| sell::StoredStep {
+                        price: s.price,
+                        lock_time: s.lock_time,
+                        signature: hex::encode(s.signature),
+                    })
+                    .eq(stored.iter().cloned())
+        });
+    if !file_is_the_rows {
+        return Err(corrupted("listing file matching its lock and steps"));
+    }
+    Ok(stored_file)
+}
+
+/// R38: the foreign step stored on `l` while it is managed elsewhere;
+/// `None` when it is not marked or the step stored does not read.
+pub(crate) fn foreign_step_of(l: &ShakedexListing) -> Option<sell::ForeignStep> {
+    l.managed_elsewhere_at.as_ref()?;
+    serde_json::from_str(l.foreign_step_json.as_deref()?).ok()
+}
+
+/// R44: the take-over of a listing that is not managed elsewhere.
+pub const TAKE_OVER_NOT_MARKED: &str = "this listing is not managed from another device: there \
+     is nothing to take over";
+/// R44: a foreign step paying another address than the listing's.
+pub const TAKE_OVER_OTHER_ADDRESS: &str = "the price set on the other device pays an address \
+     this listing does not know: import that device's listing file, or cancel the listing and \
+     list it again";
+/// R44: the stored foreign step no longer verifies over the lock coin.
+pub const TAKE_OVER_NOT_SIGNED: &str = "the price set on the other device is not signed by \
+     this lock over the lock coin the node reports: nothing was saved";
+/// R44: hsd answers 404 for a lock coin spent in a block or its mempool.
+pub const TAKE_OVER_LOCK_COIN_SPENT: &str = "the lock coin is no longer unspent (bought, \
+     cancelled, or being spent in the node's mempool): the listing cannot be taken over";
+
+const TAKE_OVER_LOCK_WORDS: LockCoinWords = LockCoinWords {
+    checked: "the price set on the other device",
+    spent: TAKE_OVER_LOCK_COIN_SPENT,
+    not_mined: "the finalize into the lock is not mined: the listing cannot be taken over \
+                until it is",
+    nothing: "the listing cannot be taken over",
+};
+
+/// Why "Manage from this device" (R44) refuses `l`; `None` for a Listed
+/// listing managed elsewhere whose foreign step reads and pays the
+/// listing's payment address. The command and My listings ask this one
+/// function.
+pub(crate) fn take_over_refusal(l: &ShakedexListing) -> Option<&'static str> {
+    if l.managed_elsewhere_at.is_none() {
+        return Some(TAKE_OVER_NOT_MARKED);
+    }
+    if l.state != ListingState::Listed {
+        return Some(listing_over(l.state).unwrap_or(
+            "only a listed listing can be managed from this device: its cancel is on its way",
+        ));
+    }
+    let Some(step) = foreign_step_of(l) else {
+        return Some(
+            "the price seen from the other device cannot be read here: import that device's \
+             listing file",
+        );
+    };
+    (l.payment_address.as_deref() != Some(step.payment_address.as_str()))
+        .then_some(TAKE_OVER_OTHER_ADDRESS)
+}
+
+/// R44: "Manage from this device". The gates of every selling write (a
+/// recovery-phrase profile, a node that can send, the unlocked signer)
+/// first; the listing the active profile's, refused by
+/// [`take_over_refusal`] (Listed, managed elsewhere, its foreign step
+/// paying the listing's payment address); its stored file the row's own
+/// ([`rows_own_file`]); on the node the lock coin checks Lower price makes
+/// ([`lock_on_node`]: unspent, at the stored outpoint, a FINALIZE of the
+/// name at the lock address of the stored key, mined, of the name's live
+/// registration) and its median time; the foreign step verified once more
+/// over that coin at hsd's value, paying the listing's payment address
+/// (`template::verify_step_signature`); then the step added to the stored
+/// steps and listing file as written ([`add_step_to_listing_file`]) and
+/// the mark cleared in one write (`queries::take_over_listing`: still
+/// Listed on that lock coin with the steps and the foreign step read).
+/// Nothing is signed; the next keep-listed run uploads over the market's
+/// copy as our own.
+pub(crate) async fn take_over_confirmed(
+    state: &State<'_, AppState>,
+    listing_id: &str,
+) -> Result<ListingSummary, AppError> {
+    let ctx = software_writer_ctx(state)?;
+    authorize_signer(state, &ctx)?;
+    let (listing, stored) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let l = queries::get_shakedex_listing(&conn, listing_id)?
+            .filter(|l| l.wallet_profile_id == ctx.profile_id)
+            .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
+        let stored = readable_steps(&l)?;
+        if let Some(why) = take_over_refusal(&l) {
+            return Err(AppError::InvalidInput(why.into()));
+        }
+        (l, stored)
+    };
+    let step = foreign_step_of(&listing)
+        .ok_or_else(|| AppError::Other("the foreign step was not read".into()))?;
+    let stored_file = rows_own_file(&listing, ctx.network, &stored)?;
+    let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
+    let (lock_txid, lock_vout) = shakedex_jobs::stored_lock(&listing)?
+        .map(|(t, v)| (t.to_string(), v))
+        .ok_or_else(|| corrupted("lock coin"))?;
+    let pubkey = shakedex_jobs::lock_pubkey(&listing)?;
+    let payment_address = listing
+        .payment_address
+        .clone()
+        .ok_or_else(|| corrupted("payment address"))?;
+    let at = shakedex_jobs::listing_lock(ctx.network, &listing)?;
+    let on_node = lock_on_node(
+        &ctx,
+        &listing.name,
+        &at,
+        (&lock_txid, lock_vout),
+        true,
+        &TAKE_OVER_LOCK_WORDS,
+    )
+    .await?;
+    let mtp = on_node
+        .mtp
+        .ok_or_else(|| AppError::Other("the node's median time was not read".into()))?;
+    let mut lock_bytes = [0u8; 32];
+    hex::decode_to_slice(&lock_txid, &mut lock_bytes)
+        .map_err(|_| corrupted("readable lock txid"))?;
+    let signature: [u8; 65] = hex::decode(&step.signature)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(|| AppError::InvalidInput(TAKE_OVER_NOT_SIGNED.into()))?;
+    // A `0x84` signature commits to its payment output: verified paying
+    // the listing's own address, never the one the market's copy named.
+    template::verify_step_signature(
+        &template::StepTemplate {
+            lock_outpoint: (lock_bytes, lock_vout),
+            lock_value: on_node.value,
+            lock_pubkey: &pubkey,
+            payment: output_address_from_string(ctx.network, &payment_address)?,
+            price: step.price,
+            lock_time_secs: step.lock_time,
+        },
+        &signature,
+    )
+    .map_err(|_| AppError::InvalidInput(TAKE_OVER_NOT_SIGNED.into()))?;
+    let (file, expires_at) = add_step_to_listing_file(
+        &stored_file,
+        &PriceStep {
+            price: step.price,
+            lock_time: step.lock_time,
+            signature,
+            fee: 0,
+        },
+        mtp + sell::LISTING_LIFETIME_SECS,
+        listing.mode,
+        ctx.network,
+    )?;
+    let mut stored_new = stored.clone();
+    stored_new.push(sell::StoredStep {
+        price: step.price,
+        lock_time: step.lock_time,
+        signature: step.signature.to_ascii_lowercase(),
+    });
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let n = queries::take_over_listing(
+        &conn,
+        &listing.id,
+        &queries::TakenOver {
+            lock: (&lock_txid, lock_vout),
+            old_steps_json: &listing.steps_json,
+            old_foreign_step_json: listing.foreign_step_json.as_deref().unwrap_or_default(),
+            steps_json: &serde_json::to_string(&stored_new)?,
+            listing_file_json: &file,
+            expires_at: Some(i64::try_from(expires_at).map_err(|_| corrupted("readable expiry"))?),
+        },
+    )?;
+    if n != 1 {
+        return Err(AppError::InvalidInput(
+            "this listing changed meanwhile: nothing was saved; try again".into(),
+        ));
+    }
+    let l = queries::get_shakedex_listing(&conn, &listing.id)?
+        .ok_or_else(|| AppError::Other("listing vanished after the take-over".into()))?;
+    ListingSummary::of(&conn, &l)
+}
+
 /// R23: the saved listing file of one of the profile's listings, once its
 /// FINALIZE into the lock is mined (Listed or later): before that its steps
 /// are over a coin that may never exist.
@@ -2121,8 +2325,12 @@ pub struct ListingActions {
     pub finalize_cancel: ListingAction,
     pub export: ListingAction,
     pub publish: ListingAction,
-    /// Import the saved listing file of a Restored lock (R32).
+    /// Import the saved listing file of a Restored lock (R32), or of a
+    /// listing managed elsewhere (R45).
     pub import_file: ListingAction,
+    /// "Manage from this device" (R44): take over a listing another device
+    /// or profile of the phrase manages.
+    pub manage_here: ListingAction,
 }
 
 /// The listing's own draft that was never sent (`queries::never_sent`), or
@@ -2202,6 +2410,58 @@ pub struct MyListing {
     pub actions: ListingActions,
     pub prices: ListingPrices,
     pub pending_send: Option<PendingSend>,
+    /// R42: another device or profile of the phrase manages the listing
+    /// (R38's mark): this device no longer uploads it.
+    pub managed_elsewhere: bool,
+    /// R42: the price of the foreign step seen, when it reads.
+    pub foreign_step_price_doos: Option<u64>,
+    /// R43: a Sold listing whose purchase paid a price none of this
+    /// device's steps names: a step set on another device.
+    pub sold_elsewhere: bool,
+    /// R43: a mined cancel this device has no cancel draft of (another
+    /// device's or profile's, or a purchase of our own made elsewhere).
+    pub cancelled_elsewhere: bool,
+}
+
+/// R43: whether `l`, Sold, was bought at a price none of its stored
+/// `steps` names: the wallet's coin at its payment address in the sale
+/// transaction (a `0x84` step commits to that output, worth exactly the
+/// step's price) is worth another amount. No coin recorded, or no payment
+/// address (a lock restored by name), is no such fact: `false`.
+fn sold_elsewhere(
+    conn: &rusqlite::Connection,
+    l: &ShakedexListing,
+    steps: &[sell::StoredStep],
+) -> Result<bool, AppError> {
+    let (ListingState::Sold, Some(txid), Some(address)) = (
+        l.state,
+        l.sold_txid.as_deref(),
+        l.payment_address.as_deref(),
+    ) else {
+        return Ok(false);
+    };
+    if steps.is_empty() {
+        return Ok(false);
+    }
+    Ok(
+        queries::own_coin_value_in_tx(conn, &l.wallet_profile_id, txid, address)?
+            .is_some_and(|paid| !steps.iter().any(|s| i64::try_from(s.price) == Ok(paid))),
+    )
+}
+
+/// R43: whether `l`'s mined cancel (`cancel_txid` in a cancel-mined state
+/// or Cancelled) is not this device's own: no cancel draft here, or one
+/// whose transaction is another.
+fn cancelled_elsewhere(conn: &rusqlite::Connection, l: &ShakedexListing) -> Result<bool, AppError> {
+    let mined = ListingState::CANCEL_MINED.contains(&l.state) || l.state == ListingState::Cancelled;
+    let Some(txid) = l.cancel_txid.as_deref().filter(|_| mined) else {
+        return Ok(false);
+    };
+    let ours = match l.cancel_draft_id.as_deref() {
+        None => None,
+        Some(id) => queries::get_tx_draft(conn, id)?.and_then(|d| d.txid),
+    };
+    Ok(!ours.is_some_and(|t| t.eq_ignore_ascii_case(txid)))
 }
 
 fn pending_send(
@@ -2258,20 +2518,31 @@ pub(crate) fn my_listing_from_conn(
                     export: refused(),
                     publish: refused(),
                     import_file: ListingAction::refused_by(
-                        import_refusal(l.state).map(str::to_string),
+                        import_refusal(l.state, l.managed_elsewhere_at.is_some())
+                            .map(str::to_string),
                     ),
+                    manage_here: refused(),
                 },
                 prices: ListingPrices::Unreadable {
                     reason: e.to_string(),
                 },
                 pending_send: None,
+                managed_elsewhere: l.managed_elsewhere_at.is_some(),
+                foreign_step_price_doos: foreign_step_of(l).map(|s| s.price),
+                sold_elsewhere: false,
+                cancelled_elsewhere: false,
             });
         }
     };
     let prices = listing_prices(&steps, chain);
     let listing = ListingSummary::with_steps(l, steps, lockup_left(conn, l)?);
     let finalize = finalize_and_sign_refusal(conn, l)?;
-    let lower = lower_refusal(l.state, listing.steps.is_empty()).map(str::to_string);
+    let lower = lower_refusal(
+        l.state,
+        listing.steps.is_empty(),
+        l.managed_elsewhere_at.is_some(),
+    )
+    .map(str::to_string);
     // The stored lockup is the last sync's count; the command counts again
     // on the node's tip when it runs.
     let finalize_cancel = finalize_cancel_refusal(l.state)
@@ -2288,10 +2559,17 @@ pub(crate) fn my_listing_from_conn(
             finalize_cancel: ListingAction::refused_by(finalize_cancel),
             export: ListingAction::refused_by(export_refusal(l).map(str::to_string)),
             publish: ListingAction::refused_by(publish_refusal(l, network)),
-            import_file: ListingAction::refused_by(import_refusal(l.state).map(str::to_string)),
+            import_file: ListingAction::refused_by(
+                import_refusal(l.state, l.managed_elsewhere_at.is_some()).map(str::to_string),
+            ),
+            manage_here: ListingAction::refused_by(take_over_refusal(l).map(str::to_string)),
         },
         prices,
         pending_send: pending_send(conn, l)?,
+        managed_elsewhere: l.managed_elsewhere_at.is_some(),
+        foreign_step_price_doos: foreign_step_of(l).map(|s| s.price),
+        sold_elsewhere: sold_elsewhere(conn, l, &listing.steps)?,
+        cancelled_elsewhere: cancelled_elsewhere(conn, l)?,
         listing,
     })
 }
@@ -2340,14 +2618,22 @@ pub(crate) fn export_refusal(l: &ShakedexListing) -> Option<&'static str> {
     l.listing_file_json.is_none().then_some(EXPORT_NO_FILE)
 }
 
-/// R32: why the saved listing file of a listing in `state` cannot be
-/// imported; `None` for a Restored lock, the only listing without its own
-/// file details. The import reads no stored step: the file replaces them.
-/// The command ([`restored_lock_for_file`]) and My listings ask this one
-/// function.
-pub(crate) fn import_refusal(state: ListingState) -> Option<&'static str> {
-    (state != ListingState::Restored)
-        .then_some("only a lock restored by name takes its saved listing file")
+/// R32, R45: why the saved listing file of a listing in `state`, marked
+/// managed elsewhere or not (`managed_elsewhere`), cannot be imported;
+/// `None` for a Restored lock, the only listing without its own file
+/// details, and for a Listed listing managed elsewhere (the other device's
+/// file takes it over). The import reads no stored step of a Restored lock:
+/// the file replaces them. The command ([`restored_lock_for_file`]) and My
+/// listings ask this one function.
+pub(crate) fn import_refusal(state: ListingState, managed_elsewhere: bool) -> Option<&'static str> {
+    match state {
+        ListingState::Restored => None,
+        ListingState::Listed if managed_elsewhere => None,
+        _ => Some(
+            "only a lock restored by name, or a listing managed from another device, takes its \
+             saved listing file",
+        ),
+    }
 }
 
 /// Whether a listing file names a market fee: this wallet writes
@@ -2511,6 +2797,8 @@ pub(crate) fn restore_lock_inner(
         cancel_vout: None,
         cancel_finalize_draft_id: None,
         cancel_blocks_remaining: None,
+        managed_elsewhere_at: None,
+        foreign_step_json: None,
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -2534,10 +2822,11 @@ pub(crate) fn restored_lock_for_file(
     file: &ListingFile,
 ) -> Result<ShakedexListing, AppError> {
     let listing = queries::open_shakedex_listing_for_name(conn, profile_id, &file.name)?
-        .filter(|l| import_refusal(l.state).is_none())
+        .filter(|l| import_refusal(l.state, l.managed_elsewhere_at.is_some()).is_none())
         .ok_or_else(|| {
             AppError::InvalidInput(format!(
-                "there is no Restored lock of '{}' here: restore it by name first",
+                "there is no Restored lock of '{}' here, nor a listing of it managed from \
+                 another device: restore it by name first",
                 file.name
             ))
         })?;
@@ -2553,6 +2842,14 @@ pub(crate) fn restored_lock_for_file(
         return Err(AppError::InvalidInput(
             "this listing file is for another lock coin".into(),
         ));
+    }
+    // R45: a listing managed elsewhere keeps its own payment address; the
+    // other device's file must pay it (the same lock, the same listing).
+    if listing.state != ListingState::Restored {
+        if listing.payment_address.as_deref() != Some(file.payment_addr.as_str()) {
+            return Err(AppError::InvalidInput(IMPORT_OTHER_ADDRESS.into()));
+        }
+        return Ok(listing);
     }
     // The payment address was reserved by the profile that locked; one
     // restored from the same phrase holds only its restore window, so a
@@ -2571,6 +2868,102 @@ pub(crate) fn restored_lock_for_file(
         ));
     }
     Ok(listing)
+}
+
+/// R45: the other device's file pays another address than the listing.
+pub const IMPORT_OTHER_ADDRESS: &str = "this listing file pays another address than this \
+     listing: it is not this listing's file";
+/// R45: the other device's file leaves out a price this device signed.
+pub const IMPORT_DROPS_OUR_STEP: &str = "this listing file leaves out a price this device \
+     signed: it is not this listing's file as the other device holds it; nothing was saved";
+
+/// R45: a Listed listing managed elsewhere takes over the other device's
+/// own listing file, already matched to it ([`restored_lock_for_file`]:
+/// the same lock outpoint, public key and payment address). The file's
+/// public key must be the lock key this wallet derives for the name; every
+/// stored step of ours must be in it (price, lock time, signature); while
+/// the lock coin is a coin, every step of it must verify over that coin at
+/// hsd's value ([`sell::verify_file_steps`], R32's check unchanged; a
+/// spent coin leaves the outpoint and key, as R32). The steps and file
+/// become the file's (kept as parsed, unknown fields included), the mark is
+/// cleared and `market_changed` set (`queries::take_over_listing`: still
+/// Listed on that lock coin with the steps and foreign step read). Writes
+/// nothing on a refusal.
+pub(crate) fn take_over_with_file_inner(
+    conn: &rusqlite::Connection,
+    i: &OwnFileInput,
+) -> Result<ListingSummary, AppError> {
+    let file = i.file;
+    let l = i.listing;
+    if file.public_key != i.key.pubkey {
+        return Err(AppError::InvalidInput(format!(
+            "this listing file's public key is not the lock key this wallet derives for '{}'",
+            file.name
+        )));
+    }
+    let ours = readable_steps(l)?;
+    let theirs: Vec<sell::StoredStep> = file
+        .steps
+        .iter()
+        .map(|s| sell::StoredStep {
+            price: s.price,
+            lock_time: s.lock_time,
+            signature: hex::encode(s.signature),
+        })
+        .collect();
+    let lower = |s: &sell::StoredStep| (s.price, s.lock_time, s.signature.to_ascii_lowercase());
+    if !ours
+        .iter()
+        .all(|o| theirs.iter().any(|t| lower(t) == lower(o)))
+    {
+        return Err(AppError::InvalidInput(IMPORT_DROPS_OUR_STEP.into()));
+    }
+    if let Some(coin) = i.coin {
+        let lock_value = sell::lock_coin_value(coin, file, &i.key.address)?;
+        sell::verify_file_steps(file, lock_value, i.network)?;
+    }
+    let expires_at = file
+        .expires_at
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| AppError::InvalidInput("the listing file's expiry is out of range".into()))?;
+    let (lock_txid, lock_vout) = shakedex_jobs::stored_lock(l)?
+        .ok_or_else(|| AppError::Other("corrupted listing: no lock coin".into()))?;
+    let n = queries::take_over_listing(
+        conn,
+        &l.id,
+        &queries::TakenOver {
+            lock: (lock_txid, lock_vout),
+            old_steps_json: &l.steps_json,
+            old_foreign_step_json: l.foreign_step_json.as_deref().unwrap_or_default(),
+            steps_json: &serde_json::to_string(&theirs)?,
+            listing_file_json: &file.to_json()?,
+            expires_at,
+        },
+    )?;
+    if n != 1 {
+        return Err(AppError::InvalidInput(
+            "this listing changed meanwhile: nothing was saved; try again".into(),
+        ));
+    }
+    let l = queries::get_shakedex_listing(conn, &l.id)?
+        .ok_or_else(|| AppError::Other("listing vanished after the import".into()))?;
+    ListingSummary::of(conn, &l)
+}
+
+/// R32, R45: the upgrade of a Restored lock ([`upgrade_restored_lock_inner`])
+/// or the take-over of a listing managed elsewhere
+/// ([`take_over_with_file_inner`]) by its own listing file, as the listing
+/// matched to the file stands.
+pub(crate) fn import_own_file_inner(
+    conn: &rusqlite::Connection,
+    i: &OwnFileInput,
+) -> Result<ListingSummary, AppError> {
+    if i.listing.state == ListingState::Restored {
+        upgrade_restored_lock_inner(conn, i)
+    } else {
+        take_over_with_file_inner(conn, i)
+    }
 }
 
 /// R32: how many receive addresses of the profile an own listing file's
@@ -3376,7 +3769,7 @@ pub async fn shakedex_import_own_listing_file(
         .await?;
     let key = derive_listing_key(&state, &ctx, &file.name)?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    upgrade_restored_lock_inner(
+    import_own_file_inner(
         &conn,
         &OwnFileInput {
             network: ctx.network,
@@ -3618,6 +4011,17 @@ pub async fn shakedex_finalize_cancel(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     finalize_cancel(&state, &listing_id, fee_rate).await
+}
+
+/// "Manage from this device" (R44): see [`take_over_confirmed`]. Returns the
+/// listing with the other device's step added.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_manage_listing_here(
+    state: State<'_, AppState>,
+    listing_id: String,
+) -> Result<ListingSummary, AppError> {
+    take_over_confirmed(&state, &listing_id).await
 }
 
 /// Lower a listing's price (R26): see [`lower_price_confirmed`]. Returns the

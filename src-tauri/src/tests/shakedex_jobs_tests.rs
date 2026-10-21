@@ -132,6 +132,8 @@ fn fx_at(state: ListingState, publish: bool, mtp: u64) -> Fx {
         cancel_vout: None,
         cancel_finalize_draft_id: None,
         cancel_blocks_remaining: None,
+        managed_elsewhere_at: None,
+        foreign_step_json: None,
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -1246,21 +1248,22 @@ async fn our_earlier_step_on_the_market_is_ours() {
 }
 
 /// R25 (T8, fix round 1): after the step moved, a copy that is not the step
-/// we last sent — another signature, our sent step's signature over
+/// we last sent — a signature of another key (one of our lock key that we
+/// never stored is another device's, R36), our sent step's signature over
 /// another offer (a price changed), or a stored step of ours we did not
 /// send (step 1, dearer: anyone holding the file may upload it) — is
 /// someone else's: ReplacedReuploaded.
 #[tokio::test]
 async fn foreign_copy_after_the_step_moved_is_replaced() {
     for case in [
-        "foreign signature",
+        "forged signature",
         "our signature, another price",
         "our step 1, not sent",
     ] {
         let f = fx(ListingState::Listed, true);
         let (_, sent) = schedule_on_market(&f).await;
-        let theirs = if case == "foreign signature" {
-            let foreign = signed_step(&f.key, &f.payment, 7_000_000, schedule()[2].1);
+        let theirs = if case == "forged signature" {
+            let foreign = forged_step(&f, 7_000_000, schedule()[2].1);
             let file = file_of(
                 &f.key,
                 &f.payment,
@@ -1326,8 +1329,9 @@ fn listing_file_market_copy_at(f: &Fx, i: usize) -> String {
 }
 
 /// R24 (T8): once the node's median time makes a cheaper step current, the
-/// next sync uploads it alone, though the hourly check is not due, with no
-/// read of the market's copy; once is enough at the same median time.
+/// next sync uploads it alone, though the hourly check is not due, after one
+/// read of the market's copy (R37: our step 2 there, no foreign step); once
+/// is enough at the same median time.
 #[tokio::test]
 async fn uploads_again_when_the_step_moves() {
     let (f, steps) = auction_on_market().await;
@@ -1341,7 +1345,7 @@ async fn uploads_again_when_the_step_moves() {
     assert!(later < NOW + 3_600, "the hourly check is not due");
     let mut s = market().await;
     let (m, seen) = upload_mock(&mut s, 1).await;
-    let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+    let get = copy_mock(&mut s, listing_file_market_copy_at(&f, 2), 1).await;
     advance(&f, &node_at(&f, TIP, mtp), &s, later).await;
     m.assert_async().await;
     get.assert_async().await;
@@ -1679,7 +1683,7 @@ async fn lowered_never_taken_auction_does_not_claim_the_markets_copy() {
         (Some(MarketStatus::Retrying), false, false)
     );
 
-    let foreign = signed_step(&f.key, &f.payment, 7_000_000, schedule()[2].1);
+    let foreign = forged_step(&f, 7_000_000, schedule()[2].1);
     let theirs = listing_file_market_copy(&file_of(
         &f.key,
         &f.payment,
@@ -1897,9 +1901,10 @@ async fn expires_at_refreshed_before_it_lapses() {
     let old = listing(&f).listing_file_json.unwrap();
     let mut s = market().await;
     let (m, seen) = upload_mock(&mut s, 1).await;
-    // The market still serves the old copy; it is replaced by the refreshed one.
-    // The file just changed: uploaded at once, the market's copy not asked.
-    let get = copy_mock(&mut s, listing_file_market_copy(&old), 0).await;
+    // The market still serves the old copy; it is replaced by the refreshed
+    // one. The file just changed: uploaded over the market's copy once that
+    // is read (R37: it carries no foreign step, R36).
+    let get = copy_mock(&mut s, listing_file_market_copy(&old), 1).await;
     keep(&f, &s, NOW).await;
     m.assert_async().await;
     get.assert_async().await;
@@ -3957,5 +3962,387 @@ async fn market_jobs_stop_before_a_listing_once_the_sync_lock_is_lost() {
                 "{job:?} {lock:?}: only a takeover stops the sync"
             );
         }
+    }
+}
+
+// --- R36–R41: another device of the same phrase -----------------------------
+
+/// R36: another device of this phrase lowered the price to `price` and
+/// published it: the market serves its one-step copy (the other device's
+/// stored file cut to that step, as it uploads it), a step signed by our
+/// lock key over our lock coin that this device never stored. The step and
+/// the copy.
+fn foreign_copy(f: &Fx, price: u64) -> (PriceStep, String) {
+    let step = signed_step(&f.key, &f.payment, price, sell::buy_now_lock_time(MTP));
+    let file = file_of(
+        &f.key,
+        &f.payment,
+        std::slice::from_ref(&step),
+        MTP + sell::LISTING_LIFETIME_SECS,
+    );
+    (step, listing_file_market_copy(&file))
+}
+
+/// A step over `f`'s lock coin signed by a key that is not its lock key
+/// (the seed's lock key of another account): anyone can make one, and it
+/// does not verify with the listing's public key (R36: never foreign).
+fn forged_step(f: &Fx, price: u64, lock_time: u64) -> PriceStep {
+    let other =
+        derive_lock_key(&ExtendedPrivKey::from_seed(&seed()).unwrap(), NET, 1, NAME).unwrap();
+    signed_step(&other, &f.payment, price, lock_time)
+}
+
+/// The foreign step stored on `f`'s listing (R38), if any.
+fn foreign_stored(f: &Fx) -> Option<sell::ForeignStep> {
+    listing(f)
+        .foreign_step_json
+        .map(|j| serde_json::from_str(&j).unwrap())
+}
+
+fn as_foreign(f: &Fx, step: &PriceStep) -> sell::ForeignStep {
+    sell::ForeignStep {
+        price: step.price,
+        lock_time: step.lock_time,
+        signature: hex::encode(step.signature),
+        payment_address: f.payment.clone(),
+    }
+}
+
+/// Mark `f`'s listing managed elsewhere, as the jobs do on a foreign step
+/// at 3 HNS seen at NOW (R38). The step.
+fn mark_elsewhere(f: &Fx) -> PriceStep {
+    let (step, _) = foreign_copy(f, 3_000_000);
+    let l = listing(f);
+    let txid_f1 = txid("f1");
+    assert_eq!(
+        queries::mark_managed_elsewhere(
+            &f.conn,
+            &f.id,
+            &queries::ManagedElsewhere {
+                lock: (&txid_f1, 0),
+                steps_json: &l.steps_json,
+                foreign_step_json: Some(&serde_json::to_string(&as_foreign(f, &step)).unwrap()),
+                seen_at: &rfc3339(NOW),
+                retry_at: &rfc3339(NOW),
+            },
+        )
+        .unwrap(),
+        1
+    );
+    step
+}
+
+/// R36, R38, R39: keep-listed finds on the market a step our lock key signed
+/// over our lock coin that this device never stored: the listing is marked
+/// managed elsewhere with that step, nothing is uploaded over it, its state
+/// and market status stay. Later reads follow the other device's price (a
+/// cheaper foreign step replaces the one stored; the first time seen
+/// stays) and leave the mark when the market serves our own copy again;
+/// none of them uploads.
+#[tokio::test]
+async fn foreign_step_on_the_market_marks_the_listing_and_nothing_is_uploaded() {
+    let f = listed_on_market(MarketStatus::Listed);
+    let (step, theirs) = foreign_copy(&f, 3_000_000);
+    let mut s = market().await;
+    let get = copy_mock(&mut s, theirs, 1).await;
+    let (up, _) = upload_mock(&mut s, 0).await;
+    keep(&f, &s, NOW).await;
+    get.assert_async().await;
+    up.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(
+        l.managed_elsewhere_at.as_deref(),
+        Some(rfc3339(NOW).as_str())
+    );
+    assert_eq!(foreign_stored(&f), Some(as_foreign(&f, &step)));
+    assert_eq!(
+        (l.state, l.market_status),
+        (ListingState::Listed, Some(MarketStatus::Listed))
+    );
+    assert_eq!(
+        l.market_retry_at.as_deref(),
+        Some(rfc3339(NOW + 3_600).as_str())
+    );
+
+    // An hour on, the other device lowered again: the cheaper step replaces
+    // the stored one; nothing goes up from any job.
+    let (cheaper, theirs) = foreign_copy(&f, 2_000_000);
+    let mut s = market().await;
+    let get = copy_mock(&mut s, theirs, 1).await;
+    let (up, _) = upload_mock(&mut s, 0).await;
+    keep(&f, &s, NOW + 3_600).await;
+    publish(&f, &node(&f, TIP), &s, NOW + 3_600).await;
+    advance(&f, &node(&f, TIP), &s, NOW + 3_600).await;
+    get.assert_async().await;
+    up.assert_async().await;
+    assert_eq!(foreign_stored(&f), Some(as_foreign(&f, &cheaper)));
+    assert_eq!(
+        listing(&f).managed_elsewhere_at.as_deref(),
+        Some(rfc3339(NOW).as_str()),
+        "first seen stays"
+    );
+
+    // Our own copy again (the other device stopped): the mark stays.
+    let mut s = market().await;
+    let get = copy_mock(&mut s, our_copy(&f), 1).await;
+    let (up, _) = upload_mock(&mut s, 0).await;
+    keep(&f, &s, NOW + 7_200).await;
+    get.assert_async().await;
+    up.assert_async().await;
+    assert_eq!(foreign_stored(&f), Some(as_foreign(&f, &cheaper)));
+    assert!(listing(&f).managed_elsewhere_at.is_some());
+}
+
+/// R36: what anyone could upload never says another device: a step signed
+/// by another key over our lock (forged), our copy with an earlier or a
+/// later expiry, with a fee address, or with one of our own older steps
+/// (a Lower price here). None of them marks the listing; R25 and R41 judge
+/// them as before.
+#[tokio::test]
+async fn copies_without_a_foreign_step_are_never_flagged() {
+    for case in [
+        "forged",
+        "earlier expiry",
+        "later expiry",
+        "fee address",
+        "our older step",
+    ] {
+        let f = listed_on_market(MarketStatus::Listed);
+        let mut copy: serde_json::Value = serde_json::from_str(&our_copy(&f)).unwrap();
+        match case {
+            "forged" => {
+                let forged = forged_step(&f, 3_000_000, sell::buy_now_lock_time(MTP));
+                copy["data"][0]["price"] = forged.price.into();
+                copy["data"][0]["signature"] = hex::encode(forged.signature).into();
+            }
+            "earlier expiry" => {
+                copy["expiresAt"] = (copy["expiresAt"].as_u64().unwrap() - 1).into();
+            }
+            "later expiry" => {
+                copy["expiresAt"] = (copy["expiresAt"].as_u64().unwrap() + 86_400).into();
+            }
+            "fee address" => {
+                copy["feeAddr"] = f.payment.clone().into();
+                copy["data"][0]["fee"] = 100_000.into();
+            }
+            _ => {
+                // The market still serves the step from before our Lower
+                // price: one of our own stored steps.
+                lower_price(&f);
+            }
+        }
+        let mut s = market().await;
+        let get = copy_mock(&mut s, copy.to_string(), 1).await;
+        let (_up, _) = upload_mock(&mut s, usize::from(case != "later expiry")).await;
+        keep(&f, &s, NOW).await;
+        get.assert_async().await;
+        let l = listing(&f);
+        assert_eq!(l.managed_elsewhere_at, None, "{case}");
+        assert_eq!(l.foreign_step_json, None, "{case}");
+    }
+}
+
+/// R41 with R25: our own offer with a **later** `expiresAt` hides nothing:
+/// it is left on the market as our copy (Listed, the step recorded as
+/// held); one with an earlier `expiresAt` is uploaded over
+/// (ReplacedReuploaded).
+#[tokio::test]
+async fn later_expiry_on_the_market_is_kept_and_an_earlier_one_replaced() {
+    for (delta, uploads, status) in [
+        (86_400_i64, 0, MarketStatus::Listed),
+        (-86_400, 1, MarketStatus::ReplacedReuploaded),
+    ] {
+        let f = listed_on_market(MarketStatus::Listed);
+        let mut copy: serde_json::Value = serde_json::from_str(&our_copy(&f)).unwrap();
+        let exp = i64::try_from(copy["expiresAt"].as_u64().unwrap()).unwrap();
+        copy["expiresAt"] = (exp + delta).into();
+        let mut s = market().await;
+        let get = copy_mock(&mut s, copy.to_string(), 1).await;
+        let (up, _) = upload_mock(&mut s, uploads).await;
+        keep(&f, &s, NOW).await;
+        get.assert_async().await;
+        up.assert_async().await;
+        let l = listing(&f);
+        assert_eq!(l.market_status, Some(status), "{delta}");
+        let ours = ListingFile::parse(&our_copy(&f), NET).unwrap();
+        assert_eq!(
+            l.market_sent_step,
+            Some(hex::encode(ours.steps[0].signature)),
+            "{delta}"
+        );
+    }
+}
+
+/// R37: the first upload of a Listed listing reads the market's copy first;
+/// a foreign step there marks the listing and nothing is sent. Its
+/// control: the market's "not listed" is uploaded over, as before.
+#[tokio::test]
+async fn first_upload_does_not_go_over_a_foreign_step() {
+    let f = fx(ListingState::Listed, true);
+    let (_, theirs) = foreign_copy(&f, 3_000_000);
+    let mut s = market().await;
+    let get = copy_mock(&mut s, theirs, 1).await;
+    let (up, _) = upload_mock(&mut s, 0).await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    get.assert_async().await;
+    up.assert_async().await;
+    let l = listing(&f);
+    assert!(l.managed_elsewhere_at.is_some());
+    assert_eq!(l.market_status, None, "no market result recorded");
+
+    let g = fx(ListingState::Listed, true);
+    let mut s = market().await;
+    let get = s
+        .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_status(404)
+        .with_body(PROOF_NOT_FOUND)
+        .expect(1)
+        .create_async()
+        .await;
+    let (up, _) = upload_mock(&mut s, 1).await;
+    publish(&g, &node(&g, TIP), &s, NOW).await;
+    get.assert_async().await;
+    up.assert_async().await;
+    assert_eq!(listing(&g).market_status, Some(MarketStatus::Listed));
+    assert_eq!(listing(&g).managed_elsewhere_at, None);
+}
+
+/// R37: a reverse auction's next step is not uploaded over a foreign step
+/// on the market either: the listing is marked, its step stays unsent.
+#[tokio::test]
+async fn advance_does_not_go_over_a_foreign_step() {
+    let (f, steps) = auction_on_market().await;
+    let (mtp, later) = moved();
+    let foreign = signed_step(&f.key, &f.payment, 1_000_000, schedule()[2].1);
+    let file = file_of(
+        &f.key,
+        &f.payment,
+        std::slice::from_ref(&foreign),
+        MTP + sell::LISTING_LIFETIME_SECS,
+    );
+    let mut s = market().await;
+    let get = copy_mock(&mut s, listing_file_market_copy(&file), 1).await;
+    let (up, _) = upload_mock(&mut s, 0).await;
+    advance(&f, &node_at(&f, TIP, mtp), &s, later).await;
+    get.assert_async().await;
+    up.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(foreign_stored(&f), Some(as_foreign(&f, &foreign)));
+    assert_eq!(
+        l.market_sent_step,
+        Some(hex::encode(steps[2].signature)),
+        "step 3 not sent"
+    );
+}
+
+/// R38, R39: a listing managed elsewhere gets no upload from any job — the
+/// first upload, keep-listed (due, its copy only read), advance, nor the
+/// expiry refresh (its file unchanged though its expiry is near) — and a
+/// reorg that takes it off Listed and back (which starts the market
+/// bookkeeping over) leaves the mark.
+#[tokio::test]
+async fn a_listing_managed_elsewhere_gets_no_upload_and_keeps_its_mark_through_a_reset() {
+    let f = listed_on_market(MarketStatus::Listed);
+    mark_elsewhere(&f);
+    // Its expiry near: a listing kept on the market would be refreshed.
+    let near = MTP + 10 * 86_400;
+    set_expiry(&f, near);
+    let before = listing(&f);
+    let mut s = market().await;
+    let any_post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    keep(&f, &s, NOW).await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    advance(&f, &node(&f, TIP), &s, NOW).await;
+    any_post.assert_async().await;
+    let after = listing(&f);
+    assert_eq!(after.listing_file_json, before.listing_file_json);
+    assert_eq!(after.expires_at, before.expires_at);
+    assert!(after.managed_elsewhere_at.is_some());
+
+    // A reorg back to Finalizing and Listed again: the bookkeeping starts
+    // over (unset), the mark stays, and the first upload makes none.
+    assert_eq!(
+        queries::mark_listing_finalizing_again(&f.conn, &f.id).unwrap(),
+        1
+    );
+    assert_eq!(queries::mark_listing_listed(&f.conn, &f.id).unwrap(), 1);
+    let l = listing(&f);
+    assert_eq!(l.market_status, None);
+    assert!(l.managed_elsewhere_at.is_some(), "not market bookkeeping");
+    let mut s = market().await;
+    let any_post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    publish(&f, &node(&f, TIP), &s, NOW + 60).await;
+    any_post.assert_async().await;
+}
+
+/// R39 with R28: a listing managed elsewhere is still followed to its end
+/// and the end reported: its mined sale and its mined cancel each go to
+/// the market once.
+#[tokio::test]
+async fn a_listing_managed_elsewhere_still_reports_its_sale_and_its_cancel() {
+    let f = listed_on_market(MarketStatus::Listed);
+    mark_elsewhere(&f);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET state = 'sold', sold_txid = ?1",
+            [txid("b1")],
+        )
+        .unwrap();
+    let mut s = market().await;
+    let (m, seen) = report_mock(&mut s, 200, SALE_RECORDED, 1).await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    m.assert_async().await;
+    let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0]).unwrap();
+    assert_eq!(sent, json!({ "saleTxHash": txid("b1") }));
+
+    let g = listed_on_market(MarketStatus::Listed);
+    mark_elsewhere(&g);
+    cancelling(&g, "broadcasted");
+    cancel_mined(&g, ListingState::CancelAwaitingFinalize);
+    let mut s = market().await;
+    let (m, seen) = report_mock(&mut s, 200, CANCEL_RECORDED, 1).await;
+    publish(&g, &node(&g, TIP), &s, NOW).await;
+    m.assert_async().await;
+    let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0]).unwrap();
+    assert_eq!(
+        sent,
+        json!({ "outcome": "cancelled", "cancelTxHash": txid("c1") })
+    );
+}
+
+/// R39, SECURITY.md: `run_sync_steps`, as the daemon and as the app run it,
+/// uploads nothing for a listing managed elsewhere though its hourly check
+/// is due, and makes no send.
+#[tokio::test]
+async fn daemon_and_app_upload_nothing_for_a_listing_managed_elsewhere() {
+    use crate::commands::sync::SyncCaller;
+    for caller in [SyncCaller::Daemon, SyncCaller::App] {
+        let now = chrono::Utc::now().timestamp();
+        let f = fx_at(ListingState::Listed, true, (now - 600) as u64);
+        f.conn
+            .execute(
+                "UPDATE shakedex_listings SET market_status = 'listed', market_retry_at = ?1,
+                 market_accepted = 1, market_told = 1",
+                [rfc3339(now - 60)],
+            )
+            .unwrap();
+        let l = listing(&f);
+        assert_eq!(
+            queries::mark_managed_elsewhere(
+                &f.conn,
+                &f.id,
+                &queries::ManagedElsewhere {
+                    lock: (&txid("f1"), 0),
+                    steps_json: &l.steps_json,
+                    foreign_step_json: Some("{}"),
+                    seen_at: &rfc3339(now - 60),
+                    retry_at: &rfc3339(now - 60),
+                },
+            )
+            .unwrap(),
+            1
+        );
+        let (after, _) = sync_on_a_copy(&f, caller, now - 600, 0).await;
+        assert!(after.managed_elsewhere_at.is_some(), "{caller:?}");
     }
 }

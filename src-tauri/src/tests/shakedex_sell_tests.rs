@@ -63,6 +63,8 @@ pub(super) fn listing(id: &str, name: &str, state: ListingState) -> ShakedexList
         cancel_vout: None,
         cancel_finalize_draft_id: None,
         cancel_blocks_remaining: None,
+        managed_elsewhere_at: None,
+        foreign_step_json: None,
         created_at: String::new(),
         updated_at: String::new(),
     }
@@ -9079,5 +9081,392 @@ fn typed_prices_and_schedules_are_refused_in_the_uis_words() {
         .err()
         .map(|e| e.to_string());
         assert_eq!(got, want(c), "{c}");
+    }
+}
+
+// --- Another device of the same phrase (R40, R44, R45) ------------------------
+
+use crate::commands::shakedex::{
+    take_over_confirmed, IMPORT_DROPS_OUR_STEP, IMPORT_OTHER_ADDRESS, LOWER_MANAGED_ELSEWHERE,
+    TAKE_OVER_LOCK_COIN_SPENT, TAKE_OVER_NOT_MARKED, TAKE_OVER_NOT_SIGNED, TAKE_OVER_OTHER_ADDRESS,
+};
+use crate::noncustodial::shakedex::cancel::CANCEL_ELSEWHERE_PRICE;
+
+/// A price step the other device of this phrase signed for `l`: the lock
+/// key over the lock coin worth `value`, at `price` valid at LISTED_MTP,
+/// paying `pay`.
+fn other_devices_step(l: &Listed, price: u64, value: u64, pay: &str) -> PriceStep {
+    let mut outpoint = [0u8; 32];
+    hex::decode_to_slice(&l.lock.0, &mut outpoint).unwrap();
+    let key = l.r.key();
+    let lock_time = sell::buy_now_lock_time(LISTED_MTP);
+    let signature = sell::sign_step(
+        &key,
+        &StepTemplate {
+            lock_outpoint: (outpoint, l.lock.1),
+            lock_value: value,
+            lock_pubkey: &key.pubkey,
+            payment: crate::noncustodial::tx::output_address_from_string(Network::Regtest, pay)
+                .unwrap(),
+            price,
+            lock_time_secs: lock_time,
+        },
+    )
+    .unwrap();
+    PriceStep {
+        price,
+        lock_time,
+        signature,
+        fee: 0,
+    }
+}
+
+/// Mark `l` managed elsewhere with `step` paying `pay`, as the market jobs
+/// do (R38).
+fn mark_with(l: &Listed, step: &PriceStep, pay: &str) {
+    let row = l.r.listing();
+    let foreign = sell::ForeignStep {
+        price: step.price,
+        lock_time: step.lock_time,
+        signature: hex::encode(step.signature),
+        payment_address: pay.to_string(),
+    };
+    with_db(&l.r.app, |c| {
+        assert_eq!(
+            queries::mark_managed_elsewhere(
+                c,
+                &l.r.listing_id,
+                &queries::ManagedElsewhere {
+                    lock: (&l.lock.0, l.lock.1),
+                    steps_json: &row.steps_json,
+                    foreign_step_json: Some(&serde_json::to_string(&foreign).unwrap()),
+                    seen_at: "2026-10-21T00:00:00Z",
+                    retry_at: "2026-10-21T01:00:00Z",
+                },
+            )
+            .unwrap(),
+            1
+        );
+    });
+}
+
+/// `l` marked managed elsewhere with the other device's step at 3 HNS
+/// paying the listing's own payment address; the step.
+fn marked_listed(l: &Listed) -> PriceStep {
+    let pay = l.r.listing().payment_address.unwrap();
+    let step = other_devices_step(l, 3_000_000, NAME_VALUE, &pay);
+    mark_with(l, &step, &pay);
+    step
+}
+
+async fn manage_here(l: &Listed) -> Result<ListingSummary, crate::error::AppError> {
+    // The fixture's own prompts (Finalize & sign) are not this call's.
+    let _ = take_test_requests();
+    take_over_confirmed(&l.r.app.state(), &l.r.listing_id).await
+}
+
+/// Nothing taken over: the steps, file and mark as they were, no prompt.
+fn assert_not_taken_over(l: &Listed, before: &ShakedexListing) {
+    let after = l.r.listing();
+    assert_eq!(after.steps_json, before.steps_json);
+    assert_eq!(after.listing_file_json, before.listing_file_json);
+    assert_eq!(after.managed_elsewhere_at, before.managed_elsewhere_at);
+    assert_eq!(after.foreign_step_json, before.foreign_step_json);
+    assert!(take_test_requests().is_empty(), "nothing asked");
+}
+
+/// R40: while another device manages the listing, Lower price is refused
+/// with the sentence the UI shows, before the node is read; nothing is
+/// asked, signed or written. My listings refuses it in the same words and
+/// offers "Manage from this device" instead.
+#[tokio::test]
+async fn lower_refused_while_managed_elsewhere() {
+    let l = listed_fixture().await;
+    marked_listed(&l);
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "2").await.expect_err("managed elsewhere"));
+    assert!(e.contains(LOWER_MANAGED_ELSEWHERE), "{e}");
+    assert_not_lowered(&l, &before);
+    let row = with_db(&l.r.app, |c| {
+        crate::commands::shakedex::my_listings_from_conn(c, PROFILE, Network::Regtest, None)
+            .unwrap()
+            .remove(0)
+    });
+    assert_eq!(
+        row.actions.lower_price.reason.as_deref(),
+        Some(LOWER_MANAGED_ELSEWHERE)
+    );
+    assert!(row.actions.manage_here.allowed);
+    assert!(row.managed_elsewhere);
+    assert_eq!(row.foreign_step_price_doos, Some(3_000_000));
+}
+
+/// R44: "Manage from this device" re-reads the lock coin on the node,
+/// verifies the other device's step over it once more, and adds it to the
+/// stored steps and listing file as written (the first step kept), clearing
+/// the mark in the same write; nothing is asked or signed. The market jobs
+/// then hold that step as ours: the market's copy of it is no foreign step
+/// any more (R36), and the listing is kept on the market again (R39).
+#[tokio::test]
+async fn manage_here_adopts_the_other_devices_step_and_clears_the_mark() {
+    let mut l = listed_fixture().await;
+    let sent = no_broadcast(&mut l.r).await;
+    let step = marked_listed(&l);
+    let before = l.r.listing();
+    let kept = |l: &Listed| {
+        with_db(&l.r.app, |c| {
+            queries::list_listings_kept_on_market(c, PROFILE)
+                .unwrap()
+                .len()
+        })
+    };
+    with_db(&l.r.app, |c| {
+        c.execute("UPDATE shakedex_listings SET publish = 1", [])
+            .unwrap();
+    });
+    assert_eq!(kept(&l), 0, "managed elsewhere: not kept");
+    let s = manage_here(&l).await.expect("taken over");
+    sent.assert_async().await;
+    assert!(
+        take_test_requests().is_empty(),
+        "nothing asked: nothing signed"
+    );
+    assert_eq!(s.steps.len(), 2);
+    let first: Vec<sell::StoredStep> = serde_json::from_str(&before.steps_json).unwrap();
+    assert_eq!(s.steps[0], first[0]);
+    assert_eq!(
+        s.steps[1],
+        sell::StoredStep {
+            price: step.price,
+            lock_time: step.lock_time,
+            signature: hex::encode(step.signature),
+        }
+    );
+    let after = l.r.listing();
+    assert_eq!(after.state, ListingState::Listed);
+    assert_eq!(
+        (&after.managed_elsewhere_at, &after.foreign_step_json),
+        (&None, &None)
+    );
+    let file = ListingFile::parse(
+        after.listing_file_json.as_deref().unwrap(),
+        Network::Regtest,
+    )
+    .unwrap();
+    assert_eq!(file.steps.len(), 2);
+    assert_eq!(file.steps[1], step);
+    assert_eq!(kept(&l), 1, "kept on the market again");
+    // The other device's one-step copy is our own step now.
+    let other_copy = ListingFile::parse(
+        &crate::noncustodial::shakedex::listing_file::market_copy(
+            after.listing_file_json.as_deref().unwrap(),
+            1,
+            Network::Regtest,
+        )
+        .unwrap(),
+        Network::Regtest,
+    )
+    .unwrap();
+    assert_eq!(
+        crate::shakedex_jobs::foreign_step_in(&other_copy, &after, NAME_VALUE, Network::Regtest)
+            .unwrap(),
+        None
+    );
+}
+
+/// R44: the take-over refuses, writing nothing and keeping the mark: a
+/// listing not managed elsewhere; a foreign step paying another address
+/// than the listing's (a `0x84` signature commits to its payment output);
+/// the lock coin spent (hsd's 404); a step that no longer verifies over the
+/// lock coin hsd reports; the signer locked (before the node is read).
+#[tokio::test]
+async fn manage_here_refuses_and_writes_nothing() {
+    // Not marked.
+    let l = listed_fixture().await;
+    let before = l.r.listing();
+    let e = err_text(manage_here(&l).await.expect_err("not marked"));
+    assert!(e.contains(TAKE_OVER_NOT_MARKED), "{e}");
+    assert_not_taken_over(&l, &before);
+
+    // Paying another address.
+    let l = listed_fixture().await;
+    let stranger = address::encode_p2wpkh(Network::Regtest, &[3; 20]).unwrap();
+    let step = other_devices_step(&l, 3_000_000, NAME_VALUE, &stranger);
+    mark_with(&l, &step, &stranger);
+    let before = l.r.listing();
+    let e = err_text(manage_here(&l).await.expect_err("another address"));
+    assert!(e.contains(TAKE_OVER_OTHER_ADDRESS), "{e}");
+    assert_not_taken_over(&l, &before);
+    assert!(before.managed_elsewhere_at.is_some(), "the mark stays");
+
+    // The lock coin spent.
+    let mut l = listed_fixture().await;
+    marked_listed(&l);
+    let (info, lock) = (l.info(), l.lock.clone());
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        info,
+        vec![(lock.0.clone(), lock.1, None)],
+    )
+    .await;
+    let before = l.r.listing();
+    let e = err_text(manage_here(&l).await.expect_err("spent"));
+    assert!(e.contains(TAKE_OVER_LOCK_COIN_SPENT), "{e}");
+    assert_not_taken_over(&l, &before);
+
+    // Signed over another value than hsd reports: no longer verifies.
+    let l = listed_fixture().await;
+    let pay = l.r.listing().payment_address.unwrap();
+    let step = other_devices_step(&l, 3_000_000, NAME_VALUE + 1, &pay);
+    mark_with(&l, &step, &pay);
+    let before = l.r.listing();
+    let e = err_text(manage_here(&l).await.expect_err("does not verify"));
+    assert!(e.contains(TAKE_OVER_NOT_SIGNED), "{e}");
+    assert_not_taken_over(&l, &before);
+
+    // The signer locked: refused before the node is read.
+    let l = listed_fixture().await;
+    marked_listed(&l);
+    *l.r.app.state::<AppState>().signer.lock().unwrap() = None;
+    let before = l.r.listing();
+    let e = manage_here(&l).await.expect_err("locked");
+    assert!(matches!(e, crate::error::AppError::WalletLocked), "{e:?}");
+    assert!(
+        !l.r.mocks[3].matched_async().await,
+        "the lock coin was not read"
+    );
+    assert_not_taken_over(&l, &before);
+}
+
+/// R44: the take-over's write lands only on the listing as it was read:
+/// another foreign step stored meanwhile, or other steps, write nothing.
+#[tokio::test]
+async fn take_over_write_takes_only_the_listing_as_read() {
+    let l = listed_fixture().await;
+    marked_listed(&l);
+    let row = l.r.listing();
+    let write = |old_steps: &str, old_foreign: &str| {
+        with_db(&l.r.app, |c| {
+            queries::take_over_listing(
+                c,
+                &l.r.listing_id,
+                &queries::TakenOver {
+                    lock: (&l.lock.0, l.lock.1),
+                    old_steps_json: old_steps,
+                    old_foreign_step_json: old_foreign,
+                    steps_json: "[]",
+                    listing_file_json: "{}",
+                    expires_at: None,
+                },
+            )
+            .unwrap()
+        })
+    };
+    let foreign = row.foreign_step_json.clone().unwrap();
+    assert_eq!(write(&row.steps_json, "{}"), 0, "another foreign step");
+    assert_eq!(write("[]", &foreign), 0, "other steps");
+    assert_eq!(l.r.listing().steps_json, row.steps_json);
+    assert!(l.r.listing().managed_elsewhere_at.is_some());
+}
+
+/// R40: the cancel of a listing managed elsewhere is offered, and its
+/// prompt says the other device's price is buyable until the cancel is
+/// mined.
+#[tokio::test]
+async fn cancel_prompt_of_a_listing_managed_elsewhere_names_the_other_devices_price() {
+    let l = listed_fixture().await;
+    marked_listed(&l);
+    answer(true);
+    cancel(&l).await.expect("cancel");
+    let reqs = take_test_requests();
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let value = rows
+        .iter()
+        .find(|r| r["label"] == "Another device's price")
+        .map(|r| r["value"].as_str().unwrap().to_string());
+    assert_eq!(
+        value,
+        Some(format!("3.000000 HNS, {CANCEL_ELSEWHERE_PRICE}"))
+    );
+}
+
+/// The listing's stored file with `extra` steps added as written (the
+/// other device's file: our steps and its own).
+fn other_devices_file(l: &Listed, extra: &[PriceStep]) -> String {
+    let mut file = l.r.listing().listing_file_json.unwrap();
+    for s in extra {
+        file = crate::noncustodial::shakedex::listing_file::add_step_to_listing_file(
+            &file,
+            s,
+            0,
+            ListingMode::BuyNow,
+            Network::Regtest,
+        )
+        .unwrap()
+        .0;
+    }
+    file
+}
+
+/// R45: importing the other device's own listing file takes a listing
+/// managed elsewhere over: its steps and file become the file's (every
+/// price the other device lowered to), the mark is cleared.
+#[tokio::test]
+async fn other_devices_file_takes_a_listing_managed_elsewhere_over() {
+    let l = listed_fixture().await;
+    let step = marked_listed(&l);
+    let pay = l.r.listing().payment_address.unwrap();
+    let cheaper = other_devices_step(&l, 2_000_000, NAME_VALUE, &pay);
+    let file = other_devices_file(&l, &[step, cheaper.clone()]);
+    let s = import(&l.r.app, file.clone()).await.expect("imported");
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!(s.steps.len(), 3);
+    assert_eq!(s.steps[2].price, cheaper.price);
+    let after = l.r.listing();
+    assert_eq!(after.managed_elsewhere_at, None);
+    assert_eq!(after.listing_file_json.as_deref(), Some(file.as_str()));
+}
+
+/// R45: the other device's file is refused, nothing written and the mark
+/// kept, when it leaves out a price this device signed, carries a step not
+/// signed by the lock over the lock coin, or pays another address.
+#[tokio::test]
+async fn other_devices_file_that_is_not_this_listings_is_refused() {
+    let l = listed_fixture().await;
+    let step = marked_listed(&l);
+    let pay = l.r.listing().payment_address.unwrap();
+    let before = l.r.listing();
+    let stranger = address::encode_p2wpkh(Network::Regtest, &[3; 20]).unwrap();
+    let only_theirs = {
+        let mut v: Value =
+            serde_json::from_str(&other_devices_file(&l, std::slice::from_ref(&step))).unwrap();
+        v["data"].as_array_mut().unwrap().remove(0);
+        v.to_string()
+    };
+    let unsigned = other_devices_file(
+        &l,
+        &[other_devices_step(&l, 2_000_000, NAME_VALUE + 1, &pay)],
+    );
+    let elsewhere = {
+        let mut v: Value = serde_json::from_str(&other_devices_file(&l, &[step])).unwrap();
+        v["paymentAddr"] = stranger.into();
+        v.to_string()
+    };
+    for (case, file, want) in [
+        ("drops our step", only_theirs, IMPORT_DROPS_OUR_STEP),
+        ("not signed", unsigned, sell::STEP_NOT_SIGNED_BY_LOCK),
+        ("another address", elsewhere, IMPORT_OTHER_ADDRESS),
+    ] {
+        let e = err_text(import(&l.r.app, file).await.expect_err(case));
+        assert!(e.contains(want), "{case}: {e}");
+        let after = l.r.listing();
+        assert_eq!(after.steps_json, before.steps_json, "{case}");
+        assert_eq!(after.listing_file_json, before.listing_file_json, "{case}");
+        assert!(after.managed_elsewhere_at.is_some(), "{case}");
     }
 }

@@ -48,6 +48,7 @@ export function makeActions(over: Partial<ShakedexListingActions> = {}): Shakede
     export: ok,
     publish: ok,
     importFile: ok,
+    manageHere: ok,
     ...over,
   };
 }
@@ -62,6 +63,10 @@ export function makeMyListing(
     actions: makeActions(),
     prices: { kind: "noSteps" },
     pendingSend: null,
+    managedElsewhere: false,
+    foreignStepPriceDoos: null,
+    soldElsewhere: false,
+    cancelledElsewhere: false,
     ...over,
   };
 }

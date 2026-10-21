@@ -78,7 +78,7 @@ fn test_schema_version_tracking() {
     // 038 (shakedex_market_step: the step the market was last sent).
     // 039 (shakedex_lock_search: whether the own-lock search after a restore
     //      is done).
-    assert_eq!(count, 39);
+    assert_eq!(count, 40);
 }
 
 #[test]

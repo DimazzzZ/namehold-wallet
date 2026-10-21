@@ -1042,8 +1042,10 @@ export interface ShakedexListingActions {
   export: ShakedexListingAction;
   /** Turn publishing on later (`publish_refusal`): mainnet, Listed, not published, own file without a market fee. */
   publish: ShakedexListingAction;
-  /** Import a Restored lock's saved listing file (`import_refusal`): Restored only; it reads no stored step. */
+  /** Import a Restored lock's saved listing file, or the other device's file of a listing managed elsewhere (`import_refusal`, R32, R45). */
   importFile: ShakedexListingAction;
+  /** "Manage from this device" (`take_over_refusal`, R44): a Listed listing managed elsewhere. */
+  manageHere: ShakedexListingAction;
 }
 
 /**
@@ -1093,6 +1095,14 @@ export interface ShakedexMyListing {
   actions: ShakedexListingActions;
   prices: ShakedexListingPrices;
   pendingSend: ShakedexPendingSend | null;
+  /** R42: another device or profile of the phrase manages the listing; this device no longer uploads it. */
+  managedElsewhere: boolean;
+  /** R42: the price (doos) of the step seen from the other device, when it reads. */
+  foreignStepPriceDoos: number | null;
+  /** R43: sold at a price none of this device's steps names. */
+  soldElsewhere: boolean;
+  /** R43: its mined cancel is not this device's own. */
+  cancelledElsewhere: boolean;
 }
 
 export type ImportSource =

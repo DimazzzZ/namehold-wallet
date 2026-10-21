@@ -172,7 +172,7 @@ fn listing_actions_follow_the_commands_refusals_in_every_state() {
         let no_steps = state == ListingState::Restored;
         assert_eq!(
             a.lower_price.reason,
-            words(lower_refusal(state, no_steps)),
+            words(lower_refusal(state, no_steps, false)),
             "{state:?}"
         );
         assert_eq!(a.cancel.reason, words(cancel_refusal(state)), "{state:?}");
@@ -189,7 +189,7 @@ fn listing_actions_follow_the_commands_refusals_in_every_state() {
         );
         assert_eq!(
             a.import_file.reason,
-            words(import_refusal(state)),
+            words(import_refusal(state, false)),
             "{state:?}"
         );
         // `with_steps` stores an unreadable file ("{}"): refused in every
@@ -244,7 +244,7 @@ fn an_unreadable_listing_is_listed_with_every_action_refused() {
     }
     assert_eq!(
         a.import_file.reason.as_deref(),
-        import_refusal(ListingState::Cancelling)
+        import_refusal(ListingState::Cancelling, false)
     );
     assert!(row.listing.steps.is_empty());
     assert!(
