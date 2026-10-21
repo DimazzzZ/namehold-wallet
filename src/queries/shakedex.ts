@@ -237,11 +237,29 @@ export const useRestoreLock = () =>
   );
 
 /**
+ * The lock search status's query key, outside `["shakedex"]`: reading it
+ * reads every derived address's history on the node, so it is not refetched
+ * by every selling mutation's invalidation, only after a lock search ran
+ * (`useFindLocks`) and at the end of a sync (`useSyncStatus`).
+ */
+export const LOCK_SEARCH_STATUS_KEY = ["lockSearchStatus"] as const;
+
+/**
  * Find our own locks in the address history (R34). `force` runs a search
  * already done ("Find my locks"); the automatic one after a sync does not.
  */
-export const useFindLocks = () =>
-  useSellingMutation((force: boolean) => invoke<FindLocksReport>("shakedex_find_locks", { force }));
+export function useFindLocks() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (force: boolean) => invoke<FindLocksReport>("shakedex_find_locks", { force }),
+    onSuccess: (report) => {
+      qc.invalidateQueries({ queryKey: ["shakedex"] });
+      qc.invalidateQueries({ queryKey: ["wallet"] });
+      qc.invalidateQueries({ queryKey: ["read"] });
+      if (report.ran) qc.invalidateQueries({ queryKey: LOCK_SEARCH_STATUS_KEY });
+    },
+  });
+}
 
 /**
  * Where the search stands, read without the signer (R34). A rejected read
@@ -250,9 +268,10 @@ export const useFindLocks = () =>
 export function useLockSearchStatus(enabled: boolean) {
   const profileId = useActiveProfile().data?.id ?? null;
   return useQuery({
-    queryKey: ["shakedex", "lockSearchStatus", profileId],
+    queryKey: [...LOCK_SEARCH_STATUS_KEY, profileId],
     enabled: enabled && profileId != null,
     queryFn: () => invoke<LockSearchStatus>("shakedex_lock_search_status"),
+    staleTime: 5 * 60_000,
     retry: false,
   });
 }

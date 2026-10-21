@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
+import { LOCK_SEARCH_STATUS_KEY } from "./shakedex";
 
 export interface SyncStatus {
   running: boolean;
@@ -92,6 +93,8 @@ export function useSyncStatus() {
     if (wasRunning.current && !running) {
       qc.invalidateQueries({ queryKey: ["read"] });
       qc.invalidateQueries({ queryKey: ["wallet"] });
+      // The sync may have grown the address window or found new history.
+      qc.invalidateQueries({ queryKey: LOCK_SEARCH_STATUS_KEY });
     }
     wasRunning.current = running;
   }, [query.data?.running, qc]);
