@@ -75,6 +75,8 @@ pub const IS_CHILD: &str = "This transaction speeds up another one and cannot be
 pub const PURCHASE_NOT_UNCONFIRMED: &str = "Only an Unconfirmed purchase can be sped up.";
 /// R5.
 pub const EXPIRES_SOON: &str = "This transaction leaves your node's mempool in less than 6 hours; speeding it up now would not keep it there.";
+/// R5: the parent waits on another unconfirmed transaction.
+pub const HAS_ANCESTOR: &str = "This transaction waits on another unconfirmed transaction of the mempool; speed that one up, or wait for it to confirm.";
 /// R6.
 pub const BELOW_RELAY: &str = "This transaction pays less than the network's minimum relay fee; a child cannot pull it into a block.";
 /// R9.
@@ -157,6 +159,9 @@ pub struct MempoolEntry {
     pub descendant_size: u64,
     /// The same package's fees, doos (`entry.descFee`).
     pub descendant_fees: u64,
+    /// Its unconfirmed ancestors in this mempool (`ancestorcount`, or the
+    /// count of `depends` when that is higher).
+    pub ancestors: u64,
 }
 
 /// Read hsd's `getmempoolentry` reply. A reply without one of the fields
@@ -186,6 +191,14 @@ pub fn parse_mempool_entry(v: &serde_json::Value) -> Result<MempoolEntry, AppErr
             .ok_or_else(|| missing("time"))?,
         descendant_size: uint("descendantsize")?,
         descendant_fees: uint("descendantfees")?,
+        // hsd counts mempool ancestors (`countAncestors`) and lists the
+        // mempool parents (`getDepends`); either one non-empty is a parent.
+        ancestors: uint("ancestorcount")?.max(
+            v.get("depends")
+                .and_then(|d| d.as_array())
+                .ok_or_else(|| missing("depends"))?
+                .len() as u64,
+        ),
     };
     if entry.size == 0 || entry.descendant_size < entry.size {
         return Err(missing("size"));
@@ -201,6 +214,13 @@ pub fn expires_at(entry: &MempoolEntry) -> i64 {
 /// The refusals that rest on the parent's entry alone: close to its mempool
 /// expiry by the wallet's clock (R5), or below hsd's relay floor (R6).
 pub fn refuse_parent_entry(entry: &MempoolEntry, now: i64) -> Result<(), AppError> {
+    // hsd expires only a transaction without a mempool parent (its chain
+    // goes with the oldest ancestor) and queues one only after its parents
+    // (`mempool/mempool.js` `limitSize`, `mining/miner.js` `assemble`): the
+    // deadline and the rate shown would not be this transaction's.
+    if entry.ancestors > 0 {
+        return Err(refuse(HAS_ANCESTOR));
+    }
     if expires_at(entry).saturating_sub(now) < EXPIRY_MARGIN_SECS {
         return Err(refuse(EXPIRES_SOON));
     }

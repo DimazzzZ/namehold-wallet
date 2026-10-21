@@ -12,7 +12,7 @@ use crate::noncustodial::session::SignerSession;
 use crate::noncustodial::speed_up::{
     child_fee, get_min_fee, get_rate, parent_change_index, parent_died_reason, parse_mempool_entry,
     plan_child, recheck_signed_child, refuse_parent_entry, ChildRequest, MempoolEntry,
-    TargetSource, ABSURD_FEE_FACTOR, BELOW_RELAY, CHANGE_TOO_SMALL, EXPIRES_SOON,
+    TargetSource, ABSURD_FEE_FACTOR, BELOW_RELAY, CHANGE_TOO_SMALL, EXPIRES_SOON, HAS_ANCESTOR,
     MEMPOOL_EXPIRY_SECS, RATE_NOT_HIGHER, SPEED_UP_ACTION,
 };
 
@@ -130,6 +130,7 @@ fn mempool_entry_reads_hsds_reply() {
             time: NOW - 3600,
             descendant_size: 140,
             descendant_fees: 140,
+            ancestors: 0,
         }
     );
     // A fee of 1.23456789 HNS is not hsd's (6 decimals), but rounds, never
@@ -140,7 +141,15 @@ fn mempool_entry_reads_hsds_reply() {
 
 #[test]
 fn mempool_entry_missing_a_field_is_not_hsds_answer() {
-    for key in ["size", "fee", "time", "descendantsize", "descendantfees"] {
+    for key in [
+        "size",
+        "fee",
+        "time",
+        "descendantsize",
+        "descendantfees",
+        "ancestorcount",
+        "depends",
+    ] {
         let mut v = entry_json(140, 0.00014, NOW, 140, 140);
         v.as_object_mut().unwrap().remove(key);
         let err = parse_mempool_entry(&v).unwrap_err();
@@ -318,6 +327,37 @@ fn mempool_entry_whose_package_is_smaller_than_itself_is_not_hsds() {
 }
 
 // --- R5, R6: the parent's entry -----------------------------------------------
+
+/// hsd expires only a transaction without a mempool parent, and queues one
+/// only after its parents: a parent that itself waits on another unconfirmed
+/// transaction is refused, whether hsd says so by `ancestorcount` or by
+/// `depends`.
+#[test]
+fn parent_waiting_on_another_unconfirmed_transaction_is_refused() {
+    let mut v = entry_json(140, 0.00014, NOW, 140, 140);
+    v["ancestorcount"] = serde_json::json!(1);
+    v["depends"] = serde_json::json!(["11".repeat(32)]);
+    let e = parse_mempool_entry(&v).unwrap();
+    assert_eq!(e.ancestors, 1);
+    assert_eq!(
+        invalid_input(refuse_parent_entry(&e, NOW).unwrap_err()),
+        HAS_ANCESTOR
+    );
+    let coin = change(1_000_000);
+    let addr = change_address();
+    assert_eq!(
+        invalid_input(plan_child(&request(&coin, &e, &addr, 10)).unwrap_err()),
+        HAS_ANCESTOR
+    );
+    // `depends` alone names one.
+    let mut v = entry_json(140, 0.00014, NOW, 140, 140);
+    v["depends"] = serde_json::json!(["11".repeat(32)]);
+    let e = parse_mempool_entry(&v).unwrap();
+    assert_eq!(
+        invalid_input(refuse_parent_entry(&e, NOW).unwrap_err()),
+        HAS_ANCESTOR
+    );
+}
 
 #[test]
 fn parent_close_to_its_mempool_expiry_is_refused() {
