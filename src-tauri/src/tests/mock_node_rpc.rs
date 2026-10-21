@@ -87,6 +87,36 @@ pub struct MockNodeRpc {
     calls: Mutex<Vec<RpcCall>>,
 }
 
+/// hsd's `GET /` reply in its real shape (`lib/node/http.js`), trimmed to
+/// the chain part, reporting `--index-tx` and `--index-address` as given.
+pub fn node_status_with_indexes(tx: bool, address: bool) -> serde_json::Value {
+    serde_json::json!({
+        "version": "8.0.0",
+        "network": "regtest",
+        "chain": {
+            "height": 100,
+            "progress": 1,
+            "indexers": { "indexTX": tx, "indexAddress": address },
+            "options": { "spv": false, "prune": false }
+        }
+    })
+}
+
+/// A mockito node's `GET /` ([`node_status_with_indexes`]): the route every
+/// command that reads address-indexed routes asks first. Keep the returned
+/// mock alive for the test (dropping it removes it).
+pub async fn mock_node_indexes(
+    server: &mut mockito::ServerGuard,
+    tx: bool,
+    address: bool,
+) -> mockito::Mock {
+    server
+        .mock("GET", "/")
+        .with_body(node_status_with_indexes(tx, address).to_string())
+        .create_async()
+        .await
+}
+
 fn err<T>(msg: &'static str) -> ResponseFn<T> {
     Box::new(move || Err(AppError::Rpc(msg.to_string())))
 }

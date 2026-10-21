@@ -29,6 +29,44 @@ use async_trait::async_trait;
 use crate::error::AppError;
 use crate::noncustodial::rpc::{BlockchainInfo, ChainSource, NodeCoin, NodeRpcClient};
 
+/// Why a command refuses a node without the address index. hsd answers
+/// `GET /coin/address` and `GET /tx/address` with an empty list, never an
+/// error, when its indexes are off, so a wallet read through such a node
+/// would look empty. Activity's banner and the error mapper both key on this
+/// sentence ("address index not enabled", "index-address").
+pub const NEEDS_ADDRESS_INDEX: &str =
+    "address index not enabled on this hsd node: restart hsd with --index-address and --index-tx";
+
+/// The indexes hsd was started with (`--index-tx`, `--index-address`), as its
+/// REST `GET /` reports them. Read once per command or sync run: never
+/// cached, as the user may restart the node with other flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NodeIndexes {
+    pub tx: bool,
+    pub address: bool,
+}
+
+/// Read the node's indexes from `chain.indexers.indexTX` and
+/// `chain.indexers.indexAddress` of its `GET /` reply. A reply without both
+/// as booleans is an [`AppError::Rpc`]: never taken as "on".
+pub(crate) async fn node_indexes(node: &dyn NodeRpc) -> Result<NodeIndexes, AppError> {
+    let status = node.get_node_status().await?;
+    let flag = |name: &str| {
+        status
+            .pointer(&format!("/chain/indexers/{name}"))
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                AppError::Rpc(format!(
+                    "node status did not report chain.indexers.{name}: could not check its indexes"
+                ))
+            })
+    };
+    Ok(NodeIndexes {
+        tx: flag("indexTX")?,
+        address: flag("indexAddress")?,
+    })
+}
+
 /// Node RPC surface used by commands and the daemon.
 ///
 /// All methods forward to the corresponding hsd RPC/REST endpoint. The

@@ -804,15 +804,18 @@ mod coverage_tests {
             &crate::db::sync_lock::LockLost::default(),
         )
         .await;
-        assert!(
-            !result,
-            "sync_node_step must return false when node is unreachable"
+        assert_eq!(
+            result,
+            crate::commands::sync::NodeStep::Failed,
+            "sync_node_step must fail when node is unreachable"
         );
     }
 
     #[tokio::test]
     async fn sync_node_step_happy_path_with_empty_coins() {
         let mut server = mockito::Server::new_async().await;
+        let _indexes_server =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
         let path = seeded_db();
         let _guard = TempDbGuard(path.clone());
         seed_address(&path, PROFILE_A, MYADDR);
@@ -839,7 +842,11 @@ mod coverage_tests {
             &crate::db::sync_lock::LockLost::default(),
         )
         .await;
-        assert!(result, "sync_node_step should succeed with mocked node");
+        assert_eq!(
+            result,
+            crate::commands::sync::NodeStep::Synced,
+            "sync_node_step should succeed with mocked node"
+        );
     }
 
     #[tokio::test]
@@ -866,9 +873,10 @@ mod coverage_tests {
             &crate::db::sync_lock::LockLost::default(),
         )
         .await;
-        assert!(
-            !result,
-            "sync_node_step must return false on blockchain-info error"
+        assert_eq!(
+            result,
+            crate::commands::sync::NodeStep::Failed,
+            "sync_node_step must fail on blockchain-info error"
         );
     }
 
@@ -877,6 +885,8 @@ mod coverage_tests {
         // Two addresses: first returns coins, second errors. Guard does NOT
         // trip (any_success=true), so the batch is applied and true is returned.
         let mut server = mockito::Server::new_async().await;
+        let _indexes_server =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
         let path = seeded_db();
         let _guard = TempDbGuard(path.clone());
         let good_addr = "hs1qgood0000000000000000000000000000000000";
@@ -931,10 +941,233 @@ mod coverage_tests {
             &crate::db::sync_lock::LockLost::default(),
         )
         .await;
-        assert!(
+        assert_eq!(
             result,
+            crate::commands::sync::NodeStep::Synced,
             "guard must NOT trip when at least one address query succeeds"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // sync_node_step against a node without the address index
+    // -----------------------------------------------------------------------
+
+    /// A coin at `MYADDR` tracked by an earlier sync, unspent, and the
+    /// profile's cursor at 50.
+    fn seed_tracked_coin(path: &std::path::Path) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        let coin: crate::noncustodial::rpc::NodeCoin = serde_json::from_value(serde_json::json!({
+            "hash": "aa".repeat(32),
+            "index": 0,
+            "value": 2_000_000_000i64,
+            "address": MYADDR,
+            "height": 90,
+            "covenant": { "type": 0, "action": "NONE", "items": [] }
+        }))
+        .unwrap();
+        crate::noncustodial::sync::upsert_utxo(&conn, PROFILE_A, &coin).unwrap();
+        crate::noncustodial::sync::set_sync_cursor(&conn, PROFILE_A, 50).unwrap();
+    }
+
+    /// The tracked coin's `spent_by_txid` and the profile's cursor.
+    fn tracked_coin_and_cursor(path: &std::path::Path) -> (Option<String>, i64) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        let spent: Option<String> = conn
+            .query_row(
+                "SELECT spent_by_txid FROM tracked_utxos WHERE wallet_profile_id = ?1",
+                [PROFILE_A],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let cursor = crate::noncustodial::sync::get_sync_height(&conn, PROFILE_A).unwrap();
+        (spent, cursor)
+    }
+
+    fn synced_node() -> crate::tests::mock_node_rpc::MockNodeRpc {
+        crate::tests::mock_node_rpc::MockNodeRpc::new().with_blockchain_info(
+            crate::noncustodial::rpc::BlockchainInfo {
+                chain: Some("main".into()),
+                blocks: 1000,
+                headers: Some(1000),
+                verification_progress: Some(1.0),
+                bestblockhash: None,
+                mediantime: None,
+            },
+        )
+    }
+
+    /// hsd 8.0.0 without `--index-address` answers `GET /coin/address` and
+    /// `GET /tx/address` with `200 []`. The node step reads its indexes
+    /// first: it neither reads the coins nor grows the window from the node,
+    /// leaves every tracked coin unspent and the cursor where it was, and
+    /// says why.
+    #[tokio::test]
+    async fn node_step_without_the_address_index_keeps_every_tracked_coin() {
+        use crate::tests::mock_node_rpc::{node_status_with_indexes, RpcCall};
+        for tx in [false, true] {
+            let path = seeded_db();
+            let _guard = TempDbGuard(path.clone());
+            seed_address(&path, PROFILE_A, MYADDR);
+            seed_tracked_coin(&path);
+            let node = synced_node()
+                .with_node_status(node_status_with_indexes(tx, false))
+                .with_coins_by_address(vec![])
+                .with_txs_by_address(vec![]);
+
+            let step = crate::commands::sync::sync_node_step_with_client(
+                &node,
+                path.to_str().unwrap(),
+                PROFILE_A,
+                &crate::db::sync_lock::LockLost::default(),
+            )
+            .await;
+
+            assert_eq!(
+                tracked_coin_and_cursor(&path),
+                (None, 50),
+                "tx index {tx}: the coin stays unspent, the cursor stays"
+            );
+            match &step {
+                crate::commands::sync::NodeStep::NotAuthoritative(why) => assert!(
+                    why.contains(crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX),
+                    "{why}"
+                ),
+                other => panic!("tx index {tx}: {other:?}"),
+            }
+            assert!(
+                node.calls_matching(|c| matches!(
+                    c,
+                    RpcCall::CoinsByAddress(_) | RpcCall::TxsByAddress(_)
+                ))
+                .is_empty(),
+                "tx index {tx}: no coin or history read: {:?}",
+                node.calls()
+            );
+        }
+    }
+
+    /// A node whose indexes cannot be read is not known to have the address
+    /// index: nothing is applied either.
+    #[tokio::test]
+    async fn node_step_with_unreadable_indexes_applies_nothing() {
+        let path = seeded_db();
+        let _guard = TempDbGuard(path.clone());
+        seed_address(&path, PROFILE_A, MYADDR);
+        seed_tracked_coin(&path);
+        let node = synced_node()
+            .with_node_status_err("status read failed")
+            .with_coins_by_address(vec![])
+            .with_txs_by_address(vec![]);
+
+        let step = crate::commands::sync::sync_node_step_with_client(
+            &node,
+            path.to_str().unwrap(),
+            PROFILE_A,
+            &crate::db::sync_lock::LockLost::default(),
+        )
+        .await;
+
+        match &step {
+            crate::commands::sync::NodeStep::NotAuthoritative(why) => {
+                assert!(why.contains("status read failed"), "{why}")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(tracked_coin_and_cursor(&path), (None, 50));
+    }
+
+    /// With the address index on, a coin the node no longer lists was spent:
+    /// the step marks it so and moves the cursor, as before. The tx index is
+    /// not needed for the coins.
+    #[tokio::test]
+    async fn node_step_with_the_address_index_marks_missing_coins_spent() {
+        use crate::tests::mock_node_rpc::node_status_with_indexes;
+        for tx in [true, false] {
+            let path = seeded_db();
+            let _guard = TempDbGuard(path.clone());
+            seed_address(&path, PROFILE_A, MYADDR);
+            seed_tracked_coin(&path);
+            let node = synced_node()
+                .with_node_status(node_status_with_indexes(tx, true))
+                .with_coins_by_address(vec![])
+                .with_txs_by_address(vec![]);
+
+            let step = crate::commands::sync::sync_node_step_with_client(
+                &node,
+                path.to_str().unwrap(),
+                PROFILE_A,
+                &crate::db::sync_lock::LockLost::default(),
+            )
+            .await;
+
+            assert_eq!(step, crate::commands::sync::NodeStep::Synced, "tx {tx}");
+            let (spent, cursor) = tracked_coin_and_cursor(&path);
+            assert!(spent.is_some(), "tx {tx}: the missing coin is spent");
+            assert_eq!(cursor, 1000, "tx {tx}");
+        }
+    }
+
+    /// A whole run against a node without the address index: the node step
+    /// applies nothing, the run's errors say why (Wallet shows them), and the
+    /// node is not authoritative, so the run takes the explorer path rather
+    /// than the node's discovery.
+    #[tokio::test]
+    async fn run_sync_steps_reports_a_node_without_the_address_index() {
+        let mut server = mockito::Server::new_async().await;
+        let path = seeded_db();
+        let _guard = TempDbGuard(path.clone());
+        seed_address(&path, PROFILE_A, MYADDR);
+        seed_tracked_coin(&path);
+
+        let _bi = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+            .with_body(
+                r#"{"result":{"chain":"main","blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#,
+            )
+            .create_async()
+            .await;
+        let _status = server
+            .mock("GET", "/")
+            .with_body(
+                crate::tests::mock_node_rpc::node_status_with_indexes(false, false).to_string(),
+            )
+            .create_async()
+            .await;
+        let _coins = server
+            .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+            .with_body(r#"[]"#)
+            .create_async()
+            .await;
+        let _history = server
+            .mock("GET", mockito::Matcher::Regex("^/tx/address/".into()))
+            .with_body(r#"[]"#)
+            .create_async()
+            .await;
+        set_node(&path, &server.url());
+
+        let status: Arc<Mutex<SyncStatus>> = Arc::new(Mutex::new(SyncStatus::default()));
+        run_sync_steps(
+            &status,
+            path.to_str().unwrap(),
+            PROFILE_A,
+            crate::commands::sync::SyncCaller::App,
+        )
+        .await;
+
+        let s = status.lock().await;
+        assert!(
+            s.errors
+                .iter()
+                .any(|e| e.contains(crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX)),
+            "{:?}",
+            s.errors
+        );
+        // The explorer's discover step ran over the profile's address; the
+        // node's discovery never sets this.
+        assert_eq!(s.discover_addresses_total, 1, "{:?}", s.errors);
+        drop(s);
+        assert_eq!(tracked_coin_and_cursor(&path), (None, 50));
     }
 
     // -----------------------------------------------------------------------
@@ -1108,6 +1341,8 @@ mod coverage_tests {
     #[tokio::test]
     async fn run_sync_steps_node_authoritative_skips_repair_calls_node_discover() {
         let mut server = mockito::Server::new_async().await;
+        let _indexes_server =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
         let path = seeded_db();
         let _guard = TempDbGuard(path.clone());
 
@@ -2195,6 +2430,8 @@ mod lock_lost_tests {
     #[tokio::test]
     async fn run_sync_steps_stops_once_the_lock_is_lost_mid_sync() {
         let mut server = mockito::Server::new_async().await;
+        let _indexes_server =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
         let path = seeded_db();
         let _guard = TempDbGuard(path.clone());
         {

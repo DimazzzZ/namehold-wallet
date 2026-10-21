@@ -45,7 +45,7 @@ mod ledger_hid_transport_tests;
 mod ledger_plan_guard_tests;
 mod live_node_it;
 mod migration_tests;
-mod mock_node_rpc;
+pub(crate) mod mock_node_rpc;
 mod name_capabilities_tests;
 mod namebase_client_tests;
 mod namebase_cmd_tests;

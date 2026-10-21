@@ -22,7 +22,7 @@ use crate::commands::read::{
 use crate::error::AppError;
 use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::{BlockchainInfo, NodeCoin};
-use crate::tests::mock_node_rpc::MockNodeRpc;
+use crate::tests::mock_node_rpc::{node_status_with_indexes, MockNodeRpc, RpcCall};
 
 // ------- read_block_info_with_client --------------------------------------
 
@@ -933,10 +933,8 @@ async fn write_probe_noop_when_cap_already_read_only() {
         signer_unlocked: false,
         reason: Some("locked".to_string()),
     };
-    crate::commands::tx::apply_node_write_probe_with_client(
-        &mock, &mut cap, "http://x", None, None,
-    )
-    .await;
+    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
+        .await;
     // Unchanged.
     assert!(!cap.can_write);
     assert_eq!(cap.reason.as_deref(), Some("locked"));
@@ -950,7 +948,6 @@ async fn write_probe_unreachable_downgrades_with_start_node_reason() {
         &mock,
         &mut cap,
         "http://localhost:12037",
-        None,
         None,
     )
     .await;
@@ -979,7 +976,6 @@ async fn write_probe_wrong_chain_downgrades_before_sync_and_index_checks() {
         &mock,
         &mut cap,
         "http://x",
-        None,
         Some("mainnet"),
     )
     .await;
@@ -995,26 +991,27 @@ async fn write_probe_wrong_chain_downgrades_before_sync_and_index_checks() {
 /// that reports no chain at all (older hsd) is not treated as a mismatch.
 #[tokio::test]
 async fn write_probe_keeps_write_on_matching_or_unknown_chain() {
-    let matching =
-        MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), Some("regtest")));
+    let matching = MockNodeRpc::new()
+        .with_blockchain_info(info(500, Some(1.0), Some(500), Some("regtest")))
+        .with_node_status(node_status_with_indexes(true, true));
     let mut cap = writable_cap();
     crate::commands::tx::apply_node_write_probe_with_client(
         &matching,
         &mut cap,
         "http://x",
-        None,
         Some("regtest"),
     )
     .await;
     assert!(cap.can_write, "{:?}", cap.reason);
 
-    let silent = MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), None));
+    let silent = MockNodeRpc::new()
+        .with_blockchain_info(info(500, Some(1.0), Some(500), None))
+        .with_node_status(node_status_with_indexes(true, true));
     let mut cap = writable_cap();
     crate::commands::tx::apply_node_write_probe_with_client(
         &silent,
         &mut cap,
         "http://x",
-        None,
         Some("mainnet"),
     )
     .await;
@@ -1095,19 +1092,18 @@ async fn write_probe_unsynced_downgrades_with_progress_pct() {
         mediantime: None,
     });
     let mut cap = writable_cap();
-    crate::commands::tx::apply_node_write_probe_with_client(
-        &mock, &mut cap, "http://x", None, None,
-    )
-    .await;
+    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
+        .await;
     assert!(!cap.can_write);
     let reason = cap.reason.as_deref().unwrap();
     assert!(reason.contains("50%"));
     assert!(reason.contains("still syncing"));
 }
 
+/// A synced node whose status cannot be read is not known to be
+/// address-indexed: no sends through it.
 #[tokio::test]
-async fn write_probe_synced_but_no_address_index_downgrades() {
-    // Synced (progress=1.0), but getcoinsbyaddress errors → not address-indexed.
+async fn write_probe_synced_but_node_status_unreadable_downgrades() {
     let mock = MockNodeRpc::new()
         .with_blockchain_info(BlockchainInfo {
             chain: Some("regtest".to_string()),
@@ -1117,18 +1113,42 @@ async fn write_probe_synced_but_no_address_index_downgrades() {
             bestblockhash: None,
             mediantime: None,
         })
-        .with_coins_by_address_err("Address indexing is not enabled");
+        .with_coins_by_address(vec![])
+        .with_node_status_err("status read failed");
     let mut cap = writable_cap();
-    crate::commands::tx::apply_node_write_probe_with_client(
-        &mock,
-        &mut cap,
-        "http://x",
-        Some("hs1qprobe"),
-        None,
-    )
-    .await;
+    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
+        .await;
     assert!(!cap.can_write);
     assert!(cap.reason.as_deref().unwrap().contains("address-indexed"));
+}
+
+/// hsd 8.0.0 without `--index-address` answers `GET /coin/address` with an
+/// empty list, never an error: the probe goes by the indexes the node
+/// reports, and such a node cannot send.
+#[tokio::test]
+async fn write_probe_synced_without_the_address_index_downgrades() {
+    for (tx, address) in [(false, false), (true, false)] {
+        let mock = MockNodeRpc::new()
+            .with_blockchain_info(BlockchainInfo {
+                chain: Some("regtest".to_string()),
+                blocks: 100,
+                headers: Some(100),
+                verification_progress: Some(1.0),
+                bestblockhash: None,
+                mediantime: None,
+            })
+            .with_coins_by_address(vec![])
+            .with_node_status(node_status_with_indexes(tx, address));
+        let mut cap = writable_cap();
+        crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
+            .await;
+        assert!(!cap.can_write, "tx index {tx}");
+        assert!(
+            cap.reason.as_deref().unwrap().contains("address-indexed"),
+            "{:?}",
+            cap.reason
+        );
+    }
 }
 
 #[tokio::test]
@@ -1142,16 +1162,11 @@ async fn write_probe_synced_and_indexed_keeps_write_capable() {
             bestblockhash: None,
             mediantime: None,
         })
-        .with_coins_by_address(vec![]);
+        .with_coins_by_address(vec![])
+        .with_node_status(node_status_with_indexes(true, true));
     let mut cap = writable_cap();
-    crate::commands::tx::apply_node_write_probe_with_client(
-        &mock,
-        &mut cap,
-        "http://x",
-        Some("hs1qprobe"),
-        None,
-    )
-    .await;
+    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
+        .await;
     assert!(cap.can_write);
     assert!(cap.reason.is_none());
 }
@@ -1169,10 +1184,8 @@ async fn write_probe_unsynced_no_verification_progress_uses_headers_ratio() {
         mediantime: None,
     });
     let mut cap = writable_cap();
-    crate::commands::tx::apply_node_write_probe_with_client(
-        &mock, &mut cap, "http://x", None, None,
-    )
-    .await;
+    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
+        .await;
     assert!(!cap.can_write);
     let reason = cap.reason.as_deref().unwrap();
     assert!(
@@ -1195,16 +1208,11 @@ async fn write_probe_synced_no_verification_progress_via_headers() {
             bestblockhash: None,
             mediantime: None,
         })
-        .with_coins_by_address(vec![]);
+        .with_coins_by_address(vec![])
+        .with_node_status(node_status_with_indexes(true, true));
     let mut cap = writable_cap();
-    crate::commands::tx::apply_node_write_probe_with_client(
-        &mock,
-        &mut cap,
-        "http://x",
-        Some("hs1qprobe"),
-        None,
-    )
-    .await;
+    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
+        .await;
     assert!(
         cap.can_write,
         "blocks>=headers with no progress should be synced"
@@ -1799,4 +1807,101 @@ async fn tx_index_probe_reads_the_tip_coinbase() {
 
     let no_block = MockNodeRpc::new().with_block_hash_err("down");
     assert_eq!(node_has_tx_index_with_client(&no_block, 5).await, None);
+}
+
+// ------- node_indexes -------------------------------------------------------
+
+/// hsd's `GET /` reply read as it reports each index, on or off.
+#[tokio::test]
+async fn node_indexes_reads_both_flags() {
+    for (tx, address) in [(true, true), (true, false), (false, true), (false, false)] {
+        let mock = MockNodeRpc::new().with_node_status(node_status_with_indexes(tx, address));
+        let got = crate::noncustodial::node_rpc::node_indexes(&mock)
+            .await
+            .expect("indexes");
+        assert_eq!(
+            got,
+            crate::noncustodial::node_rpc::NodeIndexes { tx, address }
+        );
+        assert_eq!(mock.calls(), vec![RpcCall::NodeStatus]);
+    }
+}
+
+/// A reply without both flags as booleans, or no reply, is an error: never
+/// taken as "on".
+#[tokio::test]
+async fn node_indexes_missing_or_non_boolean_is_an_error() {
+    for reply in [
+        json!({}),
+        json!({ "chain": {} }),
+        json!({ "chain": { "indexers": { "indexTX": true } } }),
+        json!({ "chain": { "indexers": { "indexAddress": true } } }),
+        json!({ "chain": { "indexers": { "indexTX": true, "indexAddress": "yes" } } }),
+        json!({ "chain": { "indexers": { "indexTX": 1, "indexAddress": true } } }),
+        json!({ "chain": { "indexers": { "indexTX": null, "indexAddress": false } } }),
+    ] {
+        let mock = MockNodeRpc::new().with_node_status(reply.clone());
+        let err = crate::noncustodial::node_rpc::node_indexes(&mock)
+            .await
+            .expect_err(&format!("{reply}"));
+        assert!(matches!(err, AppError::Rpc(_)), "{reply}: {err:?}");
+    }
+    let mock = MockNodeRpc::new().with_node_status_err("connection refused");
+    let err = crate::noncustodial::node_rpc::node_indexes(&mock)
+        .await
+        .expect_err("a failed read");
+    assert!(err.to_string().contains("connection refused"), "{err}");
+}
+
+// ------- read_action_history_with_client -----------------------------------
+
+/// hsd answers `GET /tx/address` with an empty list when either index is off:
+/// the history refuses with the sentence Activity's banner keys on, before
+/// any per-address read can swallow it, instead of an empty Activity.
+#[tokio::test]
+async fn history_refuses_a_node_without_the_indexes() {
+    for (tx, address) in [(false, false), (true, false), (false, true)] {
+        let mock = MockNodeRpc::new()
+            .with_node_status(node_status_with_indexes(tx, address))
+            .with_txs_by_address(vec![]);
+        let err = crate::commands::history::read_action_history_with_client(
+            &mock,
+            &["hs1qmine".to_string()],
+        )
+        .await
+        .expect_err("no history from an index-less node");
+        assert!(
+            matches!(&err, AppError::Rpc(m) if m == crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX),
+            "tx {tx} address {address}: {err:?}"
+        );
+        assert!(
+            mock.calls_matching(|c| matches!(c, RpcCall::TxsByAddress(_)))
+                .is_empty(),
+            "no history read: tx {tx} address {address}"
+        );
+    }
+}
+
+/// A node status that cannot be read is an error (the generic banner), not
+/// an empty Activity; with both indexes on, a failed per-address read is
+/// still skipped and the rest listed.
+#[tokio::test]
+async fn history_status_error_surfaces_and_indexed_node_keeps_partial_reads() {
+    let mock = MockNodeRpc::new()
+        .with_node_status_err("status read failed")
+        .with_txs_by_address(vec![]);
+    let err =
+        crate::commands::history::read_action_history_with_client(&mock, &["hs1qmine".into()])
+            .await
+            .expect_err("unreadable indexes");
+    assert!(err.to_string().contains("status read failed"), "{err}");
+
+    let mock = MockNodeRpc::new()
+        .with_node_status(node_status_with_indexes(true, true))
+        .with_txs_by_address_err("boom");
+    let rows =
+        crate::commands::history::read_action_history_with_client(&mock, &["hs1qmine".into()])
+            .await
+            .expect("per-address errors stay swallowed");
+    assert!(rows.is_empty());
 }

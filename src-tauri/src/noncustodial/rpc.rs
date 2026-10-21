@@ -572,8 +572,11 @@ impl NodeRpcClient {
     /// UTXOs for an address via the node REST route `GET /coin/address/:addr`.
     /// (hsd has NO `getcoinsbyaddress` JSON-RPC on the node — it's wallet-only;
     /// the node serves address coins over REST when `--index-address` is enabled.)
-    /// Returns an empty list if the address has no coins; errors if the node
-    /// rejects the request (e.g. address index disabled).
+    /// Returns an empty list if the address has no coins, and errors if the
+    /// node rejects the request. hsd 8.0.0 without `--index-address` does not
+    /// reject it but answers an empty list too: callers that conclude from an
+    /// empty list read the node's indexes first
+    /// ([`crate::noncustodial::node_rpc::node_indexes`]).
     pub async fn get_coins_by_address(&self, address: &str) -> Result<Vec<NodeCoin>, AppError> {
         let url = format!("{}/coin/address/{}", self.node_url, address);
         let resp = self

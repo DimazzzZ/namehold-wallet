@@ -1920,6 +1920,8 @@ async fn daemon_refresh_makes_no_send_and_no_market_call() {
         let buy = txid("b1");
         paid(&f, &buy, 2, TIP, false);
         let mut node = mockito::Server::new_async().await;
+        let _indexes_node =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut node, true, true).await;
         let mut market = mockito::Server::new_async().await;
         let path = std::env::temp_dir().join(format!(
             "namehold_sold_sync_{}_{caller:?}.db",

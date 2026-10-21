@@ -510,10 +510,17 @@ pub async fn run_sync_steps(
             "Syncing with local node…".into()
         };
     }
+    // A node that cannot answer for the wallet's coins (no address index) is
+    // not authoritative for this run: the run's errors say why, and the
+    // explorer steps below run as for a node that is behind.
+    let mut node_answers_for_coins = true;
     if node_mode.is_spv() {
         let _spv_ok = crate::commands::sync_spv::sync_spv_step(db_path, profile_id).await;
-    } else {
-        let _node_ok = sync_node_step(db_path, profile_id, &lock).await;
+    } else if let NodeStep::NotAuthoritative(why) = sync_node_step(db_path, profile_id, &lock).await
+    {
+        eprintln!("sync: profile {profile_id}: {why}");
+        status.lock().await.errors.push(why);
+        node_answers_for_coins = false;
     }
     if lost("the node readiness check") {
         return;
@@ -530,7 +537,7 @@ pub async fn run_sync_steps(
     //
     // In SPV mode, the node is NEVER authoritative for names/UTXOs
     // (SPV nodes don't have --index-address), so always use explorer.
-    let node_authoritative = if node_mode.is_spv() {
+    let node_authoritative = if node_mode.is_spv() || !node_answers_for_coins {
         false
     } else {
         // Both the network and the node belong to the profile being synced,
@@ -767,6 +774,21 @@ fn apply_node_sync_batch(
     Ok(())
 }
 
+/// What [`sync_node_step`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeStep {
+    /// The node's coins were applied (a failed window growth after that is
+    /// logged, and the next sync goes on).
+    Synced,
+    /// Nothing more was applied: the database, the node or the sync lock
+    /// stopped the step, and the next sync retries from the same cursor.
+    Failed,
+    /// Nothing was read or applied: the node cannot answer for the wallet's
+    /// coins (no address index, or its indexes could not be read), and is not
+    /// authoritative for this run. The reason goes to the run's errors.
+    NotAuthoritative(String),
+}
+
 /// Node UTXO sync: scan the profile's addresses, apply the batch, grow the
 /// address window ([`grow_address_window`]) and apply what it found. Writes
 /// nothing more once `lock` is raised (another process took the sync lock
@@ -775,50 +797,80 @@ pub async fn sync_node_step(
     db_path: &str,
     profile_id: &str,
     lock: &crate::db::sync_lock::LockLost,
-) -> bool {
+) -> NodeStep {
+    // Resolve the profile's effective node config (per-profile override ->
+    // global -> default) rather than reading global settings directly.
+    let client =
+        match open_conn(db_path).and_then(|conn| NodeRpcClient::for_profile(&conn, profile_id)) {
+            Ok(c) => c,
+            Err(_) => return NodeStep::Failed,
+        };
+    sync_node_step_with_client(&client, db_path, profile_id, lock).await
+}
+
+/// [`sync_node_step`] against `client`. Testable against a mock.
+pub(crate) async fn sync_node_step_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    db_path: &str,
+    profile_id: &str,
+    lock: &crate::db::sync_lock::LockLost,
+) -> NodeStep {
     let conn = match open_conn(db_path) {
         Ok(c) => c,
-        Err(_) => return false,
+        Err(_) => return NodeStep::Failed,
     };
     let addresses = match queries::get_profile_addresses(&conn, profile_id) {
         Ok(a) => a,
-        Err(_) => return false,
+        Err(_) => return NodeStep::Failed,
     };
     // The settings read fails as the reads above do: no sync step, not a
     // window grown by a gap the user did not set.
     let gap = match queries::get_settings(&conn) {
         Ok(s) => crate::commands::secure_wallet::gap_limit(&s),
-        Err(_) => return false,
-    };
-    // Resolve the profile's effective node config (per-profile override ->
-    // global -> default) rather than reading global settings directly.
-    let client = match NodeRpcClient::for_profile(&conn, profile_id) {
-        Ok(c) => c,
-        Err(_) => return false,
+        Err(_) => return NodeStep::Failed,
     };
     drop(conn);
 
     let height = match client.get_blockchain_info().await {
         Ok(info) => info.blocks,
-        Err(_) => return false,
+        Err(_) => return NodeStep::Failed,
     };
 
-    let mut all_coins = match fetch_coins_with_guard_with_client(&client, &addresses).await {
+    // hsd without `--index-address` answers every coin and history query
+    // with an empty list, never an error: applied, that list would mark
+    // every tracked coin spent. Such a node, or one whose indexes cannot be
+    // read, is not asked for coins or history at all this run. The tx index
+    // is not needed here: the coins are complete without it, and the window
+    // then grows only through addresses holding coins (see `NodeHistory`).
+    match crate::noncustodial::node_rpc::node_indexes(client).await {
+        Ok(indexes) if indexes.address => {}
+        Ok(_) => {
+            return NodeStep::NotAuthoritative(format!(
+                "{} (the node's coins were not synced, and nothing was marked spent)",
+                crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX
+            ))
+        }
+        Err(e) => {
+            return NodeStep::NotAuthoritative(format!("the node's coins were not synced: {e}"))
+        }
+    }
+
+    let mut all_coins = match fetch_coins_with_guard_with_client(client, &addresses).await {
         Some(coins) => coins,
         // Guard tripped: had addresses but every per-address query errored —
         // bail so the next sync retries from the same cursor (see the helper).
-        None => return false,
+        None => return NodeStep::Failed,
     };
 
     if stop_for_lost_lock(lock, profile_id, "the node sync batch") {
-        return false;
+        return NodeStep::Failed;
     }
     let mut conn = match open_conn(db_path) {
         Ok(c) => c,
-        Err(_) => return false,
+        Err(_) => return NodeStep::Failed,
     };
     if apply_node_sync_batch(&mut conn, profile_id, &all_coins, height).is_err() {
-        return false;
+        return NodeStep::Failed;
     }
     drop(conn);
 
@@ -826,7 +878,7 @@ pub async fn sync_node_step(
     // step after the scan above has landed: a failure here leaves that batch
     // applied and the window as far as it got, and the next sync goes on.
     let found = match grow_address_window(
-        &NodeHistory(&client),
+        &NodeHistory(client),
         db_path,
         profile_id,
         gap,
@@ -837,21 +889,24 @@ pub async fn sync_node_step(
         Ok(found) => found,
         Err(e) => {
             eprintln!("sync_node_step: growing the address window of {profile_id} failed: {e}");
-            return true;
+            return NodeStep::Synced;
         }
     };
     if stop_for_lost_lock(lock, profile_id, "the address window batch") {
-        return false;
+        return NodeStep::Failed;
     }
     if found.is_empty() {
-        return true;
+        return NodeStep::Synced;
     }
     all_coins.extend(found);
     let mut conn = match open_conn(db_path) {
         Ok(c) => c,
-        Err(_) => return false,
+        Err(_) => return NodeStep::Failed,
     };
-    apply_node_sync_batch(&mut conn, profile_id, &all_coins, height).is_ok()
+    match apply_node_sync_batch(&mut conn, profile_id, &all_coins, height) {
+        Ok(()) => NodeStep::Synced,
+        Err(_) => NodeStep::Failed,
+    }
 }
 
 /// The most rounds of [`grow_address_window`] one sync runs. Each round can
@@ -946,8 +1001,8 @@ pub(crate) trait AddressHistory: Send + Sync {
 /// error, for what it does not index. The history needs `--index-tx` as well
 /// as `--index-address`: with the address index alone only addresses that
 /// still hold coins move the window, so a run of spent addresses longer than
-/// the gap ends it. Without `--index-address` both queries return nothing and
-/// the window does not grow.
+/// the gap ends it. Without `--index-address` both queries would return
+/// nothing: [`sync_node_step`] does not grow the window from such a node.
 pub(crate) struct NodeHistory<'a>(pub &'a dyn crate::noncustodial::node_rpc::NodeRpc);
 
 #[async_trait::async_trait]
@@ -1225,8 +1280,9 @@ pub(crate) async fn explorer_window_step(
 /// Client-injected coin-fetch phase for [`sync_node_step`], with the
 /// "false everything-spent cascade" guard. Fetches coins per address; returns
 /// `Some(all_coins)` on success, or `None` when the wallet HAS addresses but
-/// EVERY per-address query errored (node lacks `--index-address`, or is
-/// momentarily unreachable). Applying an empty set in that case would make
+/// EVERY per-address query errored (the node momentarily unreachable). hsd
+/// 8.0.0 without `--index-address` does not error but lists nothing:
+/// [`sync_node_step`] checks the node's indexes before calling this. Applying an empty set in that case would make
 /// `mark_missing_as_spent` wipe every tracked UTXO — so the caller must bail.
 ///
 /// An empty address list returns `Some(vec![])` (nothing to fetch, nothing to
@@ -2157,6 +2213,8 @@ mod db_hardening_tests {
     #[tokio::test]
     async fn sync_node_step_bails_when_all_coin_queries_error() {
         let mut server = mockito::Server::new_async().await;
+        let _indexes_server =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
 
         // Mock getblockchaininfo → synced.
         let _m_info = server
@@ -2227,15 +2285,16 @@ mod db_hardening_tests {
         drop(conn);
 
         // Run sync_node_step — must bail out because every coin query errored.
-        let success = sync_node_step(
+        let step = sync_node_step(
             db_path.to_str().unwrap(),
             "p1",
             &crate::db::sync_lock::LockLost::default(),
         )
         .await;
-        assert!(
-            !success,
-            "sync_node_step must return false when all coin queries error"
+        assert_eq!(
+            step,
+            NodeStep::Failed,
+            "sync_node_step must fail when all coin queries error"
         );
 
         // Verify the UTXO was NOT marked spent and the cursor did NOT move.
@@ -2285,8 +2344,12 @@ mod db_hardening_tests {
     #[tokio::test]
     async fn sync_node_step_returns_false_when_conn_cannot_open() {
         let bad = unopenable_db_path();
-        let ok = sync_node_step(&bad, "p1", &crate::db::sync_lock::LockLost::default()).await;
-        assert!(!ok, "sync_node_step must return false when open_conn fails");
+        let step = sync_node_step(&bad, "p1", &crate::db::sync_lock::LockLost::default()).await;
+        assert_eq!(
+            step,
+            NodeStep::Failed,
+            "sync_node_step must fail when open_conn fails"
+        );
     }
 
     #[tokio::test]
@@ -2463,6 +2526,8 @@ mod address_window_tests {
     #[tokio::test]
     async fn one_sync_grows_the_window_and_scans_the_new_addresses() {
         let mut server = mockito::Server::new_async().await;
+        let _indexes_server =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
         let _info = server
             .mock("POST", "/")
             .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
@@ -2544,13 +2609,14 @@ mod address_window_tests {
         queries::set_setting(&conn, "node_rpc_api_key", "x").unwrap();
         drop(conn);
 
-        assert!(
+        assert_eq!(
             sync_node_step(
                 db_path.to_str().unwrap(),
                 "p1",
                 &crate::db::sync_lock::LockLost::default()
             )
-            .await
+            .await,
+            NodeStep::Synced
         );
 
         let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -2592,6 +2658,8 @@ mod address_window_tests {
     #[tokio::test]
     async fn a_lost_lock_stops_the_window_before_its_next_round() {
         let mut server = mockito::Server::new_async().await;
+        let _indexes_server =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
         let _info = server
             .mock("POST", "/")
             .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
@@ -2673,7 +2741,10 @@ mod address_window_tests {
         queries::set_setting(&conn, "node_rpc_api_key", "x").unwrap();
         drop(conn);
 
-        assert!(!sync_node_step(db_path.to_str().unwrap(), "p1", &lock).await);
+        assert_eq!(
+            sync_node_step(db_path.to_str().unwrap(), "p1", &lock).await,
+            NodeStep::Failed
+        );
 
         r4_mock.assert_async().await;
         r7_mock.assert_async().await;

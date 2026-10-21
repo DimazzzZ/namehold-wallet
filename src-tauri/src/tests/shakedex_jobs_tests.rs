@@ -3509,6 +3509,7 @@ async fn sync_on_a_copy(
     use crate::commands::sync::{run_sync_steps, SyncStatus};
     static COPIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let mut hsd = mockito::Server::new_async().await;
+    let _indexes_hsd = crate::tests::mock_node_rpc::mock_node_indexes(&mut hsd, true, true).await;
     let mut s = market().await;
     let path = std::env::temp_dir().join(format!(
         "namehold_publish_{}_{caller:?}_{}.db",

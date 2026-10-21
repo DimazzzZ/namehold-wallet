@@ -1610,6 +1610,8 @@ async fn daemon_sync_makes_no_send_call_where_the_apps_sync_does() {
 
     for caller in [SyncCaller::Daemon, SyncCaller::App] {
         let mut server = mockito::Server::new_async().await;
+        let _indexes_server =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
         let sends = usize::from(caller == SyncCaller::App);
         let mocks = missing_purchase_node(&mut server, sends, 1.0).await;
         let path = missing_purchase_db(&server.url());

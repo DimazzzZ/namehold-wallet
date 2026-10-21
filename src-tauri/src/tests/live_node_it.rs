@@ -1312,13 +1312,14 @@ async fn second_profile_after_one_sync(
     .expect("the restore's address window");
     drop(conn);
 
-    assert!(
+    assert_eq!(
         crate::commands::sync::sync_node_step(
             db_path.to_str().unwrap(),
             PROFILE,
             &crate::db::sync_lock::LockLost::default()
         )
-        .await
+        .await,
+        crate::commands::sync::NodeStep::Synced
     );
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -1515,13 +1516,14 @@ async fn live_sync_grows_the_address_window_to_a_name_for_a_second_profile() {
     );
     drop(conn);
     let path = db_path.to_str().unwrap();
-    assert!(
+    assert_eq!(
         crate::commands::sync::sync_node_step(
             path,
             PROFILE,
             &crate::db::sync_lock::LockLost::default()
         )
-        .await
+        .await,
+        crate::commands::sync::NodeStep::Synced
     );
     crate::commands::sync::node_discover_step(path, PROFILE).await;
 
@@ -9998,4 +10000,193 @@ async fn shakedex_rebroadcast_after_a_price_drop_is_not_sent() {
         "the old price never reached the node again"
     );
     b.cl.reconsider_block(&block).await.expect("reconsider");
+}
+
+/// Activity on a node without `--index-tx`: hsd lists only the mempool in
+/// `GET /tx/address`, so a mined history would read as empty. The coin sync
+/// still works there (the address index is on), and the history refuses
+/// with the sentence Activity's banner keys on.
+#[tokio::test]
+async fn live_noindex_history_refuses_without_the_tx_index() {
+    let Some((url, key)) = noindex_env() else {
+        eprintln!(
+            "skip live_noindex_history_refuses_without_the_tx_index: set HNS_IT_NOINDEX_NODE_URL"
+        );
+        return;
+    };
+    let cl = client(&url, &key);
+    let status = cl.get_node_status().await.expect("GET /");
+    assert_eq!(status["chain"]["indexers"]["indexTX"], false, "{status}");
+    assert_eq!(
+        status["chain"]["indexers"]["indexAddress"], true,
+        "{status}"
+    );
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let (addr, _, _) = leaf00();
+    fund(&cl, &addr, 3).await;
+    // hsd's reply first: coins listed, the mined history not.
+    assert!(!cl
+        .get_coins_by_address(&addr)
+        .await
+        .expect("coins")
+        .is_empty());
+    assert!(cl.get_txs_by_address(&addr).await.expect("txs").is_empty());
+
+    sync_wallet_state(app.state(), None)
+        .await
+        .expect("the address index is enough for the coin sync");
+    assert!(wallet_total_doos(&app) > 0);
+    let err = crate::commands::history::read_action_history(app.state(), None)
+        .await
+        .expect_err("no history from a node without the tx index");
+    assert!(
+        err.to_string().contains("address index not enabled"),
+        "{err}"
+    );
+}
+
+// --- A node without the address index ---------------------------------------
+//
+// hsd started without `--index-address` (and here without `--index-tx`)
+// answers `GET /coin/address` and `GET /tx/address` with `200 []`, the mempool
+// included: an empty list that is not "no coins". These tests need the indexed
+// node (`HNS_IT_NODE_URL`) and a third regtest node started without either
+// index (`scripts/regtest.sh start-noaddrindex`); they are skipped while
+// `HNS_IT_NOADDRINDEX_NODE_URL` is unset or empty.
+
+fn noaddrindex_env() -> Option<(String, String)> {
+    let url = std::env::var("HNS_IT_NOADDRINDEX_NODE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
+    let key = std::env::var("HNS_IT_NOADDRINDEX_NODE_API_KEY").unwrap_or_default();
+    Some((url, key))
+}
+
+/// A profile synced on the indexed node, then pointed at a node without the
+/// address index: its balance is not wiped, and every command says why.
+/// `sync_wallet_state` refuses, a full sync run keeps every tracked coin
+/// unspent and reports the reason in its errors, sending is refused, and
+/// Activity refuses with its banner's sentence.
+#[tokio::test]
+async fn live_noindex_address_sync_keeps_the_balance_and_says_why() {
+    let (Some((url, key)), Some((nurl, nkey))) = (it_env(), noaddrindex_env()) else {
+        eprintln!(
+            "skip live_noindex_address_sync_keeps_the_balance_and_says_why: set \
+             HNS_IT_NODE_URL and HNS_IT_NOADDRINDEX_NODE_URL"
+        );
+        return;
+    };
+    let cl = client(&url, &key);
+    let ncl = client(&nurl, &nkey);
+    let tip = cl.get_blockchain_info().await.expect("info").blocks as i64;
+    let acct = fresh_acct(tip);
+    let (addr, _, _) = leaf00_at(acct);
+
+    // hsd's reply on the index-less node first: it reports both indexes off,
+    // and lists neither the coin nor the history of an address it mined a
+    // coinbase to, although the coin is there.
+    let status = ncl.get_node_status().await.expect("GET /");
+    assert_eq!(status["chain"]["indexers"]["indexTX"], false, "{status}");
+    assert_eq!(
+        status["chain"]["indexers"]["indexAddress"], false,
+        "{status}"
+    );
+    let mined = ncl.generate_to_address(1, &addr).await.expect("mine");
+    let block = ncl
+        .get_block(mined[0].as_str().expect("block hash"))
+        .await
+        .expect("block");
+    let coinbase = block["tx"][0]["txid"]
+        .as_str()
+        .or_else(|| block["tx"][0]["hash"].as_str())
+        .expect("coinbase txid")
+        .to_string();
+    assert!(
+        ncl.get_coin(&coinbase, 0).await.expect("coin").is_some(),
+        "the coin is on the index-less node's chain"
+    );
+    assert!(ncl
+        .get_coins_by_address(&addr)
+        .await
+        .expect("coins")
+        .is_empty());
+    assert!(ncl.get_txs_by_address(&addr).await.expect("txs").is_empty());
+
+    // A profile synced on the indexed node holds coins.
+    let (db_path, app) = file_backed_app(&url, &key, acct);
+    fund(&cl, &addr, 3).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let total = wallet_total_doos(&app);
+    let coins = wallet_utxo_count(&app);
+    assert!(total > 0 && coins > 0, "funded on the indexed node");
+
+    // The profile now points at the index-less node.
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::set_setting(&c, "node_rpc_url", &nurl).unwrap();
+        db::queries::set_setting(&c, "node_rpc_api_key", &nkey).unwrap();
+    }
+
+    let err = sync_wallet_state(app.state(), None)
+        .await
+        .expect_err("no sync through a node without the address index");
+    assert!(
+        err.to_string()
+            .contains(crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX),
+        "{err}"
+    );
+    assert_eq!(
+        (wallet_total_doos(&app), wallet_utxo_count(&app)),
+        (total, coins)
+    );
+
+    let status = std::sync::Arc::new(tokio::sync::Mutex::new(
+        crate::commands::sync::SyncStatus::default(),
+    ));
+    crate::commands::sync::run_sync_steps(
+        &status,
+        db_path.to_str().unwrap(),
+        PROFILE,
+        crate::commands::sync::SyncCaller::App,
+    )
+    .await;
+    assert_eq!(
+        (wallet_total_doos(&app), wallet_utxo_count(&app)),
+        (total, coins),
+        "nothing marked spent"
+    );
+    let errors = status.lock().await.errors.clone();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains(crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX)),
+        "{errors:?}"
+    );
+
+    unlock(&app);
+    let cap = crate::commands::tx::get_write_capability(app.state())
+        .await
+        .expect("cap");
+    assert!(!cap.can_write, "{cap:?}");
+    assert!(
+        cap.reason
+            .as_deref()
+            .is_some_and(|r| r.contains("isn't address-indexed")),
+        "{cap:?}"
+    );
+
+    let err = crate::commands::history::read_action_history(app.state(), None)
+        .await
+        .expect_err("no history from a node without the address index");
+    assert!(
+        err.to_string().contains("address index not enabled"),
+        "{err}"
+    );
+
+    drop(app);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
 }

@@ -19,7 +19,7 @@ use crate::commands::shakedex::{
 use crate::db::queries;
 use crate::error::AppError;
 use crate::noncustodial::network::Network;
-use crate::noncustodial::node_rpc::NodeRpc;
+use crate::noncustodial::node_rpc::{node_indexes, NodeRpc};
 use crate::noncustodial::shakedex::discover::{commits_to_lock, lock_candidates, LockCandidate};
 use crate::noncustodial::shakedex::lock_key::LockKey;
 use crate::noncustodial::shakedex::sell;
@@ -57,24 +57,14 @@ fn names_the_address_index(e: &AppError) -> bool {
     matches!(e, AppError::Rpc(m) if m.contains("address index not enabled"))
 }
 
-/// Whether hsd's `GET /` reply reports both indexes the search reads with
-/// (`chain.indexers.indexTX` and `.indexAddress`). hsd answers
-/// `GET /tx/address` with an empty list when either is off, so an empty
-/// history proves nothing until this says both are on. A reply without both
-/// flags as booleans is an error: never taken as "on".
+/// Whether the node has both indexes the search reads with
+/// ([`node_indexes`]). hsd answers `GET /tx/address` with an empty list when
+/// either is off, so an empty history proves nothing until this says both
+/// are on. A reply without both flags as booleans is an error: never taken
+/// as "on".
 async fn address_index_on(node: &dyn NodeRpc) -> Result<bool, AppError> {
-    let status = node.get_node_status().await?;
-    let flag = |name: &str| {
-        status
-            .pointer(&format!("/chain/indexers/{name}"))
-            .and_then(serde_json::Value::as_bool)
-            .ok_or_else(|| {
-                AppError::Rpc(format!(
-                    "node status did not report chain.indexers.{name}: could not check its indexes"
-                ))
-            })
-    };
-    Ok(flag("indexTX")? && flag("indexAddress")?)
+    let indexes = node_indexes(node).await?;
+    Ok(indexes.tx && indexes.address)
 }
 
 fn lock_db(db: &Mutex<Connection>) -> Result<std::sync::MutexGuard<'_, Connection>, AppError> {

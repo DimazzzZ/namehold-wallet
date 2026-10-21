@@ -2364,6 +2364,8 @@ async fn sync_aborts_the_listing_in_the_app_and_the_daemon() {
         let id = open_listing(&app).unwrap().id;
 
         let mut node = mockito::Server::new_async().await;
+        let _indexes_node =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut node, true, true).await;
         let path = std::env::temp_dir().join(format!(
             "namehold_sell_abort_{}_{caller:?}.db",
             std::process::id()
@@ -4995,6 +4997,8 @@ async fn sync_lists_the_listing_in_the_app_and_the_daemon() {
         let tip = ready_tip(Network::Regtest) + 1;
 
         let mut node = mockito::Server::new_async().await;
+        let _indexes_node =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut node, true, true).await;
         let path = std::env::temp_dir().join(format!(
             "namehold_sell_listed_{}_{caller:?}.db",
             std::process::id()

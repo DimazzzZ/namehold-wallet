@@ -325,9 +325,9 @@ pub(crate) fn load_wallet_addresses(
 
 /// Full wallet action history from the local hsd node.
 ///
-/// - Requires `--index-tx` + `--index-address` on the node (surfaces a specific
-///   error otherwise; the UI can gate on this to show the "enable address
-///   index" banner).
+/// - Requires `--index-tx` + `--index-address` on the node, as its `GET /`
+///   reports them (refuses with the "address index not enabled" sentence
+///   otherwise; the UI gates its "enable address index" banner on it).
 /// - Iterates each derived address, calls `/tx/address` per address, dedupes
 ///   by txid.
 /// - Classifies each tx via [`classify_tx`] using the wallet's own-address set.
@@ -355,10 +355,32 @@ pub async fn read_action_history(
     if addresses.is_empty() {
         return Ok(Vec::new());
     }
+    read_action_history_with_client(&node, &addresses).await
+}
 
+/// [`read_action_history`] for `addresses` against `node`, newest first.
+///
+/// hsd answers `GET /tx/address` with an empty list, never an error, without
+/// `--index-address`, and with the mempool alone without `--index-tx`: such a
+/// node is refused with [`NEEDS_ADDRESS_INDEX`] (Activity's banner) before
+/// any per-address read, whose failures [`fetch_and_dedup_txs_with_client`]
+/// skips. A node whose indexes cannot be read is an error too. Testable
+/// against a mock.
+///
+/// [`NEEDS_ADDRESS_INDEX`]: crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX
+pub(crate) async fn read_action_history_with_client(
+    node: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    addresses: &[String],
+) -> Result<Vec<ActionRow>, AppError> {
+    let indexes = crate::noncustodial::node_rpc::node_indexes(node).await?;
+    if !(indexes.tx && indexes.address) {
+        return Err(AppError::Rpc(
+            crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX.into(),
+        ));
+    }
     let our: HashSet<String> = addresses.iter().cloned().collect();
 
-    let by_txid = fetch_and_dedup_txs_with_client(&node, &addresses).await;
+    let by_txid = fetch_and_dedup_txs_with_client(node, addresses).await;
 
     let mut rows: Vec<ActionRow> = by_txid
         .values()
