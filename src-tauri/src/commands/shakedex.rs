@@ -8,6 +8,7 @@
 //! never taken for availability, price or fee.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tauri::State;
 
 use crate::commands::draft_ctx::{self, random_id, Ctx};
@@ -1101,6 +1102,11 @@ pub struct ListingSummary {
     /// Owned Names row counts them ([`queries::locking_blocks_until_finalize`]);
     /// `None` before the lock TRANSFER is seen mined and in every other state.
     pub blocks_until_finalize: Option<i64>,
+    /// R35: blocks until buyers stop seeing the listing, because the name
+    /// would expire before a purchase could be finalized (R9); 0 once they
+    /// no longer see it. Only for a Listed or Restored row of My listings,
+    /// counted on an authoritative node; `None` when unknown.
+    pub blocks_until_unbuyable: Option<i64>,
     /// Where the listing stands on LearnHNS Market (R23, R25, R28); `None`
     /// while our current listing is not yet told (unpublished, not yet
     /// announced, or reset by a move back to Listed).
@@ -1143,6 +1149,7 @@ impl ListingSummary {
             cancel_finalize_draft_id: l.cancel_finalize_draft_id.clone(),
             cancel_blocks_remaining: l.cancel_blocks_remaining,
             blocks_until_finalize,
+            blocks_until_unbuyable: None,
             market_status: l.market_status,
             market_error: l.market_error.clone(),
             market_retry_at: l.market_retry_at.clone(),
@@ -2202,6 +2209,13 @@ pub struct MyListing {
     pub actions: ListingActions,
     pub prices: ListingPrices,
     pub pending_send: Option<PendingSend>,
+    /// R35: the window within which `listing.blocks_until_unbuyable` is
+    /// shown, R9's 30 days in the network's blocks
+    /// (`NameParams::expiry_warn_blocks`).
+    pub unbuyable_warn_blocks: u32,
+    /// Whether blocks keep time on the profile's network, so that count may
+    /// be shown as days (`Network::has_wall_clock_block_timing`).
+    pub wall_clock_timing: bool,
 }
 
 fn pending_send(
@@ -2235,7 +2249,10 @@ pub(crate) fn my_listing_from_conn(
     network: Network,
     l: &ShakedexListing,
     chain: Option<&Result<u64, String>>,
+    buyable: &HashMap<String, i64>,
 ) -> Result<MyListing, AppError> {
+    let unbuyable_warn_blocks = network.name_params().expiry_warn_blocks();
+    let wall_clock_timing = network.has_wall_clock_block_timing();
     let steps = match readable_steps(l) {
         Ok(steps) => steps,
         // One unreadable row must not hide the others: it is listed with
@@ -2265,11 +2282,16 @@ pub(crate) fn my_listing_from_conn(
                     reason: e.to_string(),
                 },
                 pending_send: None,
+                unbuyable_warn_blocks,
+                wall_clock_timing,
             });
         }
     };
     let prices = listing_prices(&steps, chain);
-    let listing = ListingSummary::with_steps(l, steps, lockup_left(conn, l)?);
+    let mut listing = ListingSummary::with_steps(l, steps, lockup_left(conn, l)?);
+    if counts_buyable_blocks(l.state) {
+        listing.blocks_until_unbuyable = buyable.get(&l.name).copied();
+    }
     let finalize = finalize_and_sign_refusal(conn, l)?;
     let lower = lower_refusal(l.state, listing.steps.is_empty()).map(str::to_string);
     // The stored lockup is the last sync's count; the command counts again
@@ -2293,7 +2315,30 @@ pub(crate) fn my_listing_from_conn(
         prices,
         pending_send: pending_send(conn, l)?,
         listing,
+        unbuyable_warn_blocks,
+        wall_clock_timing,
     })
+}
+
+/// R35: whether a row in `state` says how long buyers still see it: a lock
+/// on the market that the seller can still cancel (Listed, Restored). A
+/// SalePending row is not counted: its purchase is already in the mempool
+/// and Cancel is refused.
+fn counts_buyable_blocks(state: ListingState) -> bool {
+    matches!(state, ListingState::Listed | ListingState::Restored)
+}
+
+/// R35: the names whose expiry My listings asks the node for, those of rows
+/// that say how long buyers still see them.
+pub(crate) fn buyable_count_names(listings: &[ShakedexListing]) -> Vec<String> {
+    let mut names: Vec<String> = listings
+        .iter()
+        .filter(|l| counts_buyable_blocks(l.state))
+        .map(|l| l.name.clone())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// The stored steps of `l` as My listings and publishing read them: steps
@@ -2323,9 +2368,23 @@ pub(crate) fn my_listings_from_conn(
     network: Network,
     chain: Option<Result<u64, String>>,
 ) -> Result<Vec<MyListing>, AppError> {
+    my_listings_from_conn_at(conn, profile_id, network, chain, &HashMap::new())
+}
+
+/// [`my_listings_from_conn`] with the node's per-name count of blocks until
+/// each listing stops being buyable (R35,
+/// `verify::buyable_blocks_by_name`); a name missing from `buyable` is
+/// unknown.
+pub(crate) fn my_listings_from_conn_at(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    network: Network,
+    chain: Option<Result<u64, String>>,
+    buyable: &HashMap<String, i64>,
+) -> Result<Vec<MyListing>, AppError> {
     queries::list_shakedex_listings(conn, profile_id)?
         .iter()
-        .map(|l| my_listing_from_conn(conn, network, l, chain.as_ref()))
+        .map(|l| my_listing_from_conn(conn, network, l, chain.as_ref(), buyable))
         .collect()
 }
 
@@ -3652,32 +3711,34 @@ pub async fn shakedex_list_listings(
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         named_or_active_profile(&conn, wallet_profile_id)?
     };
-    let needs_chain = {
+    let (needs_chain, names) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        needs_median_time(&queries::list_shakedex_listings(&conn, &profile_id)?)
+        let listings = queries::list_shakedex_listings(&conn, &profile_id)?;
+        (needs_median_time(&listings), buyable_count_names(&listings))
     };
-    let chain = if needs_chain {
+    let mut chain = None;
+    let mut buyable = HashMap::new();
+    if needs_chain || !names.is_empty() {
         let ctx = browse_ctx_for(&state, &profile_id)?;
         if ctx.can_verify() {
-            Some(
-                verify::chain_point(&ctx.node)
-                    .await
-                    .map(|p| p.mtp)
-                    .map_err(|h| match h {
-                        Hidden::CouldNotCheck { reason } => reason,
-                        // `chain_point` answers CouldNotCheck only.
-                        other => format!("{other:?}"),
-                    }),
-            )
-        } else {
-            None
+            let point = verify::chain_point(&ctx.node).await;
+            if let Ok(p) = &point {
+                // R35: one `getnameinfo` per name, at the tip just read.
+                buyable =
+                    verify::buyable_blocks_by_name(&ctx.node, ctx.network, &names, p.tip).await;
+            }
+            if needs_chain {
+                chain = Some(point.map(|p| p.mtp).map_err(|h| match h {
+                    Hidden::CouldNotCheck { reason } => reason,
+                    // `chain_point` answers CouldNotCheck only.
+                    other => format!("{other:?}"),
+                }));
+            }
         }
-    } else {
-        None
-    };
+    }
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let network = queries::profile_network(&conn, &profile_id)?;
-    my_listings_from_conn(&conn, &profile_id, network, chain)
+    my_listings_from_conn_at(&conn, &profile_id, network, chain, &buyable)
 }
 
 #[cfg(test)]

@@ -53,6 +53,7 @@ import {
   sellRefusal,
   shakedexRefusal,
   stepTimeText,
+  unbuyableText,
   cancelStillBuyable,
   discardedText,
   withKept,
@@ -278,6 +279,12 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
     listing.state === "listed" && listing.expiresAt != null
       ? listedUntilText(listing.expiresAt)
       : null;
+  // R35: buyers stop seeing a lock whose name gets too close to expiring.
+  const unbuyable = unbuyableText(
+    listing.blocksUntilUnbuyable,
+    row.unbuyableWarnBlocks,
+    row.wallClockTiming,
+  );
 
   // Each disabled button's reason, once: the gate first, then the backend's.
   const reasons = new Set<string>();
@@ -340,6 +347,11 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
         </Disclosure>
       )}
       {listedUntil && <div className="mt-1 text-xs text-gray-400">{listedUntil}</div>}
+      {unbuyable && (
+        <p className="mt-1 text-xs text-amber-800" data-testid="listing-unbuyable">
+          {unbuyable}
+        </p>
+      )}
       {(rendered.length > 0 || pendingSend) && (
         <div className="mt-2 flex flex-wrap gap-2">
           {pendingSend && (

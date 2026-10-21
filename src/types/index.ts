@@ -1017,6 +1017,8 @@ export interface ShakedexListingSummary {
   cancelBlocksRemaining: number | null;
   /** Blocks left in the transfer lockup while Locking, counted as the Owned Names row counts them; null before the lock is seen mined and in every other state. */
   blocksUntilFinalize: number | null;
+  /** R35: blocks until buyers stop seeing the listing, because the name would expire before a purchase could be finalized (R9); 0 once they no longer see it. Listed and Restored rows of My listings only, counted on a node; null when unknown. */
+  blocksUntilUnbuyable: number | null;
   /** Where the listing stands on LearnHNS Market; null while our current listing is not yet told. */
   marketStatus: ShakedexMarketStatus | null;
   /** The market's own refusal, or why it gave no answer. */
@@ -1093,6 +1095,10 @@ export interface ShakedexMyListing {
   actions: ShakedexListingActions;
   prices: ShakedexListingPrices;
   pendingSend: ShakedexPendingSend | null;
+  /** R35: the window, in the network's blocks, within which `listing.blocksUntilUnbuyable` is shown (R9's 30 days: 4320 on mainnet, 300 on regtest). */
+  unbuyableWarnBlocks: number;
+  /** Blocks keep time on this network, so that count may be shown as days; false on regtest and simnet. */
+  wallClockTiming: boolean;
 }
 
 export type ImportSource =

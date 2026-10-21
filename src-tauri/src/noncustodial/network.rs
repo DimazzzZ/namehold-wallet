@@ -247,6 +247,20 @@ impl NameParams {
         tip + 1 + lockup_left + i64::from(self.margin_day())
     }
 
+    /// Blocks until a listing of a name expiring at `expiry_end` stops being
+    /// buyable (R9, R35): how far the expiry end lies past
+    /// [`Self::finalize_margin`] of a purchase built now, 0 once it does not.
+    pub fn blocks_until_unbuyable(self, expiry_end: i64, tip: i64) -> i64 {
+        (expiry_end - self.finalize_margin(tip, i64::from(self.transfer_lockup))).max(0)
+    }
+
+    /// R9's warning window, "30 such days" in blocks: 4320 on mainnet, 300
+    /// on regtest. A buyer is warned within it (R9), a seller told when
+    /// buyers stop seeing the listing (R35).
+    pub fn expiry_warn_blocks(self) -> u32 {
+        30 * self.margin_day()
+    }
+
     /// The height at which a name last renewed at `renewal` expires: the end
     /// of its renewal window, or for a `claimed` (reserved) name not before
     /// the claim period is over. hsd `NameState.isExpired`: "Claimed names can

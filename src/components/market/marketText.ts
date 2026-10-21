@@ -270,6 +270,34 @@ export function lockupLeftText(blocks: number, wallClockTiming: boolean): string
 }
 
 /**
+ * R35: a Listed or Restored row's warning that buyers stop seeing it, as
+ * the name gets too close to expiring for a purchase to be finalized (R9):
+ * shown once `blocks` (`blocksUntilUnbuyable`) falls within `warnBlocks`
+ * (R9's 30 days in the network's blocks), "in ~12 days" where blocks keep
+ * time (`wallClockTiming`, R10) and "in 42 blocks" where they are mined on
+ * demand. A name in a lock cannot be renewed, so the way out is Cancel.
+ * `null`: nothing to say, or not known.
+ */
+export function unbuyableText(
+  blocks: number | null,
+  warnBlocks: number,
+  wallClockTiming: boolean,
+): string | null {
+  if (blocks === null || blocks > warnBlocks) return null;
+  const why = "the name is too close to expiring to finalize a purchase";
+  const home = "Cancel it and bring the name home to renew it";
+  if (blocks <= 0) return `Buyers no longer see this listing: ${why}. ${home}.`;
+  let when: string;
+  if (!wallClockTiming) {
+    when = `in ${blocks} ${blocks === 1 ? "block" : "blocks"}`;
+  } else {
+    const days = Math.round((blocks * SECS_PER_BLOCK) / 86_400);
+    when = days < 1 ? "in less than a day" : `in ~${days} ${days === 1 ? "day" : "days"}`;
+  }
+  return `Buyers stop seeing this listing ${when}, when the name gets too close to expiring to finalize a purchase. ${home}, then list it again.`;
+}
+
+/**
  * Why a typed fee rate cannot be used, or null (empty is the default). It
  * takes what `parseDoosPerKvb` (and so `FeeRateOverride`) takes, except a
  * rate below the minimum: the parser would raise it, and the panel refuses
