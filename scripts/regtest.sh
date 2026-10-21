@@ -63,6 +63,12 @@ CPFP_MAX_WEIGHT="5700"
 log()  { printf '[regtest] %s\n' "$*" >&2; }
 die()  { printf '[regtest] error: %s\n' "$*" >&2; exit 1; }
 
+# True if pid $1 is a live hsd process. hsd renames its process to "hsd";
+# a pid file left behind by a node that exited may name any process since.
+is_hsd_pid() {
+  [ -n "${1:-}" ] && [ "$(ps -o comm= -p "$1" 2>/dev/null | tr -d ' ')" = "hsd" ]
+}
+
 need() { command -v "$1" >/dev/null 2>&1 || die "'$1' not found on PATH (install hsd: brew install hsd, or npm i -g hsd)"; }
 
 # hsd-cli rpc wrapper.
@@ -142,7 +148,7 @@ cmd_stop() {
   fi
   if [ -f "$PID_FILE" ]; then
     local pid; pid="$(cat "$PID_FILE" 2>/dev/null || true)"
-    if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+    if is_hsd_pid "${pid:-}"; then
       log "pid $pid still alive; sending TERM"
       kill "$pid" 2>/dev/null || true
     fi
@@ -197,7 +203,7 @@ cmd_stop_noaddrindex() {
   fi
   if [ -f "$NOADDR_PID_FILE" ]; then
     local pid; pid="$(cat "$NOADDR_PID_FILE" 2>/dev/null || true)"
-    if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+    if is_hsd_pid "${pid:-}"; then
       log "pid $pid still alive; sending TERM"
       kill "$pid" 2>/dev/null || true
     fi
@@ -255,10 +261,10 @@ cmd_stop_cpfp() {
   # hsd answers RPC for a while after `stop`: wait for the process itself, so
   # a start right after finds the data dir free (the live test restarts it).
   local tries=0
-  while [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && [ "$tries" -lt 40 ]; do
+  while is_hsd_pid "$pid" && [ "$tries" -lt 40 ]; do
     sleep 0.5; tries=$((tries + 1))
   done
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  if is_hsd_pid "$pid"; then
     log "pid $pid still alive; sending TERM"
     kill "$pid" 2>/dev/null || true
     sleep 1
