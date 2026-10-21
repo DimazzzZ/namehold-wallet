@@ -79,7 +79,7 @@ use crate::market::learnhns::{
     StatusReport,
 };
 use crate::noncustodial::network::Network;
-use crate::noncustodial::node_rpc::NodeRpc;
+use crate::noncustodial::node_rpc::{node_indexes, NodeIndexes, NodeRpc};
 use crate::noncustodial::rpc::{self, NodeRpcClient};
 use crate::noncustodial::send::RESERVATION_TTL_SECS;
 use crate::noncustodial::shakedex::cancel;
@@ -200,12 +200,22 @@ pub async fn refresh_purchases_with_client(
         return Ok(());
     }
     let tip = client.get_blockchain_info().await?.blocks;
+    // Only a purchase whose TRANSFER was spent needs them (its FINALIZE is
+    // found in the destination's history); a failed read stops nothing else.
+    let indexes = match node_indexes(client).await {
+        Ok(i) => Some(i),
+        Err(e) => {
+            eprintln!("shakedex purchases: the node's indexes were not read: {e}");
+            None
+        }
+    };
     let job = Job {
         conn,
         client,
         network,
         tip,
         rebroadcast,
+        indexes,
     };
     for p in &purchases {
         if let Err(e) = job.refresh(p).await {
@@ -306,6 +316,9 @@ struct Job<'a> {
     network: Network,
     tip: i64,
     rebroadcast: Rebroadcast,
+    /// The node's indexes, read once per run; `None` when its status could
+    /// not be read (the history is then asked as before).
+    indexes: Option<NodeIndexes>,
 }
 
 impl Job<'_> {
@@ -667,6 +680,15 @@ impl Job<'_> {
         p: &ShakedexPurchase,
         purchase_height: i64,
     ) -> Result<(), AppError> {
+        // hsd lists a mined transaction in `GET /tx/address` only with both
+        // indexes on, and never says when it lists nothing for want of one.
+        if self.indexes.is_some_and(|i| !(i.tx && i.address)) {
+            return Err(AppError::Rpc(
+                "no verdict: the node has no address or tx index, so its history cannot \
+                 show the FINALIZE of the purchase's transfer"
+                    .into(),
+            ));
+        }
         for tx in self
             .client
             .get_txs_by_address(&p.destination_address)

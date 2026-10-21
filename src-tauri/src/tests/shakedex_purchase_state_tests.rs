@@ -1357,6 +1357,38 @@ async fn finalized_name_moved_on_since_is_owned() {
     );
 }
 
+/// A node without the address or the tx index lists no mined FINALIZE in
+/// `GET /tx/address` (hsd answers an empty or mempool-only list): the job
+/// does not ask it, and the purchase keeps its state, no verdict. With both
+/// indexes on, the history is read as before.
+#[tokio::test]
+async fn transfer_spent_on_a_node_without_the_indexes_gives_no_verdict() {
+    use crate::tests::mock_node_rpc::node_status_with_indexes;
+    for (tx, address) in [(false, false), (true, false), (false, true)] {
+        let conn = seeded("broadcasted", "awaiting_finalize");
+        let rpc = transfer_spent_and_name_elsewhere(vec![finalize_at(1290)])
+            .with_node_status(node_status_with_indexes(tx, address));
+        run(&conn, &rpc).await;
+        let p = row(&conn);
+        assert_eq!(
+            p.state,
+            crate::db::queries::PurchaseState::AwaitingFinalize,
+            "tx {tx} address {address}"
+        );
+        assert_eq!(p.lost_reason, None);
+        assert!(
+            rpc.calls_matching(|c| matches!(c, RpcCall::TxsByAddress(_)))
+                .is_empty(),
+            "tx {tx} address {address}"
+        );
+    }
+    let conn = seeded("broadcasted", "awaiting_finalize");
+    let rpc = transfer_spent_and_name_elsewhere(vec![finalize_at(1290)])
+        .with_node_status(node_status_with_indexes(true, true));
+    run(&conn, &rpc).await;
+    assert_eq!(row(&conn).state, crate::db::queries::PurchaseState::Owned);
+}
+
 /// Owned is decided by the FINALIZE itself, never by its absence or by an
 /// output that only happens to pay us: a history without a spender of our
 /// TRANSFER (cut short by a proxy, or not indexed yet), a spender whose
