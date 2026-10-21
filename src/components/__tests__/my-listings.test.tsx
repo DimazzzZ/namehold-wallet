@@ -1036,7 +1036,7 @@ describe("MyListings", () => {
       answers: {
         shakedex_find_locks: () =>
           Promise.reject(
-            "finding your locks needs a node run with --index-tx and --index-address; Restore a lock by name works without them",
+            "Invalid input: finding your locks needs a node run with --index-tx and --index-address; Restore a lock by name works without them",
           ),
       },
     });

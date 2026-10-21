@@ -41,7 +41,9 @@ export function useLockDiscovery(): void {
     find
       .mutateAsync(false)
       .then((report) => {
-        if (report.adopted.length > 0) showToast(foundLocksText(report.adopted.length));
+        if (report.ran && report.adopted.length > 0) {
+          showToast(foundLocksText(report.adopted.length));
+        }
       })
       .catch(() => {})
       .finally(() => {

@@ -74,7 +74,8 @@ export function FindLocks() {
       // Tauri rejects with the error's Display string. The index refusal is
       // read before `mapError`, which words index errors its own way.
       const raw = e instanceof Error ? e.message : typeof e === "string" ? e : "";
-      if (raw.toLowerCase() === LOCK_SEARCH_NEEDS_INDEX.slice(0, -1).toLowerCase()) {
+      // `AppError::InvalidInput` displays as "Invalid input: <sentence>".
+      if (raw.toLowerCase().endsWith(LOCK_SEARCH_NEEDS_INDEX.slice(0, -1).toLowerCase())) {
         setIndexRefused(true);
       } else {
         setError(mapError(e));
