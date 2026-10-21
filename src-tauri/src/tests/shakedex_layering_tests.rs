@@ -111,9 +111,11 @@ fn transaction_commands_do_not_reach_into_the_shakedex_commands() {
 /// material. The whole class is refused, case-insensitively: anything that
 /// signs (`sign_…`, a signer), any private key, seed or mnemonic, a master
 /// key, the unlocked session and the vault. A send is refused too, except
-/// the one purchase rebroadcast in `shakedex_jobs.rs`, which
-/// `may_broadcast` closes for the daemon (`Rebroadcast::Never`): that exact
-/// line, exactly once.
+/// the purchase's one rebroadcast in `shakedex_jobs.rs`, which
+/// `may_broadcast` closes for the daemon (`Rebroadcast::Never`), and the
+/// resend of its Speed up child that only that rebroadcast's success reaches
+/// (`rebroadcast_child`, spec 2026-10-21 R15): that exact line, exactly
+/// twice.
 #[test]
 fn shakedex_jobs_hold_no_signing_call() {
     let sources = [
@@ -150,5 +152,13 @@ fn shakedex_jobs_hold_no_signing_call() {
         }
         assert!(scanned > 300, "{file}: only {scanned} lines scanned");
     }
-    assert_eq!(rebroadcasts, 1, "the one guarded rebroadcast, exactly once");
+    assert_eq!(
+        rebroadcasts, 2,
+        "the guarded rebroadcast and its child's resend, exactly once each"
+    );
+    // The child's resend is reached from the purchase's rebroadcast alone.
+    let child_resends = code_lines(include_str!("../shakedex_jobs.rs"))
+        .filter(|l| l.contains("rebroadcast_child("))
+        .count();
+    assert_eq!(child_resends, 2, "its definition and its one call");
 }

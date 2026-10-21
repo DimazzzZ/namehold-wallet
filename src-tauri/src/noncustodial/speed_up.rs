@@ -86,6 +86,10 @@ pub const CHANGE_TOO_SMALL: &str =
 /// R14: the parent left the mempool before the child was sent.
 pub const PARENT_GONE: &str =
     "The transaction it speeds up is no longer waiting in your node's mempool; nothing was sent.";
+/// R9: no estimate from the node, and the minimum rate it falls back to is
+/// what every transaction the mempool took already pays.
+pub const NO_ESTIMATE: &str =
+    "Your node has no fee estimate yet, and this transaction already pays the minimum rate; choose a higher one.";
 
 /// R10: the child's fee is past hsd's absurd-fee cap of `cap` doos.
 fn absurd_fee(cap: u64) -> AppError {

@@ -40,6 +40,7 @@ use crate::noncustodial::shakedex::purchase::{
     PurchaseFinalizeSummary, PurchaseSummary, PURCHASE_ACTION, PURCHASE_FINALIZE_ACTION,
 };
 use crate::noncustodial::shakedex::sell::{LOCK_ACTION, LOCK_FINALIZE_ACTION};
+use crate::noncustodial::speed_up::{SpeedUpSummary, SPEED_UP_ACTION};
 use crate::noncustodial::tx_evidence::{
     chain_evidence_with_client, node_has_tx_index_with_client, taken_by_node_with_client,
     ChainEvidence, Taken, NOT_TAKEN,
@@ -137,6 +138,11 @@ pub(crate) fn confirm_details_for_draft(
             &draft.summary_json,
         )?));
     }
+    if draft.action == SPEED_UP_ACTION {
+        return Ok(confirm_details_for_speed_up(&read_summary(
+            &draft.summary_json,
+        )?));
+    }
     // The fee and amounts the user checks before signing: a summary that
     // cannot be read is refused, never shown as zeros (fail closed).
     let summary: TxSummary = read_summary(&draft.summary_json)?;
@@ -211,6 +217,57 @@ fn confirm_details_for_purchase(s: &PurchaseSummary) -> serde_json::Value {
         "value": s.finalize_wait,
     }));
     rows.push(serde_json::json!({ "label": "Txid", "value": s.txid }));
+    push_warning_rows(&mut rows, &s.warnings);
+    serde_json::json!({ "rows": rows })
+}
+
+/// The parent's mempool deadline as the confirmation states it, in UTC.
+pub(crate) fn deadline_text(unix_secs: i64) -> String {
+    chrono::DateTime::from_timestamp(unix_secs, 0)
+        .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| format!("{unix_secs} (unix time)"))
+}
+
+/// Confirmation rows for a Speed up child (spec 2026-10-21 R11): what the
+/// child pays, the package rate before and after against the target and its
+/// source, that only the network is paid, that the original keeps its
+/// transaction id, and that its mempool deadline does not move. Every number
+/// is the build's own.
+fn confirm_details_for_speed_up(s: &SpeedUpSummary) -> serde_json::Value {
+    use crate::noncustodial::speed_up::rate_text;
+    let paid_to = if s.parent_is_purchase {
+        "The network only: nobody else is paid. The seller's price and the purchase itself are unchanged."
+    } else {
+        "The network only: nobody else is paid."
+    };
+    let mut rows = vec![
+        serde_json::json!({ "label": "Action", "value": "Speed up" }),
+        serde_json::json!({ "label": "Speeds up", "value": s.parent_txid }),
+        serde_json::json!({ "label": "Fee", "value": doos_to_hns_string(s.fee_doos) }),
+        serde_json::json!({
+            "label": "Fee rate",
+            "value": format!(
+                "{} now, {} with this fee (target {} doos/vB, {})",
+                rate_text(s.package_rate_before),
+                rate_text(s.package_rate_after),
+                s.target_rate_per_vbyte,
+                s.target_source.text()
+            ),
+        }),
+        serde_json::json!({ "label": "Paid to", "value": paid_to }),
+        serde_json::json!({
+            "label": "Original transaction",
+            "value": "It keeps its transaction id.",
+        }),
+        serde_json::json!({
+            "label": "Deadline",
+            "value": format!(
+                "Speeding up does not extend the 72 hours your node keeps the original transaction: if it is not mined by {}, both are dropped and nothing is paid by either.",
+                deadline_text(s.expires_at)
+            ),
+        }),
+        serde_json::json!({ "label": "Txid", "value": s.txid }),
+    ];
     push_warning_rows(&mut rows, &s.warnings);
     serde_json::json!({ "rows": rows })
 }
@@ -782,6 +839,14 @@ pub(crate) async fn sign_tx_draft_inner(
     } else {
         sign_via_hot_session(state, &draft, &coins, ttl_ms)?
     };
+
+    // A Speed up child is checked again as signed (spec 2026-10-21 R8, R10).
+    if draft.action == SPEED_UP_ACTION {
+        crate::noncustodial::speed_up::recheck_signed_child(
+            &signed_hex,
+            &read_summary(&draft.summary_json)?,
+        )?;
+    }
 
     // 3. Persist the signed tx and status.
     persist_signed_draft(state, draft_id, &signed_hex, &summary_json)?;
@@ -1689,7 +1754,7 @@ pub async fn broadcast_tx_draft(
     state: State<'_, AppState>,
     draft_id: String,
 ) -> Result<BroadcastResult, AppError> {
-    let (signed_hex, expected_network, settings, client, purchase, maybe_sent, lock_name) = {
+    let (signed_hex, expected_network, settings, client, purchase, maybe_sent, lock_name, speed_up) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let draft = db::queries::get_tx_draft(&conn, &draft_id)?
             .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
@@ -1752,8 +1817,9 @@ pub async fn broadcast_tx_draft(
         // `remote_broadcast_allowed` is a user-wide opt-in — it stays on the
         // global settings map by design.
         let client = NodeRpcClient::for_profile(&conn, &draft.wallet_profile_id)?;
+        let speed_up = draft.action == SPEED_UP_ACTION;
         (
-            signed, network, settings, client, purchase, maybe_sent, lock_name,
+            signed, network, settings, client, purchase, maybe_sent, lock_name, speed_up,
         )
     };
 
@@ -1802,6 +1868,12 @@ pub async fn broadcast_tx_draft(
             }
             return Err(refusal);
         }
+    }
+
+    // A Speed up child is sent only while its parent waits in the node's
+    // mempool (spec 2026-10-21 R14).
+    if speed_up {
+        crate::commands::speed_up::recheck_before_broadcast(&state.db, &client, &draft_id).await?;
     }
 
     let outcome = classify_broadcast_outcome_with_client(&client, &signed_hex).await;
@@ -1954,6 +2026,21 @@ fn local_txid_from_summary(summary_json: &str) -> Option<String> {
 /// inputs, outputs and txid).
 fn draft_hex(d: &db::queries::TxDraftRow) -> &str {
     d.signed_tx_hex.as_deref().unwrap_or(&d.unsigned_tx_hex)
+}
+
+/// Why a draft whose coin another transaction spent was dropped.
+pub(crate) const SPENT_ELSEWHERE: &str = "Another transaction spent this transaction's coins, so it can never confirm. Nothing was paid by this transaction.";
+
+/// The note of a draft dropped because a coin it spends is gone: a Speed up
+/// child's one coin is its parent's change, so it names the parent that did
+/// not confirm instead (spec 2026-10-21 R15).
+pub(crate) fn spent_elsewhere_note(d: &db::queries::TxDraftRow) -> String {
+    if d.action == SPEED_UP_ACTION {
+        if let Ok(s) = serde_json::from_str::<SpeedUpSummary>(&d.summary_json) {
+            return crate::noncustodial::speed_up::parent_died_reason(&s.parent_txid);
+        }
+    }
+    SPENT_ELSEWHERE.to_string()
 }
 
 /// Whether the node keeps a transaction index, asked at most once per
@@ -2271,14 +2358,16 @@ pub async fn refresh_tx_confirmations(
         }
         for id in &maybe_spent_elsewhere {
             if db::queries::draft_updated_age_secs(&conn, id)? >= EVICTION_GRACE_SECS {
+                let note = drafts
+                    .iter()
+                    .find(|d| &d.id == id)
+                    .map(spent_elsewhere_note)
+                    .unwrap_or_else(|| SPENT_ELSEWHERE.to_string());
                 db::queries::update_tx_draft_status(
                     &conn,
                     id,
                     DraftStatus::Dropped,
-                    Some(
-                        "Another transaction spent this transaction's coins, so it can never \
-                         confirm. Nothing was paid by this transaction.",
-                    ),
+                    Some(&note),
                     None,
                 )?;
                 // Its coins are spent: the reservation holds nothing.

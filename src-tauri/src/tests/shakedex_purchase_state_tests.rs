@@ -1189,6 +1189,143 @@ async fn dropped_purchase_is_never_rebroadcast() {
     assert!(p.lost_reason.is_some_and(|r| r.contains("never confirmed")));
 }
 
+const CHILD_ID: &str = "child1";
+const CHILD_HEX: &str = "c0ffee";
+const CHILD_TXID: &str = "6666666666666666666666666666666666666666666666666666666666666666";
+
+/// The purchase's Speed up child (spec 2026-10-21), sent as `status`: it
+/// spends the purchase's change, output 2, which it reserves.
+fn add_child(conn: &Connection, status: &str) {
+    let (addr, spk, _) = leaf(0);
+    conn.execute(
+        "INSERT INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+             value_doos, covenant_type, spend_class, spent_by_txid)
+         VALUES (?1, 2, ?2, ?3, ?4, 900000, 0, 'liquid_hns', NULL)",
+        params![PURCHASE_TXID, PROFILE, addr, spk],
+    )
+    .unwrap();
+    queries::insert_tx_draft_reserving_coins(
+        conn,
+        CHILD_ID,
+        PROFILE,
+        crate::noncustodial::speed_up::SPEED_UP_ACTION,
+        "00",
+        "{}",
+        &json!({ "parentTxid": PURCHASE_TXID, "parentDraftId": DRAFT_ID, "txid": CHILD_TXID })
+            .to_string(),
+        &[(PURCHASE_TXID.to_string(), 2)],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET status = ?2, signed_tx_hex = ?3, txid = ?4 WHERE id = ?1",
+        params![CHILD_ID, status, CHILD_HEX, CHILD_TXID],
+    )
+    .unwrap();
+}
+
+fn child_status(conn: &Connection) -> (String, Option<String>) {
+    let d = queries::get_tx_draft(conn, CHILD_ID).unwrap().unwrap();
+    (d.status.to_string(), d.error_message)
+}
+
+/// R15: the purchase's one rebroadcast sends its live Speed up child right
+/// after it, which the node takes.
+#[tokio::test]
+async fn rebroadcast_sends_the_speed_up_child_right_after_the_purchase() {
+    let conn = seeded("broadcasted", "unconfirmed");
+    add_child(&conn, "broadcasted");
+    conn.execute(
+        "UPDATE shakedex_purchases SET missing_since_height = 1000",
+        [],
+    )
+    .unwrap();
+    let rpc = missing_at(1006)
+        .with_send_raw_transaction(PURCHASE_TXID.to_string())
+        .with_raw_transaction(json!({"hash": CHILD_TXID}));
+
+    run(&conn, &rpc).await;
+
+    let sent: Vec<String> = rpc
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            RpcCall::SendRawTransaction(h) => Some(h),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sent, vec![SIGNED_HEX.to_string(), CHILD_HEX.to_string()]);
+    assert_eq!(row(&conn).rebroadcast_count, 1);
+    assert_eq!(child_status(&conn), ("broadcasted".to_string(), None));
+}
+
+/// R15: a child the node does not take after the rebroadcast is left
+/// `broadcast_pending` for the confirmation poll.
+#[tokio::test]
+async fn rebroadcast_child_refused_by_the_node_stays_pending() {
+    let conn = seeded("broadcasted", "unconfirmed");
+    add_child(&conn, "broadcasted");
+    conn.execute(
+        "UPDATE shakedex_purchases SET missing_since_height = 1000",
+        [],
+    )
+    .unwrap();
+    // hsd refuses the child's bytes outright (its own JSON-RPC error).
+    let rpc = missing_at(1006)
+        .with_raw_transaction(json!({"hash": PURCHASE_TXID}))
+        .with_send_raw_transaction_fn(|hex| {
+            if hex == CHILD_HEX {
+                Err(AppError::NodeRefused {
+                    message: "TX decoding failed.".into(),
+                    code: -22,
+                })
+            } else {
+                Ok(PURCHASE_TXID.to_string())
+            }
+        });
+
+    run(&conn, &rpc).await;
+
+    assert_eq!(row(&conn).rebroadcast_count, 1);
+    let (status, note) = child_status(&conn);
+    assert_eq!(status, "broadcast_pending");
+    assert!(note.is_some_and(|n| n.contains("TX decoding failed.")));
+}
+
+/// R15: a purchase given up while paying nothing drops its live Speed up
+/// child in the same transaction, naming the purchase, and frees its coin.
+#[tokio::test]
+async fn lost_unpaid_purchase_drops_its_speed_up_child() {
+    let conn = seeded("broadcasted", "unconfirmed");
+    add_child(&conn, "broadcasted");
+    conn.execute(
+        "UPDATE shakedex_purchases SET missing_since_height = 1000, rebroadcast_count = 1",
+        [],
+    )
+    .unwrap();
+
+    run(&conn, &missing_at(1006)).await;
+
+    assert_eq!(row(&conn).state, crate::db::queries::PurchaseState::Lost);
+    assert_eq!(
+        child_status(&conn),
+        (
+            "dropped".to_string(),
+            Some(crate::noncustodial::speed_up::parent_died_reason(
+                PURCHASE_TXID
+            ))
+        )
+    );
+    let held: Option<String> = conn
+        .query_row(
+            "SELECT reserved_by_draft_id FROM tracked_utxos WHERE txid = ?1 AND vout = 2",
+            params![PURCHASE_TXID],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(held, None);
+}
+
 /// `getnameinfo` while the purchase's TRANSFER is still the name's owner.
 fn owned_by_purchase() -> Value {
     json!({"info": {"name": NAME, "owner": {"hash": PURCHASE_TXID, "index": 0}}})
