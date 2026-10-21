@@ -178,6 +178,84 @@ async fn finds_and_adopts_a_lock_still_in_it() {
     );
 }
 
+/// R32's order, "derived after the node reads": the key an adopted lock is
+/// restored with is derived once the name's owner and its coin are read; the
+/// first derivation, before `getnameinfo`, only reads the lock program the
+/// candidate is checked against, and is dropped. A candidate whose committed
+/// address is not our lock is rejected on that first derivation alone.
+#[tokio::test]
+async fn the_key_for_adoption_is_derived_after_the_node_reads() {
+    let at_derive = std::sync::Mutex::new(Vec::<Vec<RpcCall>>::new());
+    let db = store();
+    let node = node_with(vec![our_lock_transfer()]);
+    let counting = |n: &str| {
+        at_derive.lock().unwrap().push(node.calls());
+        derive(n)
+    };
+    let r = find_locks_with(&node, &db, PROFILE, NET, false, &counting)
+        .await
+        .expect("the search");
+    assert_eq!(r.adopted, vec![NAME.to_string()]);
+    let seen = at_derive.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "once for the check, once for adoption");
+    let reads = |calls: &[RpcCall]| {
+        (
+            calls
+                .iter()
+                .filter(|c| matches!(c, RpcCall::NameInfo(_)))
+                .count(),
+            calls
+                .iter()
+                .filter(|c| matches!(c, RpcCall::GetCoin(..)))
+                .count(),
+        )
+    };
+    assert_eq!(
+        reads(&seen[0]),
+        (0, 0),
+        "the check comes before the owner reads"
+    );
+    assert_eq!(reads(&seen[1]), (1, 1), "adoption's key comes after them");
+
+    let at_derive = std::sync::Mutex::new(0usize);
+    let db = store();
+    let node = node_with(vec![transfer_tx(&addr00(NET).0, &[0x42; 32])]);
+    let counting = |n: &str| {
+        *at_derive.lock().unwrap() += 1;
+        derive(n)
+    };
+    let r = find_locks_with(&node, &db, PROFILE, NET, false, &counting)
+        .await
+        .expect("the search");
+    assert!(r.adopted.is_empty());
+    assert_eq!(*at_derive.lock().unwrap(), 1, "a rejected candidate: once");
+}
+
+/// A key for adoption that is not the one checked (the signer's seed changed
+/// between the two derivations) adopts nothing: the candidate is not judged,
+/// and the search is not done.
+#[tokio::test]
+async fn a_key_changed_between_the_check_and_adoption_leaves_the_candidate_unjudged() {
+    let n = std::sync::Mutex::new(0usize);
+    let db = store();
+    let node = node_with(vec![our_lock_transfer()]);
+    let changing = |name: &str| {
+        let mut n = n.lock().unwrap();
+        *n += 1;
+        if *n == 1 {
+            derive(name)
+        } else {
+            derive_lock_key(&master(), NET, 1, name)
+        }
+    };
+    let r = find_locks_with(&node, &db, PROFILE, NET, false, &changing)
+        .await
+        .expect("the search");
+    assert!(r.adopted.is_empty());
+    assert!(!r.complete && !done(&db));
+    assert_eq!(listings(&db), 0);
+}
+
 /// Review focus 1: a plain Transfer of a name to someone else is a candidate
 /// whose committed address is not our lock: judged and skipped before the
 /// name's owner is read, never adopted (even if that owner were our lock),

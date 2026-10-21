@@ -133,9 +133,15 @@ async fn adopt_candidate(
     // Only R32's checks judge a candidate: a key not derived (the signer
     // locked, or switched to another profile, mid-search) leaves it unjudged,
     // whatever error the signer gave.
-    let key = derive(&name)
-        .map_err(|e| AppError::Other(format!("the lock key of '{name}' was not derived: {e}")))?;
-    if !commits_to_lock(c, &key.program, network) {
+    let derive_for = |name: &str| {
+        derive(name)
+            .map_err(|e| AppError::Other(format!("the lock key of '{name}' was not derived: {e}")))
+    };
+    // The check needs the lock program alone: the key, secret and all, is
+    // dropped here, before the owner reads, and derived again after them
+    // (R32's "derived after the node reads").
+    let program = derive_for(&name)?.program;
+    if !commits_to_lock(c, &program, network) {
         return Ok(None);
     }
     let reply = node.get_name_info(&name).await?;
@@ -143,6 +149,12 @@ async fn adopt_candidate(
     let Some(coin) = node.get_coin(&owner.txid, owner.vout).await? else {
         return Ok(None);
     };
+    let key = derive_for(&name)?;
+    if key.program != program {
+        return Err(AppError::Other(format!(
+            "the lock key of '{name}' changed during the search: not judged"
+        )));
+    }
     let conn = lock_db(db)?;
     restore_lock_inner(
         &conn,
@@ -287,7 +299,8 @@ pub(crate) async fn lock_search_status_with(
 /// with a node that can send (`software_writer_ctx`, as R32's restore needs)
 /// and the unlocked signer, both checked before anything is read; then
 /// [`find_locks_with`], each lock key derived from the seed of the unlocked
-/// session once its name is read. `force` runs a search already done ("Find
+/// session once its name is read (its program for the check), and again for
+/// adoption after the owner reads. `force` runs a search already done ("Find
 /// my locks").
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
