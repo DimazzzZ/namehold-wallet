@@ -257,6 +257,35 @@ describe("ActivityView", () => {
     await waitFor(() => expect(screen.getByText(/Your node does not have/)).toBeInTheDocument());
   });
 
+  // Tauri rejects `invoke` with the command's error as serialized, a plain
+  // string (`AppError` serializes to its message), not an `Error`.
+  it("shows the index-disabled banner for the backend's string rejection", async () => {
+    const base = routes([]);
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "read_action_history"
+        ? Promise.reject(
+            "Node RPC error: address index not enabled on this hsd node: restart hsd with --index-address and --index-tx",
+          )
+        : base(cmd),
+    );
+    render(<ActivityView />, { wrapper: wrapper() });
+    await waitFor(() => expect(screen.getByText(/Your node does not have/)).toBeInTheDocument());
+    expect(screen.queryByText(/Failed to load activity/)).not.toBeInTheDocument();
+  });
+
+  it("shows the backend's string rejection in the generic error banner", async () => {
+    const base = routes([]);
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "read_action_history" ? Promise.reject("HTTP error: connection refused") : base(cmd),
+    );
+    render(<ActivityView />, { wrapper: wrapper() });
+    await waitFor(() =>
+      expect(
+        screen.getByText("Failed to load activity: HTTP error: connection refused"),
+      ).toBeInTheDocument(),
+    );
+  });
+
   it("shows an empty state when there is no activity", async () => {
     invokeMock.mockImplementation(routes([]));
     render(<ActivityView />, { wrapper: wrapper() });

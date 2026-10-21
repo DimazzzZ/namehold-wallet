@@ -188,8 +188,10 @@ export function ActivityView() {
     );
   };
 
-  const isIndexError =
-    isError && error instanceof Error && error.message.includes("address index not enabled");
+  // Tauri rejects with the command's error as a plain string; a test or a
+  // wrapper may hand an `Error`.
+  const errorText = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const isIndexError = isError && errorText.includes("address index not enabled");
 
   return (
     <div>
@@ -253,7 +255,7 @@ export function ActivityView() {
       )}
       {isError && !isIndexError && (
         <div className="bg-red-50 border border-red-200 rounded p-4 mb-4 text-sm text-red-800">
-          Failed to load activity: {error instanceof Error ? error.message : "Unknown error"}
+          Failed to load activity: {errorText || "Unknown error"}
         </div>
       )}
 
