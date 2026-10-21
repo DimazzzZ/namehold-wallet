@@ -75,7 +75,7 @@ Amounts on those rows: a purchase shows minus the price (not the name's value); 
 
 ## Known issues NOT to report again
 
-These are recorded and parked. Note what you see if a case runs into one, but file it again only if its behaviour changed.
+These are recorded and known. Note what you see if a case runs into one, but file it again only if its behaviour changed.
 
 - A name in the Cancelling state shows "Shakedex_cancel is broadcast and waiting to be mined. Nothing changes on-chain until it lands in a block." in its name actions instead of disabled owner buttons.
 - Spec §5 "Known gaps" ([the spec](../specs/2026-10-05-shakedex-name-sales.md)) lists behaviour that is by design (one device per listing, a restore sees addresses only up to the gap limit past the last used one, and so on): a case that hits one is ◐ with the gap named, not a bug.
