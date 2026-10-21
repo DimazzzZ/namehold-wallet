@@ -76,6 +76,7 @@ mod secure_wallet_tests;
 mod settings_cmd_tests;
 mod settings_tests;
 mod shakedex_cmd_tests;
+mod shakedex_discover_tests;
 mod shakedex_finalize_tests;
 mod shakedex_jobs_tests;
 mod shakedex_layering_tests;

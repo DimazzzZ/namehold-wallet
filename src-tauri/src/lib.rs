@@ -710,6 +710,8 @@ pub fn run() {
             commands::shakedex::shakedex_finalize_and_sign,
             commands::shakedex::shakedex_export_listing_file,
             commands::shakedex::shakedex_restore_lock,
+            commands::shakedex_discover::shakedex_find_locks,
+            commands::shakedex_discover::shakedex_lock_search_status,
             commands::shakedex::shakedex_import_own_listing_file,
             commands::shakedex::shakedex_cancel_listing,
             commands::shakedex::shakedex_finalize_cancel,

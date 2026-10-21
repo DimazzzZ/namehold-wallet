@@ -70,7 +70,7 @@ pub struct MockNodeRpc {
     coins_by_address: ResponseFn<Vec<NodeCoin>>,
     tx_out: ResponseFn<Option<serde_json::Value>>,
     get_coin: ResponseFn2<String, u32, Option<NodeCoin>>,
-    txs_by_address: ResponseFn<Vec<serde_json::Value>>,
+    txs_by_address: ResponseFn1<String, Vec<serde_json::Value>>,
     raw_transaction: ResponseFn<serde_json::Value>,
     tx_by_hash: ResponseFn1<String, serde_json::Value>,
     block_hash: ResponseFn1<i64, String>,
@@ -102,7 +102,7 @@ impl MockNodeRpc {
             coins_by_address: err("not configured"),
             tx_out: err("not configured"),
             get_coin: Box::new(|_, _| Err(AppError::Rpc("not configured".to_string()))),
-            txs_by_address: err("not configured"),
+            txs_by_address: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
             raw_transaction: err("not configured"),
             tx_by_hash: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
             block_hash: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
@@ -240,12 +240,20 @@ impl MockNodeRpc {
     }
 
     pub fn with_txs_by_address(mut self, txs: Vec<serde_json::Value>) -> Self {
-        self.txs_by_address = Box::new(move || Ok(txs.clone()));
+        self.txs_by_address = Box::new(move |_| Ok(txs.clone()));
+        self
+    }
+    /// `GET /tx/address/:address` answered per address by `f`.
+    pub fn with_txs_by_address_fn(
+        mut self,
+        f: impl Fn(String) -> Result<Vec<serde_json::Value>, AppError> + Send + Sync + 'static,
+    ) -> Self {
+        self.txs_by_address = Box::new(f);
         self
     }
 
     pub fn with_txs_by_address_err(mut self, msg: &'static str) -> Self {
-        self.txs_by_address = Box::new(move || Err(AppError::Rpc(msg.to_string())));
+        self.txs_by_address = Box::new(move |_| Err(AppError::Rpc(msg.to_string())));
         self
     }
 
@@ -414,7 +422,7 @@ impl NodeRpc for MockNodeRpc {
 
     async fn get_txs_by_address(&self, address: &str) -> Result<Vec<serde_json::Value>, AppError> {
         self.record(RpcCall::TxsByAddress(address.to_string()));
-        (self.txs_by_address)()
+        (self.txs_by_address)(address.to_string())
     }
 
     async fn get_raw_transaction(&self, txid: &str) -> Result<serde_json::Value, AppError> {

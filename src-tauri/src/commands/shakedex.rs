@@ -399,7 +399,7 @@ pub const NEEDS_SENDING_NODE: &str =
 /// software profile and a node that can send. The profile kind is checked
 /// before `load_ctx`, whose own watch-only refusal words it differently from
 /// the sentence the UI shows.
-fn software_writer_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
+pub(crate) fn software_writer_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
     let kind = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         draft_ctx::active_profile(&conn)?.kind
@@ -760,14 +760,14 @@ fn with_signer<T>(
 
 /// The unlocked signer session of the active profile, or `WalletLocked`.
 /// Checked before a selling command reads anything else.
-fn authorize_signer(state: &State<'_, AppState>, ctx: &Ctx) -> Result<(), AppError> {
+pub(crate) fn authorize_signer(state: &State<'_, AppState>, ctx: &Ctx) -> Result<(), AppError> {
     with_signer(state, ctx, |_| Ok(()))
 }
 
 /// The lock key of `name` (ADR 0004), derived from the seed of the unlocked
 /// session, which is authorized again. Called once every node read is done,
 /// just before the key is used; it is never stored.
-fn derive_listing_key(
+pub(crate) fn derive_listing_key(
     state: &State<'_, AppState>,
     ctx: &Ctx,
     name: &str,
