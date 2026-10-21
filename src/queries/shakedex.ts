@@ -9,7 +9,9 @@ import {
 import { invoke } from "../lib/invoke";
 import { useActiveProfile } from "./wallet";
 import type {
+  FindLocksReport,
   ImportSource,
+  LockSearchStatus,
   MarketPage,
   MarketRow,
   PurchasePreview,
@@ -233,6 +235,46 @@ export const useRestoreLock = () =>
   useSellingMutation((name: string) =>
     invoke<ShakedexListingSummary>("shakedex_restore_lock", { name }),
   );
+
+/**
+ * The lock search status's query key, outside `["shakedex"]`: reading it
+ * reads every derived address's history on the node, so it is not refetched
+ * by every selling mutation's invalidation, only after a lock search ran
+ * (`useFindLocks`) and at the end of a sync (`useSyncStatus`).
+ */
+export const LOCK_SEARCH_STATUS_KEY = ["lockSearchStatus"] as const;
+
+/**
+ * Find our own locks in the address history (R34). `force` runs a search
+ * already done ("Find my locks"); the automatic one after a sync does not.
+ */
+export function useFindLocks() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (force: boolean) => invoke<FindLocksReport>("shakedex_find_locks", { force }),
+    onSuccess: (report) => {
+      qc.invalidateQueries({ queryKey: ["shakedex"] });
+      qc.invalidateQueries({ queryKey: ["wallet"] });
+      qc.invalidateQueries({ queryKey: ["read"] });
+      if (report.ran) qc.invalidateQueries({ queryKey: LOCK_SEARCH_STATUS_KEY });
+    },
+  });
+}
+
+/**
+ * Where the search stands, read without the signer (R34). A rejected read
+ * (the node could not be read) is no data: the caller shows nothing.
+ */
+export function useLockSearchStatus(enabled: boolean) {
+  const profileId = useActiveProfile().data?.id ?? null;
+  return useQuery({
+    queryKey: [...LOCK_SEARCH_STATUS_KEY, profileId],
+    enabled: enabled && profileId != null,
+    queryFn: () => invoke<LockSearchStatus>("shakedex_lock_search_status"),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
 
 /** Import our own listing file, pasted or by its path (the backend reads the file). */
 export const useImportOwnListing = () =>

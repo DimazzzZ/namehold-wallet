@@ -15,6 +15,9 @@
 #   scripts/regtest.sh mine [n] [addr]    # mine n blocks (default 1)
 #   scripts/regtest.sh rpc <method> [..]  # hsd-cli rpc passthrough
 #   scripts/regtest.sh run-it             # start (idempotent) + run live suite
+#   scripts/regtest.sh start-noaddrindex  # an index-less node (no
+#                                         # --index-tx, no --index-address)
+#   scripts/regtest.sh stop-noaddrindex   # stop that node
 #
 # Requires: hsd + hsd-cli on PATH (brew install hsd, or npm i -g hsd).
 set -euo pipefail
@@ -33,6 +36,14 @@ WALLET_PORT="14039"
 WALLET_URL="http://$RPC_HOST:$WALLET_PORT"
 # Set by --with-wallet: leave the hsd wallet plugin enabled (default: --no-wallet).
 WITH_WALLET=0
+
+# A node without --index-tx and --index-address, for the live_noaddrindex_*
+# tests: its own ports and data dir, its own chain (it does not connect to the
+# indexed node).
+NOADDR_DIR="$REGTEST_DIR/noaddrindex"
+NOADDR_PID_FILE="$NOADDR_DIR/hsd.pid"
+NOADDR_PORT="34037"
+NOADDR_URL="http://$RPC_HOST:$NOADDR_PORT"
 
 log()  { printf '[regtest] %s\n' "$*" >&2; }
 die()  { printf '[regtest] error: %s\n' "$*" >&2; exit 1; }
@@ -125,8 +136,64 @@ cmd_stop() {
   log "stopped"
 }
 
+# hsd-cli rpc against the index-less node.
+noaddr_cli() {
+  need hsd-cli
+  hsd-cli --network="$NETWORK" --api-key="$API_KEY" --http-port="$NOADDR_PORT" rpc "$@"
+}
+
+noaddr_alive() {
+  noaddr_cli getblockchaininfo >/dev/null 2>&1
+}
+
+cmd_start_noaddrindex() {
+  need hsd
+  assert_safe_regtest_dir
+  if noaddr_alive; then
+    log "index-less node already responding on $NOADDR_URL"
+    return 0
+  fi
+  mkdir -p "$NOADDR_DIR"
+  log "starting index-less hsd regtest node (prefix=$NOADDR_DIR)"
+  # No --index-tx, no --index-address: hsd then answers GET /coin/address and
+  # GET /tx/address with an empty list, never an error.
+  hsd --network="$NETWORK" --no-wallet --listen=false \
+      --http-host="$RPC_HOST" --http-port="$NOADDR_PORT" --port=34038 \
+      --ns-port=35449 --rs-port=35450 --api-key="$API_KEY" \
+      --prefix="$NOADDR_DIR" \
+      --daemon
+  pgrep -f "hsd .*--prefix=$NOADDR_DIR" | head -1 > "$NOADDR_PID_FILE" 2>/dev/null || true
+
+  local tries=0
+  until noaddr_alive; do
+    tries=$((tries + 1))
+    [ "$tries" -ge 30 ] && die "index-less node did not answer RPC within ~15s"
+    sleep 0.5
+  done
+  log "index-less node up on $NOADDR_URL (api-key=$API_KEY)"
+}
+
+cmd_stop_noaddrindex() {
+  if noaddr_alive; then
+    log "stopping index-less node via RPC"
+    noaddr_cli stop >/dev/null 2>&1 || true
+    local tries=0
+    while noaddr_alive && [ "$tries" -lt 20 ]; do sleep 0.5; tries=$((tries + 1)); done
+  fi
+  if [ -f "$NOADDR_PID_FILE" ]; then
+    local pid; pid="$(cat "$NOADDR_PID_FILE" 2>/dev/null || true)"
+    if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+      log "pid $pid still alive; sending TERM"
+      kill "$pid" 2>/dev/null || true
+    fi
+    rm -f "$NOADDR_PID_FILE"
+  fi
+  log "index-less node stopped"
+}
+
 cmd_reset() {
   assert_safe_regtest_dir
+  cmd_stop_noaddrindex
   cmd_stop
   if [ -d "$REGTEST_DIR" ]; then
     log "removing data dir $REGTEST_DIR"
@@ -188,10 +255,12 @@ main() {
     mine)    cmd_mine "$@" ;;
     rpc)     cmd_rpc "$@" ;;
     run-it)  cmd_run_it "$@" ;;
+    start-noaddrindex) cmd_start_noaddrindex "$@" ;;
+    stop-noaddrindex)  cmd_stop_noaddrindex "$@" ;;
     ""|-h|--help|help)
-      sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       ;;
-    *) die "unknown subcommand: '$sub' (try: start stop reset fund mine rpc run-it)" ;;
+    *) die "unknown subcommand: '$sub' (try: start stop reset fund mine rpc run-it start-noaddrindex stop-noaddrindex)" ;;
   esac
 }
 

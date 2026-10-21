@@ -23,7 +23,7 @@ Procedures: [mine-and-sync](procedures/mine-and-sync.md), [switch-profile](proce
 |---|---|---|---|---|
 | [shakedex/selling.md](scenarios/shakedex/selling.md) | lock, Finalize & sign, Listed, Sold, lower price, cancel and home | S1 S2 S3 S4 S5 S6 S7 S9 S10 S11 | P1–P3 | 70 |
 | [shakedex/buying.md](scenarios/shakedex/buying.md) | import, verify, buy, finalize, races, hotkeys, one filled button | B1 … B19 | P1–P3 | 60 |
-| [shakedex/restore-and-import.md](scenarios/shakedex/restore-and-import.md) | restore a lock by name, own-file import, second device | R1 … R6, C4 | P1–P3 | 80 |
+| [shakedex/restore-and-import.md](scenarios/shakedex/restore-and-import.md) | restore a lock by name, own-file import, second device | R1 … R6, R8, C4 | P1–P3 | 91 |
 | [shakedex/gates-and-refusals.md](scenarios/shakedex/gates-and-refusals.md) | profile kind, sending, experimental flag, locked signer, input refusals | G1 G2 G3 S8 S12 X4 | P1–P3 | 2 |
 | [shakedex/persistence-and-recovery.md](scenarios/shakedex/persistence-and-recovery.md) | restarts, unsent drafts, node outages, background jobs | X1 X2 X3 X5 J1 J2 J3 | P1–P3 | 15 |
 | [shakedex/activity-and-history.md](scenarios/shakedex/activity-and-history.md) | Activity labels and amounts, consistency, balance, no paid swap entry point | C1 C2 A1 A2 | P1–P3 | 0 |

@@ -1424,9 +1424,9 @@ use crate::tests::shakedex_cmd_tests::{
 };
 use crate::AppState;
 
-type App = tauri::App<tauri::test::MockRuntime>;
+pub(super) type App = tauri::App<tauri::test::MockRuntime>;
 
-const NAME: &str = "dexsale";
+pub(super) const NAME: &str = "dexsale";
 const OWNER_TXID: &str = "5555555555555555555555555555555555555555555555555555555555555555";
 const NAME_HEIGHT: u32 = 50;
 const NAME_VALUE: u64 = 1_000_000;
@@ -1434,18 +1434,18 @@ const NAME_VALUE: u64 = 1_000_000;
 const RENEWAL: u64 = 1_000;
 const REGTEST_END: i64 = 6_000;
 /// Far from expiry on regtest (end - tip = 4000 >= 1800).
-const QUIET_TIP: i64 = 2_000;
+pub(super) const QUIET_TIP: i64 = 2_000;
 
 fn net_of(network: &str) -> Network {
     derivation::network_from_profile(network).unwrap()
 }
 
-fn master() -> ExtendedPrivKey {
+pub(super) fn master() -> ExtendedPrivKey {
     ExtendedPrivKey::from_seed(&seed()).unwrap()
 }
 
 /// Our receive address 0/0, where `seeded` puts the funding coin.
-fn addr00(net: Network) -> (String, String) {
+pub(super) fn addr00(net: Network) -> (String, String) {
     let (_sk, pk, addr) = hd::derive_address(net, &seed(), 0, 0, 0).unwrap();
     (
         addr,
@@ -1547,7 +1547,7 @@ async fn build(
     shakedex_build_lock_draft(app.state(), NAME.into(), ListingMode::BuyNow, false, None).await
 }
 
-fn count(app: &App, table: &str) -> i64 {
+pub(super) fn count(app: &App, table: &str) -> i64 {
     with_db(app, |c| {
         c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
             .unwrap()
@@ -2364,6 +2364,8 @@ async fn sync_aborts_the_listing_in_the_app_and_the_daemon() {
         let id = open_listing(&app).unwrap().id;
 
         let mut node = mockito::Server::new_async().await;
+        let _indexes_node =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut node, true, true).await;
         let path = std::env::temp_dir().join(format!(
             "namehold_sell_abort_{}_{caller:?}.db",
             std::process::id()
@@ -4995,6 +4997,8 @@ async fn sync_lists_the_listing_in_the_app_and_the_daemon() {
         let tip = ready_tip(Network::Regtest) + 1;
 
         let mut node = mockito::Server::new_async().await;
+        let _indexes_node =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut node, true, true).await;
         let path = std::env::temp_dir().join(format!(
             "namehold_sell_listed_{}_{caller:?}.db",
             std::process::id()
@@ -5652,7 +5656,7 @@ fn restored_coin(address: &str, cov: u8, height: u32, committed: Option<&[u8]>) 
 }
 
 /// The FINALIZE at our lock that a restore adopts.
-fn our_lock_coin() -> Value {
+pub(super) fn our_lock_coin() -> Value {
     restored_coin(
         &lock_address(Network::Regtest),
         COV_FINALIZE,
@@ -5665,7 +5669,7 @@ fn our_lock_coin() -> Value {
 /// `kind`, unlocked, and a node answering its tip (`mocks[0]`), `info` for
 /// NAME (`mocks[1]`) and `coin` for `(RESTORED_TXID, 1)` (`mocks[2]`;
 /// `None`: hsd's 404).
-async fn restore_fixture_of(
+pub(super) async fn restore_fixture_of(
     kind: &str,
     info: Value,
     coin: Option<Value>,
@@ -5701,7 +5705,7 @@ async fn restore_fixture(info: Value, coin: Option<Value>) -> (ServerGuard, Vec<
 }
 
 /// `getnameinfo` naming `(RESTORED_TXID, 1)` the owner of NAME.
-fn restored_info() -> Value {
+pub(super) fn restored_info() -> Value {
     let mut v = name_info(RENEWAL, 0, RESTORED_TXID);
     v["info"]["owner"]["index"] = 1.into();
     v

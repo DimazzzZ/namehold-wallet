@@ -375,6 +375,23 @@ export const SHARED_AS_FILE_ONLY = `Shared as a file only: ${MARKET_MAINNET_ONLY
 /** R32: a lock restored by name, without its listing file. */
 export const RESTORED_LABEL = "Locked — listing details unknown";
 
+/** R34: the search's button and the lines around it. */
+export const FIND_LOCKS_LABEL = "Find my locks";
+export const FIND_LOCKS_BUSY = "Searching…";
+export const NO_LOCKS_FOUND = "No locked names found";
+/** R34: a forced search that adopted nothing but could not read or judge everything. */
+export const LOCK_SEARCH_PARTIAL =
+  "Some addresses or names could not be read from your node. Try again later.";
+/** R34: the toast after a search restored `n` names. */
+export const foundLocksText = (n: number) =>
+  `Found ${n} ${n === 1 ? "name" : "names"} locked for sale · restored in My listings`;
+/** R34: candidates wait for the seed while the signer is locked. */
+export const LOCKS_WAIT_FOR_UNLOCK =
+  "Names this recovery phrase may have locked for sale were found. Unlock the wallet to restore them.";
+/** R34: the backend's `LOCK_SEARCH_NEEDS_INDEX`, sentence-cased with a full stop. */
+export const LOCK_SEARCH_NEEDS_INDEX =
+  "Finding your locks needs a node run with --index-tx and --index-address; Restore a lock by name works without them.";
+
 /** Carry 6: a schedule longer than a listing file's year (`sell.rs::LISTING_LIFETIME_SECS`). */
 export const SCHEDULE_PAST_A_YEAR =
   "The last price comes more than a year after the first, past the listing file's expiry date.";

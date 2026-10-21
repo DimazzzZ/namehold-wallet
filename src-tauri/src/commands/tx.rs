@@ -387,6 +387,18 @@ pub async fn sync_wallet_state(
         }
     };
 
+    // hsd without `--index-address` lists no coins for any address, and
+    // never says so: applied, that empty list would mark every tracked coin
+    // spent and report a balance of 0. The tx index is not needed here.
+    if !crate::noncustodial::node_rpc::node_indexes(&client)
+        .await?
+        .address
+    {
+        return Err(AppError::Rpc(
+            crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX.into(),
+        ));
+    }
+
     // 2. Fetch coins per address (network I/O, no lock held). The URL named in
     // any failure is the one this client resolved through the profile, not the
     // global setting: they differ whenever the profile overrides it, and the
@@ -2356,7 +2368,7 @@ pub async fn get_write_capability(
             .map_err(|e| AppError::Lock(e.to_string()))?;
         signer_unlocked_for(slot.as_ref(), &active_id)
     };
-    let (source, allow_remote, settings, probe_addr, expected_network, effective_url, client_opt) = {
+    let (source, allow_remote, settings, expected_network, effective_url, client_opt) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
         // Per-profile node override routing (ADR-001): if an active profile
@@ -2386,11 +2398,6 @@ pub async fn get_write_capability(
             ),
         };
         let allow_remote = crate::noncustodial::rpc::remote_broadcast_allowed(&settings);
-        // One address to probe the node's address index (if a profile exists).
-        let probe_addr = active_profile(&conn)
-            .ok()
-            .and_then(|p| db::queries::get_profile_addresses(&conn, &p.id).ok())
-            .and_then(|addrs| addrs.into_iter().next());
         // Returned, not swallowed. `Ok(None)` already means "no profile to
         // compare against" and leaves the chain check permissive by design; a
         // DB failure reaching the same `None` would report a wallet as ready to
@@ -2400,7 +2407,6 @@ pub async fn get_write_capability(
             source,
             allow_remote,
             settings,
-            probe_addr,
             expected_network,
             effective_url,
             client_opt,
@@ -2435,7 +2441,6 @@ pub async fn get_write_capability(
             &client,
             &mut cap,
             node_url,
-            probe_addr.as_deref(),
             expected_network.as_deref(),
         )
         .await;
@@ -2452,7 +2457,6 @@ pub(crate) async fn apply_node_write_probe_with_client(
     client: &dyn crate::noncustodial::node_rpc::NodeRpc,
     cap: &mut crate::providers::WriteCapability,
     node_url: &str,
-    probe_addr: Option<&str>,
     expected_network: Option<&str>,
 ) {
     if !cap.can_write {
@@ -2499,18 +2503,46 @@ pub(crate) async fn apply_node_write_probe_with_client(
                 cap.reason = Some(format!(
                     "Your local node is still syncing ({pct}%). On-chain sends and transfers need a fully-synced node."
                 ));
-            } else if let Some(addr) = probe_addr {
-                if client.get_coins_by_address(addr).await.is_err() {
-                    cap.can_write = false;
-                    cap.reason = Some(
-                        "Your node isn't address-indexed — restart hsd with address indexing (Settings → Start hsd) and let it finish syncing."
-                            .to_string(),
-                    );
+            } else {
+                // hsd without `--index-address` lists no coins and never says
+                // so, so the node's own report decides; one that cannot be
+                // read is not known to have the index, and the reason says
+                // the status was not read. An hsd older than 7.0 reports no
+                // indexes at all: its remedy is the update.
+                match crate::noncustodial::node_rpc::node_indexes(client).await {
+                    Ok(indexes) if indexes.address => {}
+                    Err(AppError::Rpc(msg))
+                        if msg == crate::noncustodial::node_rpc::NODE_INDEXES_UNREPORTED =>
+                    {
+                        cap.can_write = false;
+                        cap.reason = Some(
+                            "Your node doesn't report its indexes (hsd older than 7.0) — update hsd to 7.0 or newer to send."
+                                .to_string(),
+                        );
+                    }
+                    Ok(_) => {
+                        cap.can_write = false;
+                        cap.reason = Some(
+                            "Your node isn't address-indexed — restart hsd with address indexing (Settings → Start hsd) and let it finish syncing."
+                                .to_string(),
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("write probe: the node's status was not read: {e}");
+                        cap.can_write = false;
+                        cap.reason = Some(NODE_STATUS_UNREAD_REASON.to_string());
+                    }
                 }
             }
         }
     }
 }
+
+/// The write probe's reason when the node's `GET /` could not be read (a
+/// transport error, an HTTP error, a body that is not JSON, or a reply
+/// without both index flags as booleans): whether it has the address index
+/// is unknown, so no sends.
+pub const NODE_STATUS_UNREAD_REASON: &str = "Your node's status couldn't be read, so whether it has the address index is unknown — check that hsd is running and reachable, then Refresh.";
 
 /// Discard a draft that hasn't been broadcast, releasing any coins it had
 /// reserved (I3) so a later draft can spend them. Refuses to delete a draft

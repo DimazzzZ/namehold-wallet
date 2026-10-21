@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
+import { LOCK_SEARCH_STATUS_KEY } from "./shakedex";
 
 export interface SyncStatus {
   running: boolean;
@@ -25,6 +26,24 @@ export interface SyncStatus {
   waiting: boolean;
   /** Set once `cancel_full_sync` has been called for the in-flight run. */
   cancelRequested: boolean;
+}
+
+/**
+ * The phrase every reason carries that the backend's sync records when the
+ * node step was not authoritative for the wallet's coins (no address index,
+ * an hsd older than 7.0, or a node status it could not read): see
+ * `NODE_COINS_NOT_SYNCED` in `src-tauri/src/commands/sync.rs`.
+ */
+export const NODE_COINS_NOT_SYNCED = "the node's coins were not synced";
+
+/**
+ * Why the last sync could not read the wallet's coins from the node, or
+ * `null` when it could (or no run has recorded anything). A profile never
+ * synced through an indexed node then reads 0 from its cache, and this is
+ * the reason.
+ */
+export function nodeCoinsNotSyncedReason(status: SyncStatus | undefined): string | null {
+  return status?.errors?.find((e) => e.includes(NODE_COINS_NOT_SYNCED)) ?? null;
 }
 
 /** Start a full sync in a background thread. */
@@ -74,6 +93,8 @@ export function useSyncStatus() {
     if (wasRunning.current && !running) {
       qc.invalidateQueries({ queryKey: ["read"] });
       qc.invalidateQueries({ queryKey: ["wallet"] });
+      // The sync may have grown the address window or found new history.
+      qc.invalidateQueries({ queryKey: LOCK_SEARCH_STATUS_KEY });
     }
     wasRunning.current = running;
   }, [query.data?.running, qc]);

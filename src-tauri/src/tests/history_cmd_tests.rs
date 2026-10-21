@@ -57,6 +57,8 @@ async fn history_uses_active_profile_override() {
     // Profile W1 has a per-profile node_rpc_url override.
     // read_action_history should use it, not the global settings.
     let mut server_override = mockito::Server::new_async().await;
+    let _indexes =
+        crate::tests::mock_node_rpc::mock_node_indexes(&mut server_override, true, true).await;
     let _m = server_override
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_body(
@@ -90,6 +92,8 @@ async fn history_falls_back_to_global_when_no_override() {
     // Profile W1 has no per-profile override.
     // read_action_history should fall back to global settings.
     let mut server_global = mockito::Server::new_async().await;
+    let _indexes =
+        crate::tests::mock_node_rpc::mock_node_indexes(&mut server_global, true, true).await;
     let _m = server_global
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_body(
@@ -119,10 +123,11 @@ async fn history_falls_back_to_global_when_no_override() {
 async fn history_uses_builtin_default_when_no_override_or_global() {
     // Profile W1 has no per-profile override and no global settings.
     // read_action_history should use the built-in default (localhost:12037).
-    // The built-in default is unreachable in the test environment; the command
-    // swallows per-address node errors (see history_node_error_is_swallowed_*)
-    // and returns an empty result rather than erroring. This pins that the
-    // resolution path falls through to the built-in default without panicking.
+    // The built-in default is unreachable in the test environment: the
+    // node's indexes cannot be read, so the command errors (Activity's
+    // generic error) rather than listing an empty history it cannot vouch
+    // for. This pins that the resolution path falls through to the built-in
+    // default without panicking.
     let conn = empty_db();
     add_profile(&conn, "W1", "regtest");
     db::queries::set_active_profile(&conn, "W1").unwrap();
@@ -130,14 +135,12 @@ async fn history_uses_builtin_default_when_no_override_or_global() {
     // No global node_rpc_url set; no per-profile override.
 
     let app = app_with(conn);
-    // Unreachable built-in default → per-address fetch errors are swallowed →
-    // empty rows, no panic, no Err.
-    let rows = read_action_history(app.state(), Some("W1".into()))
+    let err = read_action_history(app.state(), Some("W1".into()))
         .await
-        .expect("unreachable built-in default must not surface as Err");
+        .expect_err("an unreachable built-in default is an error, not an empty history");
     assert!(
-        rows.is_empty(),
-        "unreachable built-in default yields no rows"
+        !err.to_string().contains("address index not enabled"),
+        "an unread status is not reported as a missing index: {err}"
     );
 }
 
@@ -324,6 +327,7 @@ async fn history_no_addresses_returns_empty() {
 #[tokio::test]
 async fn history_happy_path_receive() {
     let mut server = mockito::Server::new_async().await;
+    let _indexes = crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let _m = server
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_body(
@@ -367,6 +371,7 @@ async fn history_happy_path_send() {
         ]
     });
     let mut server = mockito::Server::new_async().await;
+    let _indexes = crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let _m = server
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_body(serde_json::to_string(&vec![send_tx]).unwrap())
@@ -408,6 +413,7 @@ async fn history_happy_path_bid_decodes_name() {
         ]
     });
     let mut server = mockito::Server::new_async().await;
+    let _indexes = crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let _m = server
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_body(serde_json::to_string(&vec![bid_tx]).unwrap())
@@ -445,6 +451,7 @@ async fn history_sort_order_unconfirmed_then_height_desc() {
         receive_tx("h200", 200, "hs1qmine", 200),
     ];
     let mut server = mockito::Server::new_async().await;
+    let _indexes = crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let _m = server
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_body(serde_json::to_string(&txs).unwrap())
@@ -472,6 +479,7 @@ async fn history_sort_order_unconfirmed_then_height_desc() {
 async fn history_dedup_same_tx_from_multiple_addresses() {
     // Both addresses return the same tx list; the row must appear once.
     let mut server = mockito::Server::new_async().await;
+    let _indexes = crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let _m = server
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_body(
@@ -505,6 +513,7 @@ async fn history_node_error_is_swallowed_returns_empty() {
     // `fetch_and_dedup_txs_with_client`, so a 500 yields an empty result set
     // rather than an `Err`.
     let mut server = mockito::Server::new_async().await;
+    let _indexes = crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let _m = server
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_status(500)
@@ -542,6 +551,7 @@ async fn history_transfer_captures_counterparty() {
         ]
     });
     let mut server = mockito::Server::new_async().await;
+    let _indexes = crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let _m = server
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_body(serde_json::to_string(&vec![transfer_tx]).unwrap())
@@ -575,6 +585,7 @@ async fn history_unrelated_txs_are_filtered_out() {
                      "covenant": {"type": 0, "items": []}}]
     });
     let mut server = mockito::Server::new_async().await;
+    let _indexes = crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let _m = server
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_body(serde_json::to_string(&vec![unrelated]).unwrap())
@@ -599,6 +610,7 @@ async fn history_resolves_active_profile_when_id_omitted() {
     // Exercises the `resolve_profile(None)` → active-profile branch of the
     // command, complementing the explicit-id cases above.
     let mut server = mockito::Server::new_async().await;
+    let _indexes = crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let _m = server
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_body(
@@ -650,6 +662,7 @@ fn covenant_tx(hash: &str, height: i64, cov_type: u64, cov_addr: &str) -> serde_
 
 async fn history_with_txs(txs: Vec<serde_json::Value>) -> Vec<crate::commands::history::ActionRow> {
     let mut server = mockito::Server::new_async().await;
+    let _indexes = crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let _m = server
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_body(serde_json::to_string(&txs).unwrap())

@@ -38,6 +38,7 @@ type ResponseFn1<A, T> = Box<dyn Fn(A) -> Result<T, AppError> + Send + Sync>;
 pub enum RpcCall {
     BlockchainInfo,
     Info,
+    NodeStatus,
     NameInfo(String),
     NameByHash(String),
     NameResource(String),
@@ -64,13 +65,14 @@ pub struct MockNodeRpc {
     pub source: ChainSource,
     blockchain_info: ResponseFn<BlockchainInfo>,
     info: ResponseFn<serde_json::Value>,
+    node_status: ResponseFn<serde_json::Value>,
     name_info: ResponseFn<serde_json::Value>,
     name_by_hash: ResponseFn<Option<String>>,
     name_resource: ResponseFn<serde_json::Value>,
     coins_by_address: ResponseFn<Vec<NodeCoin>>,
     tx_out: ResponseFn<Option<serde_json::Value>>,
     get_coin: ResponseFn2<String, u32, Option<NodeCoin>>,
-    txs_by_address: ResponseFn<Vec<serde_json::Value>>,
+    txs_by_address: ResponseFn1<String, Vec<serde_json::Value>>,
     raw_transaction: ResponseFn<serde_json::Value>,
     tx_by_hash: ResponseFn1<String, serde_json::Value>,
     block_hash: ResponseFn1<i64, String>,
@@ -85,6 +87,53 @@ pub struct MockNodeRpc {
     calls: Mutex<Vec<RpcCall>>,
 }
 
+/// hsd's `GET /` reply in its real shape (`lib/node/http.js`), trimmed to
+/// the chain part, reporting `--index-tx` and `--index-address` as given.
+pub fn node_status_with_indexes(tx: bool, address: bool) -> serde_json::Value {
+    serde_json::json!({
+        "version": "8.0.0",
+        "network": "regtest",
+        "chain": {
+            "height": 100,
+            "progress": 1,
+            "indexers": { "indexTX": tx, "indexAddress": address },
+            "options": { "spv": false, "prune": false }
+        }
+    })
+}
+
+/// hsd's `GET /` reply before v7.0.0, which added `chain.indexers` (hsd
+/// CHANGELOG, v7.0.0, Node HTTP API): the chain part as hsd 6.x sends it, with
+/// no word on its indexes whatever flags it was started with.
+pub fn node_status_before_hsd_7() -> serde_json::Value {
+    serde_json::json!({
+        "version": "6.1.1",
+        "network": "regtest",
+        "chain": {
+            "height": 100,
+            "tip": "0000000000000000000000000000000000000000000000000000000000000000",
+            "treeRoot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "progress": 1,
+            "state": { "tx": 101, "coin": 101, "value": 0, "burned": 0 }
+        }
+    })
+}
+
+/// A mockito node's `GET /` ([`node_status_with_indexes`]): the route every
+/// command that reads address-indexed routes asks first. Keep the returned
+/// mock alive for the test (dropping it removes it).
+pub async fn mock_node_indexes(
+    server: &mut mockito::ServerGuard,
+    tx: bool,
+    address: bool,
+) -> mockito::Mock {
+    server
+        .mock("GET", "/")
+        .with_body(node_status_with_indexes(tx, address).to_string())
+        .create_async()
+        .await
+}
+
 fn err<T>(msg: &'static str) -> ResponseFn<T> {
     Box::new(move || Err(AppError::Rpc(msg.to_string())))
 }
@@ -96,13 +145,14 @@ impl MockNodeRpc {
             source: ChainSource::LocalNode,
             blockchain_info: err("not configured"),
             info: err("not configured"),
+            node_status: err("not configured"),
             name_info: err("not configured"),
             name_by_hash: err("not configured"),
             name_resource: err("not configured"),
             coins_by_address: err("not configured"),
             tx_out: err("not configured"),
             get_coin: Box::new(|_, _| Err(AppError::Rpc("not configured".to_string()))),
-            txs_by_address: err("not configured"),
+            txs_by_address: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
             raw_transaction: err("not configured"),
             tx_by_hash: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
             block_hash: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
@@ -123,6 +173,16 @@ impl MockNodeRpc {
     }
     pub fn with_blockchain_info_err(mut self, msg: &'static str) -> Self {
         self.blockchain_info = Box::new(move || Err(AppError::Rpc(msg.to_string())));
+        self
+    }
+
+    /// hsd's `GET /` reply (the node's status, its indexes among others).
+    pub fn with_node_status(mut self, v: serde_json::Value) -> Self {
+        self.node_status = Box::new(move || Ok(v.clone()));
+        self
+    }
+    pub fn with_node_status_err(mut self, msg: &'static str) -> Self {
+        self.node_status = Box::new(move || Err(AppError::Rpc(msg.to_string())));
         self
     }
 
@@ -240,12 +300,20 @@ impl MockNodeRpc {
     }
 
     pub fn with_txs_by_address(mut self, txs: Vec<serde_json::Value>) -> Self {
-        self.txs_by_address = Box::new(move || Ok(txs.clone()));
+        self.txs_by_address = Box::new(move |_| Ok(txs.clone()));
+        self
+    }
+    /// `GET /tx/address/:address` answered per address by `f`.
+    pub fn with_txs_by_address_fn(
+        mut self,
+        f: impl Fn(String) -> Result<Vec<serde_json::Value>, AppError> + Send + Sync + 'static,
+    ) -> Self {
+        self.txs_by_address = Box::new(f);
         self
     }
 
     pub fn with_txs_by_address_err(mut self, msg: &'static str) -> Self {
-        self.txs_by_address = Box::new(move || Err(AppError::Rpc(msg.to_string())));
+        self.txs_by_address = Box::new(move |_| Err(AppError::Rpc(msg.to_string())));
         self
     }
 
@@ -378,6 +446,11 @@ impl NodeRpc for MockNodeRpc {
         (self.info)()
     }
 
+    async fn get_node_status(&self) -> Result<serde_json::Value, AppError> {
+        self.record(RpcCall::NodeStatus);
+        (self.node_status)()
+    }
+
     async fn get_name_info(&self, name: &str) -> Result<serde_json::Value, AppError> {
         self.record(RpcCall::NameInfo(name.to_string()));
         (self.name_info)()
@@ -414,7 +487,7 @@ impl NodeRpc for MockNodeRpc {
 
     async fn get_txs_by_address(&self, address: &str) -> Result<Vec<serde_json::Value>, AppError> {
         self.record(RpcCall::TxsByAddress(address.to_string()));
-        (self.txs_by_address)()
+        (self.txs_by_address)(address.to_string())
     }
 
     async fn get_raw_transaction(&self, txid: &str) -> Result<serde_json::Value, AppError> {

@@ -14,6 +14,7 @@ import { Onboarding } from "./components/Onboarding";
 import { useSettingsStore } from "./stores/settings";
 import { useWalletProfiles, useDraftConfirmationWatcher } from "./queries/wallet";
 import { useAutoSync } from "./queries/autoSync";
+import { useLockDiscovery } from "./queries/lockDiscovery";
 import { settingToBool } from "./lib/settingsBool";
 import "./app.css";
 
@@ -36,6 +37,8 @@ function AppRoutes() {
   // Keep cached data (balances, owned names, transactions) fresh from the node
   // automatically while it's live — no manual Refresh needed.
   useAutoSync();
+  // Find the profile's own Shakedex locks (R34) after a sync, once it is unlocked.
+  useLockDiscovery();
 
   // Onboarding shows until a non-custodial wallet profile exists (or the user
   // explicitly finished onboarding).

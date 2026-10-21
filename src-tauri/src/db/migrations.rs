@@ -63,6 +63,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("036", include_str!("../sql/036_shakedex_cancel.sql")),
     ("037", include_str!("../sql/037_shakedex_market.sql")),
     ("038", include_str!("../sql/038_shakedex_market_step.sql")),
+    ("039", include_str!("../sql/039_shakedex_lock_search.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -104,7 +105,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 38, "expected 38 migrations, got {count}");
+        assert_eq!(count, 39, "expected 39 migrations, got {count}");
     }
 
     /// An in-memory database with every migration before `version` applied
@@ -285,6 +286,29 @@ mod tests {
         assert_at_last_migration(&conn);
     }
 
+    /// A database already at 038 takes 039 on top: an existing profile keeps
+    /// its row and starts with no lock search recorded.
+    #[test]
+    fn migration_039_applies_on_top_of_038() {
+        let conn = db_before("039");
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub, account_index, watch_only)
+             VALUES ('p', 'P', 'mnemonic_hot', 'mainnet', 'xpub', 0, 0)",
+            [],
+        )
+        .unwrap();
+        run(&conn).unwrap();
+        let done: Option<String> = conn
+            .query_row(
+                "SELECT shakedex_lock_search_done_at FROM wallet_profiles WHERE id = 'p'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(done, None);
+        assert_at_last_migration(&conn);
+    }
+
     /// Every row a release before 012 could hold (008's CHECK: five
     /// statuses) comes through the migrations readable as the same
     /// `DraftStatus`, and the table the migrations leave refuses any other
@@ -331,7 +355,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 38);
+        assert_eq!(count, 39);
     }
 
     #[test]

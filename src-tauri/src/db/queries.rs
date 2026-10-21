@@ -1023,6 +1023,30 @@ pub fn stamp_explorer_sync(conn: &rusqlite::Connection, id: &str) -> Result<(), 
     Ok(())
 }
 
+/// Whether this profile's Shakedex lock search (R34) has completed: every address read from an authoritative node and every candidate judged.
+pub fn lock_search_done(conn: &rusqlite::Connection, profile_id: &str) -> Result<bool, AppError> {
+    Ok(conn.query_row(
+        "SELECT shakedex_lock_search_done_at IS NOT NULL FROM wallet_profiles WHERE id = ?1",
+        params![profile_id],
+        |r| r.get(0),
+    )?)
+}
+
+/// Record that this profile's Shakedex lock search (R34) completed, so it is not repeated.
+pub fn mark_lock_search_done(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE wallet_profiles
+            SET shakedex_lock_search_done_at = datetime('now'),
+                updated_at = datetime('now')
+         WHERE id = ?1",
+        params![profile_id],
+    )?;
+    Ok(())
+}
+
 /// Store an encrypted secret envelope for a hot profile.
 ///
 /// The `vault::encrypt` blob is self-describing (it embeds salt + nonce + ct),
@@ -9263,5 +9287,18 @@ mod noncustodial_query_tests {
         assert!(watch_p.has_passphrase, "watch_p1 should have passphrase");
         assert!(!hot_p.watch_only, "hot_p1 should NOT be watch_only");
         assert!(!hot_p.has_passphrase, "hot_p1 should NOT have passphrase");
+    }
+
+    /// A new profile has not had its Shakedex lock search; marking one
+    /// profile done leaves every other profile not done.
+    #[test]
+    fn lock_search_starts_not_done_and_is_marked_done() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        seed_profile(&conn, "p2");
+        assert!(!lock_search_done(&conn, "p1").unwrap());
+        mark_lock_search_done(&conn, "p1").unwrap();
+        assert!(lock_search_done(&conn, "p1").unwrap());
+        assert!(!lock_search_done(&conn, "p2").unwrap());
     }
 }

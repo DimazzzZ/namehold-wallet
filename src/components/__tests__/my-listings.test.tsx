@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
@@ -141,6 +141,8 @@ function setup(rows: ShakedexMyListing[], o: Opts = {}) {
       case "shakedex_list_listings":
         reads += 1;
         return Promise.resolve(reads > 1 && o.later ? o.later : rows);
+      case "shakedex_lock_search_status":
+        return Promise.resolve({ done: true, addressIndex: true, candidates: 0 });
       case "shakedex_cancel_listing":
         return needsSigner({ id: "cancel-1" });
       case "shakedex_finalize_cancel":
@@ -928,6 +930,142 @@ describe("MyListings", () => {
       ["shakedex_restore_lock", { name: "dexsale" }],
     ]);
     expect(toasts()).toContain(`Restored .dexsale: ${RESTORED_LABEL}`);
+  });
+
+  it("Find my locks runs a forced search and says how many it restored", async () => {
+    setup([], {
+      answers: {
+        shakedex_find_locks: () =>
+          Promise.resolve({ ran: true, adopted: ["a", "b"], done: true, complete: true }),
+      },
+    });
+    renderIt();
+    const button = await screen.findByRole("button", { name: "Find my locks" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(toasts()).toContain("Found 2 names locked for sale · restored in My listings"),
+    );
+    expect(calls("shakedex_find_locks")).toEqual([["shakedex_find_locks", { force: true }]]);
+  });
+
+  it("Find my locks says when it found none, and a single name in the singular", async () => {
+    let report = { ran: true, adopted: [] as string[], done: true, complete: true };
+    setup([], { answers: { shakedex_find_locks: () => Promise.resolve(report) } });
+    renderIt();
+    const button = await screen.findByRole("button", { name: "Find my locks" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() => expect(toasts()).toContain("No locked names found"));
+    report = { ran: true, adopted: ["a"], done: true, complete: true };
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(toasts()).toContain("Found 1 name locked for sale · restored in My listings"),
+    );
+  });
+
+  it("Find my locks does not say none were found after a run that could not read everything", async () => {
+    // `done` is stamped by an earlier complete run; this one read partially.
+    setup([], {
+      answers: {
+        shakedex_find_locks: () =>
+          Promise.resolve({ ran: true, adopted: [], done: true, complete: false }),
+      },
+    });
+    renderIt();
+    const button = await screen.findByRole("button", { name: "Find my locks" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(toasts()).toContain(
+        "Some addresses or names could not be read from your node. Try again later.",
+      ),
+    );
+    expect(toasts()).not.toContain("No locked names found");
+  });
+
+  it("shows the unlock line only while candidates wait and the search is not done", async () => {
+    const UNLOCK_LINE =
+      "Names this recovery phrase may have locked for sale were found. Unlock the wallet to restore them.";
+    let status = { done: false, addressIndex: true, candidates: 2 };
+    setup([], {
+      unlocked: false,
+      answers: { shakedex_lock_search_status: () => Promise.resolve(status) },
+    });
+    renderIt();
+    expect(await screen.findByText(UNLOCK_LINE)).toBeInTheDocument();
+    expect(screen.getByTestId("unlock-now")).toBeInTheDocument();
+    cleanup();
+
+    status = { done: false, addressIndex: true, candidates: 0 };
+    setup([], {
+      unlocked: false,
+      answers: { shakedex_lock_search_status: () => Promise.resolve(status) },
+    });
+    renderIt();
+    await screen.findByText("Restore a lock by name");
+    await waitFor(() => expect(calls("shakedex_lock_search_status").length).toBeGreaterThan(0));
+    expect(screen.queryByText(UNLOCK_LINE)).not.toBeInTheDocument();
+    cleanup();
+
+    status = { done: true, addressIndex: true, candidates: 2 };
+    setup([], {
+      unlocked: false,
+      answers: { shakedex_lock_search_status: () => Promise.resolve(status) },
+    });
+    renderIt();
+    await screen.findByText("Restore a lock by name");
+    await waitFor(() => expect(calls("shakedex_lock_search_status").length).toBeGreaterThan(0));
+    expect(screen.queryByText(UNLOCK_LINE)).not.toBeInTheDocument();
+    cleanup();
+
+    // Unlocked: the search runs by itself, no line.
+    status = { done: false, addressIndex: true, candidates: 2 };
+    setup([], {
+      unlocked: true,
+      answers: { shakedex_lock_search_status: () => Promise.resolve(status) },
+    });
+    renderIt();
+    await screen.findByText("Restore a lock by name");
+    await waitFor(() => expect(calls("shakedex_lock_search_status").length).toBeGreaterThan(0));
+    expect(screen.queryByText(UNLOCK_LINE)).not.toBeInTheDocument();
+  });
+
+  it("renders nothing for the search when its status cannot be read", async () => {
+    setup([], { answers: { shakedex_lock_search_status: () => Promise.reject("node down") } });
+    renderIt();
+    expect(await screen.findByText("Restore a lock by name")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Find my locks" })).toBeInTheDocument();
+    expect(screen.queryByText(/node down/)).not.toBeInTheDocument();
+  });
+
+  it("says the search needs the address index", async () => {
+    const INDEX_LINE =
+      "Finding your locks needs a node run with --index-tx and --index-address; Restore a lock by name works without them.";
+    setup([], {
+      answers: {
+        shakedex_lock_search_status: () =>
+          Promise.resolve({ done: false, addressIndex: false, candidates: 0 }),
+      },
+    });
+    renderIt();
+    expect(await screen.findByText(INDEX_LINE)).toBeInTheDocument();
+    cleanup();
+
+    // The forced search's own refusal, as Tauri rejects it: a plain string.
+    setup([], {
+      answers: {
+        shakedex_find_locks: () =>
+          Promise.reject(
+            "Invalid input: finding your locks needs a node run with --index-tx and --index-address; Restore a lock by name works without them",
+          ),
+      },
+    });
+    renderIt();
+    const button = await screen.findByRole("button", { name: "Find my locks" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(await screen.findByText(INDEX_LINE)).toBeInTheDocument();
   });
 
   it.each([

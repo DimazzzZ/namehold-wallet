@@ -35,6 +35,32 @@ describe("mapError (non-custodial)", () => {
     expect(result).toBe("some error");
   });
 
+  it("leaves the reason of an hsd older than 7.0 as it is, not the address-index hint", () => {
+    const sync =
+      "the node's coins were not synced: Node RPC error: this hsd node does not report its indexes (hsd older than 7.0): update hsd to 7.0 or newer";
+    expect(mapError(sync)).toContain("hsd older than 7.0");
+    expect(mapError(sync)).not.toMatch(/address-indexed/);
+    const probe =
+      "Your node doesn't report its indexes (hsd older than 7.0) — update hsd to 7.0 or newer to send.";
+    expect(mapError(probe)).toBe(probe);
+  });
+
+  it("names the index the node lacks", () => {
+    const remedy = "restart hsd with --index-address and --index-tx";
+    expect(
+      mapError(`Node RPC error: address index not enabled on this hsd node: ${remedy}`),
+    ).toMatch(/isn't address-indexed/);
+    const tx = mapError(
+      `Node RPC error: transaction index not enabled on this hsd node: ${remedy}`,
+    );
+    expect(tx).toMatch(/no transaction index/);
+    expect(tx).not.toMatch(/address-indexed/);
+    const both = mapError(
+      `Node RPC error: address and transaction indexes not enabled on this hsd node: ${remedy}`,
+    );
+    expect(both).toMatch(/neither the address nor the transaction index/);
+  });
+
   it("returns original for unknown errors", () => {
     expect(mapError("something completely unknown")).toBe("something completely unknown");
   });

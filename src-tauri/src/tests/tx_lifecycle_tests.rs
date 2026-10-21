@@ -1303,6 +1303,8 @@ async fn broadcast_refused_for_remote_node_without_opt_in() {
 #[tokio::test]
 async fn sync_wallet_state_fetches_coins_and_reports_reachable() {
     let mut server = mockito::Server::new_async().await;
+    let _indexes_server =
+        crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let addr = recv_addr();
     let coin = format!(
         r#"{{"hash":"{COIN_TXID}","index":7,"value":2000000,"address":"{addr}","height":120,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
@@ -1339,6 +1341,60 @@ async fn sync_wallet_state_fetches_coins_and_reports_reachable() {
     assert_eq!(res["utxoCount"], serde_json::json!(1));
     // The synced liquid coin (covenant NONE) is reflected in the balance.
     assert_eq!(res["liquidDoos"], serde_json::json!(2000000));
+}
+
+/// hsd 8.0.0 without `--index-address` answers `GET /coin/address` with
+/// `200 []`: the sync refuses with the sentence the UI maps, before any
+/// write, so the tracked coin stays unspent and the cursor stays.
+#[tokio::test]
+async fn sync_wallet_state_refuses_a_node_without_the_address_index() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"main","blocks":150000},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _status = server
+        .mock("GET", "/")
+        .with_body(crate::tests::mock_node_rpc::node_status_with_indexes(true, false).to_string())
+        .create_async()
+        .await;
+    let _coins = server
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body("[]")
+        .create_async()
+        .await;
+    let _other = server
+        .mock("POST", "/")
+        .with_body(r#"{"result":null,"error":{"message":"not found"},"id":1}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    let app = app_with(conn);
+
+    let err = sync_wallet_state(app.state(), None)
+        .await
+        .expect_err("an index-less node must not sync");
+    assert!(
+        matches!(&err, AppError::Rpc(m) if m == crate::noncustodial::node_rpc::NEEDS_ADDRESS_INDEX),
+        "{err:?}"
+    );
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    let spent_by: Option<String> = c
+        .query_row(
+            "SELECT spent_by_txid FROM tracked_utxos WHERE txid = ?1",
+            [COIN_TXID],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(spent_by, None, "the tracked coin stays unspent");
+    let cursors: i64 = c
+        .query_row("SELECT COUNT(*) FROM sync_cursors", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(cursors, 0, "no cursor written");
 }
 
 // --- get_write_capability: synced + address-indexed gating -----------------
@@ -1431,11 +1487,13 @@ async fn write_capability_blocks_when_not_address_indexed() {
         .with_body(bi_body(0.9999))
         .create_async()
         .await;
-    // Synced, but the node's REST coin route rejects (address index disabled).
+    // Synced, but started without `--index-address`: hsd reports it in its
+    // `GET /` reply, and answers `GET /coin/address` with `200 []`, never an
+    // error, so the probe goes by that report.
+    let _indexes = crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, false).await;
     let _coins = server
         .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
-        .with_status(400)
-        .with_body(r#"{"error":{"message":"Address indexing not available."}}"#)
+        .with_body("[]")
         .create_async()
         .await;
 
@@ -1445,18 +1503,68 @@ async fn write_capability_blocks_when_not_address_indexed() {
 
     let cap = get_write_capability(app.state()).await.expect("cap");
     assert!(!cap.can_write, "un-indexed node must block writes");
+    let reason = cap.reason.unwrap_or_default();
     assert!(
-        cap.reason
-            .unwrap_or_default()
-            .to_lowercase()
-            .contains("address-index"),
-        "reason should mention address indexing",
+        reason.starts_with("Your node isn't address-indexed"),
+        "reason should be the address-index one: {reason}",
     );
+    _indexes.assert_async().await;
+}
+
+/// A node whose `GET /` cannot be read, an HTTP error or a body that is not
+/// JSON, as hsd's HTTP server or a proxy in front of it answers: sends are
+/// blocked with the reason that the status was not read, not that the
+/// address index is off.
+#[tokio::test]
+async fn write_capability_says_when_the_node_status_could_not_be_read() {
+    for (code, body) in [
+        (
+            500,
+            r#"{"error":{"message":"Internal server error.","code":500}}"#,
+        ),
+        (502, "<html><body>Bad Gateway</body></html>"),
+        (200, "not json"),
+    ] {
+        let mut server = mockito::Server::new_async().await;
+        let _bi = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+            .with_body(bi_body(0.9999))
+            .create_async()
+            .await;
+        let _status = server
+            .mock("GET", "/")
+            .with_status(code)
+            .with_body(body)
+            .create_async()
+            .await;
+        let _coins = server
+            .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        let conn = seeded_conn(&server.url(), 2_000_000);
+        let app = app_with(conn);
+        unlock(&app, PROFILE);
+
+        let cap = get_write_capability(app.state()).await.expect("cap");
+        assert!(!cap.can_write, "{code}");
+        let reason = cap.reason.unwrap_or_default();
+        assert_eq!(
+            reason,
+            crate::commands::tx::NODE_STATUS_UNREAD_REASON,
+            "{code} {body}"
+        );
+        _status.assert_async().await;
+    }
 }
 
 #[tokio::test]
 async fn write_capability_allows_when_synced_indexed_and_unlocked() {
     let mut server = mockito::Server::new_async().await;
+    let _indexes_server =
+        crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let _bi = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
@@ -1916,14 +2024,15 @@ fn bi_full(blocks: i64, headers: i64, progress: f64) -> String {
 
 #[tokio::test]
 async fn write_capability_blocks_at_tip_with_low_progress() {
-    // blocks == headers but verification_progress is only 0.9997 — the node
-    // reports "tip reached" while still far behind the real chain. The progress
-    // gate must block writes in this case.
+    // blocks == headers but verification_progress is only 0.08 — the node
+    // reports "tip reached" while its headers are still far behind the real
+    // chain. The progress floor must block writes in this case. (0.9997 at
+    // the tip is synced: `chain_synced` lets the tip decide above 0.999.)
     let mut server = mockito::Server::new_async().await;
     let _bi = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(bi_full(317, 317, 0.9997))
+        .with_body(bi_full(317, 317, 0.08))
         .create_async()
         .await;
 
@@ -2300,6 +2409,8 @@ async fn sync_tracked_names_errors_when_no_active_profile() {
 async fn sync_wallet_state_auto_provisions_addresses_when_empty() {
     // Remove derived_addresses to trigger the auto-provision branch.
     let mut server = mockito::Server::new_async().await;
+    let _indexes_server =
+        crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let addr = recv_addr();
     let coin = format!(
         r#"{{"hash":"{COIN_TXID}","index":0,"value":2000000,"address":"{addr}","height":120,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
@@ -2335,6 +2446,8 @@ async fn sync_wallet_state_auto_provisions_addresses_when_empty() {
 #[tokio::test]
 async fn sync_wallet_state_with_explicit_profile_id() {
     let mut server = mockito::Server::new_async().await;
+    let _indexes_server =
+        crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let addr = recv_addr();
     let coin = format!(
         r#"{{"hash":"{COIN_TXID}","index":0,"value":1000000,"address":"{addr}","height":50,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
@@ -2383,6 +2496,8 @@ async fn sync_wallet_state_caches_transactions_returned_by_node() {
     // it in `txs` and increments `txsCached`. Prior tests only returned null
     // for that call, leaving the tx-cache-loop uncovered.
     let mut server = mockito::Server::new_async().await;
+    let _indexes_server =
+        crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let addr = recv_addr();
     let coin = format!(
         r#"{{"hash":"{COIN_TXID}","index":0,"value":2000000,"address":"{addr}","height":120,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
@@ -2642,6 +2757,8 @@ async fn sync_wallet_state_marks_address_used_when_coin_has_address() {
     // We'll check by querying the DB after sync to see if the address was
     // marked as used (used_height > 0).
     let mut server = mockito::Server::new_async().await;
+    let _indexes_server =
+        crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let addr = recv_addr();
     let coin = format!(
         r#"{{"hash":"{COIN_TXID}","index":0,"value":3000000,"address":"{addr}","height":200,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
@@ -2692,6 +2809,8 @@ async fn sync_wallet_state_calls_mark_missing_as_spent_when_coins_present() {
     // spent coins. This test verifies the call is made by checking that a
     // pre-existing UTXO that's not in the node's coin list is marked spent.
     let mut server = mockito::Server::new_async().await;
+    let _indexes_server =
+        crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
     let addr = recv_addr();
     // Return a coin with a DIFFERENT txid than the pre-seeded one.
     let coin = format!(
@@ -2999,6 +3118,8 @@ async fn broadcast_tx_draft_uses_per_profile_node_override() {
 async fn sync_wallet_state_uses_per_profile_node_override() {
     // Global node: only answers the readiness probe; serves no coins.
     let mut global = mockito::Server::new_async().await;
+    let _indexes_global =
+        crate::tests::mock_node_rpc::mock_node_indexes(&mut global, true, true).await;
     let _g = global
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
@@ -3012,6 +3133,8 @@ async fn sync_wallet_state_uses_per_profile_node_override() {
         r#"{{"hash":"{COIN_TXID}","index":0,"value":3000000,"address":"{addr}","height":200,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
     );
     let mut override_node = mockito::Server::new_async().await;
+    let _indexes_override_node =
+        crate::tests::mock_node_rpc::mock_node_indexes(&mut override_node, true, true).await;
     let _o_bi = override_node
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
@@ -3094,6 +3217,8 @@ async fn get_write_capability_uses_per_profile_node_override() {
         r#"{{"hash":"{COIN_TXID}","index":0,"value":3000000,"address":"{addr}","height":200,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
     );
     let mut override_node = mockito::Server::new_async().await;
+    let _indexes_override_node =
+        crate::tests::mock_node_rpc::mock_node_indexes(&mut override_node, true, true).await;
     let _o_bi = override_node
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))

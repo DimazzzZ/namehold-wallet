@@ -6,11 +6,117 @@ import { open } from "../../lib/dialog";
 import { mapError } from "../../lib/errors";
 import { displayName } from "../../lib/idn";
 import { normalizeNameInputAce } from "../../lib/utils";
-import { useImportOwnListing, useRestoreLock } from "../../queries/shakedex";
-import { useActiveProfile, useWithSigner, useWriteCapability } from "../../queries/wallet";
+import {
+  useFindLocks,
+  useImportOwnListing,
+  useLockSearchStatus,
+  useRestoreLock,
+} from "../../queries/shakedex";
+import {
+  useActiveProfile,
+  useSignerSession,
+  useWithSigner,
+  useWriteCapability,
+} from "../../queries/wallet";
+import { isSignerUnlockedFor } from "../../lib/signer";
+import { UnlockButton } from "../UnlockButton";
 import { useUiStore } from "../../stores/ui";
 import type { ShakedexListingSummary } from "../../types";
-import { RESTORED_LABEL, listingStateLabel, shakedexRefusal } from "./marketText";
+import {
+  FIND_LOCKS_BUSY,
+  FIND_LOCKS_LABEL,
+  LOCKS_WAIT_FOR_UNLOCK,
+  LOCK_SEARCH_NEEDS_INDEX,
+  LOCK_SEARCH_PARTIAL,
+  NO_LOCKS_FOUND,
+  RESTORED_LABEL,
+  foundLocksText,
+  listingStateLabel,
+  shakedexRefusal,
+} from "./marketText";
+
+/**
+ * R34: "Find my locks" and the two lines around it. The button runs the
+ * search again whenever the seller presses it (forced); the first one runs by
+ * itself after a sync (`useLockDiscovery`). While the signer is locked and the
+ * first search has not run, one line says that names possibly listed from this
+ * phrase were found, with an Unlock button, but only when a candidate exists.
+ * A node without the address index says what it needs instead. A status that
+ * cannot be read shows neither line.
+ */
+export function FindLocks() {
+  const showToast = useUiStore((s) => s.showToast);
+  const { data: profile } = useActiveProfile();
+  const { data: writeCap } = useWriteCapability();
+  const { data: signer } = useSignerSession();
+  const withSigner = useWithSigner();
+  const find = useFindLocks();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [indexRefused, setIndexRefused] = useState(false);
+
+  const gate = shakedexRefusal(profile?.kind, writeCap);
+  const status = useLockSearchStatus(profile?.kind === "mnemonic_hot").data;
+  const unlocked = isSignerUnlockedFor(signer, profile?.id);
+  const needsIndex = status?.addressIndex === false;
+  const waiting =
+    status != null && status.addressIndex && !status.done && status.candidates > 0 && !unlocked;
+
+  const run = async () => {
+    if (!profile) return;
+    setBusy(true);
+    setError(null);
+    setIndexRefused(false);
+    try {
+      const report = await withSigner.run(profile.id, () => find.mutateAsync(true));
+      if (report.adopted.length > 0) showToast(foundLocksText(report.adopted.length));
+      else if (report.ran) showToast(report.complete ? NO_LOCKS_FOUND : LOCK_SEARCH_PARTIAL);
+    } catch (e) {
+      // Tauri rejects with the error's Display string. The index refusal is
+      // read before `mapError`, which words index errors its own way.
+      const raw = e instanceof Error ? e.message : typeof e === "string" ? e : "";
+      // `AppError::InvalidInput` displays as "Invalid input: <sentence>".
+      if (raw.toLowerCase().endsWith(LOCK_SEARCH_NEEDS_INDEX.slice(0, -1).toLowerCase())) {
+        setIndexRefused(true);
+      } else {
+        setError(mapError(e));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-6 space-y-2">
+      <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          variant="secondary"
+          data-testid="find-locks"
+          disabled={busy || profile == null || gate !== null}
+          onClick={run}
+        >
+          {busy ? FIND_LOCKS_BUSY : FIND_LOCKS_LABEL}
+        </Button>
+        {gate && <span className="text-xs text-gray-600">{gate}</span>}
+      </div>
+      {waiting && (
+        <div className="flex items-center gap-2">
+          <p className="text-xs text-gray-600">{LOCKS_WAIT_FOR_UNLOCK}</p>
+          <UnlockButton />
+        </div>
+      )}
+      {(needsIndex || indexRefused) && (
+        <p className="text-xs text-gray-600">{LOCK_SEARCH_NEEDS_INDEX}</p>
+      )}
+      {error && (
+        <p role="alert" className="text-sm text-red-600">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
 
 /**
  * R32: adopt a lock of this wallet by the name's chain state, after the

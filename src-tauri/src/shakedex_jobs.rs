@@ -79,7 +79,7 @@ use crate::market::learnhns::{
     StatusReport,
 };
 use crate::noncustodial::network::Network;
-use crate::noncustodial::node_rpc::NodeRpc;
+use crate::noncustodial::node_rpc::{node_indexes, NodeIndexes, NodeRpc};
 use crate::noncustodial::rpc::{self, NodeRpcClient};
 use crate::noncustodial::send::RESERVATION_TTL_SECS;
 use crate::noncustodial::shakedex::cancel;
@@ -200,22 +200,42 @@ pub async fn refresh_purchases_with_client(
         return Ok(());
     }
     let tip = client.get_blockchain_info().await?.blocks;
+    // Only a purchase whose TRANSFER was spent needs them (its FINALIZE is
+    // found in the destination's history); a failed read stops nothing else.
+    let indexes = match node_indexes(client).await {
+        Ok(i) => Some(i),
+        Err(e) => {
+            eprintln!("shakedex purchases: the node's indexes were not read: {e}");
+            None
+        }
+    };
     let job = Job {
         conn,
         client,
         network,
         tip,
         rebroadcast,
+        indexes,
     };
     for p in &purchases {
         if let Err(e) = job.refresh(p).await {
             eprintln!("shakedex purchases: {} ({}): {e}", p.id, p.name);
         }
     }
+    let mut not_asked = 0usize;
     for p in &lost {
-        if let Err(e) = job.revive(p).await {
-            eprintln!("shakedex purchases: {} ({}): {e}", p.id, p.name);
+        match job.revive(p).await {
+            Ok(Revive::Done) => {}
+            Ok(Revive::NeedsTxIndex) => not_asked += 1,
+            Err(e) => eprintln!("shakedex purchases: {} ({}): {e}", p.id, p.name),
         }
+    }
+    if not_asked > 0 {
+        eprintln!(
+            "shakedex purchases: {not_asked} lost purchase(s) with the name at our destination \
+             kept as they are, no verdict: the node has no tx index, so it cannot say whether \
+             the purchase was mined"
+        );
     }
     for p in &owned {
         if let Err(e) = job.recheck_owned(p).await {
@@ -223,6 +243,17 @@ pub async fn refresh_purchases_with_client(
         }
     }
     Ok(())
+}
+
+/// What [`Job::revive`] did with a lost purchase.
+#[derive(Debug, PartialEq, Eq)]
+enum Revive {
+    /// Looked at again: revived, or left lost on what the node said.
+    Done,
+    /// Left as it is without asking: the name sits at our destination, and
+    /// whether this purchase was mined is known only by its hash, which a
+    /// node without the tx index finds only in its mempool.
+    NeedsTxIndex,
 }
 
 /// What the chain says about a purchase whose transaction cannot be read
@@ -306,6 +337,9 @@ struct Job<'a> {
     network: Network,
     tip: i64,
     rebroadcast: Rebroadcast,
+    /// The node's indexes, read once per run; `None` when its status could
+    /// not be read (the history is then asked as before).
+    indexes: Option<NodeIndexes>,
 }
 
 impl Job<'_> {
@@ -465,19 +499,24 @@ impl Job<'_> {
     /// owned. The same trace as [`Job::lose_unless_traced`]; a TRANSFER only
     /// in the mempool waits until it is mined, so the purchase never reopens
     /// beside a new purchase of the same listing.
-    async fn revive(&self, p: &ShakedexPurchase) -> Result<(), AppError> {
+    ///
+    /// A node without the tx index answers the by-hash read with null for a
+    /// mined transaction: a purchase that needs it is not asked, and the run
+    /// logs why ([`Revive::NeedsTxIndex`]).
+    async fn revive(&self, p: &ShakedexPurchase) -> Result<Revive, AppError> {
         let (height, owned) = match self.trace(p).await? {
             Trace::Committed(Some(height)) => (height, false),
+            Trace::Owned if self.indexes.is_some_and(|i| !i.tx) => return Ok(Revive::NeedsTxIndex),
             // The name at our destination is ours only through this purchase
             // if its own transaction is mined: a later purchase of the same
             // listing may have been given the same unused address, and only
             // one purchase of a lock coin can be mined.
             Trace::Owned => match self.mined_height(&p.purchase_txid).await? {
                 Some(height) => (height, true),
-                None => return Ok(()),
+                None => return Ok(Revive::Done),
             },
             Trace::Committed(None) | Trace::OwnerIsPurchase | Trace::Elsewhere | Trace::NotOurs => {
-                return Ok(())
+                return Ok(Revive::Done)
             }
         };
         let p = &ShakedexPurchase {
@@ -517,7 +556,7 @@ impl Job<'_> {
             )?;
         }
         tx.commit()?;
-        Ok(())
+        Ok(Revive::Done)
     }
 
     /// The height `txid` is mined at, or `None` while it is unknown to the
@@ -667,6 +706,15 @@ impl Job<'_> {
         p: &ShakedexPurchase,
         purchase_height: i64,
     ) -> Result<(), AppError> {
+        // hsd lists a mined transaction in `GET /tx/address` only with both
+        // indexes on, and never says when it lists nothing for want of one.
+        if self.indexes.is_some_and(|i| !(i.tx && i.address)) {
+            return Err(AppError::Rpc(
+                "no verdict: the node has no address or tx index, so its history cannot \
+                 show the FINALIZE of the purchase's transfer"
+                    .into(),
+            ));
+        }
         for tx in self
             .client
             .get_txs_by_address(&p.destination_address)
