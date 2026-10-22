@@ -8,9 +8,10 @@ vi.mock("../../lib/invoke", () => ({ invoke: (...a: unknown[]) => invokeMock(...
 
 import { useFindLocks, useLockSearchStatus, useRestoreLock } from "../shakedex";
 import { useSyncStatus } from "../sync";
-import { makeProfile } from "../../test/fixtures/wallet";
+import { useLockDiscovery } from "../lockDiscovery";
+import { makeProfile, makeSession } from "../../test/fixtures/wallet";
 
-const sync = { running: false };
+const sync = { running: false, unlocked: true };
 let report = { ran: true, adopted: [] as string[], done: false, complete: false };
 
 const statusReads = () =>
@@ -25,6 +26,7 @@ function setup() {
   );
   const hook = renderHook(
     () => ({
+      discovery: useLockDiscovery(),
       status: useLockSearchStatus(true),
       sync: useSyncStatus(),
       find: useFindLocks(),
@@ -37,12 +39,17 @@ function setup() {
 
 beforeEach(() => {
   sync.running = false;
+  sync.unlocked = true;
   report = { ran: true, adopted: [], done: false, complete: false };
   invokeMock.mockReset();
   invokeMock.mockImplementation((cmd: string) => {
     switch (cmd) {
       case "list_wallet_profiles":
         return Promise.resolve([makeProfile()]);
+      case "get_signer_session":
+        return Promise.resolve(makeSession({ unlocked: sync.unlocked }));
+      case "node_status":
+        return Promise.resolve({ connected: true, read_source: "local" });
       case "get_sync_status":
         return Promise.resolve({ running: sync.running, errors: [] });
       case "shakedex_lock_search_status":
@@ -87,21 +94,44 @@ describe("useLockSearchStatus", () => {
     await waitFor(() => expect(statusReads()).toBe(2));
   });
 
-  it("is read again at the end of a sync", async () => {
-    const { qc, hook } = setup();
+  /** Run one sync to its end, with every query the hooks read settled first. */
+  async function oneSync({ qc, hook }: ReturnType<typeof setup>) {
     await waitFor(() => expect(hook.result.current.status.isSuccess).toBe(true));
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.filter((c) => c[0] === "node_status")).toHaveLength(1),
+    );
+    await act(async () => {});
     expect(statusReads()).toBe(1);
+    for (const running of [true, false]) {
+      sync.running = running;
+      await act(async () => {
+        await qc.invalidateQueries({ queryKey: ["sync", "status"] });
+      });
+      await waitFor(() => expect(hook.result.current.sync.data?.running).toBe(running));
+    }
+    await act(async () => {});
+  }
 
-    sync.running = true;
-    await act(async () => {
-      await qc.invalidateQueries({ queryKey: ["sync", "status"] });
-    });
-    await waitFor(() => expect(hook.result.current.sync.data?.running).toBe(true));
-    sync.running = false;
-    await act(async () => {
-      await qc.invalidateQueries({ queryKey: ["sync", "status"] });
-    });
+  it("is read once at the end of a sync that starts a lock search", async () => {
+    const t = setup();
+    await oneSync(t);
+
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.filter((c) => c[0] === "shakedex_find_locks")).toHaveLength(1),
+    );
+    await waitFor(() => expect(statusReads()).toBe(2));
+    await act(async () => {});
+    expect(statusReads()).toBe(2);
+  });
+
+  it("is read once at the end of a sync that starts no lock search", async () => {
+    sync.unlocked = false;
+    const t = setup();
+    await oneSync(t);
 
     await waitFor(() => expect(statusReads()).toBe(2));
+    await act(async () => {});
+    expect(statusReads()).toBe(2);
+    expect(invokeMock.mock.calls.filter((c) => c[0] === "shakedex_find_locks")).toHaveLength(0);
   });
 });
