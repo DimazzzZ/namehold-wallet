@@ -14,7 +14,9 @@
 //! `commands::sync` (which this module thinly wraps); the DB-lock coordination
 //! is covered inside `db::sync_lock`. What remains here is pure orchestration
 //! against a real filesystem + tokio runtime + hsd node, structurally out of
-//! scope for unit tests.
+//! scope for unit tests. The one exception is `send_finalize_reminders_with`,
+//! which takes a connection and an emitter and is tested in
+//! `tests::deadlines_cmd_tests`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -60,9 +62,65 @@ pub fn run(db_path: &str) -> Result<(), AppError> {
         // / highest-bid threshold. No-op unless the user opted in via Settings.
         rt.block_on(watched_names::run_watched_scan(db_path));
 
+        // Then the Shakedex finalize reminders (purchase, listing, cancel),
+        // so they reach the user while the app window is closed. The app
+        // sends none of them while this step's heartbeat is fresh.
+        run_finalize_reminders(db_path);
+
         // Sleep 60 seconds before the next sync cycle.
         std::thread::sleep(Duration::from_secs(SYNC_INTERVAL_SECS));
     }
+}
+
+/// One cycle's finalize reminders, sent as OS notifications through
+/// `notify-rust`. Errors are logged; the loop goes on.
+fn run_finalize_reminders(db_path: &str) {
+    let now = chrono::Utc::now().timestamp();
+    let conn = match sync_cmd::open_conn(db_path) {
+        Ok(conn) => conn,
+        Err(e) => return eprintln!("namehold-syncd: finalize reminders: {e}"),
+    };
+    let result = send_finalize_reminders_with(&conn, now, &mut |summary, body| {
+        watched_names::emit_os_notification(summary, body)
+    });
+    match result {
+        Ok(outcome) => {
+            if !outcome.notified.is_empty() {
+                eprintln!(
+                    "namehold-syncd: sent {} finalize reminder(s)",
+                    outcome.notified.len()
+                );
+            }
+            if let Some(e) = outcome.delivery_error {
+                eprintln!("namehold-syncd: finalize reminder not shown: {e}");
+            }
+        }
+        Err(e) => eprintln!("namehold-syncd: finalize reminders: {e}"),
+    }
+}
+
+/// The daemon's finalize-reminder step at unix time `now`, with its emitter
+/// given: the shared delivery shell
+/// (`commands::deadlines::deliver_finalize_reminders`, the same scanners,
+/// setting and dedup state as the app) hands each reminder's title and body
+/// to `emit`, whose error becomes the outcome's `delivery_error` as the app's
+/// own does (the reminder stays claimed: at most once). Then the daemon's
+/// heartbeat is written, with the reminders off too, so the app leaves them
+/// to this process while it keeps running this step; a step that failed
+/// writes none, and the app takes over once the last one is stale.
+pub(crate) fn send_finalize_reminders_with(
+    conn: &rusqlite::Connection,
+    now: i64,
+    emit: &mut dyn FnMut(&str, &str) -> Result<(), String>,
+) -> Result<crate::commands::deadlines::ScanOutcome, AppError> {
+    use crate::commands::deadlines::{
+        deliver_finalize_reminders, record_daemon_heartbeat, PendingNotification,
+    };
+    let day = now.div_euclid(86_400);
+    let mut notify = |n: &PendingNotification| emit(&n.title, &n.body).err();
+    let outcome = deliver_finalize_reminders(conn, day, &mut notify)?;
+    record_daemon_heartbeat(conn, now)?;
+    Ok(outcome)
 }
 
 /// Sync all wallet profiles.

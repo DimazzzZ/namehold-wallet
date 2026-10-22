@@ -461,7 +461,7 @@ A wallet restored from its recovery phrase looks for the names it had locked for
 
 A name you are selling shows its listing's state on its Owned Names row, in place of what the name needs next: "Locking · N blocks" while the transfer lockup runs (counted once the lock transfer is mined; "Locking" before that), then the states of My listings ("Ready to Finalize & sign", "Listed for sale", "Cancelled · finalize to bring it home", and so on), and "Sold" for a week after a sale. A lock restored by name reads "Locked — listing details unknown". A name in your lock that is no longer a coin at your own addresses still has its row, at the lock address. The row's My listings button opens Market › My listings, where the listing's actions are; while the listing is open, the name's own Update, Transfer, Renew and Revoke are disabled with "this name is locked for sale through Shakedex". Once a cancelled listing's name is home, the row is an ordinary name again.
 
-With deadline notifications on (Settings › Notifications), the app sends a "Ready to finalize" notification when a listing's transfer lockup is over ("<name>: the transfer lockup is over — Finalize & sign to lock it in and set its price", repeated daily while it waits) and when a cancel's lockup is over ("<name>: the cancel's transfer lockup is over — finalize it to bring the name home").
+With deadline notifications on (Settings › Notifications), Namehold sends a "Ready to finalize" notification when a name you bought can be finalized ("<name> is paid for — finalize it to make it yours", once), when a listing's transfer lockup is over ("<name>: the transfer lockup is over — Finalize & sign to lock it in and set its price", repeated daily while it waits) and when a cancel's lockup is over ("<name>: the cancel's transfer lockup is over — finalize it to bring the name home"). These three reminders come from the background sync daemon (`namehold-syncd`) while it runs, so they arrive with the app window closed too, and from the app only while the daemon is not running its reminder step; either way each one is sent once (the listing one once a day).
 
 Activity names the selling transactions while they are drafts: "Lock for sale" (the transfer into the lock), "Finalize into lock" (the finalize Finalize & sign sends), "Cancel listing" (the cancel) and "Finalize cancel" (the finalize that brings the name home). Each can be picked in Activity's action filter.
 
@@ -547,6 +547,10 @@ same name are treated as fresh episodes.
 **macOS note:** The daemon binary runs unbundled, so notifications may show a
 generic sender icon rather than the Namehold app icon. The alert text is
 unaffected.
+
+### Finalize reminders in the background
+
+The "Ready to finalize" reminders of a Shakedex purchase, listing or cancel (see Market › My listings) follow the deadline notifications setting in **Settings › Notifications**. While background sync is enabled and the daemon runs, the daemon checks for them after each background sync cycle (about a minute apart) and sends them itself, also with the app closed; the app then sends none of them, so you get each reminder once. If the daemon stops, or has not finished a cycle for about three minutes, the app sends them again. With background sync off, the app sends them while it is open, every ~10 minutes and at launch. The reveal and renewal reminders are sent by the app only. After a reboot the daemon starts again when the app is opened (or launched at login).
 
 ---
 
