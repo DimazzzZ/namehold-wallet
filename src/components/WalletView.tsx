@@ -29,7 +29,7 @@ import {
   useStartFullSync,
   useSyncStatus,
   useCancelFullSync,
-  nodeCoinsNotSyncedReason,
+  useNodeCoinsNotSyncedReason,
 } from "../queries/sync";
 import { useNodeLive, useStartHsd } from "../queries/node";
 import { useSyncTriggerStore } from "../stores/syncTrigger";
@@ -225,7 +225,7 @@ export function WalletView() {
   const isRunning = syncStatus.data?.running ?? false;
   // The last sync could not read this wallet's coins from the node: the
   // balance below is the cache, and this says why.
-  const nodeCoinsReason = nodeCoinsNotSyncedReason(syncStatus.data);
+  const nodeCoinsReason = useNodeCoinsNotSyncedReason(syncStatus.data);
 
   // Reset manualSync flag when sync finishes (running transitions true → false).
   // Uses a ref to detect the transition edge, not the initial state.

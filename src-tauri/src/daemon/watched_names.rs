@@ -568,7 +568,9 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
 
     // 6. Emit notifications via notify-rust. Best-effort per notification.
     for n in &result.notifications {
-        emit_os_notification(&n.summary, &n.body);
+        if let Err(e) = emit_os_notification(&n.summary, &n.body) {
+            eprintln!("namehold-syncd: OS notification failed: {e}");
+        }
     }
 
     // 7. Persist updated dedup set.
@@ -654,25 +656,26 @@ fn ensure_notify_identity() {
     });
 }
 
+/// Show one OS notification through notify-rust, which is cross-platform
+/// (macOS via mac-notification-sys, Linux via libnotify/D-Bus, Windows via
+/// tauri-winrt-notification). Returns the OS's error text when it could not
+/// be shown; callers report it and move on (nothing is retried).
 #[cfg(not(test))]
-fn emit_os_notification(summary: &str, body: &str) {
+pub(crate) fn emit_os_notification(summary: &str, body: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     ensure_notify_identity();
-    // notify-rust is cross-platform (macOS via mac-notification-sys, Linux via
-    // libnotify/D-Bus, Windows via tauri-winrt-notification). Fire-and-forget:
-    // if the OS notification center is unavailable we just log and move on.
-    if let Err(e) = notify_rust::Notification::new()
+    notify_rust::Notification::new()
         .summary(summary)
         .body(body)
         .show()
-    {
-        eprintln!("namehold-syncd: OS notification failed: {e}");
-    }
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
-fn emit_os_notification(_summary: &str, _body: &str) {
+pub(crate) fn emit_os_notification(_summary: &str, _body: &str) -> Result<(), String> {
     // No-op in tests: the pure scanner is tested directly; the shell is not.
+    Ok(())
 }
 
 /// Debug-only accessor around the real `notify-rust` dispatch, so the
@@ -684,16 +687,7 @@ fn emit_os_notification(_summary: &str, _body: &str) {
 /// release builds entirely.
 #[cfg(all(debug_assertions, not(test)))]
 pub(crate) fn emit_watchlist_os(summary: &str, body: &str) -> Option<String> {
-    #[cfg(target_os = "macos")]
-    ensure_notify_identity();
-    match notify_rust::Notification::new()
-        .summary(summary)
-        .body(body)
-        .show()
-    {
-        Ok(_) => None,
-        Err(e) => Some(e.to_string()),
-    }
+    emit_os_notification(summary, body).err()
 }
 
 // -------- Tests: the pure scanner ----------------------------------------
@@ -1751,7 +1745,7 @@ mod tests {
     fn emit_os_notification_test_stub_is_noop() {
         // In cfg(test) the emitter is a no-op; just ensure it is callable and
         // returns unit (covers the test-only stub body).
-        emit_os_notification("Watchlist", "some body");
+        assert_eq!(emit_os_notification("Watchlist", "some body"), Ok(()));
     }
 
     #[test]
