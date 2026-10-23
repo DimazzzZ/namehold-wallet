@@ -48,16 +48,22 @@ const pkgPath = join(repoRoot, "package.json");
 const confPath = join(repoRoot, "src-tauri", "tauri.conf.json");
 const cargoPath = join(repoRoot, "src-tauri", "Cargo.toml");
 
-// ── package.json ────────────────────────────────────────────────────────────
-const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-const prev = pkg.version;
-pkg.version = next;
-writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
-
-// ── tauri.conf.json ───────────────────────────────────────────────────────────
-const conf = JSON.parse(readFileSync(confPath, "utf8"));
-conf.version = next;
-writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
+// ── package.json, tauri.conf.json ─────────────────────────────────────────────
+// Replace the top-level "version" value in the text rather than re-serializing:
+// JSON.stringify would undo Prettier's layout (it spreads short arrays over
+// several lines), and the prettier gate would then fail on the bump commit.
+const setJsonVersion = (path) => {
+  const text = readFileSync(path, "utf8");
+  const current = JSON.parse(text).version;
+  const re = /^(  "version": )"[^"]*"/m;
+  if (!re.test(text)) fail(`could not find a top-level "version" line in ${path}`);
+  const updated = text.replace(re, `$1"${next}"`);
+  if (JSON.parse(updated).version !== next) fail(`replacing the version in ${path} did not take`);
+  writeFileSync(path, updated);
+  return current;
+};
+const prev = setJsonVersion(pkgPath);
+setJsonVersion(confPath);
 
 // ── Cargo.toml ────────────────────────────────────────────────────────────────
 // Replace only the first top-level `version = "..."` line (the [package]
