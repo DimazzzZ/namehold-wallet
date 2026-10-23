@@ -145,12 +145,12 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] Read source label: "Explorer" when node not synced, "Local" when synced
 - [ ] Last error shown when node start fails
 - [ ] Re-sync button appears on index mismatch
-- [ ] **Node mode dropdown** visible when chain_source ≠ explorer
-- [ ] **Node mode dropdown** hidden when chain_source = explorer
+- [ ] **Chain source** selector offers Local full node, SPV, Remote node and Read-only (no separate Node mode dropdown)
+- [ ] "Allow sending via remote node" shown only for Remote node; Test connection probes the node URL in every mode
 - [ ] **Explorer fallback URL** field editable and saveable
 
 ### B2. SPV mode
-- [ ] Switch to SPV mode in Settings → Node mode dropdown
+- [ ] Switch to SPV in Settings → Chain source
 - [ ] hsd restarts with `--spv` flag (check logs)
 - [ ] StatusStrip shows "Explorer (SPV)" label
 - [ ] Balance loads from explorer (not local cache)

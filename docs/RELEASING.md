@@ -34,8 +34,8 @@ This creates:
    ```bash
    pnpm version:set X.Y.Z
    ```
-   This updates `package.json`, `src-tauri/tauri.conf.json`, and
-   `src-tauri/Cargo.toml` in one shot, then runs `cargo check` to refresh
+   This updates `package.json`, `src-tauri/tauri.conf.json`,
+   `e2e/package.json` and `src-tauri/Cargo.toml` in one shot, then runs `cargo check` to refresh
    `Cargo.lock`. The frontend derives its version from these at build time
    (backend via `CARGO_PKG_VERSION`, webqa mock via a Vite `define`), so no
    `.tsx` file needs editing.
