@@ -456,3 +456,28 @@ Expected:
 - **Blocks mined:** 0
 - **Evidence:** screenshots `B19-1-buy-filled`, `B19-2-finalize-filled`.
 - **Cleanup / end state:** back to B8 step 1's end; continue B8.
+
+## B20 — Speed up an unconfirmed purchase
+
+- **Priority:** P2
+- **Covers:** R13 (amended by the [Speed up spec](../../../specs/2026-10-21-speed-up-unconfirmed-sends.md) R4, R11, R12, R16)
+- **Preconditions:** run inside [B7](#b7--buy-a-cli-listing-through-the-secure-window), after its step 2 (the purchase of X1 sent, `Unconfirmed purchase`) and before its step 3's `mine 1`; or on X5 listed with [cli-list-a-name](../../procedures/cli-list-a-name.md) and bought with [buy-a-cli-listing](../../procedures/buy-a-cli-listing.md) up to its step 2. Mine nothing until step 4.
+
+Steps:
+
+1. Sync. Market › Browse › `Your purchases`: read X1's line and its right-hand column; hover `Speed up`.
+2. `Speed up` → read the dialog's first paragraph → type `10` in `Fee rate (doos/vB)` → read the rows → `Review and sign` → the secure window → read → confirm.
+3. Without mining: read `Your purchases` (hover `Speed up` again), Owned Names, and Activity filtered by X1 and unfiltered; `scripts/regtest.sh rpc getrawmempool`.
+4. Continue B7 from its step 3 (`mine 1`, Sync); read Activity and `Your purchases`.
+
+Expected:
+
+- Step 1: X1 "Paid 5 HNS", "Waiting for the purchase to be mined", and on the right a secondary `Speed up`, enabled, hover "Pay a higher fee for it through a second transaction" (before the Sync it may be disabled with "Its change is not in your wallet yet; refresh your wallet and try again."). A purchase whose change fell into its fee shows `Speed up` disabled with "This transaction has no change to spend, so it cannot be sped up.": record it and continue B7.
+- Step 2: the paragraph reads "A second transaction spends this one's change and pays the fee for both, so a miner takes them together. The fee goes to the network only; nobody else is paid, and the seller's price and the purchase itself are unchanged. The original keeps its transaction id."; the rows as in [U1](../wallet/speed-up.md#u1--speed-up-an-ordinary-send) step 5. The secure window `Confirm transaction`: `Action` `Speed up`, `Speeds up` the purchase's txid, `Paid to` "The network only: nobody else is paid. The seller's price and the purchase itself are unchanged.", `Back to your wallet`, `Original transaction` "It keeps its transaction id.", the `Deadline` sentence. Toast `Speed up sent <first 12 hex of the child's txid>…`.
+- Step 3: `Your purchases` still lists X1 "Waiting for the purchase to be mined", its `Speed up` now disabled with "This transaction is already being sped up."; Owned Names still `Unconfirmed purchase`; Activity: the `Buy` row with "Sped up by <first 10 hex of the child's txid>…" and a `Speed up` row with "Speeds up <first 10 hex of the purchase's txid>…"; the mempool holds both.
+- Step 4: B7's expectations hold unchanged (`Awaiting finalize · 9 blocks`, "1 of 10 blocks", `9 blocks left` with no `Speed up`); the `Buy` and `Speed up` rows are `Confirmed` in the same block. B8 then finalizes X1 as usual. The child's fee is spent on top of the price and the purchase's own fee: account for it in B7's balance note.
+- Passes if the purchase is sped up without changing what the seller is paid, and the purchase proceeds as without it.
+
+- **Blocks mined:** 0 (inside B7)
+- **Evidence:** screenshots `B20-1-speed-up-offered`, `B20-2-form`, `B20-2-secure`, `B20-3-already`, `B20-4-awaiting`.
+- **Cleanup / end state:** X1 awaiting finalize (B7 and B8 continue).

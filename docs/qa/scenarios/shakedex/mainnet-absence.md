@@ -107,6 +107,29 @@ Expected:
 - **Evidence:** browser screenshots `M5-1-top`, `M5-2-hidden-open`, `M5-3-studio-scrolled`, `M5-4-all-loaded`, `M5-5-buying-on`.
 - **Cleanup / end state:** reload the page (the mock forgets the setting); stop the dev server.
 
+## M6 — When buyers stop seeing a listing, in the browser mock
+
+- **Priority:** P2
+- **Covers:** R35
+- **Preconditions:** mode C ([environment](../../environment.md#modes)): `pnpm dev` on a fresh page load. The mock's mainnet chain stands at height 100 000 and knows the expiry of two names: `urgent` (1 000 blocks from its end) and `example` (10 000 blocks); its signer is unlocked.
+
+Steps:
+
+1. Open `/market` → `My listings` → `Restore a lock by name` → type `urgent` → `Restore`; read the new row.
+2. Restore `dexsale` the same way; read its row.
+3. In the browser console run `__webqa_mine(1000)`; switch to `Browse` and back to `My listings`; read both rows.
+
+Expected:
+
+- Step 1: the toast "Restored .urgent: Locked — listing details unknown"; the row reads `Locked — listing details unknown` with `Cancel listing` and `Import its listing file`, and one amber line: "Buyers stop seeing this listing in ~6 days, when the name gets too close to expiring to finalize a purchase. Cancel it and bring the name home to renew it, then list it again." (979 blocks at ten minutes a block, whole days counted down).
+- Step 2: the `dexsale` row has no such line (the mock knows no expiry for it).
+- Step 3: the `urgent` row reads "Buyers no longer see this listing: the name is too close to expiring to finalize a purchase. Cancel it and bring the name home to renew it."; `dexsale` still has no line.
+- Passes if the line counts days on mainnet, turns to "no longer" past the point, and is absent where the count is unknown. The regtest wording (`in N blocks`) is not reachable here or on the shared regtest chain ([C5](#c5--not-gui-checkable-on-regtest)).
+
+- **Blocks mined:** 0
+- **Evidence:** browser screenshots `M6-1-urgent-days`, `M6-3-no-longer`.
+- **Cleanup / end state:** reload the page (the mock forgets the restored locks and its height); stop the dev server.
+
 ## C5 — Not GUI-checkable on regtest
 
 - **Priority:** P3
@@ -125,3 +148,7 @@ Expected:
 | Reorgs, rebroadcast after missing blocks, mempool expiry, "Lost, paid" by expiry, a purchase beating a broadcast cancel | R13, R22, R28 | needs `invalidateblock`/`setmocktime`, forbidden on the shared node | `shakedex_purchase_follows_reorgs_of_its_own_blocks`, `shakedex_purchase_the_node_lost_is_given_up_after_mempool_expiry`, `shakedex_name_expired_before_finalize_is_lost_with_the_price_paid`, `shakedex_cli_purchase_beats_our_cancel`, `shakedex_namehold_listing_sold_to_the_cli_is_sold` |
 | Byte parity of scripts, steps, purchases, FINALIZEs and cancels; fees on vsize; the lock self-check | R1, R4, R18 | not observable in a GUI | `shakedex_vector_tests`; the `*_pays_its_fee_rate_on_vsize` live tests; unit tests |
 | Ledger profiles | R16 | no device | vitest gate tests |
+| My listings' line saying when buyers stop seeing a Listed or Restored listing (`in N blocks` on regtest) | R35 | needs a listed name within ~300 blocks of the point buyers stop seeing it, about 4 700 blocks after the FINALIZE into the lock (which renews the name) | `shakedex_verify_tests::{blocks_until_unbuyable_counts_down_to_r9s_margin, buyable_blocks_by_name_reads_each_names_expiry_once, unbuyable_warn_window_is_at_most_half_the_renewal_window}`, `shakedex_my_listings_tests::a_listed_row_says_how_long_buyers_still_see_it`, vitest `my-listings.test.tsx :: R35: when buyers stop seeing the listing`; the mainnet wording in the browser mock: M6; every Listed row in the S and R cases shows no such line |
+| A listing managed from another device: the mark, the amber `Managed from another device: …` status line with the other device's price, prices `— on this device`, `Manage from this device` and its dialog, `Import its listing file` on a Listed row taking it over, Lower price refused, the Cancel dialog's sentence on the other device's price, the export line; no upload over the other device's copy; the take-over's refusals | R36–R42, R44, R45 | the mark comes only from a market job reading LearnHNS Market's copy of the listing, and the market jobs return before any read off mainnet (R23); the browser mock has one device. Importing the other device's file on regtest takes nothing over: a Listed row offers `Import its listing file` only while marked (a Restored lock's import is R1) | live `shakedex_two_devices_of_one_phrase_take_a_listing_over`; `shakedex_jobs_tests::{foreign_step_on_the_market_marks_the_listing_and_nothing_is_uploaded, copies_without_a_foreign_step_are_never_flagged, first_upload_does_not_go_over_a_foreign_step, advance_does_not_go_over_a_foreign_step, a_listing_managed_elsewhere_gets_no_upload_and_keeps_its_mark_through_a_reset, a_listing_managed_elsewhere_still_reports_its_sale_and_its_cancel, daemon_and_app_upload_nothing_for_a_listing_managed_elsewhere, later_expiry_on_the_market_is_kept_and_an_earlier_one_replaced}`, `shakedex_listing_state_tests::{managed_elsewhere_mark_lands_only_on_the_listing_read, a_listing_back_before_its_lock_loses_its_mark, a_listing_managed_elsewhere_is_still_sold_from_the_chain}`, `shakedex_sell_tests::{lower_refused_while_managed_elsewhere, cancel_prompt_of_a_listing_managed_elsewhere_names_the_other_devices_price, manage_here_adopts_the_other_devices_step_and_clears_the_mark, manage_here_refuses_and_writes_nothing, take_over_write_takes_only_the_listing_as_read, other_devices_file_takes_a_listing_managed_elsewhere_over, other_devices_file_that_is_not_this_listings_is_refused}`, vitest `my-listings.test.tsx`; the chain-fact wording of R43 is checked on regtest by R9 |
+| Speed up pulling a stuck parent into a full block; a child dropped with "The transaction it sped up (<txid>) did not confirm, so this one can never confirm. Nothing was paid by either." when its parent leaves the mempool; the 6-hour expiry and relay-floor refusals | Speed up R5, R6, R15, R17 | the shared node never fills a block, and emptying its mempool means a restart or 72 hours; the wallet never builds a parent below the floor | live `live_cpfp_parent_and_child_confirm_together`, `live_cpfp_child_of_a_vanished_parent_says_so` (on the capped node of `scripts/regtest.sh start-cpfp`); `speed_up_tests::{parent_close_to_its_mempool_expiry_is_refused, parent_below_the_relay_floor_is_refused, a_childs_death_names_its_parent}` |
+| Speed up on a Ledger profile | Speed up R13 | no device; no child has been signed on a device yet | `speed_up_cmd_tests::the_ledger_guard_passes_the_childs_plan` |

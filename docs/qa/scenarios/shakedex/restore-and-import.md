@@ -1,7 +1,7 @@
 ---
 area: Shakedex restore a lock by name, own listing file import, second device
 priority: P1–P3
-blocks: ~80
+blocks: ~92
 requires:
   - environment.md (seller and second-device profiles of one recovery phrase; names SE, SF)
   - procedures/lock-and-list.md
@@ -197,6 +197,31 @@ Expected:
 - **Blocks mined:** 11
 - **Evidence:** screenshots `R8-1-unlock-line`, `R8-2-found`, `R8-3-nothing-new`.
 - **Cleanup / end state:** SE a Restored lock of the second device and a Listed listing of the seller; [R3](#r3--cancel-a-lock-restored-without-its-file-relisting-reuses-the-lock) can continue from here, and R1 from its step 3 (its Restore by name step would be refused as already tracked).
+
+## R9 — A cancel and a sale made by the second device read as from another device
+
+- **Priority:** P2
+- **Covers:** R43 (R36–R42, R44 and R45 are not reachable on regtest: [C5](mainnet-absence.md#c5--not-gui-checkable-on-regtest))
+- **Preconditions:** (a) at [R1](#r1--restore-by-name-import-the-sellers-file-cancel-and-bring-the-name-home-from-the-second-device) step 7, or [C4](#c4--a-lowered-buy-now-imported-in-a-second-device-stays-buy-now) step 6 (there the seller cancels and the second device reads); (b) SE an ordinary owned name of the seller, home in both profiles, that no later case needs (after C4): the CLI buys it. The second device's signer stays locked until the restore step (see the note under the title).
+
+Steps:
+
+1. (a) After the cancel made in one profile is mined and both profiles have synced, read the SE row in My listings of the profile that did **not** cancel, then of the one that did.
+2. (b) Seller: [lock-and-list](../../procedures/lock-and-list.md) SE, Buy Now 5, `EXPORT=$QA_DIR/SE-3.json`.
+3. Second device: [restore-and-import](../../procedures/restore-and-import.md) SE with `SE-3.json`, pasted (if the sync already restored SE by itself, [R8](#r8--a-restored-profile-finds-its-own-locks-after-the-first-sync), import the file on that row). `Lower price` → `4` → `Sign the lower price` → `Confirm Lower price` → confirm. `Export listing file` → `$QA_DIR/SE-3-lowered.json`.
+4. [cli-fill](../../procedures/cli-fill.md) mined at once with `SE-3-lowered.json` (the CLI takes the cheapest valid step, 4 HNS).
+5. Sync in the second device, then [switch-profile](../../procedures/switch-profile.md) to the seller and Sync (twice if needed); read the SE row in both profiles; `info SE`.
+
+Expected:
+
+- Step 1: the row of the profile that did not cancel reads `Cancelled` with the line "Cancelled from another device or profile with your recovery phrase"; the row of the profile that cancelled reads `Cancelled` without that line.
+- Step 3: the second device's row reads `Listed for sale`, `Buy now`, `Price 4.000000 HNS`, with `All 2 price steps`; the seller's row still `Price 5.000000 HNS` (no market off mainnet, so nothing tells the seller of the lower step, and nothing marks its row as managed elsewhere).
+- Step 5: the seller's row reads `Sold` and "Sold at a price set on another device" (it was paid 4 HNS, a price none of its own steps names); the second device's row reads `Sold` without that line. `info SE` shows the owner a TRANSFER out of the lock, then the CLI's FINALIZE. A seller row that stays `Listed for sale` after two syncs is ◐ with spec §5 "One device per listing" named; add `info SE`.
+- Passes if each profile words the other device's cancel or sale as from another device, and its own without.
+
+- **Blocks mined:** 0 for (a); 12 for (b)
+- **Evidence:** screenshots `R9-1-cancelled-elsewhere`, `R9-1-cancelled-here`, `R9-3-lowered-on-second-device`, `R9-5-sold-elsewhere`, `R9-5-sold-here`; `info SE` after step 5.
+- **Cleanup / end state:** SE sold to the hsd wallet; both rows `Sold`.
 
 ## C4 — A lowered Buy Now imported in a second device stays Buy Now
 
