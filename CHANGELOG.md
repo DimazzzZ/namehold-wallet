@@ -35,8 +35,9 @@
 
 **Wallet**
 - **Speed up** a sent, unconfirmed transaction or purchase that pays too little: a child transaction spends its change and pays enough for both to reach the rate you choose (hsd has no replace-by-fee). The confirmation shows the rates and fees, and when Speed up is not possible the button says why.
-- **Several bids on one name**, each with its own value and lockup; your own bids are highlighted in the bids panel.
-- **Choose how to connect on first run:** a local full node, a remote node (with Test connection) or SPV. Settings offers the same choices, plus "Allow sending via remote node" (off by default). Your keys never leave the device.
+- **Several bids on one name**, each with its own value and lockup; your own bids are highlighted in the bids panel, and Reveal and Redeem take all of them in one transaction.
+- **Transfer several names at once:** select owned names and send them to one recipient in a single transaction.
+- **Choose how to connect on first run:** pick the network, then a local full node, a remote node (Test connection checks it is reachable, synced and on that network) or SPV. Settings offers the same choices, plus "Allow sending via remote node" (off by default). Your keys never leave the device.
 
 ### Fixed
 
@@ -62,8 +63,7 @@
 - The batch confirmation shows the amount it moves, and every confirmation counts all outputs of a name action.
 
 **Bids, reveals and redeems**
-- Reveal and Redeem now cover every bid you placed on a name, not only the last one.
-- Each bid shows the amount its own reveal disclosed; bids from a name's earlier auction no longer mix into the current one, and a bid you just placed shows while it waits for a block.
+- The bids panel no longer reads "No bids yet" for a name that has bids; bids from a name's earlier auction no longer mix into the current one, and a bid you just placed shows while it waits for a block.
 - Lost lockups are named with their amount: an unrevealed bid reads "Lost — Not Revealed", and a lockup stranded in an auction nobody revealed in is shown instead of disappearing.
 - A closed auction no longer reads "Owned" for a name that is not yours; without a node that can tell, it says to sync.
 - Redeem works on a revoked name, is not offered in the last block before expiry, takes only the current auction's reveals, and is not offered for a reveal that won.
@@ -77,12 +77,9 @@
 - A transaction of yours waiting for a block is shown as such ("waiting for a block"), and broadcasting your own register or transfer no longer reads as losing the name.
 - Registering says DNS records are optional; renewal countdowns (claimed names included) and the expiring-soon warning are right on every network.
 
-**Shakedex**
-- A sale shows in Activity as income; your own listing cannot be bought; a lowered Buy Now imports as Buy Now; a cancelled listing offers Finalize home again after a reorg; Owned Names and the Market refresh as soon as a purchase fails or is discarded.
-
 **App**
 - A new wallet no longer inherits another wallet's unlocked signer.
-- Test connection uses the API key and network you typed; the xpub import asks for an xpub.
+- The xpub import asks for an xpub, not a recovery phrase.
 - Export bid backup saves the file (readable by you only).
 - A sync taken over by another process stops and says so.
 - Move from Namebase explains that Namebase has shut down; importing your exported history still works.
@@ -91,9 +88,9 @@
 - Activity shows the name and the real amount for every name action; explorer links appear only where the explorer indexes the network.
 
 ### Changed
-- Market sits right after Auctions in the sidebar; hotkeys follow (`4` Market, `5`–`7` the rest).
+- Market sits right after Auctions in the sidebar, so Watchlist, Move from Namebase and Settings move to hotkeys `5`–`7`.
 - Hover hints are the app's own tooltips, visible on disabled buttons too.
-- Secondary buttons are white and tabs are underlined, so each page has one filled main action.
+- Secondary buttons are white with a border, so each page has one filled main action.
 
 ### Removed
 - The paid name swap: it could not be atomic. Offers recorded earlier are listed read-only under Activity › Paid swap offers, and the README and manual no longer describe it.
