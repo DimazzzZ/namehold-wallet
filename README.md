@@ -13,7 +13,7 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 </p>
 
 > ⚠️ **Beta software.** Namehold is under active development and can make mistakes.
-> Transactions and Namebase transfers are **irreversible** — always test with a
+> Transactions, transfers and name sales are **irreversible** — always test with a
 > single name or a small amount and confirm it arrives **before** sending or
 > transferring everything.
 
@@ -40,6 +40,18 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 
 The screenshots are generated from the app with showcase data: see [screenshots/README.md](screenshots/README.md).
 
+## Install
+
+Download the latest build from [Releases](https://github.com/DimazzzZ/namehold-wallet/releases/latest):
+
+| Platform | File |
+|----------|------|
+| macOS (Apple Silicon and Intel) | `Namehold_<version>_universal.dmg` — not code-signed yet, see [macOS](#macos) |
+| Windows | `Namehold_<version>_x64-setup.exe` |
+| Linux | `Namehold_<version>_amd64.AppImage`, `.deb` or `.rpm` |
+
+Once installed, the app updates itself (see [Auto-update](#auto-update-since-v020)). On first launch it asks how to connect: a local full node, a remote node or SPV.
+
 ## Features
 
 ### Wallet (the core)
@@ -65,7 +77,11 @@ The screenshots are generated from the app with showcase data: see [screenshots/
   batch flow. Minimum 1000 doos/kvB (1 sat/byte).
 - **Send Max** to sweep a wallet.
 - **Status tracking** — sent transactions move Pending → Confirmed (with block
-  height), or are flagged "Not confirmed" if they never make it on-chain.
+  height); a transaction the node did not accept reads "Not sent", and one that
+  never makes it on-chain is flagged with the reason.
+- **Speed up** — a sent, unconfirmed transaction or purchase that pays too little
+  for full blocks gets a child transaction that pays for both (hsd has no
+  replace-by-fee), from Activity or Your purchases.
 
 ### Names & auctions
 - The complete Vickrey-auction lifecycle: **open, bid, reveal, redeem, register,
@@ -74,14 +90,16 @@ The screenshots are generated from the app with showcase data: see [screenshots/
   and a **"Locked in Auctions"** balance for in-flight bids.
 - A typed **DNS-record editor** (TXT/A/AAAA/NS/CNAME…) for register/update, with a
   raw-JSON fallback.
-- **Batch operations** — bid, renew, reveal, redeem, or finalize multiple names in a
-  single transaction. Multi-select checkboxes on the Owned Names table with a
+- **Several bids on one name**, each with its own value and lockup; Reveal and
+  Redeem take all of them in one transaction.
+- **Batch operations** — bid, renew, reveal, redeem, finalize or transfer multiple
+  names in a single transaction. Multi-select checkboxes on the Owned Names table with a
   batch action bar and a confirmation modal showing estimated fee + name list.
 - **Name watchlist** — track names you don't own for monitoring. Watchlist page
   in the sidebar with add/remove, tags, CSV import/export, and "Add to
   Watchlist" buttons in name modals.
-- **Buy names on the Market** — browse LearnHNS Market listings, verified against your own node, or import a listing file, pasted JSON or a market.learnhns.com link, and buy at the current step. One list with search, filters and sorting sits beside a panel that shows the selected listing's price, what your node checked, and the price, market fee and network fee before you buy; the purchase then shows in Your purchases and Owned Names until you finalize it. Needs a node and a recovery-phrase wallet; mainnet buying is behind "Shakedex (experimental)" in Settings.
-- **Sell names through Shakedex** — Sell, in a name's actions, locks the name for sale as a Buy Now or a reverse auction; once the transfer lockup is over, Finalize & sign sets the price or the schedule and signs every price at once. Market › My listings follows each listing to Sold or back home, with Lower price, Cancel listing and Finalize home, Export listing file, and Restore a lock by name after restoring the wallet from its recovery phrase. The listing file is a Shakedex v2 listing that the shakedex CLI can buy; on mainnet it can also be published on LearnHNS Market, where the app and the background daemon keep it at its current price. Needs a node that can send and a recovery-phrase wallet; mainnet selling is behind the same experimental setting as buying.
+- **Buy names on the Market** — browse LearnHNS Market listings, verified against your own node, or import a listing file, pasted JSON or a market.learnhns.com link, and buy at the current step. One list with search, filters and sorting sits beside a panel that shows the selected listing's price, what your node checked, and the price, market fee and network fee before you buy; the purchase then shows in Your purchases and Owned Names until you finalize it. Needs a node and a recovery-phrase wallet; on mainnet, buying is behind "Allow buying and selling names on mainnet through Shakedex (experimental)" in Settings, which the Market offers to turn on.
+- **Sell names through Shakedex** — Sell, in a name's actions, locks the name for sale as a Buy Now or a reverse auction; once the transfer lockup is over, Finalize & sign sets the price or the schedule and signs every price at once. Market › My listings follows each listing to Sold or back home, with Lower price, Cancel listing and Finalize home, and Export listing file, and warns before buyers stop seeing a listing whose name nears expiry. A wallet restored from its recovery phrase finds its locked names on its first sync (Find my locks, or Restore a lock by name, for the rest), and a listing managed from another device of the same phrase is recognised and can be taken over. The listing file is a Shakedex v2 listing that the shakedex CLI can buy; on mainnet it can also be published on LearnHNS Market, where the app and the background daemon keep it at its current price. Needs a node that can send and a recovery-phrase wallet; mainnet selling is behind the same experimental setting as buying.
 - **Recover lost bids** — if you lose your local bid data (reinstall, seed-
   restore, import from another wallet), Namehold can brute-force the bid value
   from your seed and reveal it before the window closes. See
@@ -111,23 +129,28 @@ The screenshots are generated from the app with showcase data: see [screenshots/
 
 - Namehold can keep your wallet data fresh even when the app is closed. A
   lightweight background daemon (`namehold-syncd`) wakes every 60 seconds and
-  syncs all wallet profiles (UTXOs, name states, transactions) from the local
-  hsd node into the shared SQLite database.
+  syncs all wallet profiles (UTXOs, name states, transactions) from each
+  profile's node into the shared SQLite database.
 - Controlled by a Settings checkbox **"Sync in background"** (default ON).
 - When enabled, hsd stays running after you close the app so the daemon can
   query it; the next app launch adopts the running node (no duplicate spawned).
 - Crash recovery: if the daemon dies, the app respawns it on startup.
-- The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market (on mainnet, for listings you chose to publish).
+- The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market (on mainnet, for listings you chose to publish), and sends the Shakedex "Ready to finalize" reminders, so they arrive with the app closed.
 
-### SPV mode
+### Connections: local node, remote node, SPV
 
-- An opt-in **lightweight alternative** to the full node mode. SPV downloads only
+- **Chain source** in Settings → Connections (and the first-run screen) picks how
+  the wallet reaches the network: **Local full node** (the app runs hsd on this
+  device; the default), **Remote node** (an hsd you run elsewhere), **SPV** or
+  **Read-only**.
+- **Remote node** — point at an existing hsd's RPC; **Test connection** checks that
+  it is reachable, synced and on the wallet's network before you save. Sending
+  through it is off until you tick **"Allow sending via remote node"**. Your keys
+  never leave the device either way.
+- **SPV** — a **lightweight alternative** to the full node: it downloads only
   block headers (~tens of MB vs ~15GB), enabling fast first launch and minimal disk
-  usage.
-- **Balance and name data come from the explorer** — sending is blocked in SPV mode
-  (read-only).
-- Controlled via a **"Node mode"** dropdown in Settings → Connections (default:
-  Full node). When using SPV, hsd runs with `--spv` instead of `--index-address
+  usage. **Balance and name data come from the explorer** — sending is blocked in SPV
+  mode (read-only). hsd then runs with `--spv` instead of `--index-address
   --index-tx`.
 - **Explorer failover** — all explorer HTTP requests support automatic failover to a
   configurable fallback URL.
@@ -138,10 +161,14 @@ The screenshots are generated from the app with showcase data: see [screenshots/
 - **Command palette** (⌘K / Ctrl+K) — fuzzy-searchable list of navigation targets
   and view actions on the current page. Type to filter, ↑/↓ to move, Enter to run.
 - **Cheatsheet** (Shift+?) — overlay documenting all bindings for the current page.
+- **Sections** — `1` Wallet, `2` Activity, `3` Auctions, `4` Market, `5` Watchlist,
+  `6` Move from Namebase, `7` Settings.
 - **Per-page shortcuts** — common flows without the mouse:
   - **Wallet** (`/`): `s` send, `r` refresh, `u` unlock, `q` toggle QR, `/` filter
     names, `j`/`k` + Enter to walk owned names
   - **Auctions** (`/auctions`): `/` lookup, `b` batch bid
+  - **Market** (`/market`): `/` search, `i` import a listing, `j`/`k` + Enter to
+    walk the list and press the listing panel's button
   - **Activity** (`/activity`): `/` search
   - **Watchlist** (`/watchlist`): `a` add name, `e` export CSV
 
@@ -149,8 +176,9 @@ The screenshots are generated from the app with showcase data: see [screenshots/
 
 - **Reads are node-free** on mainnet. Balances and names come from the explorer
   and are cached locally per wallet; other networks need an explorer URL of yours. Links to transactions, names, and addresses open on Shakeshift.
-- **Sending needs a node.** Broadcasting and coin/owner discovery use a local
-  **hsd** node over RPC. The app can start/stop hsd for you (Settings → Connections).
+- **Sending needs a node.** Broadcasting and coin/owner discovery use an **hsd**
+  node over RPC: a local one the app can start/stop for you, or a remote one with
+  sending allowed (Settings → Connections).
 - **Secrets stay in a secure window.** Your mnemonic/passphrase is only ever typed
   into — and your backup phrase only ever shown in — a small **Rust-owned window**;
   it never passes through the web UI. At rest it's an **encrypted vault**
@@ -186,7 +214,7 @@ For a detailed threat model, attack surfaces, and mitigations, see [SECURITY.md]
 ## Quick start
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/DimazzzZ/namehold-wallet.git
 cd namehold-wallet
 pnpm install
 pnpm tauri dev
@@ -229,8 +257,8 @@ The legacy custodial Namebase (sunset.namebase.io) closed on 1 October 2026 and 
 pnpm tauri build
 ```
 
-Output in `src-tauri/target/release/bundle/` — macOS `.app`/`.dmg`, Windows `.msi`,
-Linux `.AppImage`/`.deb`. CI (PR tests), a dependency-audit gate (`cargo audit` +
+Output in `src-tauri/target/release/bundle/` — macOS `.app`/`.dmg`, Windows `.msi`
+and `-setup.exe` (releases ship the `-setup.exe`), Linux `.AppImage`/`.deb`/`.rpm`. CI (PR tests), a dependency-audit gate (`cargo audit` +
 `pnpm audit`), and the cross-platform release pipeline live in
 [`.github/workflows`](.github/workflows).
 
@@ -344,6 +372,6 @@ pnpm test   # requires a release build + the Tauri WebDriver running on :4444
 
 The E2E suite uses [WebdriverIO](https://webdriver.io/) with the Tauri WebDriver
 (`tauri driver`, from `@tauri-apps/cli`). It runs in CI on Linux via
-`.github/workflows/e2e.yml` after a `cargo tauri build --release`. These tests
+`.github/workflows/e2e.yml` after a `pnpm tauri build --debug --no-bundle`. These tests
 deliberately cover the runtime-only surface that unit tests cannot reach, so the
 two suites are complementary rather than overlapping.

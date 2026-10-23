@@ -4,7 +4,7 @@ Your local desktop wallet for **Handshake (HNS)**: hold HNS, run the full name
 auction lifecycle, manage the names you own, and edit on-chain DNS — all
 non-custodially, with your keys encrypted on your own machine.
 
-> **Beta software.** Transactions and Namebase transfers are irreversible. Always
+> **Beta software.** Transactions, transfers and name sales are irreversible. Always
 > test with a single name or a small amount before moving everything.
 
 ---
