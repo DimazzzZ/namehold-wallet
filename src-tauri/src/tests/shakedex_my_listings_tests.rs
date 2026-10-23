@@ -118,6 +118,62 @@ fn a_locking_row_counts_the_lockup_as_owned_names_does() {
     assert_eq!(row_of(&conn, "l").listing.blocks_until_finalize, None);
 }
 
+/// R35: a Listed or Restored row carries the blocks until buyers stop seeing
+/// it, from the per-name count the node gave (some left, or 0 once past R9's
+/// margin); `None` without a node's count and in every other state. Only
+/// Listed and Restored names are asked of the node. The row also says the
+/// network's warning window (R9's 30 days) and whether blocks keep time.
+#[test]
+fn a_listed_row_says_how_long_buyers_still_see_it() {
+    use crate::commands::shakedex::{buyable_count_names, my_listings_from_conn_at};
+    use std::collections::HashMap;
+    let rows_with = |conn: &Connection, network: Network, left: &HashMap<String, i64>| {
+        my_listings_from_conn_at(conn, "sell1", network, None, left).unwrap()
+    };
+    for state in ListingState::ALL {
+        let conn = store_conn();
+        insert(&conn, &listing("l", "dexsale", state));
+        let counted = matches!(state, ListingState::Listed | ListingState::Restored);
+        let names = buyable_count_names(&queries::list_shakedex_listings(&conn, "sell1").unwrap());
+        assert_eq!(
+            names,
+            if counted {
+                vec!["dexsale".to_string()]
+            } else {
+                vec![]
+            },
+            "{state:?}"
+        );
+        for left in [1_200, 0] {
+            let by_name = HashMap::from([("dexsale".to_string(), left)]);
+            let row = &rows_with(&conn, Network::Main, &by_name)[0];
+            assert_eq!(
+                row.listing.blocks_until_unbuyable,
+                counted.then_some(left),
+                "{state:?}"
+            );
+        }
+        let unknown = &rows_with(&conn, Network::Main, &HashMap::new())[0];
+        assert_eq!(unknown.listing.blocks_until_unbuyable, None, "{state:?}");
+        let no_node = &my_listings_from_conn(&conn, "sell1", Network::Main, None).unwrap()[0];
+        assert_eq!(no_node.listing.blocks_until_unbuyable, None, "{state:?}");
+    }
+    let conn = store_conn();
+    insert(&conn, &listing("l", "dexsale", ListingState::Listed));
+    let main = &rows_with(&conn, Network::Main, &HashMap::new())[0];
+    assert!(main.wall_clock_timing);
+    assert_eq!(main.unbuyable_warn_blocks, 4_320);
+    let regtest = &rows_with(&conn, Network::Regtest, &HashMap::new())[0];
+    assert!(!regtest.wall_clock_timing);
+    assert_eq!(regtest.unbuyable_warn_blocks, 300);
+    let testnet = &rows_with(&conn, Network::Testnet, &HashMap::new())[0];
+    assert!(testnet.wall_clock_timing);
+    assert_eq!(
+        testnet.unbuyable_warn_blocks, 2_160,
+        "half testnet's renewal window"
+    );
+}
+
 /// Which state allows which action: Finalize & sign only ReadyToFinalize,
 /// Lower price only Listed, Cancel Listed and Restored, Finalize cancel
 /// only CancelAwaitingFinalize, export the EXPORT_ALLOWED states with a file.
@@ -172,7 +228,7 @@ fn listing_actions_follow_the_commands_refusals_in_every_state() {
         let no_steps = state == ListingState::Restored;
         assert_eq!(
             a.lower_price.reason,
-            words(lower_refusal(state, no_steps)),
+            words(lower_refusal(state, no_steps, false)),
             "{state:?}"
         );
         assert_eq!(a.cancel.reason, words(cancel_refusal(state)), "{state:?}");
@@ -189,7 +245,7 @@ fn listing_actions_follow_the_commands_refusals_in_every_state() {
         );
         assert_eq!(
             a.import_file.reason,
-            words(import_refusal(state)),
+            words(import_refusal(state, false)),
             "{state:?}"
         );
         // `with_steps` stores an unreadable file ("{}"): refused in every
@@ -244,7 +300,7 @@ fn an_unreadable_listing_is_listed_with_every_action_refused() {
     }
     assert_eq!(
         a.import_file.reason.as_deref(),
-        import_refusal(ListingState::Cancelling)
+        import_refusal(ListingState::Cancelling, false)
     );
     assert!(row.listing.steps.is_empty());
     assert!(

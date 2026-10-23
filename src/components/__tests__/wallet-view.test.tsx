@@ -1932,6 +1932,179 @@ describe("WalletView — balance card names a node that can't report the wallet'
     expect(line.textContent).toBe(`Your node can't report this wallet's coins: ${BEFORE_HSD_7}`);
   });
 
+  it("shows the line for the profile the sync ran for and hides it after a switch", async () => {
+    const state = { running: true, activeId: "p1" };
+    const profiles = () => [
+      { ...baseProfile, id: "p1", label: "Primary", active: state.activeId === "p1" },
+      { ...baseProfile, id: "p2", label: "Second", active: state.activeId === "p2" },
+    ];
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_sync_status") {
+        return Promise.resolve(
+          baseSyncStatus({
+            running: state.running,
+            finishedAt: state.running ? null : "2026-10-21T10:00:00Z",
+            errors: state.running ? [] : [NO_ADDRESS_INDEX],
+          }),
+        );
+      }
+      if (cmd === "list_wallet_profiles") return Promise.resolve(profiles());
+      return routeInvoke({ spendableDoos: 0 })(cmd);
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/wallet"]}>
+          <WalletView />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByText("Primary");
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some((c) => c[0] === "get_sync_status")).toBe(true),
+    );
+
+    // The sync ends while p1 is active.
+    state.running = false;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["sync", "status"] });
+    });
+    expect(await screen.findByTestId("balance-node-not-authoritative")).toBeInTheDocument();
+
+    // Another profile becomes active; the status still carries p1's errors.
+    state.activeId = "p2";
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["wallet"] });
+    });
+    await screen.findByText("Second");
+    await waitFor(() => expect(screen.queryByTestId("balance-node-not-authoritative")).toBeNull());
+  });
+
+  it("attributes a sync to the profile active when it started, not when it ended", async () => {
+    const state = { running: true, activeId: "p1" };
+    const profiles = () => [
+      { ...baseProfile, id: "p1", label: "Primary", active: state.activeId === "p1" },
+      { ...baseProfile, id: "p2", label: "Second", active: state.activeId === "p2" },
+    ];
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_sync_status") {
+        return Promise.resolve(
+          baseSyncStatus({
+            running: state.running,
+            finishedAt: state.running ? null : "2026-10-21T10:00:00Z",
+            errors: state.running ? [] : [NO_ADDRESS_INDEX],
+          }),
+        );
+      }
+      if (cmd === "list_wallet_profiles") return Promise.resolve(profiles());
+      return routeInvoke({ spendableDoos: 0 })(cmd);
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/wallet"]}>
+          <WalletView />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByText("Primary");
+    await waitFor(() =>
+      expect(queryClient.getQueryData<SyncStatus>(["sync", "status"])?.running).toBe(true),
+    );
+    await act(async () => {});
+
+    // The user switches profile while the sync runs, then it ends.
+    state.activeId = "p2";
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["wallet"] });
+    });
+    await screen.findByText("Second");
+    state.running = false;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["sync", "status"] });
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<SyncStatus>(["sync", "status"])?.running).toBe(false),
+    );
+    await act(async () => {});
+    expect(screen.queryByTestId("balance-node-not-authoritative")).toBeNull();
+
+    // Back on the profile it ran for, the reason shows.
+    state.activeId = "p1";
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["wallet"] });
+    });
+    expect(await screen.findByTestId("balance-node-not-authoritative")).toBeInTheDocument();
+  });
+
+  it("attributes a run first seen while the profile list loads to the profile that loads", async () => {
+    const state = { running: true, activeId: "p1" };
+    let releaseProfiles: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (releaseProfiles = resolve));
+    let firstProfileRead = true;
+    const profiles = () => [
+      { ...baseProfile, id: "p1", label: "Primary", active: state.activeId === "p1" },
+      { ...baseProfile, id: "p2", label: "Second", active: state.activeId === "p2" },
+    ];
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_sync_status") {
+        return Promise.resolve(
+          baseSyncStatus({
+            running: state.running,
+            startedAt: "2026-10-21T09:00:00Z",
+            finishedAt: state.running ? null : "2026-10-21T10:00:00Z",
+            errors: state.running ? [] : [NO_ADDRESS_INDEX],
+          }),
+        );
+      }
+      if (cmd === "list_wallet_profiles") {
+        if (firstProfileRead) {
+          firstProfileRead = false;
+          return gate.then(profiles);
+        }
+        return Promise.resolve(profiles());
+      }
+      return routeInvoke({ spendableDoos: 0 })(cmd);
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/wallet"]}>
+          <WalletView />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    // The run is seen while the profile list is still loading.
+    await waitFor(() =>
+      expect(queryClient.getQueryData<SyncStatus>(["sync", "status"])?.running).toBe(true),
+    );
+    await act(async () => {
+      releaseProfiles();
+    });
+    await screen.findByText("Primary");
+
+    state.activeId = "p2";
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["wallet"] });
+    });
+    await screen.findByText("Second");
+    state.running = false;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["sync", "status"] });
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<SyncStatus>(["sync", "status"])?.running).toBe(false),
+    );
+    await act(async () => {});
+    expect(screen.queryByTestId("balance-node-not-authoritative")).toBeNull();
+  });
+
   it("shows no line when the run's errors are not about the node's coins", async () => {
     invokeMock.mockImplementation(withSyncErrors(["explorer: status 403"]));
     render(<WalletView />, { wrapper: wrapper() });

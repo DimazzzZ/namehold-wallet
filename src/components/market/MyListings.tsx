@@ -17,6 +17,7 @@ import {
   useFinalizeCancel,
   useKeptDraft,
   useLowerPrice,
+  useManageListingHere,
   useMyListings,
   usePublishListing,
   useSaveListingFile,
@@ -38,9 +39,19 @@ import {
   CANCEL_MARKET_TOLD,
   CANCEL_MEMPOOL_PURCHASE,
   CANCEL_THEN_FINALIZE,
+  CANCELLED_ELSEWHERE,
+  EXPORT_THIS_DEVICE_ONLY,
+  MANAGED_ELSEWHERE,
+  MANAGE_HERE_LABEL,
+  MANAGE_HERE_TEXT,
+  ON_THIS_DEVICE,
+  SOLD_ELSEWHERE,
+  cancelElsewhereText,
+  managedElsewherePriceText,
   LISTING_BUTTONS,
   LISTING_BUTTON_LABEL,
   LOWER_PRICE_PERMANENCE,
+  MANAGED_ELSEWHERE_BUTTONS,
   PUBLISH_PRIVACY,
   TONE_DOT,
   type ListingButton,
@@ -53,13 +64,14 @@ import {
   sellRefusal,
   shakedexRefusal,
   stepTimeText,
+  unbuyableText,
   cancelStillBuyable,
   discardedText,
   withKept,
 } from "./marketText";
 
 /** A row's dialog. */
-type RowDialog = "finalize" | "importFile" | "cancel" | "lower" | null;
+type RowDialog = "finalize" | "importFile" | "cancel" | "lower" | "manageHere" | null;
 
 const TEST_ID: Record<ListingButton, string> = {
   finalizeAndSign: "listing-finalize-and-sign",
@@ -69,6 +81,7 @@ const TEST_ID: Record<ListingButton, string> = {
   export: "listing-export",
   publish: "listing-publish",
   importFile: "listing-import-file",
+  manageHere: "listing-manage-here",
 };
 
 /**
@@ -146,7 +159,13 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
   const gateOf = (b: ListingButton) =>
     b === "export" ? null : b === "publish" ? publishGate : signingGate;
 
-  const buttons = LISTING_BUTTONS[listing.state].filter(
+  const elsewhere = row.managedElsewhere;
+  const buttons = [
+    ...LISTING_BUTTONS[listing.state],
+    // R44, R45: a Listed row is taken over, by the button or the other
+    // device's file, only while another device manages it.
+    ...(listing.state === "listed" && elsewhere ? MANAGED_ELSEWHERE_BUTTONS : []),
+  ].filter(
     // Carry 1: off → on only, on mainnet only.
     (b) => b !== "publish" || (!listing.publish && mainnet),
   );
@@ -266,18 +285,37 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
     importFile: () => setDialog("importFile"),
     cancel: () => setDialog("cancel"),
     lowerPrice: () => setDialog("lower"),
+    manageHere: () => setDialog("manageHere"),
     finalizeCancel: () => void finalizeHome(),
     export: () => void exportFile(),
     publish: () => void publishNow(),
   };
 
   const mode = modeText(listing);
-  const status = marketStatusText(listing, profile?.network);
-  const pricesText = listingPricesText(listing, prices);
+  // R42: a listing managed elsewhere says so in place of its market status.
+  const status = elsewhere
+    ? { tone: "warn" as const, text: MANAGED_ELSEWHERE }
+    : marketStatusText(listing, profile?.network);
+  const ownPrices = listingPricesText(listing, prices);
+  // R42: this device's own prices, never confused with the other device's.
+  const pricesText = ownPrices && elsewhere ? `${ownPrices} — ${ON_THIS_DEVICE}` : ownPrices;
+  // R43: chain facts from another device, in words only.
+  const fromElsewhere =
+    listing.state === "sold" && row.soldElsewhere
+      ? SOLD_ELSEWHERE
+      : row.cancelledElsewhere
+        ? CANCELLED_ELSEWHERE
+        : null;
   const listedUntil =
     listing.state === "listed" && listing.expiresAt != null
       ? listedUntilText(listing.expiresAt)
       : null;
+  // R35: buyers stop seeing a lock whose name gets too close to expiring.
+  const unbuyable = unbuyableText(
+    listing.blocksUntilUnbuyable,
+    row.unbuyableWarnBlocks,
+    row.wallClockTiming,
+  );
 
   // Each disabled button's reason, once: the gate first, then the backend's.
   const reasons = new Set<string>();
@@ -318,6 +356,16 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
         />
         <span data-testid="listing-market-status">{status.text}</span>
       </div>
+      {elsewhere && row.foreignStepPriceDoos != null && (
+        <div className="mt-1 text-sm text-gray-700" data-testid="listing-elsewhere-price">
+          {managedElsewherePriceText(row.foreignStepPriceDoos)}
+        </div>
+      )}
+      {fromElsewhere && (
+        <div className="mt-1 text-xs text-gray-600" data-testid="listing-from-elsewhere">
+          {fromElsewhere}
+        </div>
+      )}
       {pricesText && (
         <div className="mt-1 text-sm tabular-nums text-gray-900" data-testid="listing-prices">
           {pricesText}
@@ -340,6 +388,11 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
         </Disclosure>
       )}
       {listedUntil && <div className="mt-1 text-xs text-gray-400">{listedUntil}</div>}
+      {unbuyable && (
+        <p className="mt-1 text-xs text-amber-800" data-testid="listing-unbuyable">
+          {unbuyable}
+        </p>
+      )}
       {(rendered.length > 0 || pendingSend) && (
         <div className="mt-2 flex flex-wrap gap-2">
           {pendingSend && (
@@ -375,6 +428,9 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
       {buttons.includes("publish") && (
         <p className="mt-1 text-xs text-gray-500">{PUBLISH_PRIVACY}</p>
       )}
+      {elsewhere && buttons.includes("export") && (
+        <p className="mt-1 text-xs text-gray-500">{EXPORT_THIS_DEVICE_ONLY}</p>
+      )}
       {[...reasons].map((r) => (
         <p key={r} className="mt-1 text-xs text-gray-600">
           {r}
@@ -393,7 +449,67 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
       )}
       {dialog === "cancel" && <CancelDialog row={row} onClose={() => setDialog(null)} />}
       {dialog === "lower" && <LowerPriceDialog row={row} onClose={() => setDialog(null)} />}
+      {dialog === "manageHere" && <ManageHereDialog row={row} onClose={() => setDialog(null)} />}
     </li>
+  );
+}
+
+/**
+ * R44: take the listing over from the other device, its price included.
+ * The backend re-reads the lock coin and the step; nothing is signed.
+ */
+function ManageHereDialog({ row, onClose }: { row: ShakedexMyListing; onClose: () => void }) {
+  const { listing } = row;
+  const showToast = useUiStore((s) => s.showToast);
+  const { data: profile } = useActiveProfile();
+  const withSigner = useWithSigner();
+  const manage = useManageListingHere();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const confirm = async () => {
+    if (!profile) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await withSigner.run(profile.id, () => manage.mutateAsync(listing.id));
+      showToast("This device manages the listing again. It goes up at the next sync.");
+      onClose();
+    } catch (e) {
+      setError(mapError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open
+      onClose={() => !busy && onClose()}
+      title={`${MANAGE_HERE_LABEL}: .${displayName(listing.name)}`}
+    >
+      <div className="space-y-3 text-sm text-gray-700">
+        <p data-testid="manage-here-text">{MANAGE_HERE_TEXT(row.foreignStepPriceDoos ?? 0)}</p>
+        {error && (
+          <Alert tone="error">
+            <span data-testid="manage-here-error">{error}</span>
+          </Alert>
+        )}
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="ghost" disabled={busy} onClick={onClose}>
+            Leave it
+          </Button>
+          <Button
+            variant="primary"
+            data-testid="manage-here-confirm"
+            disabled={busy}
+            onClick={() => void confirm()}
+          >
+            {busy ? "Processing…" : MANAGE_HERE_LABEL}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
   );
 }
 
@@ -451,6 +567,9 @@ function CancelDialog({ row, onClose }: { row: ShakedexMyListing; onClose: () =>
     >
       <div className="space-y-3 text-sm text-gray-700">
         <p>{cancelStillBuyable(listing, row.prices)}</p>
+        {row.managedElsewhere && row.foreignStepPriceDoos != null && (
+          <p data-testid="cancel-elsewhere">{cancelElsewhereText(row.foreignStepPriceDoos)}</p>
+        )}
         <p>{CANCEL_MEMPOOL_PURCHASE}</p>
         <p>{CANCEL_THEN_FINALIZE}</p>
         {listing.publish && <p>{CANCEL_MARKET_TOLD}</p>}

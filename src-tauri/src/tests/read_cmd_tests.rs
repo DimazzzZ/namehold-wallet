@@ -3715,6 +3715,8 @@ fn add_listing(
             cancel_vout: None,
             cancel_finalize_draft_id: None,
             cancel_blocks_remaining: None,
+            managed_elsewhere_at: None,
+            foreign_step_json: None,
             created_at: String::new(),
             updated_at: String::new(),
         },

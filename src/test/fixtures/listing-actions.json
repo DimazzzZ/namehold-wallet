@@ -25,11 +25,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the price is set at Finalize & sign"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -60,11 +64,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the price is set at Finalize & sign"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -95,11 +103,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the price is set at Finalize & sign"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -130,11 +142,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the price is set at Finalize & sign"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -165,11 +181,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the price is set at Finalize & sign"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -200,11 +220,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the price is set at Finalize & sign"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -235,11 +259,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the price is set at Finalize & sign"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -270,11 +298,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the price is set at Finalize & sign"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -305,11 +337,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the price can be lowered once the finalize into the lock is mined"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -340,11 +376,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the price can be lowered once the finalize into the lock is mined"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -375,11 +415,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the price can be lowered once the finalize into the lock is mined"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -410,11 +454,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the price can be lowered once the finalize into the lock is mined"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -445,12 +493,16 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing has no signed prices here: import its listing file first"
         },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
+        },
         "publish": {
           "allowed": false,
           "reason": "this lock has no listing file here: import its saved file"
@@ -480,81 +532,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing has no signed prices here: import its listing file first"
         },
-        "publish": {
+        "manageHere": {
           "allowed": false,
-          "reason": "this listing is already published on LearnHNS Market"
-        }
-      },
-      "published": true,
-      "state": "listed",
-      "withFile": false
-    },
-    {
-      "actions": {
-        "cancel": {
-          "allowed": true,
-          "reason": null
-        },
-        "export": {
-          "allowed": true,
-          "reason": null
-        },
-        "finalizeAndSign": {
-          "allowed": false,
-          "reason": "this listing is already finalized into its lock"
-        },
-        "finalizeCancel": {
-          "allowed": false,
-          "reason": "this listing has no mined cancel to finalize"
-        },
-        "importFile": {
-          "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
-        },
-        "lowerPrice": {
-          "allowed": true,
-          "reason": null
-        },
-        "publish": {
-          "allowed": true,
-          "reason": null
-        }
-      },
-      "published": false,
-      "state": "listed",
-      "withFile": true
-    },
-    {
-      "actions": {
-        "cancel": {
-          "allowed": true,
-          "reason": null
-        },
-        "export": {
-          "allowed": true,
-          "reason": null
-        },
-        "finalizeAndSign": {
-          "allowed": false,
-          "reason": "this listing is already finalized into its lock"
-        },
-        "finalizeCancel": {
-          "allowed": false,
-          "reason": "this listing has no mined cancel to finalize"
-        },
-        "importFile": {
-          "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
-        },
-        "lowerPrice": {
-          "allowed": true,
-          "reason": null
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -563,6 +549,84 @@
       },
       "published": true,
       "state": "listed",
+      "withFile": false
+    },
+    {
+      "actions": {
+        "cancel": {
+          "allowed": true,
+          "reason": null
+        },
+        "export": {
+          "allowed": true,
+          "reason": null
+        },
+        "finalizeAndSign": {
+          "allowed": false,
+          "reason": "this listing is already finalized into its lock"
+        },
+        "finalizeCancel": {
+          "allowed": false,
+          "reason": "this listing has no mined cancel to finalize"
+        },
+        "importFile": {
+          "allowed": false,
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
+        },
+        "lowerPrice": {
+          "allowed": true,
+          "reason": null
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
+        },
+        "publish": {
+          "allowed": true,
+          "reason": null
+        }
+      },
+      "published": false,
+      "state": "listed",
+      "withFile": true
+    },
+    {
+      "actions": {
+        "cancel": {
+          "allowed": true,
+          "reason": null
+        },
+        "export": {
+          "allowed": true,
+          "reason": null
+        },
+        "finalizeAndSign": {
+          "allowed": false,
+          "reason": "this listing is already finalized into its lock"
+        },
+        "finalizeCancel": {
+          "allowed": false,
+          "reason": "this listing has no mined cancel to finalize"
+        },
+        "importFile": {
+          "allowed": false,
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
+        },
+        "lowerPrice": {
+          "allowed": true,
+          "reason": null
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
+        },
+        "publish": {
+          "allowed": false,
+          "reason": "this listing is already published on LearnHNS Market"
+        }
+      },
+      "published": true,
+      "state": "listed",
       "withFile": true
     },
     {
@@ -585,11 +649,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "a purchase of this listing is in the node's mempool: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -620,11 +688,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "a purchase of this listing is in the node's mempool: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -655,11 +727,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "a purchase of this listing is in the node's mempool: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -690,11 +766,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "a purchase of this listing is in the node's mempool: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -725,11 +805,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this name is sold: the listing is over"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -760,11 +844,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this name is sold: the listing is over"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -795,11 +883,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this name is sold: the listing is over"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -830,11 +922,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this name is sold: the listing is over"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -865,11 +961,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "a cancel of this listing is not mined yet: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -900,11 +1000,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "a cancel of this listing is not mined yet: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -935,11 +1039,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "a cancel of this listing is not mined yet: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -970,11 +1078,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "a cancel of this listing is not mined yet: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1005,11 +1117,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing is cancelled: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1040,11 +1156,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing is cancelled: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1075,11 +1195,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing is cancelled: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1110,11 +1234,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing is cancelled: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1145,11 +1273,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing is cancelled: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1180,11 +1312,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing is cancelled: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1215,11 +1351,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing is cancelled: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1250,11 +1390,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing is cancelled: its price cannot be lowered"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1285,11 +1429,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing is cancelled: its signed prices can no longer be used"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1320,11 +1468,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing is cancelled: its signed prices can no longer be used"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1355,11 +1507,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing is cancelled: its signed prices can no longer be used"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1390,11 +1546,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing is cancelled: its signed prices can no longer be used"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1425,11 +1585,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing was aborted: the name left its lock transfer before the finalize into the lock, so there is nothing to finalize, sign or export; lock the name again to sell it"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1460,11 +1624,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing was aborted: the name left its lock transfer before the finalize into the lock, so there is nothing to finalize, sign or export; lock the name again to sell it"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1495,11 +1663,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing was aborted: the name left its lock transfer before the finalize into the lock, so there is nothing to finalize, sign or export; lock the name again to sell it"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1530,11 +1702,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing was aborted: the name left its lock transfer before the finalize into the lock, so there is nothing to finalize, sign or export; lock the name again to sell it"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1570,6 +1746,10 @@
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing has no signed prices here: import its listing file first"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1606,6 +1786,10 @@
           "allowed": false,
           "reason": "this listing has no signed prices here: import its listing file first"
         },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
+        },
         "publish": {
           "allowed": false,
           "reason": "this listing is already published on LearnHNS Market"
@@ -1640,6 +1824,10 @@
         "lowerPrice": {
           "allowed": false,
           "reason": "this listing has no signed prices here: import its listing file first"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1676,6 +1864,10 @@
           "allowed": false,
           "reason": "this listing has no signed prices here: import its listing file first"
         },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
+        },
         "publish": {
           "allowed": false,
           "reason": "this listing is already published on LearnHNS Market"
@@ -1705,11 +1897,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the name expired while it was locked: this listing is over"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1740,11 +1936,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the name expired while it was locked: this listing is over"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1775,11 +1975,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the name expired while it was locked: this listing is over"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,
@@ -1810,11 +2014,15 @@
         },
         "importFile": {
           "allowed": false,
-          "reason": "only a lock restored by name takes its saved listing file"
+          "reason": "only a lock restored by name, or a listing managed from another device, takes its saved listing file"
         },
         "lowerPrice": {
           "allowed": false,
           "reason": "the name expired while it was locked: this listing is over"
+        },
+        "manageHere": {
+          "allowed": false,
+          "reason": "this listing is not managed from another device: there is nothing to take over"
         },
         "publish": {
           "allowed": false,

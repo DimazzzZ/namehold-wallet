@@ -2319,6 +2319,13 @@ pub struct ShakedexListing {
     /// Blocks left in the cancel's transfer lockup at the last sync (hsd
     /// judges the FINALIZE at tip + 1); 0 once it can be finalized.
     pub cancel_blocks_remaining: Option<i64>,
+    /// R38: when this device first saw a foreign step of this listing on
+    /// LearnHNS Market (RFC 3339 UTC): another device or profile of the same
+    /// phrase manages it. Not market bookkeeping: cleared only by a
+    /// take-over ([`take_over_listing`]).
+    pub managed_elsewhere_at: Option<String>,
+    /// R38: the foreign step seen (`sell::ForeignStep`, JSON).
+    pub foreign_step_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -2327,7 +2334,7 @@ const SHAKEDEX_LISTING_COLS: &str = "id, wallet_profile_id, name, mode, state, l
     lock_transfer_draft_id, lock_finalize_draft_id, lock_transfer_txid, lock_txid, lock_vout, \
     payment_address, cancel_address, cancel_child_index, steps_json, listing_file_json, publish, market_status, \
     market_retry_at, market_attempts, market_error, market_accepted, market_changed, market_told, market_sent_step, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout, \
-    cancel_finalize_draft_id, cancel_blocks_remaining, created_at, updated_at";
+    cancel_finalize_draft_id, cancel_blocks_remaining, managed_elsewhere_at, foreign_step_json, created_at, updated_at";
 
 fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShakedexListing> {
     Ok(ShakedexListing {
@@ -2365,6 +2372,8 @@ fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<Shakedex
         cancel_vout: row.get("cancel_vout")?,
         cancel_finalize_draft_id: row.get("cancel_finalize_draft_id")?,
         cancel_blocks_remaining: row.get("cancel_blocks_remaining")?,
+        managed_elsewhere_at: row.get("managed_elsewhere_at")?,
+        foreign_step_json: row.get("foreign_step_json")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -2794,8 +2803,11 @@ fn ends_before_lock_sql(w: ListingWrite) -> String {
 /// What a listing ended from Finalizing loses of its dead FINALIZE: the
 /// draft link, the steps and file signed over a lock coin that never
 /// existed, and their expiry. Already so for a listing before the lock.
+/// R38: the mark of a listing managed elsewhere belongs to its lock coin and
+/// steps, so it goes with them.
 const DROP_DEAD_FINALIZE_SET: &str = "lock_finalize_draft_id = NULL, steps_json = '[]', \
-     listing_file_json = NULL, expires_at = NULL";
+     listing_file_json = NULL, expires_at = NULL, managed_elsewhere_at = NULL, \
+     foreign_step_json = NULL";
 
 /// R19: a reorg took an Aborted listing's abort out of the chain (its lock
 /// TRANSFER is a coin or the owner again), so the listing is Locking again — unless another listing of the name is
@@ -2821,6 +2833,7 @@ fn revert_to_ready_set() -> String {
     format!(
         "state = '{}', lock_finalize_draft_id = NULL, lock_txid = NULL, lock_vout = NULL, \
          steps_json = '[]', listing_file_json = NULL, expires_at = NULL, \
+         managed_elsewhere_at = NULL, foreign_step_json = NULL, \
          updated_at = datetime('now')",
         ListingWrite::RevertToReady.target().as_str()
     )
@@ -3650,6 +3663,133 @@ pub fn refresh_listing_expiry(
     )?)
 }
 
+/// What a market job writes when it reads the market's copy of a listing
+/// it would upload and that listing is, or may be, managed elsewhere (R38).
+pub struct ManagedElsewhere<'a> {
+    /// The lock coin the foreign step was verified over: the stored
+    /// outpoint, as the job read it.
+    pub lock: (&'a str, u32),
+    /// The steps the job read: a foreign step is "not ours" only against
+    /// them (a Lower price or a take-over meanwhile may have made it ours).
+    pub steps_json: &'a str,
+    /// The foreign step seen (`sell::ForeignStep`, JSON), or `None` when this
+    /// read found none on a listing already marked (the mark and the step
+    /// stored stay; only the next check is scheduled).
+    pub foreign_step_json: Option<&'a str>,
+    /// RFC 3339 UTC: now, the mark's time when it is new.
+    pub seen_at: &'a str,
+    /// RFC 3339 UTC: when the market's copy of it is read again.
+    pub retry_at: &'a str,
+}
+
+/// R38: mark a listing managed elsewhere (or, with a foreign step on a
+/// listing already marked, replace the step stored), and schedule the next
+/// read of the market's copy. Not a state write (no `ListingWrite`): the
+/// state stays, and nothing of the market bookkeeping but `market_retry_at`
+/// changes. Guarded by the listing's id, its stored lock outpoint and the
+/// steps the job read, and a state the market jobs read (Listed,
+/// Cancelling), so a mark seen for one lock coin never lands on a listing
+/// re-listed on another, nor over a step that became ours meanwhile.
+/// `managed_elsewhere_at` keeps the first time seen. A read without a step
+/// changes only a listing already marked. Returns how many rows changed.
+pub fn mark_managed_elsewhere(
+    conn: &rusqlite::Connection,
+    id: &str,
+    m: &ManagedElsewhere,
+) -> Result<usize, AppError> {
+    Ok(conn.execute(
+        "UPDATE shakedex_listings
+         SET managed_elsewhere_at = COALESCE(managed_elsewhere_at, ?2),
+             foreign_step_json = COALESCE(?3, foreign_step_json),
+             market_retry_at = ?4, updated_at = datetime('now')
+         WHERE id = ?1 AND lock_txid = ?5 AND lock_vout = ?6 AND steps_json = ?7
+           AND state IN (?8, ?9)
+           AND (?3 IS NOT NULL OR managed_elsewhere_at IS NOT NULL)",
+        params![
+            id,
+            m.seen_at,
+            m.foreign_step_json,
+            m.retry_at,
+            listing_txid(m.lock.0),
+            i64::from(m.lock.1),
+            m.steps_json,
+            ListingState::Listed,
+            ListingState::Cancelling
+        ],
+    )?)
+}
+
+/// What a take-over writes (R44, R45): the steps and listing file the
+/// listing gains, over the lock coin, the steps and the foreign step read.
+pub struct TakenOver<'a> {
+    pub lock: (&'a str, u32),
+    pub old_steps_json: &'a str,
+    /// The foreign step the take-over read (`foreign_step_json` as stored).
+    pub old_foreign_step_json: &'a str,
+    pub steps_json: &'a str,
+    pub listing_file_json: &'a str,
+    pub expires_at: Option<i64>,
+}
+
+/// R44, R45: a Listed listing managed elsewhere takes the other device's
+/// price over: its steps and listing file replaced, the mark cleared, in
+/// one write, only while it is still Listed on that lock coin with the
+/// steps and the foreign step read. Lower price's guard and market SQL
+/// ([`ListingWrite::LowerPrice`]: Listed to Listed, `market_changed` set
+/// once the market took it), so the next keep-listed run uploads over the
+/// market's copy as our own. Returns 0 when it changed meanwhile.
+pub fn take_over_listing(
+    conn: &rusqlite::Connection,
+    id: &str,
+    t: &TakenOver,
+) -> Result<usize, AppError> {
+    let w = ListingWrite::LowerPrice;
+    let sql = format!(
+        "UPDATE shakedex_listings
+         SET state = ?2, steps_json = ?3, listing_file_json = ?4,
+             expires_at = COALESCE(?5, expires_at),
+             managed_elsewhere_at = NULL, foreign_step_json = NULL,
+             updated_at = datetime('now'){}
+         WHERE id = ?1 AND {} AND lock_txid = ?6 AND lock_vout = ?7 AND steps_json = ?8
+           AND managed_elsewhere_at IS NOT NULL AND foreign_step_json = ?9",
+        w.market_reset_sql(w.target()),
+        w.source_sql()
+    );
+    Ok(conn.execute(
+        &sql,
+        params![
+            id,
+            w.target(),
+            t.steps_json,
+            t.listing_file_json,
+            t.expires_at,
+            listing_txid(t.lock.0),
+            i64::from(t.lock.1),
+            t.old_steps_json,
+            t.old_foreign_step_json
+        ],
+    )?)
+}
+
+/// R43: the value of the wallet's coin at `address` in transaction `txid`
+/// (a sale's payment output), `None` when the wallet recorded none.
+pub fn own_coin_value_in_tx(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    txid: &str,
+    address: &str,
+) -> Result<Option<i64>, AppError> {
+    Ok(conn
+        .query_row(
+            "SELECT value_doos FROM tracked_utxos
+             WHERE wallet_profile_id = ?1 AND txid = ?2 AND address = ?3
+             ORDER BY vout LIMIT 1",
+            params![profile_id, listing_txid(txid), address],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 /// The listing as a market job read it: its result is written only over
 /// that row ([`record_market_result`]).
 pub struct MarketSeen<'a> {
@@ -3911,17 +4051,44 @@ pub fn publish_shakedex_listing(
 /// cancel draft is not sent yet (`draft`, `signed`; R28 stops the jobs once
 /// a cancel is broadcast) and only once the market accepted an upload of it
 /// (`market_accepted`): a cancel in progress never publishes a listing for
-/// the first time. The mainnet rule (R23) is the jobs' own.
+/// the first time. Never one managed elsewhere (`managed_elsewhere_at` set,
+/// R39): this device makes no upload for it, the first one and the expiry
+/// refresh included ([`list_listings_managed_elsewhere`] lists those). The
+/// mainnet rule (R23) is the jobs' own.
 pub fn list_listings_kept_on_market(
     conn: &rusqlite::Connection,
     profile_id: &str,
+) -> Result<Vec<ShakedexListing>, AppError> {
+    list_listings_on_market(conn, profile_id, false)
+}
+
+/// R38, R39: the listings [`list_listings_kept_on_market`] would keep but
+/// for their mark: published, Listed or Cancelling with an unsent cancel
+/// once the market accepted it, and managed elsewhere. The keep-listed job
+/// only reads the market's copy of these, to follow the other device's
+/// price; it uploads nothing for them.
+pub fn list_listings_managed_elsewhere(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<ShakedexListing>, AppError> {
+    list_listings_on_market(conn, profile_id, true)
+}
+
+/// [`list_listings_kept_on_market`] (`marked` false) or
+/// [`list_listings_managed_elsewhere`] (`marked` true).
+fn list_listings_on_market(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    marked: bool,
 ) -> Result<Vec<ShakedexListing>, AppError> {
     let sql = format!(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
          WHERE wallet_profile_id = ?1 AND publish = 1
            AND (state = ?2 OR (state = ?3 AND market_accepted = 1 AND {}))
+           AND managed_elsewhere_at IS {}
          ORDER BY created_at, id",
-        cancel_draft_unsent_sql()
+        cancel_draft_unsent_sql(),
+        if marked { "NOT NULL" } else { "NULL" }
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(

@@ -523,6 +523,20 @@ pub struct StoredStep {
     pub signature: String,
 }
 
+/// R36, R38: a foreign step as `shakedex_listings.foreign_step_json` stores
+/// it: a price step not among the listing's stored steps whose signature
+/// verifies with its lock key over its lock coin, paying `payment_address`
+/// (the address the market's copy named; a `0x84` signature commits to it).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignStep {
+    pub price: u64,
+    pub lock_time: u64,
+    /// 65 bytes, hex, as [`StoredStep::signature`].
+    pub signature: String,
+    pub payment_address: String,
+}
+
 /// When a step signed with `lock_time` is valid, at `mtp` (R3): "valid at
 /// once", or the UTC time it becomes valid, or that the time is too far away
 /// to show. The one wording both signing prompts use.

@@ -498,3 +498,25 @@ pub fn same_market_listing(copy: &ListingFile, ours: &ListingFile) -> bool {
         && copy.steps == ours.steps
         && copy.expires_at == ours.expires_at
 }
+
+/// R41: whether `copy`, the market's copy of a listing, offers a buyer
+/// exactly `ours` ([`same_market_listing`]) but for a **later** `expiresAt`.
+/// A later expiry hides nothing (an earlier one hides the listing early), so
+/// such a copy is left on the market: two devices that hold the same step
+/// but refreshed the expiry at different times settle on the later one
+/// instead of overwriting each other every hour. Only up to `latest`
+/// (Unix seconds, the latest expiry a refresh of ours could write; the
+/// caller's bound): a later one is no device's refresh, and is replaced, so
+/// a third party cannot freeze our uploads with an absurd `expiresAt`. A
+/// copy without `expiresAt` beside ours with one, or ours without one, is
+/// not later.
+pub fn same_offer_expiring_later(copy: &ListingFile, ours: &ListingFile, latest: u64) -> bool {
+    match (copy.expires_at, ours.expires_at) {
+        (Some(theirs), Some(mine)) if theirs > mine && theirs <= latest => {
+            let mut at_ours = copy.clone();
+            at_ours.expires_at = ours.expires_at;
+            same_market_listing(&at_ours, ours)
+        }
+        _ => false,
+    }
+}

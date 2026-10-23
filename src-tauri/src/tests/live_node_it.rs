@@ -7656,6 +7656,141 @@ async fn shakedex_restore_lock_by_name_after_a_fresh_profile() {
     );
 }
 
+/// R36, R44 on hsd, two devices of one phrase: device A lists; device B (a
+/// fresh profile of the same phrase and account, its own database) restores
+/// the lock by name, imports A's saved file and lowers the price. B's
+/// lowered step, as B would upload it, verifies over the lock coin hsd
+/// reports as a foreign step of A's listing (A never stored it); A, marked
+/// managed elsewhere as its market job marks it, takes the listing over:
+/// hsd's lock coin is read again, the step verified once more, and A's
+/// market copy (the one its next upload sends) now carries B's price. B's
+/// copy is then no foreign step of A's. The live market is mainnet only and
+/// the market jobs return before any read off mainnet (R23), so the market
+/// side runs through the functions those jobs call; the step's validity
+/// over the lock coin is the live node's.
+#[tokio::test]
+async fn shakedex_two_devices_of_one_phrase_take_a_listing_over() {
+    let Some((url, key)) =
+        shakedex_node_env("shakedex_two_devices_of_one_phrase_take_a_listing_over")
+    else {
+        return;
+    };
+    let (app, cl, addr, name, id) = ready_to_finalize_on_chain(&url, &key, "nhtwodev").await;
+    let s = finalize_and_sign_on_chain(&app, &cl, &addr, &id, "5", 1).await;
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+    let file_a = exported_file(&app, &id);
+
+    // Device B: the same phrase, its own database; restore and import.
+    let gap = crate::commands::secure_wallet::gap_limit(&std::collections::HashMap::new());
+    let fresh_conn = seeded_conn_acct(&url, &key, test_acct());
+    crate::commands::secure_wallet::provision_addresses(
+        &fresh_conn,
+        PROFILE,
+        NET,
+        &account_xpub_at(test_acct()),
+        gap,
+    )
+    .expect("the restore's address window");
+    let b = app_with(fresh_conn);
+    sync_wallet_state(b.state(), None).await.expect("sync");
+    unlock(&b);
+    crate::commands::shakedex::shakedex_restore_lock(b.state(), name.clone())
+        .await
+        .expect("restore");
+    let up = crate::commands::shakedex::shakedex_import_own_listing_file(b.state(), file_a)
+        .await
+        .expect("import");
+    assert_eq!(up.state, ListingState::Listed);
+    crate::commands::secure_prompt::push_test_answer(
+        crate::commands::secure_prompt::SecurePromptResult {
+            value: None,
+            confirmed: true,
+        },
+    );
+    let lowered =
+        crate::commands::shakedex::lower_price_confirmed(&b.state(), b.handle(), &up.id, "3")
+            .await
+            .expect("B lowers");
+    assert_eq!(lowered.steps.len(), 2);
+    // B's market copy: its file cut to the lowered step, as B uploads it.
+    let b_copy = crate::noncustodial::shakedex::listing_file::ListingFile::parse(
+        &crate::noncustodial::shakedex::listing_file::market_copy(
+            &exported_file(&b, &up.id),
+            1,
+            NET,
+        )
+        .expect("B's copy"),
+        NET,
+    )
+    .expect("B's copy reads");
+
+    // Device A reads it over the lock coin hsd reports: a foreign step.
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+    let value = u64::try_from(
+        cl.get_coin(&lock_txid, lock_vout)
+            .await
+            .expect("coin")
+            .expect("the lock coin")
+            .value,
+    )
+    .unwrap();
+    let row = listing_row(&app, &id);
+    let foreign = crate::shakedex_jobs::foreign_step_in(&b_copy, &row, value, NET)
+        .expect("reads")
+        .expect("B's step is a foreign step of A's listing");
+    assert_eq!(foreign.price, 3_000_000);
+    {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        assert_eq!(
+            crate::db::queries::mark_managed_elsewhere(
+                &conn,
+                &id,
+                &crate::db::queries::ManagedElsewhere {
+                    lock: (&lock_txid, lock_vout),
+                    steps_json: &row.steps_json,
+                    foreign_step_json: Some(&serde_json::to_string(&foreign).unwrap()),
+                    seen_at: "2026-10-21T00:00:00Z",
+                    retry_at: "2026-10-21T01:00:00Z",
+                },
+            )
+            .unwrap(),
+            1
+        );
+    }
+    unlock(&app);
+    let taken = crate::commands::shakedex::take_over_confirmed(&app.state(), &id)
+        .await
+        .expect("A takes over");
+    assert_eq!(taken.steps.len(), 2);
+    let row = listing_row(&app, &id);
+    assert_eq!(row.managed_elsewhere_at, None);
+    assert_eq!(
+        crate::shakedex_jobs::foreign_step_in(&b_copy, &row, value, NET).expect("reads"),
+        None,
+        "B's step is A's own now"
+    );
+    let now = chrono::Utc::now().timestamp();
+    let conn = std::mem::replace(
+        &mut *app.state::<AppState>().db.lock().unwrap(),
+        rusqlite::Connection::open_in_memory().unwrap(),
+    );
+    let copy = crate::shakedex_jobs::market_copy(&conn, &cl, NET, &row, now).await;
+    *app.state::<AppState>().db.lock().unwrap() = conn;
+    let file = match copy.expect("market copy") {
+        crate::shakedex_jobs::MarketCopy::Ready { file, .. } => file,
+        _ => panic!("A's copy is ready on hsd's lock coin"),
+    };
+    let a_copy =
+        crate::noncustodial::shakedex::listing_file::ListingFile::parse(&file, NET).unwrap();
+    assert_eq!(
+        a_copy.steps, b_copy.steps,
+        "A's next upload carries B's price"
+    );
+}
+
 /// R34 on hsd: a fresh profile from the same recovery phrase finds the lock
 /// the first one made without being told its name. The search reads the
 /// node's indexes through the REST root (its first meeting with a real hsd),

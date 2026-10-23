@@ -565,6 +565,8 @@ fn own_listing_row(conn: &rusqlite::Connection, profile: &str, id: &str, pubkey_
             cancel_vout: None,
             cancel_finalize_draft_id: None,
             cancel_blocks_remaining: None,
+            managed_elsewhere_at: None,
+            foreign_step_json: None,
             created_at: String::new(),
             updated_at: String::new(),
         },
@@ -2063,6 +2065,14 @@ fn refusal_sentences_match_the_uis_word_for_word() {
         (
             "LOWER_DURING_CANCEL",
             crate::commands::shakedex::LOWER_DURING_CANCEL,
+        ),
+        (
+            "LOWER_MANAGED_ELSEWHERE",
+            crate::commands::shakedex::LOWER_MANAGED_ELSEWHERE,
+        ),
+        (
+            "TAKE_OVER_OTHER_ADDRESS",
+            crate::commands::shakedex::TAKE_OVER_OTHER_ADDRESS,
         ),
         (
             "CANCEL_LOCKUP_NOT_COUNTED",
