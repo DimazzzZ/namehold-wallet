@@ -96,7 +96,7 @@ export function hiddenReasonText(r: ShakedexHidden): string {
 }
 
 /**
- * "Listed until July 10, 2027 · stays buyable until sold or cancelled": the
+ * "Listed until July 10, 2027 · this date does not end the listing": the
  * seller's own `expiresAt` (unix seconds). Shown, never enforced: the signed
  * price steps stay valid on chain until the lock coin is spent, whatever the
  * date says (R2), and the spec has the wallet say so wherever the date is
@@ -106,7 +106,7 @@ export function hiddenReasonText(r: ShakedexHidden): string {
 export function listedUntilText(expiresAt: number): string | null {
   const d = new Date(expiresAt * 1000);
   if (Number.isNaN(d.getTime())) return null;
-  return `Listed until ${formatDate(d.toISOString().slice(0, 10))} · stays buyable until sold or cancelled`;
+  return `Listed until ${formatDate(d.toISOString().slice(0, 10))} · this date does not end the listing`;
 }
 
 /**
@@ -267,6 +267,35 @@ export function lockupLeftText(blocks: number, wallClockTiming: boolean): string
   const hours = Math.round(secs / 3600);
   if (hours < 24) return `~${hours} h left`;
   return `~${Math.floor(hours / 24)} d ${hours % 24} h left`;
+}
+
+/**
+ * R35: a Listed or Restored row's warning that buyers stop seeing it, as
+ * the name gets too close to expiring for a purchase to be finalized (R9):
+ * shown once `blocks` (`blocksUntilUnbuyable`) falls within `warnBlocks`
+ * (R9's 30 days, at most half the renewal window), "in ~12 days" where
+ * blocks keep time (`wallClockTiming`, R10) and "in 42 blocks" where they
+ * are mined on demand. A name in a lock cannot be renewed, so the way out is Cancel.
+ * `null`: nothing to say, or not known.
+ */
+export function unbuyableText(
+  blocks: number | null,
+  warnBlocks: number,
+  wallClockTiming: boolean,
+): string | null {
+  if (blocks === null || blocks > warnBlocks) return null;
+  const why = "the name is too close to expiring to finalize a purchase";
+  const home = "Cancel it and bring the name home to renew it";
+  if (blocks <= 0) return `Buyers no longer see this listing: ${why}. ${home}.`;
+  let when: string;
+  if (!wallClockTiming) {
+    when = `in ${blocks} ${blocks === 1 ? "block" : "blocks"}`;
+  } else {
+    // Whole days down, as `lockupLeftText` counts them: never a day more than is left.
+    const days = Math.floor((blocks * SECS_PER_BLOCK) / 86_400);
+    when = days < 1 ? "in less than a day" : `in ~${days} ${days === 1 ? "day" : "days"}`;
+  }
+  return `Buyers stop seeing this listing ${when}, when the name gets too close to expiring to finalize a purchase. ${home}, then list it again.`;
 }
 
 /**

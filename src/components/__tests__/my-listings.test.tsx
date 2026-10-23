@@ -286,6 +286,65 @@ describe("MyListings", () => {
     expect(await screen.findByText("Locking · 9 blocks")).toBeInTheDocument();
   });
 
+  describe("R35: when buyers stop seeing the listing", () => {
+    /** A row whose name stops being buyable in `blocks`, on mainnet unless told. */
+    const expiring = (
+      blocks: number | null,
+      state: ShakedexListingState = "listed",
+      over: Partial<ShakedexMyListing> = {},
+    ): ShakedexMyListing => {
+      const row = makeMyListing(state, over);
+      return { ...row, listing: { ...row.listing, blocksUntilUnbuyable: blocks } };
+    };
+    const line = async () =>
+      (await screen.findByTestId("my-listing-row")).querySelector(
+        "[data-testid='listing-unbuyable']",
+      );
+
+    it("says in days, within 30 days on mainnet, when buyers stop seeing it", async () => {
+      setup([expiring(1_440)]);
+      renderIt();
+      expect(await screen.findByTestId("listing-unbuyable")).toHaveTextContent(
+        "Buyers stop seeing this listing in ~10 days, when the name gets too close to expiring to finalize a purchase. Cancel it and bring the name home to renew it, then list it again.",
+      );
+    });
+
+    it("says it on a restored lock too", async () => {
+      setup([expiring(4_320, "restored")]);
+      renderIt();
+      expect(await screen.findByTestId("listing-unbuyable")).toHaveTextContent(
+        "Buyers stop seeing this listing in ~30 days,",
+      );
+    });
+
+    it("says it in blocks where blocks are mined on demand", async () => {
+      setup([expiring(42, "listed", { unbuyableWarnBlocks: 300, wallClockTiming: false })], {
+        network: "regtest",
+      });
+      renderIt();
+      expect(await screen.findByTestId("listing-unbuyable")).toHaveTextContent(
+        "Buyers stop seeing this listing in 42 blocks, when the name gets too close to expiring to finalize a purchase. Cancel it and bring the name home to renew it, then list it again.",
+      );
+    });
+
+    it("says buyers no longer see it once past that point", async () => {
+      setup([expiring(0)]);
+      renderIt();
+      expect(await screen.findByTestId("listing-unbuyable")).toHaveTextContent(
+        "Buyers no longer see this listing: the name is too close to expiring to finalize a purchase. Cancel it and bring the name home to renew it.",
+      );
+    });
+
+    it.each([
+      ["outside 30 days", 4_321],
+      ["when not known", null],
+    ])("says nothing %s", async (_, blocks) => {
+      setup([expiring(blocks)]);
+      renderIt();
+      expect(await line()).toBeNull();
+    });
+  });
+
   it("shows a refused action disabled with its reason, never hides it", async () => {
     setup([
       makeMyListing("locking", {

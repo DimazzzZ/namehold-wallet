@@ -4670,7 +4670,14 @@ async fn a_listing_managed_elsewhere_is_still_sold_from_the_chain() {
     assert_eq!(l.sold_txid.as_deref(), Some(buy.as_str()));
     // R42: an ended listing is not shown as managed elsewhere, nor its
     // other device's price as buyable.
-    let row = crate::commands::shakedex::my_listing_from_conn(&f.conn, NET, &l, None).unwrap();
+    let row = crate::commands::shakedex::my_listing_from_conn(
+        &f.conn,
+        NET,
+        &l,
+        None,
+        &std::collections::HashMap::new(),
+    )
+    .unwrap();
     assert!(!row.managed_elsewhere);
     assert_eq!(row.foreign_step_price_doos, None);
 }
@@ -4713,7 +4720,16 @@ fn my_listings_words_a_sale_and_a_cancel_from_another_device() {
             [&buy],
         )
         .unwrap();
-    let row = |f: &Fx| my_listing_from_conn(&f.conn, NET, &listing(f), None).unwrap();
+    let row = |f: &Fx| {
+        my_listing_from_conn(
+            &f.conn,
+            NET,
+            &listing(f),
+            None,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap()
+    };
     assert!(!row(&f).sold_elsewhere, "paid at our own price");
     f.conn
         .execute("UPDATE tracked_utxos SET value_doos = 3000000", [])

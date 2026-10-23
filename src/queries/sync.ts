@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
-import { LOCK_SEARCH_STATUS_KEY } from "./shakedex";
+import { useActiveProfile } from "./wallet";
 
 export interface SyncStatus {
   running: boolean;
@@ -46,6 +46,41 @@ export function nodeCoinsNotSyncedReason(status: SyncStatus | undefined): string
   return status?.errors?.find((e) => e.includes(NODE_COINS_NOT_SYNCED)) ?? null;
 }
 
+/**
+ * Which profile the sync status describes. `SyncStatus` carries no profile
+ * id, so `useSyncStatus` records the profile active when a run is first seen
+ * running (the backend takes its profile at start; a switch mid-run does not
+ * change it) and keeps that at the run's end. A run that ended before this
+ * session read the status has no start to see: the first status read is
+ * attributed to the profile active at first load. That is inherent, since
+ * `SyncStatus` has no profile id.
+ */
+const SYNC_RAN_FOR_KEY = ["sync", "ranFor"] as const;
+
+/** The profile active when the run (told apart by `startedAt`) was first seen running. */
+const SYNC_STARTED_FOR_KEY = ["sync", "startedFor"] as const;
+interface StartedFor {
+  startedAt: string | null;
+  profileId: string | null;
+}
+
+/**
+ * `nodeCoinsNotSyncedReason` of the last sync, only while the profile that
+ * sync ran for is still the active one: after a switch the reason belongs to
+ * the previous profile, and reads `null` until the next sync ends.
+ */
+export function useNodeCoinsNotSyncedReason(status: SyncStatus | undefined): string | null {
+  const activeId = useActiveProfile().data?.id ?? null;
+  const { data: ranFor } = useQuery<string | null>({
+    queryKey: SYNC_RAN_FOR_KEY,
+    queryFn: () => null,
+    enabled: false,
+    staleTime: Infinity,
+    gcTime: Infinity,
+  });
+  return activeId != null && ranFor === activeId ? nodeCoinsNotSyncedReason(status) : null;
+}
+
 /** Start a full sync in a background thread. */
 export function useStartFullSync() {
   const qc = useQueryClient();
@@ -72,11 +107,16 @@ export function useCancelFullSync() {
  * Poll the current sync status (persistent across navigation). When a
  * background sync run finishes (`running` transitions true -> false), the
  * read/wallet caches are invalidated so the Owned Names / Active Auctions
- * lists refresh automatically without a manual reload.
+ * lists refresh automatically without a manual reload. The lock-search
+ * status is refreshed at the same edge by `useLockDiscovery`, which knows
+ * whether its own search is about to do it.
  */
 export function useSyncStatus() {
   const qc = useQueryClient();
   const wasRunning = useRef(false);
+  const activeId = useActiveProfile().data?.id ?? null;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
   const query = useQuery<SyncStatus>({
     queryKey: ["sync", "status"],
     queryFn: () => invoke<SyncStatus>("get_sync_status"),
@@ -90,14 +130,40 @@ export function useSyncStatus() {
 
   useEffect(() => {
     const running = query.data?.running ?? false;
+    if (running) {
+      // Several mounts see the same run: the first one to write wins.
+      const startedAt = query.data?.startedAt ?? null;
+      const seen = qc.getQueryData<StartedFor>(SYNC_STARTED_FOR_KEY);
+      // The profile list may still have been loading when the run was first
+      // seen: fill the profile in once it is known (same run).
+      if (
+        seen === undefined ||
+        seen.startedAt !== startedAt ||
+        (seen.profileId === null && activeIdRef.current !== null)
+      ) {
+        qc.setQueryData<StartedFor>(SYNC_STARTED_FOR_KEY, {
+          startedAt,
+          profileId: activeIdRef.current,
+        });
+      }
+    }
     if (wasRunning.current && !running) {
       qc.invalidateQueries({ queryKey: ["read"] });
       qc.invalidateQueries({ queryKey: ["wallet"] });
-      // The sync may have grown the address window or found new history.
-      qc.invalidateQueries({ queryKey: LOCK_SEARCH_STATUS_KEY });
+      const started = qc.getQueryData<StartedFor>(SYNC_STARTED_FOR_KEY);
+      qc.setQueryData(SYNC_RAN_FOR_KEY, started?.profileId ?? activeIdRef.current);
     }
     wasRunning.current = running;
-  }, [query.data?.running, qc]);
+  }, [query.data?.running, query.data?.startedAt, activeId, qc]);
+
+  // A run that ended before this session read the status has no start to
+  // record: the first status read belongs to the profile active then.
+  const loaded = query.data != null;
+  useEffect(() => {
+    if (loaded && activeId != null && qc.getQueryData(SYNC_RAN_FOR_KEY) === undefined) {
+      qc.setQueryData(SYNC_RAN_FOR_KEY, activeId);
+    }
+  }, [loaded, activeId, qc]);
 
   return query;
 }

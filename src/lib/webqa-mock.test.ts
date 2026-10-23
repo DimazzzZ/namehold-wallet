@@ -578,4 +578,17 @@ describe("webqa-mock selling", () => {
       "only a lock restored by name, or a listing managed from another device, takes its saved listing file",
     );
   });
+
+  it("counts when buyers stop seeing a restored lock of a name close to expiring (R35)", () => {
+    mockInvoke("shakedex_restore_lock", { name: "urgent" });
+    // Expiry end 101 000, less tip 100 000 + 1 + lockup 10 + a day of 10.
+    expect(row().listing.blocksUntilUnbuyable).toBe(979);
+    expect(row().unbuyableWarnBlocks).toBe(4_320);
+    expect(row().wallClockTiming).toBe(true);
+    __mineForTests(1_000);
+    expect(row().listing.blocksUntilUnbuyable).toBe(0);
+    __resetChainForTests();
+    mockInvoke("shakedex_restore_lock", { name: "dexsale" });
+    expect(row().listing.blocksUntilUnbuyable).toBeNull();
+  });
 });
