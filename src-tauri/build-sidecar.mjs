@@ -13,7 +13,7 @@
 //
 // The bash equivalent (`build-sidecar.sh`) is kept for direct manual use.
 import { execSync } from "node:child_process";
-import { copyFileSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -73,4 +73,6 @@ execSync(`cargo build${cargoFlag} --bin namehold-syncd`, { stdio: "inherit" });
 
 const src = resolve("target", targetDir, `namehold-syncd${ext}`);
 copyFileSync(src, dest);
+// The bundles copy the sidecar with its mode; never ship one that cannot run.
+if (!isWin) chmodSync(dest, 0o755);
 console.log(`Staged: ${dest}`);

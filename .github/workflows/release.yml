@@ -285,6 +285,9 @@ jobs:
           # Stage per-arch binaries for externalBin validation + resource bundling.
           cp target/aarch64-apple-darwin/release/namehold-syncd binaries/namehold-syncd-aarch64-apple-darwin
           cp target/x86_64-apple-darwin/release/namehold-syncd binaries/namehold-syncd-x86_64-apple-darwin
+          # cargo's build.rs leaves an empty 0644 placeholder at the staged path, and
+          # cp onto an existing file keeps its mode: set the mode explicitly.
+          chmod 0755 binaries/namehold-syncd-aarch64-apple-darwin binaries/namehold-syncd-x86_64-apple-darwin
           # externalBin resolves to `binaries/namehold-syncd-<target-triple>`; for a
           # universal build the triple is `universal-apple-darwin`, so stage a
           # lipo'd universal binary there too.
@@ -311,6 +314,28 @@ jobs:
           EXT=""
           if [[ "$RUNNER_OS" == "Windows" ]]; then EXT=".exe"; fi
           cp "target/release/namehold-syncd${EXT}" "binaries/namehold-syncd-${TARGET_TRIPLE}${EXT}"
+          # `cargo build` above runs build.rs, which creates an empty placeholder at
+          # this path with mode 0644, and cp onto an existing file keeps that mode.
+          # The AppImage copies the file as it is, so the daemon shipped in 0.6.0's
+          # AppImage could not be executed. Set the mode explicitly.
+          chmod 0755 "binaries/namehold-syncd-${TARGET_TRIPLE}${EXT}"
+
+      # The Tauri bundler downloads the AppImage launcher (AppRun) into its cache
+      # with mode 0770 and copies it into the image as AppRun.wrapped, so the image
+      # does not start for a user other than the one who mounted it (firejail, the
+      # AppImage catalog's test: "AppRun.wrapped: Permission denied";
+      # tauri-apps/tauri#16155, still 0770 in the 2.12 bundler). It downloads the
+      # file only when it is missing, so put the same file there with mode 0755.
+      - name: Pre-seed the AppImage launcher (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+          cache="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
+          mkdir -p "$cache"
+          curl -fsSL --retry 3 -o "$cache/AppRun-x86_64" \
+            https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64
+          echo "f30140a43a0a59e46db21bdefdf749b9e9f2c6946e92afabbacf98b8ae73fb4f  $cache/AppRun-x86_64" | sha256sum -c -
+          chmod 0755 "$cache/AppRun-x86_64"
 
       - name: Build + upload bundles
         uses: tauri-apps/tauri-action@v1
@@ -329,6 +354,30 @@ jobs:
           releaseId: ${{ needs.prepare.outputs.release_id }}
           releaseBody: ${{ needs.prepare.outputs.release_notes }}
           args: ${{ matrix.args }}
+
+      # The AppImage runs as whoever mounted it, or as another user under firejail
+      # and in the AppImage catalog's test: every file its owner can execute must be
+      # executable by everyone, and everything in usr/bin must be executable. A
+      # failure here stops the release before `publish` takes it out of draft.
+      - name: Check the AppImage's file modes (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        working-directory: src-tauri/target/release/bundle/appimage
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(*.AppImage)
+          [ "${#images[@]}" -eq 1 ] || { echo "::error::expected one AppImage, found ${#images[@]}"; exit 1; }
+          rm -rf squashfs-root
+          chmod +x "${images[0]}"
+          "./${images[0]}" --appimage-extract >/dev/null
+          bad=$( { find squashfs-root -type f -perm -u+x ! -perm -o+x; find squashfs-root/usr/bin -type f ! -perm -o+x; } | sort -u)
+          rm -rf squashfs-root
+          if [ -n "$bad" ]; then
+            echo "::error::files in the AppImage another user cannot execute:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "AppImage file modes OK (${images[0]})"
 
       # Surface cache effectiveness in the job log (hit rate, compile requests).
       # `if: always()` so we still see stats when the build fails. Skipped

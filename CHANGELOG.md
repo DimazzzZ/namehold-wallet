@@ -13,6 +13,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Linux AppImage: background sync runs, and the app starts for any user.** The 0.6.0 AppImage shipped the background sync daemon (`namehold-syncd`) without its executable bit, so background sync and the finalize reminders with the app closed could not run from it, and its launcher could be started only by the user who mounted the image, so it failed under firejail and in the AppImage catalog's test ("AppRun.wrapped: Permission denied"). Both files are now executable by everyone, and the release build checks every AppImage for this before it is published. The `.deb`, `.rpm`, macOS and Windows builds were not affected.
+
 ## [0.6.0] - 2026-10-23
 
 > **Highlights:** buy and sell Handshake names through Shakedex, speed up a stuck transaction, connect to a remote node or SPV from the first screen, place several bids on one name, and a long round of fixes to bids, reveals, redeems, transfers and fees.
