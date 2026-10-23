@@ -56,10 +56,64 @@ pub enum Verdict {
 /// `(buyable, warn)`: whether the name outlives the transfer lockup plus a
 /// day's margin after `tip`, and whether it expires within a month beyond that.
 pub fn finalize_deadline_ok(expiry_end: u32, tip: u32, p: &NameParams) -> (bool, bool) {
-    let day = i64::from(p.margin_day());
-    let margin = p.finalize_margin(i64::from(tip), i64::from(p.transfer_lockup));
-    let end = i64::from(expiry_end);
-    (end > margin, end <= margin + 30 * day)
+    let left = p.blocks_until_unbuyable(i64::from(expiry_end), i64::from(tip));
+    (left > 0, left <= i64::from(p.expiry_warn_blocks()))
+}
+
+/// The claim-aware expiry end (`NameParams::expiry_end`) of a name from its
+/// `getnameinfo` `info`, saturated at u32, or why the node's answer lacks it.
+fn name_expiry_end(params: &NameParams, ni: &serde_json::Value) -> Result<u32, Hidden> {
+    let Some(renewal) = ni["renewal"].as_u64().and_then(|r| u32::try_from(r).ok()) else {
+        return Err(Hidden::CouldNotCheck {
+            reason: "node did not report the name's renewal height".into(),
+        });
+    };
+    let Some(claimed) = ni["claimed"].as_u64().map(|c| c > 0) else {
+        return Err(Hidden::CouldNotCheck {
+            reason: "node did not report whether the name was claimed".into(),
+        });
+    };
+    // A height past u32 is beyond any chain's reach: saturate, as before.
+    Ok(u32::try_from(params.expiry_end(i64::from(renewal), claimed)).unwrap_or(u32::MAX))
+}
+
+/// R35: for each of `names` (one `getnameinfo` per distinct name), the
+/// blocks until a listing of it stops being buyable at `tip`
+/// (`NameParams::blocks_until_unbuyable`), 0 once it is not, as for a name
+/// the node reports expired (`info: null`). A name the node did not answer
+/// for, or answered without its expiry, is left out: unknown.
+pub async fn buyable_blocks_by_name(
+    client: &dyn NodeRpc,
+    network: Network,
+    names: &[String],
+    tip: u32,
+) -> std::collections::HashMap<String, i64> {
+    let params = network.name_params();
+    let mut out = std::collections::HashMap::new();
+    for name in names {
+        if out.contains_key(name) {
+            continue;
+        }
+        let Ok(reply) = client.get_name_info(name).await else {
+            continue;
+        };
+        let Some(ni) = reply.get("info") else {
+            continue;
+        };
+        // hsd answers `info: null` for an expired name, which R9 hides
+        // (`ExpiresBeforeFinalize`): buyers no longer see the listing.
+        if ni.is_null() {
+            out.insert(name.clone(), 0);
+            continue;
+        }
+        if let Ok(end) = name_expiry_end(&params, ni) {
+            out.insert(
+                name.clone(),
+                params.blocks_until_unbuyable(i64::from(end), i64::from(tip)),
+            );
+        }
+    }
+    out
 }
 
 /// The node's tip height and median time past, which every verification is
@@ -241,18 +295,10 @@ pub async fn verify_listing_at(
     };
     let next = template::next_step_index(&encoded, mtp, Some(current));
     let params = network.name_params();
-    let Some(renewal) = ni["renewal"].as_u64().and_then(|r| u32::try_from(r).ok()) else {
-        return hide(Hidden::CouldNotCheck {
-            reason: "node did not report the name's renewal height".into(),
-        });
+    let end = match name_expiry_end(&params, ni) {
+        Ok(end) => end,
+        Err(h) => return hide(h),
     };
-    let Some(claimed) = ni["claimed"].as_u64().map(|c| c > 0) else {
-        return hide(Hidden::CouldNotCheck {
-            reason: "node did not report whether the name was claimed".into(),
-        });
-    };
-    // A height past u32 is beyond any chain's reach: saturate, as before.
-    let end = u32::try_from(params.expiry_end(i64::from(renewal), claimed)).unwrap_or(u32::MAX);
     let (ok, warn) = finalize_deadline_ok(end, tip, &params);
     if !ok {
         return hide(Hidden::ExpiresBeforeFinalize);

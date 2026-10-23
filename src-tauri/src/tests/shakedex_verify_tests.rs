@@ -705,3 +705,93 @@ async fn unreadable_tip_could_not_be_checked() {
         }
     }
 }
+
+// --- R35: how long a seller's listing stays buyable ------------------------
+
+/// R35: the blocks until a listing stops being buyable are R9's rule counted
+/// forward: the expiry end less `tip + 1 + transferLockup + 1 day`, 0 once
+/// the listing is hidden. The count and `finalize_deadline_ok` agree at
+/// every tip around both of R9's edges.
+#[test]
+fn blocks_until_unbuyable_counts_down_to_r9s_margin() {
+    let p = Network::Main.name_params();
+    let end: i64 = 442_747;
+    // 1 + 288 + 144 blocks of margin.
+    assert_eq!(p.blocks_until_unbuyable(end, 400_000), 42_314);
+    assert_eq!(p.blocks_until_unbuyable(end, end - 434), 1);
+    assert_eq!(p.blocks_until_unbuyable(end, end - 433), 0);
+    assert_eq!(p.blocks_until_unbuyable(end, end + 50), 0);
+    for tip in [
+        end - 4_800,
+        end - 4_754,
+        end - 4_753,
+        end - 434,
+        end - 433,
+        end,
+    ] {
+        let left = p.blocks_until_unbuyable(end, tip);
+        let (ok, warn) = verify::finalize_deadline_ok(end as u32, tip as u32, &p);
+        assert_eq!(ok, left > 0, "tip {tip}");
+        assert_eq!(warn, left <= i64::from(p.expiry_warn_blocks()), "tip {tip}");
+    }
+    assert_eq!(p.expiry_warn_blocks(), 4_320);
+    assert_eq!(Network::Regtest.name_params().expiry_warn_blocks(), 300);
+}
+
+/// R35's window is R9's 30 days, or half the renewal window where that is
+/// shorter: testnet renews every 4320 blocks, so 30 days of 144 would warn
+/// for the whole life of every testnet listing. R9's own warning is not
+/// shortened (`expiry_warn_blocks`).
+#[test]
+fn unbuyable_warn_window_is_at_most_half_the_renewal_window() {
+    assert_eq!(Network::Main.name_params().unbuyable_warn_blocks(), 4_320);
+    assert_eq!(
+        Network::Testnet.name_params().unbuyable_warn_blocks(),
+        2_160
+    );
+    assert_eq!(Network::Testnet.name_params().expiry_warn_blocks(), 4_320);
+    assert_eq!(Network::Regtest.name_params().unbuyable_warn_blocks(), 300);
+    let mut small = Network::Main.name_params();
+    small.renewal_window = 1_000;
+    assert_eq!(small.unbuyable_warn_blocks(), 500);
+}
+
+/// R35: My listings' count, one `getnameinfo` per name against the tip
+/// already read: blocks left from the name's claim-aware expiry end, 0 past
+/// it, and absent when the node did not answer for the name.
+#[tokio::test]
+async fn buyable_blocks_by_name_reads_each_names_expiry_once() {
+    use crate::tests::mock_node_rpc::RpcCall;
+    let names = vec!["dexreviews".to_string(), "dexreviews".to_string()];
+    // Expiry end 337 627 + 105 120 = 442 747 (name_dexreviews.json).
+    let m = MockNodeRpc::new().with_name_info(name_value());
+    let left = verify::buyable_blocks_by_name(&m, Network::Main, &names, 440_000).await;
+    assert_eq!(left.get("dexreviews"), Some(&(442_747 - 440_000 - 433)));
+    let reads = m
+        .calls()
+        .into_iter()
+        .filter(|c| matches!(c, RpcCall::NameInfo(_)))
+        .count();
+    assert_eq!(reads, 1, "one read per name");
+    let past = verify::buyable_blocks_by_name(&m, Network::Main, &names, 442_500).await;
+    assert_eq!(past.get("dexreviews"), Some(&0));
+    let down = MockNodeRpc::new().with_name_info_err("connection refused");
+    assert!(
+        verify::buyable_blocks_by_name(&down, Network::Main, &names, 440_000)
+            .await
+            .is_empty()
+    );
+    let mut no_renewal = name_value();
+    no_renewal["info"]["renewal"] = Value::Null;
+    let m = MockNodeRpc::new().with_name_info(no_renewal);
+    assert!(
+        verify::buyable_blocks_by_name(&m, Network::Main, &names, 440_000)
+            .await
+            .is_empty()
+    );
+    // hsd answers `info: null` for an expired name: R9 hides its listing
+    // (ExpiresBeforeFinalize), so buyers no longer see it.
+    let m = MockNodeRpc::new().with_name_info(serde_json::json!({ "info": null }));
+    let expired = verify::buyable_blocks_by_name(&m, Network::Main, &names, 440_000).await;
+    assert_eq!(expired.get("dexreviews"), Some(&0));
+}

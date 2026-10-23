@@ -28,6 +28,7 @@ export function makeListing(over: Partial<ShakedexListingSummary> = {}): Shakede
     cancelFinalizeDraftId: null,
     cancelBlocksRemaining: null,
     blocksUntilFinalize: null,
+    blocksUntilUnbuyable: null,
     marketStatus: null,
     marketError: null,
     marketRetryAt: null,
@@ -62,6 +63,8 @@ export function makeMyListing(
     actions: makeActions(),
     prices: { kind: "noSteps" },
     pendingSend: null,
+    unbuyableWarnBlocks: 4_320,
+    wallClockTiming: true,
     ...over,
   };
 }

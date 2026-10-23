@@ -179,6 +179,7 @@ fn ts_listing_summary_lists_every_field() {
         cancel_finalize_draft_id: None,
         cancel_blocks_remaining: None,
         blocks_until_finalize: None,
+        blocks_until_unbuyable: None,
         market_status: None,
         market_error: None,
         market_retry_at: None,

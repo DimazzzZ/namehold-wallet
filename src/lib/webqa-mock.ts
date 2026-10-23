@@ -475,6 +475,25 @@ function buyNowLockTime(): number {
   return mockMtp() - LOCK_TIME_UNIT_SECS;
 }
 
+/**
+ * The expiry end of the names `read_renewals` reports a chain height for; a
+ * listing of any other name has no count of when buyers stop seeing it.
+ */
+const NAME_EXPIRY_END: Record<string, number> = { example: 110_000, urgent: 101_000 };
+
+/**
+ * R35 (`NameParams::blocks_until_unbuyable`): blocks until a Listed or
+ * Restored listing stops being buyable, past R9's margin of tip + 1 + the
+ * lockup + a day; 0 once past it. The mock compresses the lockup to 10
+ * blocks on its mainnet profile, and R9's day is the lockup wherever that is
+ * shorter than 144 blocks, so the day here is 10 blocks too.
+ */
+function blocksUntilUnbuyable(l: MockListing): number | null {
+  const end = NAME_EXPIRY_END[l.name];
+  if (end === undefined || (l.state !== "listed" && l.state !== "restored")) return null;
+  return Math.max(0, end - (chain.height + 1 + TRANSFER_LOCKUP + TRANSFER_LOCKUP));
+}
+
 /** hsd judges a FINALIZE at tip + 1 (`NameParams::blocks_until_finalize`). */
 function blocksUntilFinalize(transferHeight: number): number {
   return Math.max(0, transferHeight + TRANSFER_LOCKUP - (chain.height + 1));
@@ -667,6 +686,7 @@ function listingSummary(l: MockListing): ShakedexListingSummary {
     cancelFinalizeDraftId: l.cancelFinalizeDraftId,
     cancelBlocksRemaining: cancelBlocksRemaining(l),
     blocksUntilFinalize: lockupLeft(l),
+    blocksUntilUnbuyable: blocksUntilUnbuyable(l),
     marketStatus: null,
     marketError: null,
     marketRetryAt: null,
@@ -723,6 +743,9 @@ function myListing(l: MockListing): ShakedexMyListing {
     actions: actionsOf(l),
     prices: listingPrices(l),
     pendingSend: pendingSend(l),
+    // The mock profile is mainnet: R9's 30 days of 144 blocks, shown as days.
+    unbuyableWarnBlocks: 4_320,
+    wallClockTiming: true,
   };
 }
 
