@@ -27,6 +27,8 @@ import { TxInfoModal } from "./TxInfoModal";
 import { PaidSwapOffers } from "./PaidSwapOffers";
 import { mergeActivity, type MergedRow } from "../lib/activity";
 import { subscribeAction } from "../lib/actionBus";
+import { SpeedUpButton, shortTxid } from "./SpeedUp";
+import { SPEED_UP_ACTION } from "../queries/speedUp";
 
 // Action label + badge variant mapping.
 export const ACTION_META: Record<
@@ -58,6 +60,8 @@ export const ACTION_META: Record<
   shakedex_lock_finalize: { label: "Finalize into lock", variant: "default" },
   shakedex_cancel: { label: "Cancel listing", variant: "warning" },
   shakedex_cancel_finalize: { label: "Finalize cancel", variant: "success" },
+  // A Speed up child (speed_up.rs::SPEED_UP_ACTION).
+  speed_up: { label: "Speed up", variant: "info" },
   other: { label: "Other", variant: "default" },
 };
 
@@ -553,6 +557,16 @@ export function ActivityRow({
       <td className="py-1 pr-4 text-xs text-gray-500 whitespace-nowrap">{timeStr}</td>
       <td className="py-1 pr-4">
         <Badge variant={meta.variant}>{meta.label}</Badge>
+        {row.speedsUp && (
+          <div className="text-xs text-gray-500 font-mono" data-testid="activity-speeds-up">
+            Speeds up {shortTxid(row.speedsUp)}
+          </div>
+        )}
+        {row.spedUpBy && (
+          <div className="text-xs text-gray-500 font-mono" data-testid="activity-sped-up-by">
+            Sped up by {shortTxid(row.spedUpBy)}
+          </div>
+        )}
       </td>
       <td className="py-1 pr-4 text-xs font-mono">
         {row.nameList && row.nameList.length > 1 ? (
@@ -673,6 +687,15 @@ export function ActivityRow({
         )}
       </td>
       <td className="py-1 pr-2 text-xs whitespace-nowrap">
+        {/* Speed up: every sent, unconfirmed transaction of ours but a
+            child itself; refused ones show it disabled with the reason
+            (spec 2026-10-21 R16). */}
+        {canAct &&
+          row.status === "broadcasted" &&
+          !row.confirmed &&
+          row.action !== SPEED_UP_ACTION && (
+            <SpeedUpButton draftId={row.draftId!} isPurchase={row.action === PURCHASE_ACTION} />
+          )}
         {canAct && draftActions.execute && (
           <Tooltip content={draftActions.execute}>
             <button

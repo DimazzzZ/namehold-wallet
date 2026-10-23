@@ -2,6 +2,7 @@ import { Button } from "../ui/Button";
 import { displayName } from "../../lib/idn";
 import { formatHnsShort } from "../../lib/utils";
 import { lockupLeftText } from "./marketText";
+import { SpeedUpButton } from "../SpeedUp";
 import type { ShakedexNameState } from "../../types";
 
 export interface PendingPurchase {
@@ -117,6 +118,9 @@ export function PendingPurchases({
                 ) : p.shakedex.blocksRemaining != null &&
                   p.shakedex.state === "awaitingFinalize" ? (
                   lockupLeftText(p.shakedex.blocksRemaining, p.shakedex.wallClockTiming)
+                ) : p.shakedex.state === "unconfirmed" && p.shakedex.purchaseDraftId ? (
+                  // An Unconfirmed purchase can be sped up (spec 2026-10-21 R16).
+                  <SpeedUpButton draftId={p.shakedex.purchaseDraftId} isPurchase />
                 ) : null}
               </div>
             </li>

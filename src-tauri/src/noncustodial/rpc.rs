@@ -272,6 +272,14 @@ pub fn is_tx_not_found(e: &AppError) -> bool {
     matches!(e, AppError::NodeRefused { message, code: -1 } if message == "Transaction not found.")
 }
 
+/// Whether `e` is hsd's own answer that a transaction is not in its mempool:
+/// `getmempoolentry`'s `RPCError(errs.MISC_ERROR, 'Transaction not in
+/// mempool.')` (hsd 8.0.0 `lib/node/rpc.js` `getMempoolEntry`), given for a
+/// transaction it never had and for one already mined alike.
+pub fn is_not_in_mempool(e: &AppError) -> bool {
+    matches!(e, AppError::NodeRefused { message, code: -1 } if message == "Transaction not in mempool.")
+}
+
 /// Whether the user has opted in to broadcasting through a remote node.
 /// Mirrors the `allow_remote_broadcast` setting ("true" / "false", default
 /// off). Only meaningful when the chain source is [`ChainSource::RemoteNode`];
@@ -722,6 +730,17 @@ impl NodeRpcClient {
     /// `getrawtransaction` with verbose=1 — full decoded tx by hash.
     pub async fn get_raw_transaction(&self, txid: &str) -> Result<serde_json::Value, AppError> {
         self.call("getrawtransaction", serde_json::json!([txid, 1]))
+            .await
+    }
+
+    /// `getmempoolentry` — hsd's mempool entry for `txid` (hsd 8.0.0
+    /// `lib/node/rpc.js` `entryToJSON`): `size` (sigop-adjusted vsize),
+    /// `fee` (HNS), `time` (when it entered this mempool, unix seconds),
+    /// `descendantsize` (vbytes) and `descendantfees` (doos) among others. A
+    /// transaction the node does not hold, mined or not, is hsd's
+    /// `Transaction not in mempool.` ([`is_not_in_mempool`]).
+    pub async fn get_mempool_entry(&self, txid: &str) -> Result<serde_json::Value, AppError> {
+        self.call("getmempoolentry", serde_json::json!([txid]))
             .await
     }
 

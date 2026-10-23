@@ -149,6 +149,8 @@ export interface ShakedexNameState {
   state: "unconfirmed" | "awaitingFinalize";
   blocksRemaining: number | null;
   purchaseId: string;
+  /** The purchase's draft, the parent Speed up names. */
+  purchaseDraftId: string;
   /** The price paid to the seller. */
   priceDoos: number;
   /** The network's whole transfer lockup, which `blocksRemaining` counts down. */
@@ -495,6 +497,39 @@ export interface TxSummary {
   /** The Shakedex purchase a purchase finalize draft finalizes; absent on
    *  every other draft. */
   purchaseId?: string;
+  /** The transaction a Speed up child speeds up (`speed_up` drafts only). */
+  parentTxid?: string;
+}
+
+/** Where a Speed up target rate came from (`speed_up.rs::TargetSource`). */
+export type SpeedUpTargetSource = "estimate" | "setting" | "fallback" | "typed";
+
+/**
+ * A Speed up child's numbers as the backend builds them
+ * (`speed_up.rs::SpeedUpSummary`). Rates are hsd's `getRate`, doos per kB.
+ */
+export interface SpeedUpSummary extends TxSummary {
+  parentTxid: string;
+  parentDraftId: string;
+  parentIsPurchase: boolean;
+  targetRatePerVbyte: number;
+  targetSource: SpeedUpTargetSource;
+  parentSize: number;
+  parentFeeDoos: number;
+  packageSize: number;
+  packageFeesDoos: number;
+  childSize: number;
+  packageRateBefore: number;
+  packageRateAfter: number;
+  /** The parent's mempool deadline, unix seconds. */
+  expiresAt: number;
+}
+
+/** Whether a draft can be sped up now (`commands/speed_up.rs::SpeedUpCheck`). */
+export interface SpeedUpCheck {
+  available: boolean;
+  reason: string | null;
+  expiresAt: number | null;
 }
 
 export interface TxDraftSummary {

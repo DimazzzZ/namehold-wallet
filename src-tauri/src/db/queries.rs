@@ -4476,6 +4476,9 @@ pub struct PurchaseNameState {
     pub state: PurchaseState,
     pub blocks_remaining: Option<i64>,
     pub purchase_id: String,
+    /// The purchase's draft, which Speed up names as its parent (spec
+    /// 2026-10-21 R16).
+    pub purchase_draft_id: String,
     /// The price paid to the seller.
     pub price_doos: i64,
     /// The network's whole transfer lockup, which `blocks_remaining` counts down.
@@ -4501,7 +4504,8 @@ pub fn read_shakedex_purchase_names(
     let lockup_blocks = network.name_params().transfer_lockup;
     let wall_clock_timing = network.has_wall_clock_block_timing();
     let mut stmt = conn.prepare(&format!(
-        "SELECT p.id, p.name, p.state, p.blocks_remaining, p.destination_address, p.price_doos
+        "SELECT p.id, p.name, p.state, p.blocks_remaining, p.destination_address, p.price_doos,
+                p.purchase_draft_id
          FROM shakedex_purchases p
          WHERE p.wallet_profile_id = ?1
            AND (p.state IN (?2, ?3)
@@ -4533,6 +4537,7 @@ pub fn read_shakedex_purchase_names(
                 state,
                 blocks_remaining,
                 purchase_id: id,
+                purchase_draft_id: row.get(6)?,
                 price_doos: row.get(5)?,
                 lockup_blocks,
                 wall_clock_timing,
@@ -4700,6 +4705,107 @@ pub fn delete_abandoned_shakedex_purchase(
 pub fn get_tx_draft(conn: &rusqlite::Connection, id: &str) -> Result<Option<TxDraftRow>, AppError> {
     let sql = format!("SELECT {DRAFT_COLS} FROM wallet_tx_drafts WHERE id = ?1");
     let row = conn.query_row(&sql, params![id], row_to_draft).optional()?;
+    Ok(row)
+}
+
+/// The live Speed up child of `parent_txid` in `profile_id`: a
+/// `speed_up` draft whose summary names that parent and whose status is
+/// anything but `dropped` or `failed` (spec 2026-10-21 R3). Newest first if
+/// there were ever more than one.
+pub fn find_live_speed_up_child(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    parent_txid: &str,
+) -> Result<Option<TxDraftRow>, AppError> {
+    let sql = format!(
+        "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
+         WHERE wallet_profile_id = ?1 AND action = ?2
+           AND json_extract(summary_json, '$.parentTxid') = ?3
+           AND status NOT IN (?4, ?5)
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1"
+    );
+    let row = conn
+        .query_row(
+            &sql,
+            params![
+                profile_id,
+                crate::noncustodial::speed_up::SPEED_UP_ACTION,
+                parent_txid,
+                DraftStatus::Dropped,
+                DraftStatus::Failed
+            ],
+            row_to_draft,
+        )
+        .optional()?;
+    Ok(row)
+}
+
+/// Drop the live Speed up child of `parent_txid`, if any, with `reason`, and
+/// release its reservation: its parent died, so its input never existed
+/// (spec 2026-10-21 R15). A confirmed child is left alone. Returns how many
+/// were dropped.
+pub fn drop_live_speed_up_child(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    parent_txid: &str,
+    reason: &str,
+) -> Result<usize, AppError> {
+    let Some(child) = find_live_speed_up_child(conn, profile_id, parent_txid)? else {
+        return Ok(0);
+    };
+    if child.status == DraftStatus::Confirmed {
+        return Ok(0);
+    }
+    update_tx_draft_status(conn, &child.id, DraftStatus::Dropped, Some(reason), None)?;
+    release_reserved_utxos_for_draft(conn, &child.id)?;
+    Ok(1)
+}
+
+/// One output of ours as `tracked_utxos` holds it, with the derivation path
+/// of its address: what Speed up reads of a parent's change (spec 2026-10-21
+/// R2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackedOutput {
+    pub value: u64,
+    pub covenant_type: i64,
+    pub spend_class: String,
+    pub spent_by_txid: Option<String>,
+    pub reserved_by_draft_id: Option<String>,
+    pub branch: u32,
+    pub child_index: u32,
+}
+
+/// The tracked output `txid:vout` of `profile_id` at one of its derived
+/// addresses, or `None` when the wallet has not seen it.
+pub fn get_tracked_output(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    txid: &str,
+    vout: u32,
+) -> Result<Option<TrackedOutput>, AppError> {
+    let row = conn
+        .query_row(
+            "SELECT u.value_doos, u.covenant_type, u.spend_class, u.spent_by_txid,
+                    u.reserved_by_draft_id, d.branch, d.child_index
+             FROM tracked_utxos u
+             JOIN derived_addresses d
+               ON d.wallet_profile_id = u.wallet_profile_id AND d.address = u.address
+             WHERE u.wallet_profile_id = ?1 AND u.txid = ?2 AND u.vout = ?3",
+            params![profile_id, txid, vout as i64],
+            |row| {
+                Ok(TrackedOutput {
+                    value: row.get::<_, i64>(0)? as u64,
+                    covenant_type: row.get(1)?,
+                    spend_class: row.get(2)?,
+                    spent_by_txid: row.get(3)?,
+                    reserved_by_draft_id: row.get(4)?,
+                    branch: row.get::<_, i64>(5)? as u32,
+                    child_index: row.get::<_, i64>(6)? as u32,
+                })
+            },
+        )
+        .optional()?;
     Ok(row)
 }
 

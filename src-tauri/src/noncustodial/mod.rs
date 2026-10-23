@@ -22,6 +22,7 @@ pub mod rpc;
 pub mod send;
 pub mod session;
 pub mod shakedex;
+pub mod speed_up;
 pub mod sync;
 pub mod tx;
 pub mod tx_evidence;

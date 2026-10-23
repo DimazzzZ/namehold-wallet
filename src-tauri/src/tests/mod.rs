@@ -90,6 +90,8 @@ mod shakedex_sell_tests;
 mod shakedex_vector_tests;
 mod shakedex_verify_tests;
 mod sign_name_message_tests;
+mod speed_up_cmd_tests;
+mod speed_up_tests;
 mod sync_race_tests;
 mod sync_spv_tests;
 mod tx_lifecycle_tests;

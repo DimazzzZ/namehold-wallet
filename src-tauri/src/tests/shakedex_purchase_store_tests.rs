@@ -16,6 +16,7 @@ const MNEMONIC: &str = "april coyote civil finger crane uncle situate moon choic
 const PROFILE: &str = "life1";
 const COIN_TXID: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const PURCHASE_TXID: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+const CHILD_TXID: &str = "6666666666666666666666666666666666666666666666666666666666666666";
 const LOCK_TXID: &str = "4444444444444444444444444444444444444444444444444444444444444444";
 
 fn seed() -> [u8; 64] {
@@ -280,13 +281,39 @@ fn change_of_unconfirmed_purchase_is_not_spendable() {
             .collect()
     };
 
+    // The purchase's Speed up child spends that change into one output of
+    // ours, which falls with the purchase too (spec 2026-10-21 R12).
+    conn.execute(
+        "INSERT INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+             value_doos, covenant_type, spend_class, spent_by_txid)
+         VALUES (?1, 0, ?2, ?3, ?4, 2990000, 0, 'liquid_hns', NULL)",
+        params![CHILD_TXID, PROFILE, addr, spk],
+    )
+    .unwrap();
+    queries::insert_tx_draft(
+        &conn,
+        "child-draft",
+        PROFILE,
+        crate::noncustodial::speed_up::SPEED_UP_ACTION,
+        "",
+        "{}",
+        &serde_json::json!({ "parentTxid": PURCHASE_TXID, "txid": CHILD_TXID }).to_string(),
+    )
+    .unwrap();
+
     assert!(txids(&conn).contains(&PURCHASE_TXID.to_string()));
+    assert!(txids(&conn).contains(&CHILD_TXID.to_string()));
 
     queries::insert_shakedex_purchase(&conn, &purchase("p1", "unconfirmed", "hs1qdest")).unwrap();
     let held = txids(&conn);
     assert!(
         !held.contains(&PURCHASE_TXID.to_string()),
         "change of an unconfirmed purchase is held back: {held:?}"
+    );
+    assert!(
+        !held.contains(&CHILD_TXID.to_string()),
+        "the output of its Speed up child is held back too: {held:?}"
     );
     assert!(
         held.contains(&COIN_TXID.to_string()),
@@ -307,6 +334,7 @@ fn change_of_unconfirmed_purchase_is_not_spendable() {
     )
     .unwrap();
     assert!(txids(&conn).contains(&PURCHASE_TXID.to_string()));
+    assert!(txids(&conn).contains(&CHILD_TXID.to_string()));
 }
 
 #[test]

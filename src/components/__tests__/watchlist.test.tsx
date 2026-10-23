@@ -127,6 +127,7 @@ describe("Watchlist", () => {
               state: "awaitingFinalize",
               blocksRemaining: 3,
               purchaseId: "p1",
+              purchaseDraftId: "draft-p1",
               priceDoos: 5_000_000,
               lockupBlocks: 288,
               wallClockTiming: true,

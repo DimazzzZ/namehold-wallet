@@ -476,8 +476,13 @@ impl Job<'_> {
                 {
                     tx_evidence::Taken::No => self.lose_unless_traced(p, REFUSED, Some(1)).await,
                     // Taken, mined meanwhile (the next sync traces it), or no
-                    // answer: the one rebroadcast is spent either way.
-                    _ => self.unconfirmed(p, None, 1),
+                    // answer: the one rebroadcast is spent either way. Its
+                    // Speed up child, gone from the mempool with it, follows
+                    // it (spec 2026-10-21 R15).
+                    _ => {
+                        self.unconfirmed(p, None, 1)?;
+                        self.rebroadcast_child(p).await
+                    }
                 }
             }
             // hsd's own error: it did not take the transaction (in hsd 8.0.0
@@ -489,6 +494,64 @@ impl Job<'_> {
             // Transport failure or a reply that is not hsd's: nothing is
             // known, try again next sync.
             Err(e) => Err(e),
+        }
+    }
+
+    /// Send the purchase's live Speed up child again, right after the
+    /// purchase's own rebroadcast, through the same taken-by-the-node check
+    /// (spec 2026-10-21 R15). A child the node does not take, or refuses, is
+    /// left `broadcast_pending` for the confirmation poll to judge; one taken
+    /// is `broadcasted`. Nothing it answers fails the purchase's run.
+    async fn rebroadcast_child(&self, p: &ShakedexPurchase) -> Result<(), AppError> {
+        let Some(child) =
+            queries::find_live_speed_up_child(self.conn, &p.wallet_profile_id, &p.purchase_txid)?
+        else {
+            return Ok(());
+        };
+        let Some(signed) = child.signed_tx_hex.as_deref() else {
+            return Ok(());
+        };
+        if !matches!(
+            child.status,
+            DraftStatus::Broadcasted | DraftStatus::BroadcastPending
+        ) {
+            return Ok(());
+        }
+        let txid = child
+            .txid
+            .clone()
+            .or_else(|| {
+                serde_json::from_str::<serde_json::Value>(&child.summary_json)
+                    .ok()
+                    .and_then(|v| v["txid"].as_str().map(str::to_owned))
+            })
+            .unwrap_or_default();
+        let pending = |note: &str| {
+            queries::update_tx_draft_status(
+                self.conn,
+                &child.id,
+                DraftStatus::BroadcastPending,
+                Some(note),
+                None,
+            )
+        };
+        match self.client.send_raw_transaction(signed).await {
+            Ok(_) => match tx_evidence::taken_by_node_with_client(self.client, signed, &txid).await
+            {
+                tx_evidence::Taken::No => pending(tx_evidence::NOT_TAKEN),
+                tx_evidence::Taken::Yes | tx_evidence::Taken::Mined(_) => {
+                    queries::update_tx_draft_status(
+                        self.conn,
+                        &child.id,
+                        DraftStatus::Broadcasted,
+                        None,
+                        Some(&txid),
+                    )
+                }
+                tx_evidence::Taken::Unknown => Ok(()),
+            },
+            Err(e) if rpc::is_node_rejection(&e) => pending(&e.to_string()),
+            Err(_) => Ok(()),
         }
     }
 
@@ -877,6 +940,14 @@ impl Job<'_> {
                     None,
                 )?;
             }
+            // Its Speed up child spent change that never existed (spec
+            // 2026-10-21 R15).
+            queries::drop_live_speed_up_child(
+                &tx,
+                &p.wallet_profile_id,
+                &p.purchase_txid,
+                &crate::noncustodial::speed_up::parent_died_reason(&p.purchase_txid),
+            )?;
         }
         tx.commit()?;
         Ok(())

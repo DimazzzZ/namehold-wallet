@@ -52,6 +52,7 @@ function purchaseRow(name: string, shakedex: Partial<ShakedexNameState> = {}) {
       state: "awaitingFinalize",
       blocksRemaining: 142,
       purchaseId: `p-${name}`,
+      purchaseDraftId: `draft-p-${name}`,
       priceDoos: 410_200_000,
       lockupBlocks: 288,
       wallClockTiming: true,

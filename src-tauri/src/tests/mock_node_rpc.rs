@@ -48,6 +48,7 @@ pub enum RpcCall {
     TxsByAddress(String),
     RawTransaction(String),
     TxByHash(String),
+    MempoolEntry(String),
     BlockHash(i64),
     Block(String),
     GenerateToAddress(u32, String),
@@ -75,11 +76,15 @@ pub struct MockNodeRpc {
     txs_by_address: ResponseFn1<String, Vec<serde_json::Value>>,
     raw_transaction: ResponseFn<serde_json::Value>,
     tx_by_hash: ResponseFn1<String, serde_json::Value>,
+    mempool_entry: ResponseFn1<String, serde_json::Value>,
     block_hash: ResponseFn1<i64, String>,
     block: ResponseFn1<String, serde_json::Value>,
     generate_to_address: ResponseFn<serde_json::Value>,
     stop: ResponseFn<()>,
     send_raw_transaction: ResponseFn<String>,
+    /// When set, answers `sendrawtransaction` per raw hex instead of
+    /// `send_raw_transaction`.
+    send_raw_transaction_by_hex: Option<ResponseFn1<String, String>>,
     estimate_smart_fee: ResponseFn<u64>,
     /// Ordered log of every trait-method call this mock has seen, with the
     /// caller's arguments captured. Interior mutability so the log can be
@@ -155,11 +160,13 @@ impl MockNodeRpc {
             txs_by_address: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
             raw_transaction: err("not configured"),
             tx_by_hash: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
+            mempool_entry: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
             block_hash: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
             block: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
             generate_to_address: err("not configured"),
             stop: Box::new(|| Ok(())),
             send_raw_transaction: err("not configured"),
+            send_raw_transaction_by_hex: None,
             estimate_smart_fee: err("not configured"),
             calls: Mutex::new(Vec::new()),
         }
@@ -220,6 +227,38 @@ impl MockNodeRpc {
     pub fn with_tx_by_hash_err(mut self, msg: &'static str) -> Self {
         self.tx_by_hash = Box::new(move |_| Err(AppError::Rpc(msg.to_string())));
         self
+    }
+
+    /// `estimatesmartfee` as `NodeRpcClient::estimate_smart_fee` returns it:
+    /// doos per vbyte.
+    pub fn with_estimate_smart_fee(mut self, rate: u64) -> Self {
+        self.estimate_smart_fee = Box::new(move || Ok(rate));
+        self
+    }
+
+    /// `getmempoolentry` answered per txid by `f`.
+    pub fn with_mempool_entry_fn(
+        mut self,
+        f: impl Fn(String) -> Result<serde_json::Value, AppError> + Send + Sync + 'static,
+    ) -> Self {
+        self.mempool_entry = Box::new(f);
+        self
+    }
+
+    /// `getmempoolentry` answered with `v` for every txid.
+    pub fn with_mempool_entry(self, v: serde_json::Value) -> Self {
+        self.with_mempool_entry_fn(move |_| Ok(v.clone()))
+    }
+
+    /// hsd's own `getmempoolentry` answer for a transaction it does not hold:
+    /// `Transaction not in mempool.`, code -1, as `call` returns it.
+    pub fn with_mempool_entry_not_in_mempool(self) -> Self {
+        self.with_mempool_entry_fn(|_| {
+            Err(AppError::NodeRefused {
+                message: "Transaction not in mempool.".to_string(),
+                code: -1,
+            })
+        })
     }
 
     pub fn with_block_hash(mut self, hash: String) -> Self {
@@ -346,6 +385,15 @@ impl MockNodeRpc {
                 code: -1,
             })
         });
+        self
+    }
+
+    /// `sendrawtransaction` answered per raw hex by `f`.
+    pub fn with_send_raw_transaction_fn(
+        mut self,
+        f: impl Fn(String) -> Result<String, AppError> + Send + Sync + 'static,
+    ) -> Self {
+        self.send_raw_transaction_by_hex = Some(Box::new(f));
         self
     }
 
@@ -500,6 +548,11 @@ impl NodeRpc for MockNodeRpc {
         (self.tx_by_hash)(txid.to_string())
     }
 
+    async fn get_mempool_entry(&self, txid: &str) -> Result<serde_json::Value, AppError> {
+        self.record(RpcCall::MempoolEntry(txid.to_string()));
+        (self.mempool_entry)(txid.to_string())
+    }
+
     async fn get_block_hash(&self, height: i64) -> Result<String, AppError> {
         self.record(RpcCall::BlockHash(height));
         (self.block_hash)(height)
@@ -526,7 +579,10 @@ impl NodeRpc for MockNodeRpc {
 
     async fn send_raw_transaction(&self, raw_tx_hex: &str) -> Result<String, AppError> {
         self.record(RpcCall::SendRawTransaction(raw_tx_hex.to_string()));
-        (self.send_raw_transaction)()
+        match &self.send_raw_transaction_by_hex {
+            Some(f) => f(raw_tx_hex.to_string()),
+            None => (self.send_raw_transaction)(),
+        }
     }
 
     async fn estimate_smart_fee(&self, blocks: u32) -> Result<u64, AppError> {

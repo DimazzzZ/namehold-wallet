@@ -308,6 +308,14 @@ pub fn load_spendable_coins(
            AND u.txid NOT IN (SELECT s.purchase_txid FROM shakedex_purchases s
                                WHERE s.wallet_profile_id = ?1
                                  AND s.state IN (?5, ?6))
+           AND NOT EXISTS (SELECT 1 FROM wallet_tx_drafts c
+                           JOIN shakedex_purchases s
+                             ON s.wallet_profile_id = c.wallet_profile_id
+                            AND s.purchase_txid = json_extract(c.summary_json, '$.parentTxid')
+                           WHERE c.wallet_profile_id = ?1
+                             AND c.action = ?7
+                             AND json_extract(c.summary_json, '$.txid') = u.txid
+                             AND s.state IN (?5, ?6))
            AND (u.reserved_by_draft_id IS NULL OR u.reserved_by_draft_id = ?2)
            AND (u.coinbase = 0 OR u.height + ?3 <= ?4)
          ORDER BY u.value_doos DESC, u.txid ASC, u.vout ASC",
@@ -319,7 +327,8 @@ pub fn load_spendable_coins(
             maturity,
             spend_height,
             crate::db::queries::PurchaseState::PendingSend,
-            crate::db::queries::PurchaseState::Unconfirmed
+            crate::db::queries::PurchaseState::Unconfirmed,
+            crate::noncustodial::speed_up::SPEED_UP_ACTION
         ],
         |row| {
             Ok(SpendableCoin {

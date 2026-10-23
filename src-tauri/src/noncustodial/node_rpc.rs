@@ -142,6 +142,11 @@ pub trait NodeRpc: Send + Sync {
 
     async fn get_tx_by_hash(&self, txid: &str) -> Result<serde_json::Value, AppError>;
 
+    /// `getmempoolentry`: the node's own mempool entry for `txid`, or hsd's
+    /// `Transaction not in mempool.` refusal
+    /// ([`crate::noncustodial::rpc::is_not_in_mempool`]).
+    async fn get_mempool_entry(&self, txid: &str) -> Result<serde_json::Value, AppError>;
+
     async fn get_block_hash(&self, height: i64) -> Result<String, AppError>;
 
     async fn get_block(&self, hash: &str) -> Result<serde_json::Value, AppError>;
@@ -230,6 +235,10 @@ impl NodeRpc for NodeRpcClient {
 
     async fn get_tx_by_hash(&self, txid: &str) -> Result<serde_json::Value, AppError> {
         NodeRpcClient::get_tx_by_hash(self, txid).await
+    }
+
+    async fn get_mempool_entry(&self, txid: &str) -> Result<serde_json::Value, AppError> {
+        NodeRpcClient::get_mempool_entry(self, txid).await
     }
 
     async fn get_block_hash(&self, height: i64) -> Result<String, AppError> {

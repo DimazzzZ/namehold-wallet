@@ -27,6 +27,7 @@ pub mod secure_wallet;
 pub mod settings;
 pub mod shakedex;
 pub mod shakedex_discover;
+pub mod speed_up;
 pub mod sync;
 pub mod sync_spv;
 pub mod tray;

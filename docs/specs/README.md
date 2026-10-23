@@ -26,3 +26,4 @@ Each spec has these sections, in this order:
 | [2026-09-21 Paid name swaps](./2026-09-21-paid-name-swaps.md) | Superseded by 2026-10-05 Shakedex name sales |
 | [2026-10-05 Shakedex name sales](./2026-10-05-shakedex-name-sales.md) | Accepted — buying implemented; selling and clean-up not yet |
 | [2026-10-07 Honest broadcast result](./2026-10-07-honest-broadcast-result.md) | Implemented |
+| [2026-10-21 Speed up an unconfirmed send](./2026-10-21-speed-up-unconfirmed-sends.md) | Implemented |

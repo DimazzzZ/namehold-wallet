@@ -111,9 +111,11 @@ fn transaction_commands_do_not_reach_into_the_shakedex_commands() {
 /// material. The whole class is refused, case-insensitively: anything that
 /// signs (`sign_…`, a signer), any private key, seed or mnemonic, a master
 /// key, the unlocked session and the vault. A send is refused too, except
-/// the one purchase rebroadcast in `shakedex_jobs.rs`, which
-/// `may_broadcast` closes for the daemon (`Rebroadcast::Never`): that exact
-/// line, exactly once.
+/// the purchase's one rebroadcast in `shakedex_jobs.rs`, which
+/// `may_broadcast` closes for the daemon (`Rebroadcast::Never`), and the
+/// resend of its Speed up child that only that rebroadcast's success reaches
+/// (`rebroadcast_child`, spec 2026-10-21 R15): that exact line, exactly
+/// twice.
 #[test]
 fn shakedex_jobs_hold_no_signing_call() {
     let sources = [
@@ -150,5 +152,60 @@ fn shakedex_jobs_hold_no_signing_call() {
         }
         assert!(scanned > 300, "{file}: only {scanned} lines scanned");
     }
-    assert_eq!(rebroadcasts, 1, "the one guarded rebroadcast, exactly once");
+    assert_eq!(
+        rebroadcasts, 2,
+        "the guarded rebroadcast and its child's resend, exactly once each"
+    );
+    // The child's resend is reached from the purchase's rebroadcast alone.
+    let child_resends = code_lines(include_str!("../shakedex_jobs.rs"))
+        .filter(|l| l.contains("rebroadcast_child("))
+        .count();
+    assert_eq!(child_resends, 2, "its definition and its one call");
+}
+
+/// Where the market jobs' two sends are (spec 2026-10-21 R15): one in
+/// `refresh_missing`, after its `may_broadcast()` gate, and one in
+/// `rebroadcast_child`, whose only call is in `refresh_missing` after that
+/// same gate. Read lexically, by the function each code line falls in.
+#[test]
+fn shakedex_jobs_send_only_behind_may_broadcast() {
+    const SEND: &str = "match self.client.send_raw_transaction(signed).await {";
+    let mut current = String::new();
+    let mut gate_seen_in = None::<String>;
+    let mut sends = Vec::new();
+    let mut calls = Vec::new();
+    for line in code_lines(include_str!("../shakedex_jobs.rs")) {
+        if let Some(rest) = line
+            .strip_prefix("async fn ")
+            .or_else(|| line.strip_prefix("fn "))
+            .or_else(|| line.strip_prefix("pub(crate) async fn "))
+            .or_else(|| line.strip_prefix("pub async fn "))
+            .or_else(|| line.strip_prefix("pub fn "))
+        {
+            current = rest.split(['(', '<']).next().unwrap_or("").to_string();
+        }
+        if line.contains("self.may_broadcast()") {
+            gate_seen_in = Some(current.clone());
+        }
+        let gated = gate_seen_in.as_deref() == Some(current.as_str());
+        if line.trim_end() == SEND {
+            sends.push((current.clone(), gated));
+        }
+        if line.contains("self.rebroadcast_child(") {
+            calls.push((current.clone(), gated));
+        }
+    }
+    assert_eq!(
+        sends,
+        vec![
+            ("refresh_missing".to_string(), true),
+            ("rebroadcast_child".to_string(), false)
+        ],
+        "the purchase's send after the gate, the child's in its own function"
+    );
+    assert_eq!(
+        calls,
+        vec![("refresh_missing".to_string(), true)],
+        "the child's resend is called once, after the gate"
+    );
 }

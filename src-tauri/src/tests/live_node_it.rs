@@ -10329,3 +10329,308 @@ async fn live_noindex_address_sync_keeps_the_balance_and_says_why() {
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
 }
+
+// --- Speed up (spec 2026-10-21 R17) ------------------------------------------
+//
+// Needs an indexed regtest node whose block template holds only a few
+// transactions, on ports of its own (`scripts/regtest.sh start-cpfp`:
+// `--max-weight=5700`, room for three 1-in-2-out sends beside the coinbase):
+//
+// ```sh
+// scripts/regtest.sh start-cpfp
+// HNS_IT_CPFP_NODE_URL=http://127.0.0.1:44037 HNS_IT_CPFP_NODE_API_KEY=test \
+//   cargo test --manifest-path src-tauri/Cargo.toml live_cpfp -- --test-threads=1
+// scripts/regtest.sh stop-cpfp
+// ```
+
+/// `Some((url, api_key))` of the Speed up node, else `None`.
+fn cpfp_env() -> Option<(String, String)> {
+    let url = std::env::var("HNS_IT_CPFP_NODE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
+    let key = std::env::var("HNS_IT_CPFP_NODE_API_KEY").unwrap_or_default();
+    Some((url, key))
+}
+
+/// A JSON-RPC call the wallet does not make, answered with its `result`.
+async fn cpfp_rpc(url: &str, key: &str, method: &str) -> serde_json::Value {
+    let reply: serde_json::Value = reqwest::Client::new()
+        .post(url)
+        .basic_auth("x", Some(key))
+        .json(&serde_json::json!({ "method": method, "params": [] }))
+        .send()
+        .await
+        .expect(method)
+        .json()
+        .await
+        .expect(method);
+    assert!(reply["error"].is_null(), "{method}: {reply}");
+    reply["result"].clone()
+}
+
+/// The txids of hsd's `getblocktemplate` (`lib/node/rpc.js`
+/// `_createTemplate`: `transactions[].txid`), in the order it took them.
+async fn template_txids(url: &str, key: &str) -> Vec<String> {
+    cpfp_rpc(url, key, "getblocktemplate").await["transactions"]
+        .as_array()
+        .expect("template transactions")
+        .iter()
+        .map(|t| t["txid"].as_str().expect("template txid").to_string())
+        .collect()
+}
+
+/// Mine until the node's mempool is empty, so a rerun on the same chain
+/// starts with no earlier test's sends competing for the block.
+async fn mine_mempool_empty(cl: &NodeRpcClient, url: &str, key: &str, addr: &str) {
+    for _ in 0..50 {
+        let pool = cpfp_rpc(url, key, "getrawmempool").await;
+        if pool.as_array().is_some_and(|a| a.is_empty()) {
+            return;
+        }
+        cl.generate_to_address(1, addr).await.expect("mine");
+    }
+    panic!("the mempool did not empty in 50 blocks");
+}
+
+/// Sign and broadcast a built draft; its txid.
+async fn sign_and_send(app: &tauri::App<tauri::test::MockRuntime>, draft_id: &str) -> String {
+    unlock(app);
+    sign_tx_draft_inner(&app.state(), draft_id)
+        .await
+        .expect("sign");
+    let bc = broadcast_tx_draft(app.state(), draft_id.to_string())
+        .await
+        .expect("broadcast");
+    assert_eq!(bc.status, "broadcasted");
+    bc.txid
+}
+
+/// Mined (at least one confirmation) per `getrawtransaction`.
+async fn is_mined(cl: &NodeRpcClient, txid: &str) -> bool {
+    let tx = cl
+        .get_raw_transaction(txid)
+        .await
+        .expect("getrawtransaction");
+    tx["confirmations"].as_i64().unwrap_or(0) >= 1
+}
+
+/// R17: hsd's template takes a parent at its package rate. A 1 doo/vB send
+/// is left out of a full block while four sends at 20 doos/vB compete; with
+/// its Speed up child at 50 doos/vB, the template takes the parent and the
+/// child first, and the next block confirms both while senders that paid
+/// more for themselves wait. The refusals that rest on hsd's replies follow:
+/// a mined parent (`Transaction not in mempool.`) and a child past hsd's
+/// absurd-fee cap.
+#[tokio::test]
+async fn live_cpfp_parent_and_child_confirm_together() {
+    use crate::commands::speed_up::{build_speed_up_draft, preview_speed_up, speed_up_check};
+    let Some((url, key)) = cpfp_env() else {
+        eprintln!("skip live_cpfp_parent_and_child_confirm_together: set HNS_IT_CPFP_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    let to = recv_leaf_01_at(test_acct());
+    mine_mempool_empty(&cl, &url, &key, &addr).await;
+    // Seven coinbases, five of them mature (regtest matures after two).
+    fund(&cl, &addr, 7).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // The parent pays the relay floor; four others pay 20 doos/vB each.
+    let parent = build_send_hns_draft(app.state(), to.clone(), 100_000, Some(1), None)
+        .await
+        .expect("build parent");
+    let parent_txid = sign_and_send(&app, &parent.id).await;
+    let mut competitors = Vec::new();
+    for _ in 0..4 {
+        let d = build_send_hns_draft(app.state(), to.clone(), 100_000, Some(20), None)
+            .await
+            .expect("build competitor");
+        competitors.push((d.id.clone(), sign_and_send(&app, &d.id).await));
+    }
+    let before = template_txids(&url, &key).await;
+    assert_eq!(before.len(), 3, "the block holds three sends: {before:?}");
+    assert!(
+        !before.contains(&parent_txid),
+        "a full block leaves the 1 doo/vB parent out: {before:?}"
+    );
+
+    // The wallet sees the parent's change, and speeds the parent up.
+    sync_wallet_state(app.state(), None)
+        .await
+        .expect("sync change");
+    let check = speed_up_check(app.state(), parent.id.clone())
+        .await
+        .expect("check");
+    assert!(check.available, "{check:?}");
+    let child = build_speed_up_draft(app.state(), parent.id.clone(), Some(50))
+        .await
+        .expect("build child");
+    // hsd refreshes a cached template on a new transaction only 10 seconds
+    // after it built the last one (`lib/node/rpc.js` `bindChain`).
+    tokio::time::sleep(std::time::Duration::from_secs(11)).await;
+    let child_txid = sign_and_send(&app, &child.id).await;
+    let entry = cl.get_mempool_entry(&parent_txid).await.expect("entry");
+    assert_eq!(
+        entry["descendantsize"].as_u64(),
+        Some(entry["size"].as_u64().unwrap() + child.summary["childSize"].as_u64().unwrap()),
+        "hsd counts the child in the parent's package: {entry}"
+    );
+
+    let after = template_txids(&url, &key).await;
+    assert_eq!(
+        after.iter().take(2).collect::<Vec<_>>(),
+        vec![&parent_txid, &child_txid],
+        "the template takes the parent at its package rate, then the child: {after:?}"
+    );
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    assert!(is_mined(&cl, &parent_txid).await, "the parent confirms");
+    assert!(is_mined(&cl, &child_txid).await, "with its child");
+    let mut waiting = Vec::new();
+    let mut mined = Vec::new();
+    for (id, txid) in &competitors {
+        if is_mined(&cl, txid).await {
+            mined.push(id.clone());
+        } else {
+            waiting.push(id.clone());
+        }
+    }
+    assert_eq!(mined.len(), 1, "the block was full: one sender got in");
+    let r = refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh");
+    assert!(r["confirmed"].as_i64().unwrap() >= 3, "{r}");
+    assert_eq!(draft_status(&app, &parent.id).status, "confirmed");
+    assert_eq!(draft_status(&app, &child.id).status, "confirmed");
+
+    // hsd's reply to a mined parent: not in its mempool. Asked before the
+    // confirmation poll has seen the competitor mined, its draft still reads
+    // broadcasted; after the poll the draft says so itself.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::update_tx_draft_status(
+            &c,
+            &mined[0],
+            db::queries::DraftStatus::Broadcasted,
+            None,
+            None,
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE wallet_tx_drafts SET confirmation_height = NULL WHERE id = ?1",
+            params![mined[0]],
+        )
+        .unwrap();
+    }
+    let check = speed_up_check(app.state(), mined[0].clone())
+        .await
+        .expect("check mined");
+    assert_eq!(
+        check.reason.as_deref(),
+        Some(crate::noncustodial::speed_up::NOT_IN_MEMPOOL),
+        "{check:?}"
+    );
+
+    // A child past hsd's absurd-fee cap is refused, naming the cap.
+    let err = preview_speed_up(app.state(), waiting[0].clone(), Some(100_000))
+        .await
+        .expect_err("absurd");
+    assert!(
+        err.to_string().contains(
+            "more in fee than your node accepts from one transaction (about 1.080000 HNS)"
+        ),
+        "{err}"
+    );
+    // The waiting sender can itself be sped up.
+    let ok = preview_speed_up(app.state(), waiting[0].clone(), Some(50))
+        .await
+        .expect("preview");
+    assert!(ok.package_rate_after >= 50_000);
+}
+
+/// R15 live: a parent that leaves every mempool takes its child with it, and
+/// the confirmation poll drops the child naming the parent. hsd keeps its
+/// mempool in memory only (no `--persistent-mempool`), so restarting the
+/// Speed up node forgets both, as its 72-hour expiry would: the parent's coin
+/// is unspent again, and the child's one coin, the parent's change, never
+/// existed. `invalidateblock` empties the mempool too, but also takes blocks
+/// away; a restart leaves the chain as it was.
+#[tokio::test]
+async fn live_cpfp_child_of_a_vanished_parent_says_so() {
+    use crate::commands::speed_up::build_speed_up_draft;
+    let Some((url, key)) = cpfp_env() else {
+        eprintln!("skip live_cpfp_child_of_a_vanished_parent_says_so: set HNS_IT_CPFP_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    mine_mempool_empty(&cl, &url, &key, &addr).await;
+    fund(&cl, &addr, 4).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let parent = build_send_hns_draft(
+        app.state(),
+        recv_leaf_01_at(test_acct()),
+        100_000,
+        Some(1),
+        None,
+    )
+    .await
+    .expect("build parent");
+    let parent_txid = sign_and_send(&app, &parent.id).await;
+    sync_wallet_state(app.state(), None)
+        .await
+        .expect("sync change");
+    let child = build_speed_up_draft(app.state(), parent.id.clone(), Some(5))
+        .await
+        .expect("build child");
+    sign_and_send(&app, &child.id).await;
+
+    // Restart the node: its mempool is gone. `stop-cpfp` waits for the
+    // process to exit (it answers RPC for a while after `stop`), so the new
+    // one finds its data dir free.
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/regtest.sh");
+    for step in ["stop-cpfp", "start-cpfp"] {
+        let ran = std::process::Command::new(&script)
+            .arg(step)
+            .status()
+            .expect(step);
+        assert!(ran.success(), "{step}");
+    }
+    assert!(
+        cl.get_mempool_entry(&parent_txid).await.is_err(),
+        "the restarted node does not hold the parent"
+    );
+
+    // Past the grace window, the poll judges both from the chain.
+    age_past_grace(&app, &parent.id);
+    age_past_grace(&app, &child.id);
+    refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh");
+    let p = draft_status(&app, &parent.id);
+    assert_eq!(p.status, "dropped", "{:?}", p.error_message);
+    let c = draft_status(&app, &child.id);
+    assert_eq!(c.status, "dropped");
+    assert_eq!(
+        c.error_message.as_deref(),
+        Some(crate::noncustodial::speed_up::parent_died_reason(&parent_txid).as_str())
+    );
+    let state = app.state::<AppState>();
+    let held: i64 = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = ?1",
+            params![child.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(held, 0, "the child's reservation is released");
+}
