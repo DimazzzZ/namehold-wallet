@@ -189,6 +189,11 @@ function mineBlocks(n: number): number {
 declare global {
   // eslint-disable-next-line no-var
   var __webqa_mine: ((n?: number) => number) | undefined;
+  // Per-command answers that take precedence over the mock's own data: a value,
+  // or a function of the call's args (returning undefined falls through to the
+  // mock). The screenshot generator (screenshots/) installs its showcase here.
+  // eslint-disable-next-line no-var
+  var __webqa_overrides: Record<string, unknown> | undefined;
 }
 if (typeof globalThis !== "undefined") {
   globalThis.__webqa_mine = (n?: number) => mineBlocks(n ?? 1);
@@ -1984,6 +1989,11 @@ const handlers: Record<string, Handler> = {
  * Returns `null` with a console warning for any command not in the map.
  */
 export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
+  const override = globalThis.__webqa_overrides?.[cmd];
+  if (override !== undefined) {
+    const value = typeof override === "function" ? (override as Handler)(args) : override;
+    if (value !== undefined) return value as T;
+  }
   const handler = handlers[cmd];
   if (handler) {
     return handler(args) as T;

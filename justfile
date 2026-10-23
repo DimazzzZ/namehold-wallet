@@ -24,3 +24,8 @@ fmt:
 # Lint with clippy
 lint:
     cd src-tauri && cargo clippy --lib -- -D warnings
+
+# Regenerate the README screenshots in docs/assets/ (browser mock + showcase data).
+# Pass scene names to shoot only those: `just screenshots market auctions`
+screenshots *scenes:
+    cd screenshots && pnpm install --frozen-lockfile --ignore-workspace && pnpm typecheck && pnpm shoot {{scenes}}

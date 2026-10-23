@@ -17,6 +17,29 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 > single name or a small amount and confirm it arrives **before** sending or
 > transferring everything.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><a href="docs/assets/auctions.png"><img src="docs/assets/auctions.png" alt="Auctions: every name you are bidding on, with its next step and countdown" /></a></td>
+    <td width="50%"><a href="docs/assets/market.png"><img src="docs/assets/market.png" alt="Market: Shakedex listings checked by your node, and your purchases on their way" /></a></td>
+  </tr>
+  <tr>
+    <td align="center">Auctions</td>
+    <td align="center">Market (Shakedex)</td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/assets/market-listings.png"><img src="docs/assets/market-listings.png" alt="My listings: your names for sale, Buy Now and reverse auction, and one still in its transfer lockup" /></a></td>
+    <td width="50%"><a href="docs/assets/namebase-migration.png"><img src="docs/assets/namebase-migration.png" alt="Move from Namebase: the history you exported, imported" /></a></td>
+  </tr>
+  <tr>
+    <td align="center">Selling your names</td>
+    <td align="center">Namebase history</td>
+  </tr>
+</table>
+
+The screenshots are generated from the app with showcase data: see [screenshots/README.md](screenshots/README.md).
+
 ## Features
 
 ### Wallet (the core)
