@@ -10,6 +10,7 @@
  * Updates:
  *   - package.json                 ("version")
  *   - src-tauri/tauri.conf.json    ("version")
+ *   - e2e/package.json             ("version", the E2E suite of this app)
  *   - src-tauri/Cargo.toml         (package `version`)
  *
  * Then runs `cargo check` in src-tauri/ to refresh Cargo.lock so the whole
@@ -46,9 +47,10 @@ if (!SEMVER.test(next)) {
 
 const pkgPath = join(repoRoot, "package.json");
 const confPath = join(repoRoot, "src-tauri", "tauri.conf.json");
+const e2ePkgPath = join(repoRoot, "e2e", "package.json");
 const cargoPath = join(repoRoot, "src-tauri", "Cargo.toml");
 
-// ── package.json, tauri.conf.json ─────────────────────────────────────────────
+// ── package.json, tauri.conf.json, e2e/package.json ──────────────────────────
 // Replace the top-level "version" value in the text rather than re-serializing:
 // JSON.stringify would undo Prettier's layout (it spreads short arrays over
 // several lines), and the prettier gate would then fail on the bump commit.
@@ -64,6 +66,8 @@ const setJsonVersion = (path) => {
 };
 const prev = setJsonVersion(pkgPath);
 setJsonVersion(confPath);
+// The E2E package is versioned with the app it tests.
+setJsonVersion(e2ePkgPath);
 
 // ── Cargo.toml ────────────────────────────────────────────────────────────────
 // Replace only the first top-level `version = "..."` line (the [package]
@@ -75,7 +79,9 @@ if (!/^version = "[^"]*"$/m.test(cargo)) {
 const cargoNext = cargo.replace(/^version = "[^"]*"$/m, `version = "${next}"`);
 writeFileSync(cargoPath, cargoNext);
 
-console.log(`✓ Bumped ${prev} → ${next} in package.json, tauri.conf.json, Cargo.toml`);
+console.log(
+  `✓ Bumped ${prev} → ${next} in package.json, tauri.conf.json, e2e/package.json, Cargo.toml`,
+);
 
 // ── Refresh Cargo.lock ────────────────────────────────────────────────────────
 console.log("→ Running `cargo check` to update Cargo.lock ...");

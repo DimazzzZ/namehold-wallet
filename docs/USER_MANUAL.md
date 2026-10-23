@@ -863,7 +863,7 @@ signing key never touches your machine.
 ### Checking your current version
 
 Open **Settings > Updates**. Your running version is shown at the top of
-the card (e.g. "Current version: v0.5.0"). This is currently the only
+the card (e.g. "Current version: v0.6.0"). This is currently the only
 in-app surface that displays the app version.
 
 ---
