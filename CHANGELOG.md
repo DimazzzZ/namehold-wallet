@@ -134,6 +134,7 @@
 - A contract test reads every `invoke` call in the frontend and fails on an argument name Tauri would not match (snake_case instead of camelCase), the mistake that made Test connection ignore the typed API key.
 - A test fails if the file-system plugin comes back, in `Cargo.toml`, `package.json` or `lib.rs`, or if any capability or app config grants an `fs:` permission.
 - Take `rustls-webpki` `0.103.16` and `webpki-root-certs` `1.0.10` to clear RUSTSEC-2026-0382 and RUSTSEC-2026-0383 (distrusted emSign intermediate certificates still trusted), which failed the `cargo audit --deny warnings` gate. Lockfile-only patch updates.
+- Take `clipboard-win` `5.4.3` (pulled in by the clipboard plugin through `arboard`, Windows only): `5.4.1` was yanked, which `cargo audit --deny warnings` refuses. Lockfile-only patch update.
 
 ## [0.5.0] - 2026-08-20
 
