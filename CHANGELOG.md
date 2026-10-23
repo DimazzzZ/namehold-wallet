@@ -2,6 +2,7 @@
 
 ## Releases
 
+- [0.6.0](#060---2026-10-23)
 - [0.5.0](#050---2026-08-20)
 - [0.4.1](#041---2026-08-11)
 - [0.4.0](#040---2026-08-07)
@@ -11,6 +12,10 @@
 - [0.1.0](#010---2026-06-30)
 
 ## [Unreleased]
+
+## [0.6.0] - 2026-10-23
+
+> **Highlights:** Buy and sell Handshake names through Shakedex (LearnHNS Market and listing files: Buy Now, reverse auctions, My listings, restored locks found after a restore), Speed up for a stuck send or purchase, remote-node and SPV onboarding, several bids on one name, and a long list of fixes to bids, reveals, redeems and transfers that read or behaved wrong.
 
 ### Added
 - **Speed up a sent transaction.** hsd has no replace-by-fee, so a transaction that pays too little for full blocks could only wait, for up to 72 hours, and vanish. Every sent, unconfirmed transaction of yours in Activity, and an Unconfirmed purchase under Your purchases on the Market, now has Speed up: a second transaction that spends its change back to your wallet and pays enough for both to reach a target rate (your node's estimate, or one you type), which hsd's block template then takes together (a child pays for its parent). The form and the secure confirmation show the transaction's size and fee, its rate now and with the child, the child's fee and the change left, that only the network is paid (for a purchase, the price and the purchase itself are unchanged), that the original keeps its transaction id, and that the 72-hour deadline does not move. A transaction without change, already sped up, waiting on another unconfirmed transaction, not in your node's mempool, within 6 hours of its deadline, paying below the relay floor, or on SPV or Explorer keeps the button, disabled with the reason; a target already paid, change too small for the fee, and a fee above what your node accepts from one transaction are refused with theirs. The original is checked once more just before the child is sent; the child of a purchase follows its purchase's rebroadcast and is dropped with it, and a child whose parent never confirms says so by name.
@@ -132,6 +137,7 @@
 - **The file-system plugin.** Nothing in the app used it once the bid backup moved to a backend command, so it is no longer registered or shipped, and no window can be granted file access through it.
 
 ### CI / tooling
+- `pnpm version:set` replaces only the version line in `package.json` and `tauri.conf.json` instead of re-serializing them, which spread short arrays over several lines and failed the prettier gate on the bump commit.
 - **README screenshots are generated, not taken by hand.** `just screenshots` (the `screenshots/` package, Playwright on the browser mock) shoots the Wallet, Auctions, Market, My listings and Namebase history screens with a showcase mainnet wallet over the mock's data, framed as a macOS window, into `docs/assets/`; `docs/RELEASING.md` runs it after each version bump. The showcase data is typed against `src/types`, takes its next-action words from the backend and its My listings actions from `listing-actions.json`, and its addresses are well-formed but belong to nobody; a fixed clock, locale and time zone make two runs on one machine byte-identical. The browser mock gained a `__webqa_overrides` hook (a command's answer, or a function of its args) checked before its own data; nothing sets it in the app. The README now opens a Screenshots section under the hero image.
 - `npm run lint:native-title` fails the build on a native `title` attribute, so hover hints cannot drift back off the `Tooltip` component.
 - A contract test reads every `invoke` call in the frontend and fails on an argument name Tauri would not match (snake_case instead of camelCase), the mistake that made Test connection ignore the typed API key.
