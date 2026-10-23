@@ -98,7 +98,7 @@ Roles used by the scenarios; the real names carry the run's `TAG`, and the repor
 | X2 | `qxb$TAG` | hsd wallet, listed by the CLI, reverse auction 10 → 5 HNS | buying |
 | X3 | `qxc$TAG` | hsd wallet, listed by the CLI, Buy Now 5 HNS | buying, the race |
 | X4 | `qxd$TAG` | hsd wallet, listed by the CLI, Buy Now 5 HNS (only for B13) | buying |
-| X5 | `qxe$TAG` | spare CLI listing, for a repeat of a race or a node-down case | optional |
+| X5 | `qxe$TAG` | spare CLI listing, for a repeat of a race or a node-down case, or B20 outside B7; registered only when a case will use it (below) | optional |
 
 Register them all in **one** auction cycle with the hsd wallet (about 36 blocks for all, far cheaper than the script's `REGISTER=1`, which mines 110 funding blocks per name), then move the app's names to the seller:
 
@@ -118,7 +118,7 @@ for n in $APP_NAMES; do W sendtransfer $n $APP >/dev/null; done; mine 11
 for n in $APP_NAMES; do W sendfinalize $n >/dev/null; done; mine 1
 ```
 
-Then **Sync** in the seller profile: all six app names appear in Owned Names, and `info <n>` shows `transfer 0` with the owner at the app's address. If they do not, that is a finding (owned-name discovery); fall back to the in-app auction ([REGTEST_TESTING.md](../REGTEST_TESTING.md) §6, about 25 blocks for all names at once). Then list X1 (`fixed`, PRICE 5), X2 (`auction` 10 → 5), X3 (`fixed`, PRICE 5) and, only for B13, X4 with [cli-list-a-name](procedures/cli-list-a-name.md), 13 blocks each. Setup total: about 36 + 39 (+13) blocks, plus the funding blocks.
+Then **Sync** in the seller profile: all six app names appear in Owned Names, and `info <n>` shows `transfer 0` with the owner at the app's address. If they do not, that is a finding (owned-name discovery); fall back to the in-app auction ([REGTEST_TESTING.md](../REGTEST_TESTING.md) §6, about 25 blocks for all names at once). When a case will use X5, add `qxe$TAG` to `CLI_NAMES` and to the two-bid loop (`for n in qxb$TAG qxc$TAG qxd$TAG qxe$TAG`) before running the block above. Then list X1 (`fixed`, PRICE 5), X2 (`auction` 10 → 5), X3 (`fixed`, PRICE 5) and, only when used, X5 (`fixed`, PRICE 5) and, only for B13, X4 with [cli-list-a-name](procedures/cli-list-a-name.md), 13 blocks each. Setup total: about 36 + 39 (+13) blocks, plus the funding blocks.
 
 A chain reset leaves the app profiles holding rows and drafts about names that no longer exist on chain; rows that a Sync does not clear are leftovers of the reset, noted once in the report, not findings.
 

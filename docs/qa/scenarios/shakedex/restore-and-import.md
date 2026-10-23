@@ -41,7 +41,7 @@ Expected:
 - Step 4: refused "'<se>' is already tracked by one of this wallet's listings"; no row added.
 - Step 5: the Buy Now first sentence; the `Confirm cancel` secure window opens (no "corrupted listing: no cancel address" before it), `Current price` `5.000000 HNS`, `Name comes home to` an `rs1…` address; after confirming, `Cancelling` and Activity `Cancel listing`.
 - Step 6: `Cancelled · finalize to bring it home` with "the cancel can be finalized in 9 blocks", then `Coming home`, then `Cancelled`; SE an ordinary owned name in this profile; `info SE` shows `transfer 0` and the owner at step 5's `Name comes home to` address.
-- Step 7: the seller's SE listing ends `Cancelled` (it may pass through `Cancelled · finalize to bring it home` with "the cancel is mined, but its transfer lockup is not counted yet: sync, then finalize it" on the first sync); SE an ordinary owned name. A seller row that stays `Listed for sale` or reads `Sold` is ◐ with spec §5 "One device per listing" named; add `info SE` and the cancel's home address.
+- Step 7: the seller's SE listing ends `Cancelled` (it may pass through `Cancelled · finalize to bring it home` with "the cancel is mined, but its transfer lockup is not counted yet: sync, then finalize it" on the first sync); SE an ordinary owned name. A seller row that stays `Listed for sale` or reads `Sold` after two syncs is a finding: record it with `info SE` and the cancel's home address (the seller follows the chain whichever device cancels, R39).
 - Passes if the second device restores, imports, cancels and brings the name home, and the seller ends `Cancelled`.
 
 - **Blocks mined:** 22
@@ -202,7 +202,7 @@ Expected:
 
 - **Priority:** P2
 - **Covers:** R43 (R36–R42, R44 and R45 are not reachable on regtest: [C5](mainnet-absence.md#c5--not-gui-checkable-on-regtest))
-- **Preconditions:** (a) at [R1](#r1--restore-by-name-import-the-sellers-file-cancel-and-bring-the-name-home-from-the-second-device) step 7, or [C4](#c4--a-lowered-buy-now-imported-in-a-second-device-stays-buy-now) step 6 (there the seller cancels and the second device reads); (b) SE an ordinary owned name of the seller, home in both profiles, that no later case needs (after C4): the CLI buys it. The second device's signer stays locked until the restore step (see the note under the title).
+- **Preconditions:** (a) at [R1](#r1--restore-by-name-import-the-sellers-file-cancel-and-bring-the-name-home-from-the-second-device) step 7, or [C4](#c4--a-lowered-buy-now-imported-in-a-second-device-stays-buy-now) step 6 (there the seller cancels and the second device reads); (b) SE an ordinary owned name of the seller, home in both profiles, that no later case needs (after C4): the CLI buys it. The second device's SE row from C4 must read `Cancelled` (Sync there first): a row still `Listed for sale` makes step 3's restore refused as already tracked. If it stays Listed, run (b) on X1 after [B8](buying.md#b8--finalize-the-bought-name) instead (an ordinary owned name of the seller; the CLI buying it is not a buy-back by the app's phrase), reading X1 for SE throughout. The second device's signer stays locked until the restore step (see the note under the title).
 
 Steps:
 
@@ -216,7 +216,7 @@ Expected:
 
 - Step 1: the row of the profile that did not cancel reads `Cancelled` with the line "Cancelled from another device or profile with your recovery phrase"; the row of the profile that cancelled reads `Cancelled` without that line.
 - Step 3: the second device's row reads `Listed for sale`, `Buy now`, `Price 4.000000 HNS`, with `All 2 price steps`; the seller's row still `Price 5.000000 HNS` (no market off mainnet, so nothing tells the seller of the lower step, and nothing marks its row as managed elsewhere).
-- Step 5: the seller's row reads `Sold` and "Sold at a price set on another device" (it was paid 4 HNS, a price none of its own steps names); the second device's row reads `Sold` without that line. `info SE` shows the owner a TRANSFER out of the lock, then the CLI's FINALIZE. A seller row that stays `Listed for sale` after two syncs is ◐ with spec §5 "One device per listing" named; add `info SE`.
+- Step 5: the seller's row reads `Sold` and "Sold at a price set on another device" (it was paid 4 HNS, a price none of its own steps names); the second device's row reads `Sold` without that line. `info SE` shows the owner a TRANSFER out of the lock, then the CLI's FINALIZE. A seller row that stays `Listed for sale` after two syncs is a finding: record it with `info SE` (the seller follows the chain whichever device sells, R39).
 - Passes if each profile words the other device's cancel or sale as from another device, and its own without.
 
 - **Blocks mined:** 0 for (a); 12 for (b)

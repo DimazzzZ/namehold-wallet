@@ -21,7 +21,7 @@ Never `mine` while a case below waits for the parent to stay unconfirmed: a bloc
 
 - **Priority:** P1
 - **Covers:** R1, R2, R7, R8, R9, R10, R11, R16
-- **Preconditions:** the seller profile active, sending allowed, the signer unlocked or the passphrase at hand, at least 2 HNS spendable; no unconfirmed send of the seller in Activity.
+- **Preconditions:** the seller profile active, sending allowed, the signer unlocked or the passphrase at hand, at least 2 HNS spendable; no unconfirmed send of the seller in Activity; Settings › `Fee rate (doos/kvB)` empty (note its value and restore it at the end), since the send's rate, the `1` refusal and the empty-field answer of step 3 depend on it.
 
 Steps:
 
@@ -66,7 +66,7 @@ Expected:
 
 - Step 2: the child built in step 1 survives as an unsent draft: a row labelled `Speed up` offering `Sign & broadcast` and `Discard`; the `Send` row's `Speed up` is disabled with "This transaction already has a Speed up that was never sent; discard it in Activity (its row offers Discard) to speed this one up again." If no `Speed up` row survived the quit, record what you saw and go on from step 4.
 - Step 3: toast "Draft discarded"; the `Speed up` row goes; the `Send` row's `Speed up` is enabled again.
-- Step 4: the toast "Not signed: Confirmation declined" (unverified wording); no `Speed up` row stays in Activity (declining discards the child); the `Send` row's `Speed up` is still enabled.
+- Step 4: the toast "Not signed: Confirmation declined"; no `Speed up` row stays in Activity (declining discards the child); the `Send` row's `Speed up` is still enabled.
 - Step 5: before the Sync, `Speed up` is disabled with "This transaction is not waiting in your node's mempool, so a child could not pull it into a block. If it was not mined, send it again instead."; after the Sync the row reads `Confirmed` and has no `Speed up`.
 - Passes if an unsent child blocks a second one only until it is discarded, a declined child leaves nothing behind, and a mined parent is never offered a child.
 

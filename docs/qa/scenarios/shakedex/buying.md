@@ -461,7 +461,7 @@ Expected:
 
 - **Priority:** P2
 - **Covers:** R13 (amended by the [Speed up spec](../../../specs/2026-10-21-speed-up-unconfirmed-sends.md) R4, R11, R12, R16)
-- **Preconditions:** run inside [B7](#b7--buy-a-cli-listing-through-the-secure-window), after its step 2 (the purchase of X1 sent, `Unconfirmed purchase`) and before its step 3's `mine 1`; or on X5 listed with [cli-list-a-name](../../procedures/cli-list-a-name.md) and bought with [buy-a-cli-listing](../../procedures/buy-a-cli-listing.md) up to its step 2. Mine nothing until step 4.
+- **Preconditions:** run inside [B7](#b7--buy-a-cli-listing-through-the-secure-window), after its step 2 (the purchase of X1 sent, `Unconfirmed purchase`) and before its step 3's `mine 1`; or on X5, registered with the other test names and listed with [cli-list-a-name](../../procedures/cli-list-a-name.md) ([environment](../../environment.md#test-names-for-a-run)) and bought with [buy-a-cli-listing](../../procedures/buy-a-cli-listing.md) up to its step 2. Mine nothing until step 4.
 
 Steps:
 

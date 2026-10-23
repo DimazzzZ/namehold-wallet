@@ -68,7 +68,7 @@ A report is written per run, from [report-template.md](report-template.md), **ou
 - Change a case only when the behaviour it checks changes (a new sentence, a new state), or when its wording was wrong against the code; never to make a failing run pass.
 - Keep ids stable and **never reuse an id**, also after a case is deleted. A new case takes the next free number in its letter (S13, B17, R8, …).
 - When two cases check the same behaviour, keep one and list the other's id in its `Was:` line.
-- Every expected UI string is copied from the source (`src/components/**`, `src/components/market/marketText.ts`, the refusal constants in `src-tauri/src/commands/shakedex.rs` and `src-tauri/src/noncustodial/speed_up.rs`, `src/test/fixtures/listing-actions.json`); a string that could not be checked carries `(unverified wording)`.
+- Every expected UI string is copied from the source (`src/components/**`, `src/components/market/marketText.ts`, the backend's sentences in `src-tauri/src/commands/*.rs` and `src-tauri/src/noncustodial/**/*.rs` and `src-tauri/src/error.rs` (refusal constants, confirmation rows, notifications, error texts), `src/test/fixtures/listing-actions.json`); a string that could not be checked carries `(unverified wording)`.
 - No run-specific facts in a case: no heights, txids, real names (use the roles of [environment](environment.md#test-names-for-a-run)), dates or commit references. Update the file's `last_verified` front matter after a run that executed it.
 - Use this shape:
 
