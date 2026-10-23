@@ -64,6 +64,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("037", include_str!("../sql/037_shakedex_market.sql")),
     ("038", include_str!("../sql/038_shakedex_market_step.sql")),
     ("039", include_str!("../sql/039_shakedex_lock_search.sql")),
+    (
+        "040",
+        include_str!("../sql/040_shakedex_managed_elsewhere.sql"),
+    ),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -105,7 +109,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 39, "expected 39 migrations, got {count}");
+        assert_eq!(count, 40, "expected 40 migrations, got {count}");
     }
 
     /// An in-memory database with every migration before `version` applied
@@ -309,6 +313,35 @@ mod tests {
         assert_at_last_migration(&conn);
     }
 
+    /// A database already at 039 takes 040 on top: an existing listing
+    /// keeps its row and starts not managed elsewhere (R38).
+    #[test]
+    fn migration_040_applies_on_top_of_039() {
+        let conn = db_before("040");
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub, account_index, watch_only)
+             VALUES ('p', 'P', 'mnemonic_hot', 'mainnet', 'xpub', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO shakedex_listings (id, wallet_profile_id, name, mode, state, lock_pubkey_hex, publish, market_status)
+             VALUES ('l1', 'p', 'dexsale', 'buy_now', 'listed', '02', 1, 'listed')",
+            [],
+        )
+        .unwrap();
+        run(&conn).unwrap();
+        let marked: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT managed_elsewhere_at, foreign_step_json FROM shakedex_listings WHERE id = 'l1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(marked, (None, None));
+        assert_at_last_migration(&conn);
+    }
+
     /// Every row a release before 012 could hold (008's CHECK: five
     /// statuses) comes through the migrations readable as the same
     /// `DraftStatus`, and the table the migrations leave refuses any other
@@ -355,7 +388,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 39);
+        assert_eq!(count, 40);
     }
 
     #[test]

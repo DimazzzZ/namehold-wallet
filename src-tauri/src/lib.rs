@@ -717,6 +717,7 @@ pub fn run() {
             commands::shakedex::shakedex_cancel_listing,
             commands::shakedex::shakedex_finalize_cancel,
             commands::shakedex::shakedex_lower_price,
+            commands::shakedex::shakedex_manage_listing_here,
             commands::shakedex::shakedex_list_listings,
             commands::shakedex::shakedex_publish_listing,
             commands::shakedex::shakedex_save_listing_file,

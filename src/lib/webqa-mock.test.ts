@@ -574,7 +574,9 @@ describe("webqa-mock selling", () => {
     expect(allowed()).toEqual(["cancel", "export", "lowerPrice", "publish"]);
     expect(() =>
       mockInvoke("shakedex_import_own_listing_from_file", { path: "/tmp/dexsale.json" }),
-    ).toThrow("only a lock restored by name takes its saved listing file");
+    ).toThrow(
+      "only a lock restored by name, or a listing managed from another device, takes its saved listing file",
+    );
   });
 
   it("counts when buyers stop seeing a restored lock of a name close to expiring (R35)", () => {

@@ -230,6 +230,15 @@ export const useLowerPrice = () =>
     invoke<ShakedexListingSummary>("shakedex_lower_price", { ...a }),
   );
 
+/**
+ * "Manage from this device" (R44): take over a listing another device of the
+ * phrase manages, its price included. Nothing is signed.
+ */
+export const useManageListingHere = () =>
+  useSellingMutation((listingId: string) =>
+    invoke<ShakedexListingSummary>("shakedex_manage_listing_here", { listingId }),
+  );
+
 /** Restore a lock of ours by the name's chain state (R32). */
 export const useRestoreLock = () =>
   useSellingMutation((name: string) =>

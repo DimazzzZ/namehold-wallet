@@ -98,6 +98,8 @@ fn fx(state: ListingState) -> Fx {
         cancel_vout: None,
         cancel_finalize_draft_id: None,
         cancel_blocks_remaining: None,
+        managed_elsewhere_at: None,
+        foreign_step_json: None,
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -4571,4 +4573,196 @@ fn market_status_is_stored_by_its_spelling() {
         .execute("UPDATE shakedex_listings SET market_status = 'gone'", [])
         .unwrap();
     assert!(queries::get_shakedex_listing(&f.conn, &f.id).is_err());
+}
+
+// --- Another device of the same phrase (R38, R39, R43) ------------------------
+
+/// The fixture's listing marked managed elsewhere (R38), as the market jobs
+/// write it over the row they read.
+fn mark_elsewhere(f: &Fx) -> usize {
+    let l = listing(f);
+    queries::mark_managed_elsewhere(
+        &f.conn,
+        &f.id,
+        &queries::ManagedElsewhere {
+            lock: (&f.lock_txid, f.lock_vout),
+            steps_json: &l.steps_json,
+            foreign_step_json: Some(r#"{"price":3000000}"#),
+            seen_at: "2026-10-21T00:00:00Z",
+            retry_at: "2026-10-21T01:00:00Z",
+        },
+    )
+    .unwrap()
+}
+
+/// R38: the mark lands only on the listing the job read: its stored lock
+/// outpoint (never on a listing re-listed on another lock coin), the steps
+/// it read (a step that became ours meanwhile is no foreign step), and a
+/// state the market jobs read (Listed, Cancelling). A read without a step
+/// changes only a listing already marked, and keeps the first time seen
+/// and the step stored.
+#[test]
+fn managed_elsewhere_mark_lands_only_on_the_listing_read() {
+    let f = fx(ListingState::Listed);
+    let l = listing(&f);
+    let write = |lock: (&str, u32), steps: &str, step: Option<&str>, at: &str| {
+        queries::mark_managed_elsewhere(
+            &f.conn,
+            &f.id,
+            &queries::ManagedElsewhere {
+                lock,
+                steps_json: steps,
+                foreign_step_json: step,
+                seen_at: at,
+                retry_at: at,
+            },
+        )
+        .unwrap()
+    };
+    let lock = (f.lock_txid.as_str(), f.lock_vout);
+    let other = txid("f2");
+    assert_eq!(write((&other, 0), &l.steps_json, Some("{}"), "t0"), 0);
+    assert_eq!(write((lock.0, 1), &l.steps_json, Some("{}"), "t0"), 0);
+    assert_eq!(write(lock, "[]", Some("{}"), "t0"), 0, "other steps");
+    assert_eq!(
+        write(lock, &l.steps_json, None, "t0"),
+        0,
+        "no step, unmarked"
+    );
+    assert_eq!(listing(&f).managed_elsewhere_at, None);
+    assert_eq!(write(lock, &l.steps_json, Some("{}"), "t1"), 1);
+    assert_eq!(
+        write(lock, &l.steps_json, None, "t2"),
+        1,
+        "only rescheduled"
+    );
+    let m = listing(&f);
+    assert_eq!(
+        (
+            m.managed_elsewhere_at.as_deref(),
+            m.foreign_step_json.as_deref()
+        ),
+        (Some("t1"), Some("{}"))
+    );
+    assert_eq!(m.market_retry_at.as_deref(), Some("t2"));
+    let g = fx(ListingState::Sold);
+    assert_eq!(mark_elsewhere(&g), 0, "an ended listing is never marked");
+}
+
+/// R39: a listing managed elsewhere is followed from the chain as any
+/// other: its sale is found (R22) and the mark changes nothing of it.
+#[tokio::test]
+async fn a_listing_managed_elsewhere_is_still_sold_from_the_chain() {
+    let f = fx(ListingState::Listed);
+    assert_eq!(mark_elsewhere(&f), 1);
+    let buy = txid("b1");
+    paid(&f, &buy, 2, TIP, false);
+    let chain = node(
+        info((&buy, 0)),
+        vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+        Value::Null,
+    )
+    .with_block_hash("ab".repeat(32))
+    .with_block(block_with(&purchase_rest(&f, &buy, TIP, &f.payment), TIP));
+    run(&f, &chain).await;
+    let l = listing(&f);
+    assert_eq!(l.state, ListingState::Sold);
+    assert_eq!(l.sold_txid.as_deref(), Some(buy.as_str()));
+    // R42: an ended listing is not shown as managed elsewhere, nor its
+    // other device's price as buyable.
+    let row = crate::commands::shakedex::my_listing_from_conn(
+        &f.conn,
+        NET,
+        &l,
+        None,
+        &std::collections::HashMap::new(),
+    )
+    .unwrap();
+    assert!(!row.managed_elsewhere);
+    assert_eq!(row.foreign_step_price_doos, None);
+}
+
+/// R38: the mark belongs to the lock coin and steps it was seen over: a
+/// reorg that takes the FINALIZE into the lock away and the listing back to
+/// Ready to Finalize & sign (its lock coin, steps and file dropped) drops
+/// the mark too, so a listing finalized into a new lock coin starts
+/// unmarked.
+#[test]
+fn a_listing_back_before_its_lock_loses_its_mark() {
+    let f = fx(ListingState::Listed);
+    assert_eq!(mark_elsewhere(&f), 1);
+    assert_eq!(
+        queries::mark_listing_finalizing_again(&f.conn, &f.id).unwrap(),
+        1
+    );
+    assert!(listing(&f).managed_elsewhere_at.is_some(), "still the coin");
+    assert_eq!(queries::revert_listing_to_ready(&f.conn, &f.id).unwrap(), 1);
+    let l = listing(&f);
+    assert_eq!(l.state, ListingState::ReadyToFinalize);
+    assert_eq!((l.managed_elsewhere_at, l.foreign_step_json), (None, None));
+}
+
+/// R43: My listings words a sale paid at a price none of this device's
+/// steps names (our coin at the payment address in the sale transaction is
+/// worth another amount) as sold at another device's price, and a mined
+/// cancel this device has no draft of (or whose draft is another
+/// transaction) as cancelled from another device. Our own price and our
+/// own cancel are not.
+#[test]
+fn my_listings_words_a_sale_and_a_cancel_from_another_device() {
+    use crate::commands::shakedex::my_listing_from_conn;
+    let f = fx(ListingState::Listed);
+    let buy = txid("b1");
+    paid(&f, &buy, 2, TIP, false);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET state = 'sold', sold_txid = ?1",
+            [&buy],
+        )
+        .unwrap();
+    let row = |f: &Fx| {
+        my_listing_from_conn(
+            &f.conn,
+            NET,
+            &listing(f),
+            None,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap()
+    };
+    assert!(!row(&f).sold_elsewhere, "paid at our own price");
+    f.conn
+        .execute("UPDATE tracked_utxos SET value_doos = 3000000", [])
+        .unwrap();
+    assert!(row(&f).sold_elsewhere, "paid at a price we never signed");
+
+    let g = fx(ListingState::Listed);
+    g.conn
+        .execute(
+            "UPDATE shakedex_listings SET state = 'cancel_awaiting_finalize', cancel_txid = ?1,
+             cancel_vout = 0",
+            [txid("c1")],
+        )
+        .unwrap();
+    assert!(row(&g).cancelled_elsewhere, "no cancel draft here");
+    queries::insert_tx_draft(&g.conn, "cd", PROFILE, "shakedex_cancel", "00", "{}", "{}").unwrap();
+    queries::update_tx_draft_status(
+        &g.conn,
+        "cd",
+        queries::DraftStatus::Confirmed,
+        None,
+        Some(&txid("c1")),
+    )
+    .unwrap();
+    g.conn
+        .execute("UPDATE shakedex_listings SET cancel_draft_id = 'cd'", [])
+        .unwrap();
+    assert!(!row(&g).cancelled_elsewhere, "our own cancel");
+    g.conn
+        .execute(
+            "UPDATE shakedex_listings SET cancel_txid = ?1",
+            [txid("c2")],
+        )
+        .unwrap();
+    assert!(row(&g).cancelled_elsewhere, "another cancel was mined");
 }

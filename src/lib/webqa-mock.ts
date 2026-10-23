@@ -743,6 +743,11 @@ function myListing(l: MockListing): ShakedexMyListing {
     actions: actionsOf(l),
     prices: listingPrices(l),
     pendingSend: pendingSend(l),
+    // R42, R43: the mock has one device; nothing is managed elsewhere.
+    managedElsewhere: false,
+    foreignStepPriceDoos: null,
+    soldElsewhere: false,
+    cancelledElsewhere: false,
     // The mock profile is mainnet: R9's 30 days of 144 blocks, shown as days.
     unbuyableWarnBlocks: 4_320,
     wallClockTiming: true,
@@ -915,6 +920,14 @@ const sellingHandlers: Record<string, Handler> = {
     }
     // R26: the lowered step joins the schedule, valid at once.
     l.steps = [...l.steps, mockStep(price, buyNowLockTime())];
+    return listingSummary(l);
+  },
+
+  // R44: the mock has one device, so no listing is managed elsewhere and
+  // the backend's own refusal (`take_over_refusal`) answers.
+  shakedex_manage_listing_here: (args) => {
+    const l = listingById(args);
+    refuse(actionsOf(l).manageHere.reason);
     return listingSummary(l);
   },
 

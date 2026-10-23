@@ -2587,6 +2587,20 @@ pub const RETRY_BASE_SECS: i64 = 300;
 pub const RETRY_MAX_SECS: i64 = 6 * 3_600;
 /// R23: `expiresAt` is moved ahead once it is this close.
 pub const EXPIRY_REFRESH_MARGIN_SECS: i64 = 30 * 86_400;
+/// R41: how far past the expiry the R23 refresh would write now (MTP +
+/// [`sell::LISTING_LIFETIME_SECS`]) a copy of ours may expire and still be
+/// left on the market: one refresh period, the most two devices' refreshes
+/// of the same step can differ by. A copy expiring later than that is no
+/// device's refresh and is replaced, so nobody freezes our uploads with an
+/// absurd `expiresAt`.
+pub const LATER_EXPIRY_SLACK_SECS: u64 = EXPIRY_REFRESH_MARGIN_SECS as u64;
+
+/// R41: the latest `expiresAt` a copy of ours may carry at the median time
+/// `mtp` and still be left on the market ([`LATER_EXPIRY_SLACK_SECS`]).
+pub(crate) fn latest_own_expiry(mtp: u64) -> u64 {
+    mtp.saturating_add(sell::LISTING_LIFETIME_SECS)
+        .saturating_add(LATER_EXPIRY_SLACK_SECS)
+}
 
 /// R25: the wait before try `attempts + 1` after `attempts` failures in a row.
 pub(crate) fn retry_delay_secs(attempts: i64) -> i64 {
@@ -2781,6 +2795,12 @@ pub(crate) enum MarketCopy {
         /// `file`, read back by the strict parser.
         copy: Box<listing_file::ListingFile>,
         listing: Box<queries::ShakedexListing>,
+        /// The lock coin's value as hsd reports it, every stored step
+        /// verified over it: a market copy's foreign step is verified over
+        /// it too (R36).
+        lock_value: u64,
+        /// The node's median time the copy was cut at.
+        mtp: u64,
     },
     /// A step of the stored file does not verify over the lock coin hsd
     /// reports, the file is not this listing's, the row does not read (its
@@ -2850,16 +2870,10 @@ async fn market_copy_at(
             None => return not_now("the node reported no median time"),
         },
     };
-    let Some(coin) = node.get_coin(lock.0, lock.1).await? else {
-        return not_now("the node reports the lock coin spent");
+    let value = match lock_coin_on_node(node, lock, &at, &file).await? {
+        Ok(value) => value,
+        Err(why) => return not_now(why),
     };
-    if at.stored_coin(&coin, lock, COV_FINALIZE).is_err() {
-        return not_now("the node reports something else than this listing's lock coin");
-    }
-    if coin.mined_height()?.is_none() {
-        return not_now("the FINALIZE into the lock is not mined");
-    }
-    let value = sell::lock_coin_value(&coin, &file, &at.address)?;
     if let Err(e) = sell::verify_file_steps(&file, value, network) {
         return unverified(e.to_string());
     }
@@ -2917,7 +2931,169 @@ async fn market_copy_at(
         file: copy,
         copy: Box::new(parsed),
         listing: Box::new(listing),
+        lock_value: value,
+        mtp,
     })
+}
+
+/// The value hsd reports for the stored lock coin `lock` of a listing whose
+/// lock is `at` and stored file `file` ([`row_for_market`]): the coin must
+/// be this listing's FINALIZE at its lock address, mined
+/// ([`sell::ListingLock::stored_coin`], [`sell::lock_coin_value`]).
+/// `Ok(Err(why))` is the node's no verdict this sync (the coin spent, 404,
+/// something else there, unmined); an `Err` is a reply that does not read.
+async fn lock_coin_on_node(
+    node: &dyn NodeRpc,
+    lock: (&str, u32),
+    at: &sell::ListingLock,
+    file: &listing_file::ListingFile,
+) -> Result<Result<u64, &'static str>, AppError> {
+    let Some(coin) = node.get_coin(lock.0, lock.1).await? else {
+        return Ok(Err("the node reports the lock coin spent"));
+    };
+    if at.stored_coin(&coin, lock, COV_FINALIZE).is_err() {
+        return Ok(Err(
+            "the node reports something else than this listing's lock coin",
+        ));
+    }
+    if coin.mined_height()?.is_none() {
+        return Ok(Err("the FINALIZE into the lock is not mined"));
+    }
+    Ok(Ok(sell::lock_coin_value(&coin, file, &at.address)?))
+}
+
+/// R36: the foreign step of `theirs`, the market's copy of listing `l`
+/// whose lock coin hsd reports worth `lock_value`: when the copy is a
+/// listing file of this listing (the same name, stored lock outpoint and
+/// lock public key), each of its steps that is not one of `l`'s stored
+/// steps (price, lock time and signature) is verified with the lock key
+/// over that coin, paying the address the copy names
+/// (`template::verify_step_signature`); the cheapest one that verifies is
+/// returned. `None`: the copy is another listing's, or every step it carries
+/// is ours or does not verify (someone else's copy, R25). Only a holder of
+/// the lock key can sign a step that verifies; the lock key comes from the
+/// seed (R17), so a foreign step was signed by another device or profile of
+/// this recovery phrase. A row that does not read is an `Err`.
+pub(crate) fn foreign_step_in(
+    theirs: &listing_file::ListingFile,
+    l: &queries::ShakedexListing,
+    lock_value: u64,
+    network: Network,
+) -> Result<Option<sell::ForeignStep>, AppError> {
+    let Some(lock) = stored_lock(l)? else {
+        return Ok(None);
+    };
+    let pubkey = lock_pubkey(l)?;
+    if !(theirs.name == l.name
+        && hex::encode(theirs.lock_txid).eq_ignore_ascii_case(lock.0)
+        && theirs.lock_vout == lock.1
+        && theirs.public_key == pubkey)
+    {
+        return Ok(None);
+    }
+    // A payment address the parser took but no output can pay makes no
+    // step that verifies.
+    let Ok(payment) = theirs.payment_output_address(network) else {
+        return Ok(None);
+    };
+    let ours: Vec<(u64, u64, String)> = stored_steps(l)?
+        .into_iter()
+        .map(|s| (s.price, s.lock_time, s.signature.to_ascii_lowercase()))
+        .collect();
+    let mut found: Option<sell::ForeignStep> = None;
+    for step in &theirs.steps {
+        let signature = hex::encode(step.signature);
+        if ours.contains(&(step.price, step.lock_time, signature.clone())) {
+            continue;
+        }
+        let verified = template::verify_step_signature(
+            &template::StepTemplate {
+                lock_outpoint: (theirs.lock_txid, theirs.lock_vout),
+                lock_value,
+                lock_pubkey: &pubkey,
+                payment: payment.clone(),
+                price: step.price,
+                lock_time_secs: step.lock_time,
+            },
+            &step.signature,
+        )
+        .is_ok();
+        if verified && found.as_ref().is_none_or(|f| step.price < f.price) {
+            found = Some(sell::ForeignStep {
+                price: step.price,
+                lock_time: step.lock_time,
+                signature,
+                payment_address: theirs.payment_addr.clone(),
+            });
+        }
+    }
+    Ok(found)
+}
+
+/// R38: write the mark (or, with `step` `None` on a listing already marked,
+/// only schedule the next read) on `l`, the row the job read, due again in
+/// [`KEEP_LISTED_INTERVAL_SECS`]. Logs a mark that did not land (the
+/// listing changed meanwhile).
+fn mark_elsewhere(
+    conn: &rusqlite::Connection,
+    l: &queries::ShakedexListing,
+    step: Option<&sell::ForeignStep>,
+    now: i64,
+) -> Result<(), AppError> {
+    let lock = stored_lock(l)?
+        .ok_or_else(|| AppError::Other(format!("corrupted listing {}: no lock coin", l.id)))?;
+    let step_json = step.map(serde_json::to_string).transpose()?;
+    let n = queries::mark_managed_elsewhere(
+        conn,
+        &l.id,
+        &queries::ManagedElsewhere {
+            lock,
+            steps_json: &l.steps_json,
+            foreign_step_json: step_json.as_deref(),
+            seen_at: &rfc3339(now),
+            retry_at: &rfc3339(now.saturating_add(KEEP_LISTED_INTERVAL_SECS)),
+        },
+    )?;
+    if n == 0 {
+        eprintln!(
+            "shakedex market: {} ({}): the listing changed meanwhile; not marked",
+            l.id, l.name
+        );
+    } else if step.is_some() {
+        eprintln!(
+            "shakedex market: {} ({}): LearnHNS Market shows a price step of this lock this \
+             device never signed: another device manages it; this device no longer uploads it",
+            l.id, l.name
+        );
+    }
+    Ok(())
+}
+
+/// R36, R37: whether the market's copy `copy` of `listing` (whose lock coin
+/// hsd reports worth `lock_value`) carries a foreign step; when it does,
+/// the listing is marked managed elsewhere ([`mark_elsewhere`]) and `true`
+/// says nothing is to be uploaded. A copy that does not read as a listing
+/// file carries none.
+fn flagged_by_copy(
+    conn: &rusqlite::Connection,
+    listing: &queries::ShakedexListing,
+    copy: &ProofCopy,
+    lock_value: u64,
+    now: i64,
+) -> Result<bool, AppError> {
+    let ProofCopy::Copy(text) = copy else {
+        return Ok(false);
+    };
+    let Ok(theirs) = listing_file::ListingFile::parse(text, Network::Main) else {
+        return Ok(false);
+    };
+    match foreign_step_in(&theirs, listing, lock_value, Network::Main)? {
+        Some(step) => {
+            mark_elsewhere(conn, listing, Some(&step), now)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
 }
 
 /// R3's current step of listing file `file` at the median time `mtp`: the
@@ -3275,7 +3451,9 @@ fn market_job_clients(
 /// [`queries::list_listings_kept_on_market`] (published) the market has not
 /// taken yet (`market_status` unset) gets its current step uploaded
 /// ([`market_copy`]: a Buy Now's, or a reverse auction's cheapest step
-/// valid at the node's median time, R24), the step sent recorded. R28: each due listing of
+/// valid at the node's median time, R24), the step sent recorded, unless the
+/// market's copy, read first, carries a foreign step (R37). A listing
+/// managed elsewhere gets no upload (R39), its report still goes. R28: each due listing of
 /// [`queries::list_listings_to_report`] — the market told about it, and our
 /// node has its sale or cancel mined — is reported first ([`report`]), once;
 /// a sent cancel already stopped the keep jobs, the report waits for it to
@@ -3438,7 +3616,9 @@ async fn announce(
 
 /// R23, R24: upload `l`'s current step ([`market_copy`], every stored step
 /// verified on our node first) and record the market's answer and the step
-/// sent; an acceptance keeps the listing's label ([`kept_label`]). `mtp`:
+/// sent; an acceptance keeps the listing's label ([`kept_label`]). R37: the
+/// market's copy is read first, and a foreign step there (R36) marks the
+/// listing managed elsewhere instead of any upload. `mtp`:
 /// the median time the caller read, or `None` to read it
 /// ([`market_copy_at`]).
 async fn upload_current(
@@ -3459,10 +3639,19 @@ async fn upload_current(
             file,
             copy,
             listing,
+            lock_value,
+            ..
         } => {
             let Some(step) = step_or_record(conn, &listing, &copy, now)? else {
                 return Ok(());
             };
+            // R37: the market's copy first. A foreign step there marks the
+            // listing managed elsewhere and nothing is sent; "not listed",
+            // no answer, and any other copy are uploaded over as before.
+            let theirs = market.proof_copy(&listing.name).await?;
+            if flagged_by_copy(conn, &listing, &theirs, lock_value, now)? {
+                return Ok(());
+            }
             let ok = kept_label(&listing);
             upload(conn, market, &file, &step, &listing, ok, now).await
         }
@@ -3558,10 +3747,14 @@ async fn upload(
 ///
 /// Per listing: [`market_copy`] first (our node: every step verified
 /// again, the expiry refreshed when near). StepsUnverified → recorded,
-/// backed off, nothing asked of the market. The expiry just refreshed (the
-/// file changed) → uploaded at once (Listed). Otherwise the market's
-/// copy (`GET /listing/<name>/proof.json`): the same offer
-/// ([`listing_file::same_market_listing`]) → nothing uploaded, checked again
+/// backed off, nothing asked of the market. Then the market's copy
+/// (`GET /listing/<name>/proof.json`), always (R37): a foreign step there
+/// (R36, [`foreign_step_in`]) → the listing marked managed elsewhere, nothing
+/// uploaded ([`mark_elsewhere`]). The expiry just refreshed (the file
+/// changed) → uploaded over any other copy, and on no answer, at once
+/// (Listed). Otherwise the same offer
+/// ([`listing_file::same_market_listing`], or ours with a later `expiresAt`,
+/// R41, [`listing_file::same_offer_expiring_later`]) → nothing uploaded, checked again
 /// in an hour (Retrying/StepsUnverified → Listed, ReplacedReuploaded
 /// stays); a copy that does not read as a listing file, or another offer →
 /// ours uploaded over it (ReplacedReuploaded; Listed while
@@ -3611,7 +3804,54 @@ pub async fn keep_listed_with_client(
             eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
         }
     }
+    // R38, R39: a listing managed elsewhere is only read, hourly, to follow
+    // the other device's price; nothing is uploaded for it.
+    for l in queries::list_listings_managed_elsewhere(conn, profile_id)? {
+        if !due(&l, now) {
+            continue;
+        }
+        if market_lock_lost(conn, lock, profile_id) {
+            return Ok(());
+        }
+        if let Err(e) = follow_elsewhere(conn, node, market, &l, now).await {
+            eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
+        }
+    }
     Ok(())
+}
+
+/// R38, R39: one due read of the market's copy of `l`, a listing managed
+/// elsewhere. Reads hsd's lock coin (no expiry refresh: that is a write of
+/// what this device would upload) and the market's copy; a foreign step
+/// there replaces the one stored, anything else leaves it; either way the
+/// next read is due in [`KEEP_LISTED_INTERVAL_SECS`]. Never uploads. The
+/// node's no verdict is logged, nothing written; a row that does not read
+/// is logged too (the take-over and the file import refuse it in their own
+/// words).
+async fn follow_elsewhere(
+    conn: &rusqlite::Connection,
+    node: &dyn NodeRpc,
+    market: &LearnHnsClient,
+    l: &queries::ShakedexListing,
+    now: i64,
+) -> Result<(), AppError> {
+    let row = row_for_market(l, Network::Main)?;
+    let value = match lock_coin_on_node(node, row.lock, &row.at, &row.file).await? {
+        Ok(value) => value,
+        Err(why) => {
+            not_now(l, why);
+            return Ok(());
+        }
+    };
+    let step = match market.proof_copy(&l.name).await? {
+        ProofCopy::Copy(text) => listing_file::ListingFile::parse(&text, Network::Main)
+            .ok()
+            .map(|theirs| foreign_step_in(&theirs, l, value, Network::Main))
+            .transpose()?
+            .flatten(),
+        ProofCopy::NotListed | ProofCopy::NoAnswer(_) => None,
+    };
+    mark_elsewhere(conn, l, step.as_ref(), now)
 }
 
 /// Whether kept `l`'s stored listing file's `expiresAt` is near
@@ -3667,35 +3907,50 @@ async fn keep_listed(
     now: i64,
 ) -> Result<(), AppError> {
     use queries::MarketStatus as S;
-    let (file, ours, listing) = match market_copy(conn, node, Network::Main, l, now).await? {
-        MarketCopy::NotNow(why) => {
-            not_now(l, &why);
-            return Ok(());
-        }
-        MarketCopy::StepsUnverified(why) => {
-            return record(conn, l, &steps_unverified(l, why, now));
-        }
-        MarketCopy::Ready {
-            file,
-            copy,
-            listing,
-        } => (file, copy, listing),
-    };
+    let (file, ours, listing, lock_value, mtp) =
+        match market_copy(conn, node, Network::Main, l, now).await? {
+            MarketCopy::NotNow(why) => {
+                not_now(l, &why);
+                return Ok(());
+            }
+            MarketCopy::StepsUnverified(why) => {
+                return record(conn, l, &steps_unverified(l, why, now));
+            }
+            MarketCopy::Ready {
+                file,
+                copy,
+                listing,
+                lock_value,
+                mtp,
+            } => (file, copy, listing, lock_value, mtp),
+        };
+    // R41: the latest expiry this wallet could have written itself, one
+    // refresh period of slack included; a copy expiring later is replaced.
+    let latest_expiry = latest_own_expiry(mtp);
     let Some(step) = step_or_record(conn, &listing, &ours, now)? else {
         return Ok(());
     };
-    if listing.listing_file_json != l.listing_file_json {
-        // The expiry was just refreshed: the market holds the old file.
-        return upload(conn, market, &file, &step, &listing, S::Listed, now).await;
+    // The expiry was just refreshed: the market holds the old file, and
+    // ours is uploaded over it unless the copy is another device's (R36) or
+    // already ours with an expiry as late (R41).
+    let refreshed = listing.listing_file_json != l.listing_file_json;
+    let copy = market.proof_copy(&listing.name).await?;
+    if flagged_by_copy(conn, &listing, &copy, lock_value, now)? {
+        return Ok(());
     }
-    match market.proof_copy(&listing.name).await? {
+    match copy {
         ProofCopy::Copy(text) => {
             // A copy that does not read as a listing file differs from ours
             // and is no step of ours: ours is uploaded over it.
             let theirs = listing_file::ListingFile::parse(&text, Network::Main).ok();
-            let same = theirs
-                .as_ref()
-                .is_some_and(|theirs| listing_file::same_market_listing(theirs, &ours));
+            // R41: our offer with a later expiry hides nothing: it is ours.
+            let same = theirs.as_ref().is_some_and(|theirs| {
+                listing_file::same_market_listing(theirs, &ours)
+                    || listing_file::same_offer_expiring_later(theirs, &ours, latest_expiry)
+            });
+            if refreshed && !same {
+                return upload(conn, market, &file, &step, &listing, S::Listed, now).await;
+            }
             // A copy that differs is our own older one, not someone else's,
             // when what is sent changed since the market last took our copy
             // (a Lower price, an expiry refresh, a reorg back to an unsent
@@ -3725,6 +3980,11 @@ async fn keep_listed(
             }
         }
         ProofCopy::NotListed => upload(conn, market, &file, &step, &listing, S::Listed, now).await,
+        // A refreshed expiry goes up on no answer too, as it always did
+        // (what is sent changed); the upload's own answer is recorded.
+        ProofCopy::NoAnswer(_) if refreshed => {
+            upload(conn, market, &file, &step, &listing, S::Listed, now).await
+        }
         ProofCopy::NoAnswer(why) => {
             let none = Outcome::NoVerdict(format!("no answer from the market: {why}"));
             record(
