@@ -25,6 +25,8 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "category": "Finance",
+    "shortDescription": "A non-custodial Handshake (HNS) wallet and TLD manager",
     "externalBin": ["binaries/namehold-syncd"],
     "icon": ["icons/icon.png", "icons/icon.ico"]
   },
