@@ -132,10 +132,12 @@
 - **The file-system plugin.** Nothing in the app used it once the bid backup moved to a backend command, so it is no longer registered or shipped, and no window can be granted file access through it.
 
 ### CI / tooling
+- **README screenshots are generated, not taken by hand.** `just screenshots` (the `screenshots/` package, Playwright on the browser mock) shoots the Wallet, Auctions, Market, My listings and Namebase history screens with a showcase mainnet wallet over the mock's data, framed as a macOS window, into `docs/assets/`; `docs/RELEASING.md` runs it after each version bump. The showcase data is typed against `src/types`, takes its next-action words from the backend and its My listings actions from `listing-actions.json`, and its addresses are well-formed but belong to nobody; a fixed clock, locale and time zone make two runs on one machine byte-identical. The browser mock gained a `__webqa_overrides` hook (a command's answer, or a function of its args) checked before its own data; nothing sets it in the app. The README now opens a Screenshots section under the hero image.
 - `npm run lint:native-title` fails the build on a native `title` attribute, so hover hints cannot drift back off the `Tooltip` component.
 - A contract test reads every `invoke` call in the frontend and fails on an argument name Tauri would not match (snake_case instead of camelCase), the mistake that made Test connection ignore the typed API key.
 - A test fails if the file-system plugin comes back, in `Cargo.toml`, `package.json` or `lib.rs`, or if any capability or app config grants an `fs:` permission.
 - Take `rustls-webpki` `0.103.16` and `webpki-root-certs` `1.0.10` to clear RUSTSEC-2026-0382 and RUSTSEC-2026-0383 (distrusted emSign intermediate certificates still trusted), which failed the `cargo audit --deny warnings` gate. Lockfile-only patch updates.
+- Take `tokio` `1.53.3` to clear RUSTSEC-2026-0386 (`AsyncFd`'s safe constructors violate I/O safety), which failed the `cargo audit --deny warnings` gate. The wallet calls none of them itself. Lockfile-only patch update.
 - Take `clipboard-win` `5.4.3` (pulled in by the clipboard plugin through `arboard`, Windows only): `5.4.1` was yanked, which `cargo audit --deny warnings` refuses. Lockfile-only patch update.
 
 ## [0.5.0] - 2026-08-20

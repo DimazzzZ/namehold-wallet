@@ -6,7 +6,7 @@
  * reveal -> closed -> won/lost) via the invoke() surface, plus check the
  * reveal sub-lifecycle (broadcasted -> confirmed) that PR2 relies on.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mockInvoke, __resetChainForTests, __mineForTests } from "./webqa-mock";
 import fixture from "../test/fixtures/listing-actions.json";
 import type {
@@ -590,5 +590,36 @@ describe("webqa-mock selling", () => {
     __resetChainForTests();
     mockInvoke("shakedex_restore_lock", { name: "dexsale" });
     expect(row().listing.blocksUntilUnbuyable).toBeNull();
+  });
+});
+
+describe("webqa-mock overrides", () => {
+  afterEach(() => {
+    delete globalThis.__webqa_overrides;
+  });
+
+  it("answers a command from a static override before the mock's own data", () => {
+    globalThis.__webqa_overrides = { get_settings: { network: "mainnet", sentinel: 1 } };
+    expect(mockInvoke("get_settings")).toEqual({ network: "mainnet", sentinel: 1 });
+  });
+
+  it("passes the call's args to a function override", () => {
+    globalThis.__webqa_overrides = {
+      get_name_action_capabilities: (args?: Record<string, unknown>) => ({
+        name: args?.name,
+        phase: "CLOSED",
+      }),
+    };
+    expect(caps("atlas")).toEqual({ name: "atlas", phase: "CLOSED" });
+  });
+
+  it("falls through to the mock when a function override returns undefined", () => {
+    globalThis.__webqa_overrides = { get_name_action_capabilities: () => undefined };
+    expect(caps("atlas").phase).toBe("AVAILABLE");
+  });
+
+  it("answers commands the mock has no handler for", () => {
+    globalThis.__webqa_overrides = { not_a_mock_command: [1, 2] };
+    expect(mockInvoke("not_a_mock_command")).toEqual([1, 2]);
   });
 });

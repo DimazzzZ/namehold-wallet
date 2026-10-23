@@ -42,12 +42,17 @@ This creates:
 
    Then add a CHANGELOG entry: rename `[Unreleased]` → `[X.Y.Z] - <date>` and
    open a fresh `[Unreleased]`.
-2. Commit and tag:
+2. Refresh the README screenshots, so they show this version's screens and version number:
+   ```bash
+   just screenshots
+   ```
+   Look over the changed images in `docs/assets/` (`git diff --stat docs/assets` lists them) and commit them with the version bump. A screen that changed shape may need its showcase data or scene updated; see [screenshots/README.md](../screenshots/README.md).
+3. Commit and tag:
    ```bash
    git tag v0.X.0
    git push origin main --tags
    ```
-3. The `release.yml` workflow:
+4. The `release.yml` workflow:
    - Creates a **draft** GitHub Release.
    - Builds on macOS (universal), Linux, Windows.
    - Runs `beforeBuildCommand` to build the `namehold-syncd` sidecar binary
@@ -58,7 +63,7 @@ This creates:
      configuration in `tauri.conf.json`.
    - Verifies `latest.json` is present on the release.
    - Un-drafts the release (makes it public + "latest").
-4. Existing installs auto-detect the new version within ~30 s of their next
+5. Existing installs auto-detect the new version within ~30 s of their next
    launch (or immediately when the user clicks "Check for updates" in Settings).
 
 ---
