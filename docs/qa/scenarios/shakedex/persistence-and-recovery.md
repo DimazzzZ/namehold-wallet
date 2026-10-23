@@ -178,3 +178,34 @@ Expected:
 - **Blocks mined:** 1 (+11 to list a spare name)
 - **Evidence:** the daemon's start time; screenshot `J3-1-sold-at-launch`.
 - **Cleanup / end state:** the background setting at its original value; the node running.
+
+## J4 — The background daemon sends the finalize reminders while the app is closed
+
+- **Priority:** P2
+- **Covers:** R14, R19, R28 (the reminders' sender), spec §5 "Background jobs need a running process"
+- **Preconditions:** Settings › Notifications `Enable deadline notifications` on and saved; Settings › Connections `Sync in background (keep wallet up to date when app is closed)` on (note both original values); `namehold-syncd` started from the installed build ([J3](#j3--the-background-daemon-follows-a-listing-while-the-app-is-closed) step 1); the maintainer watching the screen, and Namehold allowed to post notifications in macOS System Settings › Notifications (the maintainer's call, never changed by the agent). A name to lock and later cancel: fold the case into [S2](selling.md#s2--buy-now-lock-finalize--sign-listed-cancel-and-bring-home) (part 1 at its step 4's `mine 9`, part 2 at its step 8's `mine 9`), or run it on a spare ordinary name with [lock-and-list](../../procedures/lock-and-list.md) and [cancel-and-bring-home](../../procedures/cancel-and-bring-home.md).
+
+This case exists for one manual check: a macOS notification banner that the daemon, not the app, posts. The banner is outside Namehold's windows, so it is not screenshotted ([rules](../../rules.md#secrets-and-evidence)): the maintainer reads it, or Namehold's group in Notification Center is read, and the report says who saw it. An unsigned build may show the macOS permission prompt for Namehold on its first notification, or post nothing until Namehold is allowed; the daemon's own delivery errors go nowhere visible (its output is discarded).
+
+Steps:
+
+1. Part 1. Lock the name and `mine 1`, Sync: `Locking · 9 blocks`.
+2. Quit the app (`osascript -e 'tell application "Namehold" to quit'`). Check `pgrep -x namehold-wallet` prints nothing and `pgrep -x namehold-syncd` still prints a PID.
+3. `mine 9`; note the time. Wait up to 3 minutes (the daemon syncs every 60 seconds and sends its reminders right after each sync).
+4. Relaunch; before any Sync read My listings. Keep the app open for 15 minutes (the app checks on launch and every ~10 minutes) and watch for another banner about the same listing.
+5. Part 2. Settings › Connections: untick `Sync in background (keep wallet up to date when app is closed)` (it applies at once and stops the daemon); `pgrep -x namehold-syncd` prints nothing.
+6. Take the listing through Finalize & sign and its `mine 1`, then `Cancel listing` and its `mine 1`, Sync, as S2 does. Then `mine 9`, note the time, do not press Sync; keep the app running (window open or closed to the tray) for up to 15 minutes.
+7. Tick `Sync in background (keep wallet up to date when app is closed)` again if it was on; check that `namehold-syncd` runs; bring the name home (S2 step 8, or the procedure).
+
+Expected:
+
+- Step 2: the daemon outlives the app.
+- Step 3: within about 3 minutes, with no app process running, one banner from Namehold: title `Ready to finalize`, body "<name>: the transfer lockup is over — Finalize & sign to lock it in and set its price". Only the daemon can have sent it.
+- Step 4: My listings already reads `Ready to Finalize & sign` at launch (the daemon's sync wrote it). No second banner for this listing while the app runs: the app leaves the finalize reminders to the daemon while its heartbeat is fresh, and the reminder was claimed once. The listing reminder repeats once per UTC day, so a banner after UTC midnight is expected, not a duplicate.
+- Step 6: with the daemon stopped, the app sends instead: within about 15 minutes (its own periodic sync must first count the lockup over; the stopped daemon's heartbeat counts as fresh for 3 minutes; the app checks every ~10 minutes) one banner `Ready to finalize`, body "<name>: the cancel's transfer lockup is over — finalize it to bring the name home"; exactly one. The app's periodic sync is not checked here ([J1](#j1--states-move-without-pressing-sync) is): if no banner arrives within 15 minutes, record ◐ with what was seen (whether My listings moved to `Cancelled · finalize to bring it home` with `Finalize home` enabled on its own, the time and height), then press Sync and wait one more app interval (~10 minutes) before giving up.
+- With `Enable deadline notifications` on and macOS refusing them, Settings › Notifications reads "OS notifications are blocked for this app. Enable them in your system notification settings — …": then step 3 and step 6 are BLOCKED ✗, not ❌.
+- Passes if the daemon posts the listing reminder with the app quit, the app does not post it a second time, and the app posts the cancel reminder once the daemon is stopped. A banner nobody saw, with Notification Center unreadable, is ◐ with the times noted.
+
+- **Blocks mined:** 0 inside S2 (22 on a spare name)
+- **Evidence:** the daemon's start time and PID before and after the quit; who saw each banner, at what time and height; screenshot `J4-4-ready-at-launch`.
+- **Cleanup / end state:** both settings at their original values, the daemon running if background sync was on; the name home (or as the host case leaves it).

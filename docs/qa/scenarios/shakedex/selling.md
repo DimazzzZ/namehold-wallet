@@ -34,7 +34,7 @@ Expected:
 
 - The info box reads "Its owner coin is in the Shakedex lock; manage the listing in Market › My listings."; "This name is yours, but its owner coin hasn't synced locally yet." is **not** shown, before or after the Sync.
 - Update, Transfer, Renew, Revoke and `Sell…` are shown disabled, the hover reason `this name is locked for sale through Shakedex`; Sign message may be absent.
-- Locking and Ready: Transfer, Renew and Revoke disabled with the same reason, `Cancel transfer` enabled (it is the R19 abort, [X2](persistence-and-recovery.md)); Update may be hidden by the pending transfer. Cancelling shows the known parked sentence ([ui](../../ui.md#known-issues-not-to-report-again)). Back home: the ordinary owner actions, enabled.
+- Locking and Ready: Transfer, Renew and Revoke disabled with the same reason, `Cancel transfer` enabled (it is the R19 abort, [X2](persistence-and-recovery.md)); Update may be hidden by the pending transfer. Cancelling shows the known-issue sentence ([ui](../../ui.md#known-issues-not-to-report-again)). Back home: the ordinary owner actions, enabled.
 - Passes if the Listed name shows the lock hint and every owner action refused with the Shakedex reason on both paths; hover text that cannot be read is ◐.
 
 - **Blocks mined:** 0

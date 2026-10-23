@@ -29,13 +29,13 @@ pnpm tauri build               # set CARGO_HOME / CARGO_TARGET_DIR the way the m
 - The build may end with an error at the updater signing step (no private key in the environment). The `.app` is still produced: check that `$CARGO_TARGET_DIR/release/bundle/macos/Namehold.app` has a fresh mtime.
 - **Install** (mode A): keep every earlier backup as it is; move the current app aside with `mv /Applications/Namehold.app /Applications/Namehold.app.qa-bak-<yyyymmdd>`, then `ditto $CARGO_TARGET_DIR/release/bundle/macos/Namehold.app /Applications/Namehold.app`.
 - **Record**: the commit, `shasum -a 256` of `/Applications/Namehold.app/Contents/MacOS/namehold-wallet` and of `$CARGO_TARGET_DIR/release/namehold-wallet` (they must match), the binary's mtime (`stat -f '%Sm' …`), and About › Version. A mismatch means the installed app is not the build: stop and rebuild.
-- The background daemon `namehold-syncd` may still be an old process from an earlier install; a case that relies on it ([J3](scenarios/shakedex/persistence-and-recovery.md#j3--the-background-daemon-follows-a-listing-while-the-app-is-closed)) first checks its start time.
+- The background daemon `namehold-syncd` may still be an old process from an earlier install; a case that relies on it ([J3](scenarios/shakedex/persistence-and-recovery.md#j3--the-background-daemon-follows-a-listing-while-the-app-is-closed), [J4](scenarios/shakedex/persistence-and-recovery.md#j4--the-background-daemon-sends-the-finalize-reminders-while-the-app-is-closed)) first checks its start time.
 
 ## Modes
 
 - **Mode A — the installed app** with existing regtest profiles. The maintainer must agree to it for the run (it writes to the real `~/.namehold` through the app, never by hand). Ask the maintainer for the seller profile's passphrase if you do not have it; never write it down.
 - **Mode B — isolated dev build**: `HOME=$QA_DIR/qa-home pnpm tauri dev > $QA_DIR/tauri-dev.log 2>&1 &` (keep `CARGO_HOME` pointing at the real cargo home). It is ready when the log shows ``Running `…/debug/namehold-wallet` ``; `$QA_DIR/qa-home/.namehold/portfolio.db` must exist, which proves the isolated database is in use. You then create the profiles yourself ([Profiles](#profiles)). It rebuilds on any repo file change, so edit nothing while it runs. Stop it at the end with `pkill -f debug/namehold-wallet` if you started it.
-- **Mode C — the browser mock** (`pnpm dev`, no Tauri, `src/lib/webqa-mock.ts`). Its profile is a mainnet one and nothing reaches a node, so it checks UI structure only; the Shakedex selling walk it supports is described in [QA_WORKFLOWS.md](../QA_WORKFLOWS.md) §J, last item. No case below needs it except [M3](scenarios/shakedex/mainnet-absence.md#m3--mainnet-only-selling-ui-in-the-browser-mock) and [M5](scenarios/shakedex/mainnet-absence.md#m5--the-mainnet-market-page-in-the-browser-mock).
+- **Mode C — the browser mock** (`pnpm dev`, no Tauri, `src/lib/webqa-mock.ts`). Its profile is a mainnet one and nothing reaches a node, so it checks UI structure only; the Shakedex selling walk it supports is described in [QA_WORKFLOWS.md](../QA_WORKFLOWS.md) §J, last item. No case below needs it except [M3](scenarios/shakedex/mainnet-absence.md#m3--mainnet-only-selling-ui-in-the-browser-mock), [M5](scenarios/shakedex/mainnet-absence.md#m5--the-mainnet-market-page-in-the-browser-mock) and [M6](scenarios/shakedex/mainnet-absence.md#m6--when-buyers-stop-seeing-a-listing-in-the-browser-mock).
 
 Record the mode and the GUI driver (computer use, or an accessibility driver such as cua-driver) in the report.
 
@@ -98,7 +98,7 @@ Roles used by the scenarios; the real names carry the run's `TAG`, and the repor
 | X2 | `qxb$TAG` | hsd wallet, listed by the CLI, reverse auction 10 → 5 HNS | buying |
 | X3 | `qxc$TAG` | hsd wallet, listed by the CLI, Buy Now 5 HNS | buying, the race |
 | X4 | `qxd$TAG` | hsd wallet, listed by the CLI, Buy Now 5 HNS (only for B13) | buying |
-| X5 | `qxe$TAG` | spare CLI listing, for a repeat of a race or a node-down case | optional |
+| X5 | `qxe$TAG` | spare CLI listing, for a repeat of a race or a node-down case, or B20 outside B7; registered only when a case will use it (below) | optional |
 
 Register them all in **one** auction cycle with the hsd wallet (about 36 blocks for all, far cheaper than the script's `REGISTER=1`, which mines 110 funding blocks per name), then move the app's names to the seller:
 
@@ -118,7 +118,7 @@ for n in $APP_NAMES; do W sendtransfer $n $APP >/dev/null; done; mine 11
 for n in $APP_NAMES; do W sendfinalize $n >/dev/null; done; mine 1
 ```
 
-Then **Sync** in the seller profile: all six app names appear in Owned Names, and `info <n>` shows `transfer 0` with the owner at the app's address. If they do not, that is a finding (owned-name discovery); fall back to the in-app auction ([REGTEST_TESTING.md](../REGTEST_TESTING.md) §6, about 25 blocks for all names at once). Then list X1 (`fixed`, PRICE 5), X2 (`auction` 10 → 5), X3 (`fixed`, PRICE 5) and, only for B13, X4 with [cli-list-a-name](procedures/cli-list-a-name.md), 13 blocks each. Setup total: about 36 + 39 (+13) blocks, plus the funding blocks.
+Then **Sync** in the seller profile: all six app names appear in Owned Names, and `info <n>` shows `transfer 0` with the owner at the app's address. If they do not, that is a finding (owned-name discovery); fall back to the in-app auction ([REGTEST_TESTING.md](../REGTEST_TESTING.md) §6, about 25 blocks for all names at once). When a case will use X5, add `qxe$TAG` to `CLI_NAMES` and to the two-bid loop (`for n in qxb$TAG qxc$TAG qxd$TAG qxe$TAG`) before running the block above. Then list X1 (`fixed`, PRICE 5), X2 (`auction` 10 → 5), X3 (`fixed`, PRICE 5) and, only when used, X5 (`fixed`, PRICE 5) and, only for B13, X4 with [cli-list-a-name](procedures/cli-list-a-name.md), 13 blocks each. Setup total: about 36 + 39 (+13) blocks, plus the funding blocks.
 
 A chain reset leaves the app profiles holding rows and drafts about names that no longer exist on chain; rows that a Sync does not clear are leftovers of the reset, noted once in the report, not findings.
 
