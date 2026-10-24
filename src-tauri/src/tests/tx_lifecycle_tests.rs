@@ -1478,6 +1478,54 @@ async fn sign_rejects_when_user_cancels_confirmation() {
     m.assert_async().await;
 }
 
+/// A draft the window cannot show (gone, or a summary it cannot read) is
+/// refused before any window opens: nothing is shown as zeros, and nothing
+/// is signed.
+#[tokio::test]
+async fn sign_confirmed_refuses_before_the_window_a_draft_it_cannot_show() {
+    use crate::commands::secure_prompt::{
+        clear_test_answers, push_test_answer, take_test_requests, SecurePromptResult,
+    };
+    let server = mockito::Server::new_async().await;
+    let conn = seeded_conn(&server.url(), 1_000_000);
+    let app = app_with(conn);
+    unlock(&app, PROFILE);
+    let draft_id = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .expect("build")
+        .id;
+    app.state::<AppState>()
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE wallet_tx_drafts SET summary_json = '{' WHERE id = ?1",
+            rusqlite::params![draft_id],
+        )
+        .unwrap();
+    // An answer is queued so a window that did open would be recorded.
+    push_test_answer(SecurePromptResult {
+        value: None,
+        confirmed: true,
+    });
+
+    let err = sign_tx_draft_confirmed(&app.state(), app.handle(), "no-such-draft")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, crate::error::AppError::NotFound(m) if m == "draft no-such-draft"),
+        "{err:?}"
+    );
+    let err = sign_tx_draft_confirmed(&app.state(), app.handle(), &draft_id)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("corrupted draft"), "{err}");
+
+    assert!(take_test_requests().is_empty(), "no window was opened");
+    clear_test_answers();
+    assert!(draft_row(&app, &draft_id).signed_tx_hex.is_none());
+}
+
 #[tokio::test]
 async fn write_capability_blocks_when_not_address_indexed() {
     let mut server = mockito::Server::new_async().await;

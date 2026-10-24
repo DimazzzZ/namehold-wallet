@@ -2057,6 +2057,117 @@ mod coverage_tests {
         assert_eq!(s.discover_txs_scanned, 1, "shared txid should be deduped");
         assert_eq!(s.discover_addresses_done, 2);
     }
+
+    // -----------------------------------------------------------------------
+    // No explorer for the profile's network; node step failures
+    // -----------------------------------------------------------------------
+
+    /// A regtest profile has no explorer unless one is configured: the window,
+    /// repair and discover steps ask nothing, and repair and discover say the
+    /// explorer is unavailable in the run's errors.
+    #[tokio::test]
+    async fn explorer_steps_on_a_network_without_an_explorer_read_nothing_and_say_so() {
+        let path = seeded_db();
+        let _guard = TempDbGuard(path.clone());
+        seed_address(&path, PROFILE_A, MYADDR);
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute(
+                "UPDATE wallet_profiles SET network = 'regtest' WHERE id = ?1",
+                [PROFILE_A],
+            )
+            .unwrap();
+            conn.execute("DELETE FROM settings WHERE key = 'explorer_api_url'", [])
+                .unwrap();
+        }
+        let db = path.to_str().unwrap();
+        let status: Arc<Mutex<SyncStatus>> = Arc::new(Mutex::new(SyncStatus::default()));
+
+        crate::commands::sync::explorer_window_step(&status, db, PROFILE_A).await;
+        assert!(
+            status.lock().await.errors.is_empty(),
+            "the window step only logs"
+        );
+        repair_step_windowed(&status, db, PROFILE_A, 150).await;
+        discover_step(&status, db, PROFILE_A).await;
+
+        let s = status.lock().await;
+        assert_eq!(
+            s.errors,
+            vec![
+                crate::providers::EXPLORER_UNAVAILABLE.to_string(),
+                crate::providers::EXPLORER_UNAVAILABLE.to_string()
+            ]
+        );
+        assert_eq!(s.discover_addresses_total, 0, "discover read no address");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let derived: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM derived_addresses WHERE wallet_profile_id = ?1",
+                [PROFILE_A],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(derived, 1, "the window did not grow");
+    }
+
+    /// A database that cannot be opened fails the node step before the node
+    /// is asked anything.
+    #[tokio::test]
+    async fn node_step_fails_before_asking_the_node_when_the_database_cannot_open() {
+        let node = synced_node()
+            .with_node_status(crate::tests::mock_node_rpc::node_status_with_indexes(
+                true, true,
+            ))
+            .with_coins_by_address(vec![]);
+        let missing_dir = std::env::temp_dir()
+            .join(format!("namehold_no_such_dir_{}", std::process::id()))
+            .join("wallet.db");
+        let step = crate::commands::sync::sync_node_step_with_client(
+            &node,
+            missing_dir.to_str().unwrap(),
+            PROFILE_A,
+            &crate::db::sync_lock::LockLost::default(),
+        )
+        .await;
+        assert_eq!(step, crate::commands::sync::NodeStep::Failed);
+        assert!(node.calls().is_empty(), "{:?}", node.calls());
+    }
+
+    /// A batch that cannot be written lands not at all: the coin the node no
+    /// longer lists stays unspent and the cursor stays, for the next sync to
+    /// retry.
+    #[tokio::test]
+    async fn node_step_whose_batch_cannot_be_written_applies_none_of_it() {
+        let path = seeded_db();
+        let _guard = TempDbGuard(path.clone());
+        seed_address(&path, PROFILE_A, MYADDR);
+        seed_tracked_coin(&path);
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER no_cursor_move BEFORE UPDATE ON sync_cursors
+                 BEGIN SELECT RAISE(ABORT, 'cursor write refused'); END;",
+            )
+            .unwrap();
+        let node = synced_node()
+            .with_node_status(crate::tests::mock_node_rpc::node_status_with_indexes(
+                true, true,
+            ))
+            .with_coins_by_address(vec![])
+            .with_txs_by_address(vec![]);
+
+        let step = crate::commands::sync::sync_node_step_with_client(
+            &node,
+            path.to_str().unwrap(),
+            PROFILE_A,
+            &crate::db::sync_lock::LockLost::default(),
+        )
+        .await;
+
+        assert_eq!(step, crate::commands::sync::NodeStep::Failed);
+        assert_eq!(tracked_coin_and_cursor(&path), (None, 50));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2540,6 +2651,70 @@ mod lock_lost_tests {
             )
             .unwrap();
         assert_eq!(cursors, 0, "the scan's batch was not applied");
+    }
+
+    /// The lock is lost while the run asks whether the node is caught up.
+    /// Behind, the run stops before the explorer's address window; caught up,
+    /// before the repair step. Either way no later step starts.
+    #[tokio::test]
+    async fn a_lock_lost_during_the_readiness_check_stops_before_the_next_step() {
+        for caught_up in [false, true] {
+            let mut server = mockito::Server::new_async().await;
+            let _indexes_server =
+                crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
+            let path = seeded_db();
+            let _guard = TempDbGuard(path.clone());
+            {
+                let conn = rusqlite::Connection::open(&path).unwrap();
+                conn.execute(
+                    "INSERT INTO derived_addresses
+                        (wallet_profile_id, account_index, branch, child_index,
+                         address, script_pubkey_hex, public_key_hex)
+                     VALUES (?1, 0, 0, 0, ?2, '0014aa', '02aa')",
+                    rusqlite::params![PROFILE_A, MYADDR],
+                )
+                .unwrap();
+                crate::db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+            }
+            let status = Arc::new(Mutex::new(SyncStatus::default()));
+            let lost = status.lock().await.lock_lost.clone();
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let seen = calls.clone();
+            let synced = r#"{"result":{"chain":"main","blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#;
+            let behind = r#"{"result":{"chain":"main","blocks":10,"headers":1000,"verificationprogress":0.01},"error":null,"id":1}"#;
+            let _info = server
+                .mock("POST", "/")
+                .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+                .with_body_from_request(move |_| {
+                    // The node step asks first; the readiness check second.
+                    if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                        return synced.as_bytes().to_vec();
+                    }
+                    lost.raise();
+                    if caught_up { synced } else { behind }.as_bytes().to_vec()
+                })
+                .create_async()
+                .await;
+            let _coins = server
+                .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+                .with_body("[]")
+                .create_async()
+                .await;
+            let _history = server
+                .mock("GET", mockito::Matcher::Regex("^/tx/address/".into()))
+                .with_body("[]")
+                .create_async()
+                .await;
+
+            run_sync_steps(&status, path.to_str().unwrap(), PROFILE_A, SyncCaller::App).await;
+
+            assert!(calls.load(Ordering::SeqCst) >= 2, "caught up {caught_up}");
+            assert_eq!(
+                status.lock().await.step,
+                "node",
+                "caught up {caught_up}: no later step started"
+            );
+        }
     }
 
     /// The repair and discover loops stop on a lost lock as on a Stop, before

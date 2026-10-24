@@ -9,7 +9,8 @@ use std::sync::Mutex;
 use rusqlite::{params, Connection};
 
 use crate::commands::speed_up::{
-    build_with, preview_with, recheck_before_broadcast, speed_up_check_with, PURCHASE_MOVED_ON,
+    build_with, preview_with, recheck_before_broadcast, speed_up_check_with, wallet_now,
+    PURCHASE_MOVED_ON,
 };
 use crate::commands::tx::{
     confirm_details_for_draft, refuse_unsupported_ledger_plan, spent_elsewhere_note,
@@ -1032,4 +1033,67 @@ async fn signing_refuses_a_child_whose_plan_pays_elsewhere_than_our_change() {
         .unwrap_err();
     assert!(err.to_string().contains("not your change address"), "{err}");
     assert_eq!(app_status(&app, &id).status, queries::DraftStatus::Draft);
+}
+
+// --- coverage of the remaining arms ---------------------------------------------
+
+#[tokio::test]
+async fn a_node_that_fails_to_answer_for_the_parent_is_no_verdict() {
+    // Not hsd's "not in mempool": the node's own failure is shown as it reads,
+    // never turned into a verdict on the parent.
+    let rpc = MockNodeRpc::new()
+        .with_blockchain_info(regtest_tip())
+        .with_mempool_entry_fn(|_| Err(AppError::Rpc("connection refused".into())));
+    let (_, r) = check_reason(seeded(), &rpc).await;
+    assert_eq!(r.as_deref(), Some("Node RPC error: connection refused"));
+}
+
+#[tokio::test]
+async fn a_parent_with_an_unreadable_summary_is_a_corrupted_draft() {
+    let conn = seeded();
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET summary_json = '{' WHERE id = ?1",
+        params![PARENT],
+    )
+    .unwrap();
+    let (_, r) = check_reason(conn, &node()).await;
+    assert!(r
+        .unwrap()
+        .starts_with("corrupted draft: unreadable summary"));
+}
+
+#[tokio::test]
+async fn a_typed_rate_not_above_the_package_says_so_rather_than_no_estimate() {
+    // NO_ESTIMATE is for a target the wallet picked; a rate the user typed
+    // that changes nothing is refused as such.
+    let m = Mutex::new(seeded());
+    let err = preview_with(&m, &node(), PARENT, Some(1), NOW)
+        .await
+        .unwrap_err();
+    assert_eq!(refusal(err), su::RATE_NOT_HIGHER);
+}
+
+#[tokio::test]
+async fn a_change_too_small_for_the_fee_is_refused_whatever_the_source() {
+    let conn = seeded();
+    conn.execute(
+        "UPDATE tracked_utxos SET value_doos = 2000 WHERE txid = ?1",
+        params![PARENT_TXID],
+    )
+    .unwrap();
+    let m = Mutex::new(conn);
+    let err = preview_with(&m, &node(), PARENT, Some(10), NOW)
+        .await
+        .unwrap_err();
+    assert_eq!(refusal(err), su::CHANGE_TOO_SMALL);
+}
+
+#[test]
+fn the_wallet_clock_is_unix_seconds_now() {
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let now = wallet_now();
+    assert!((before..=before + 5).contains(&now), "{now} vs {before}");
 }

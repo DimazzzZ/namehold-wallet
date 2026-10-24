@@ -827,6 +827,25 @@ mod tests {
         assert!(matches!(err, AppError::InvalidInput(_)));
     }
 
+    /// Coins that hold the amount but not the amount plus the fee are refused
+    /// once every coin has been tried, not sent with the fee cut short.
+    #[test]
+    fn select_coins_refuses_funds_that_cover_the_amount_but_not_the_fee() {
+        let amount = 100_000u64;
+        let short = estimate_fee(2, 1, 1) - 1;
+        let coins = vec![coin(1, amount, 0, 0), coin(2, short, 0, 1)];
+        match select_coins(&coins, amount, 1) {
+            Err(AppError::InvalidInput(m)) => {
+                assert_eq!(m, "insufficient funds to cover amount and fee")
+            }
+            other => panic!("expected insufficient funds, got {other:?}"),
+        }
+        // One doo more and the same coins pay amount and fee.
+        let coins = vec![coin(1, amount, 0, 0), coin(2, short + 1, 0, 1)];
+        let sel = select_coins(&coins, amount, 1).unwrap();
+        assert_eq!(sel.fee, estimate_fee(2, 1, 1));
+    }
+
     /// When the leftover after `amount + fee_no_change` is too small to fund a
     /// change output (i.e. `input_total` sits in the window
     /// `[amount + fee_no_change, amount + fee_with_change)`), `select_coins`

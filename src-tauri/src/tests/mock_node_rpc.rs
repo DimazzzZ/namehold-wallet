@@ -320,6 +320,18 @@ impl MockNodeRpc {
         self
     }
 
+    /// `getcoinsbyaddress` fails in transport (`AppError::Http`), as when no
+    /// node listens. The error is a real `reqwest::Error` from a request that
+    /// could not be built, so nothing touches the network.
+    pub fn with_coins_by_address_http_err(mut self) -> Self {
+        self.coins_by_address = Box::new(|| {
+            Err(AppError::Http(
+                reqwest::Client::new().get("not a url").build().unwrap_err(),
+            ))
+        });
+        self
+    }
+
     pub fn with_get_coin(
         mut self,
         f: impl Fn(&str, u32) -> Result<Option<NodeCoin>, AppError> + Send + Sync + 'static,

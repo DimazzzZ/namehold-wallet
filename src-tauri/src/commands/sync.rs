@@ -2785,6 +2785,118 @@ mod address_window_tests {
         let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     }
 
+    /// A coin at receive 2 grows the window to receive 5. The node fails to
+    /// list the coins of the new receive 4: that is logged, the address stays
+    /// stored for the next sync, and the step is still Synced. Nothing past
+    /// the window holds coins, so no second batch is applied.
+    #[tokio::test]
+    async fn a_new_address_whose_coins_cannot_be_read_stays_for_the_next_sync() {
+        let mut server = mockito::Server::new_async().await;
+        let _indexes_server =
+            crate::tests::mock_node_rpc::mock_node_indexes(&mut server, true, true).await;
+        let _info = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+            .with_body(r#"{"result":{"chain":"main","blocks":100},"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let (r2, r4) = (addr(BRANCH_RECEIVE, 2), addr(BRANCH_RECEIVE, 4));
+        let _r2 = server
+            .mock("GET", format!("/coin/address/{r2}").as_str())
+            .with_body(coin_body(1, &r2))
+            .create_async()
+            .await;
+        let r4_mock = server
+            .mock("GET", format!("/coin/address/{r4}").as_str())
+            .with_status(500)
+            .with_body("boom")
+            .expect(1)
+            .create_async()
+            .await;
+        let _rest = server
+            .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+            .with_body("[]")
+            .create_async()
+            .await;
+        let _history = server
+            .mock("GET", mockito::Matcher::Regex("^/tx/address/".into()))
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        let db_path = std::env::temp_dir().join(format!(
+            "namehold_address_window_coins_err_{}_{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        let xpub_str = xpub().to_base58check(Network::Main);
+        queries::insert_wallet_profile(
+            &conn,
+            "p1",
+            "Watch",
+            "watch_only_xpub",
+            "mainnet",
+            &xpub_str,
+            0,
+            true,
+        )
+        .unwrap();
+        crate::commands::secure_wallet::provision_addresses(
+            &conn,
+            "p1",
+            Network::Main,
+            &xpub_str,
+            GAP,
+        )
+        .unwrap();
+        queries::set_setting(&conn, "address_gap_limit", &GAP.to_string()).unwrap();
+        queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+        queries::set_setting(&conn, "node_rpc_api_key", "x").unwrap();
+        drop(conn);
+
+        assert_eq!(
+            sync_node_step(
+                db_path.to_str().unwrap(),
+                "p1",
+                &crate::db::sync_lock::LockLost::default()
+            )
+            .await,
+            NodeStep::Synced
+        );
+
+        r4_mock.assert_async().await;
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let tracked: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT txid FROM tracked_utxos WHERE wallet_profile_id = 'p1'")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert_eq!(tracked, vec![txid(1)]);
+        assert_eq!(
+            derivation::max_derived_index(&conn, "p1", 0, BRANCH_RECEIVE).unwrap(),
+            Some(2 + GAP),
+            "receive 4 is stored for the next sync"
+        );
+        assert_eq!(
+            crate::noncustodial::sync::get_sync_height(&conn, "p1").unwrap(),
+            100
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    }
+
     /// A file-backed DB with one mainnet watch-only profile `p1` restored with
     /// the window `[0, GAP)` per branch, in SPV mode against an unreachable
     /// node and the explorer at `explorer_url`.

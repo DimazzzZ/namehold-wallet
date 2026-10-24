@@ -585,6 +585,41 @@ mod tests {
         crate::noncustodial::sync::COV_OPEN
     }
 
+    /// Funds that cover the fee of a change-less tx but not the fee of one
+    /// with a change output: the plan drops the change output and the fee is
+    /// the change-less fee exactly.
+    #[test]
+    fn plan_without_room_for_change_has_no_change_output() {
+        let cov = covenants::open(&[4u8; 32], b"example");
+        let primary_vbytes = Output {
+            value: 0,
+            address: output_address_from_string(Network::Main, ADDR).unwrap(),
+            covenant: cov.clone(),
+        }
+        .encoded_len() as u64;
+        let fee_nc = estimate_fee_with_primary(1, primary_vbytes, 0, 1);
+        let fee_wc = estimate_fee_with_primary(1, primary_vbytes, 1, 1);
+        assert!(fee_nc < fee_wc);
+        let res = build_plan(
+            Network::Main,
+            0,
+            None,
+            PrimaryOutput {
+                value: 1_000_000,
+                address: ADDR.into(),
+                covenant: cov,
+            },
+            &[coin(1, 1_000_000 + fee_nc, 0)],
+            ADDR,
+            1,
+        )
+        .unwrap();
+        assert_eq!(res.fee, fee_nc);
+        assert_eq!(res.change, 0);
+        assert_eq!(res.plan.outputs.len(), 1);
+        assert_eq!(res.plan.change_output_index, None);
+    }
+
     #[test]
     fn owner_action_keeps_name_value_and_funds_fee_separately() {
         // TRANSFER-like: name input value == output value; fee must come from

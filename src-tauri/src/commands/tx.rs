@@ -2798,6 +2798,54 @@ mod confirm_tests {
             .collect();
         assert_eq!(warnings, vec!["dust output", "high fee"]);
     }
+
+    #[test]
+    fn confirm_details_refuses_an_unreadable_speed_up_summary() {
+        let err = confirm_details_for_draft(&draft(SPEED_UP_ACTION, r#"{"action":"speed_up"}"#))
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("corrupted draft: unreadable summary"),
+            "{err}"
+        );
+    }
+
+    /// A foreign listing with a market fee but no price: the fee is shown
+    /// without a percentage (never a made-up one), and with no fee address
+    /// there is no "Market fee to" row.
+    #[test]
+    fn purchase_fee_without_a_price_or_address_shows_the_bare_fee() {
+        let s = PurchaseSummary {
+            action: PURCHASE_ACTION.to_string(),
+            name: "dexreviews".into(),
+            price_doos: 0,
+            market_fee_doos: 50_000,
+            market_fee_address: None,
+            fee_doos: 1_000,
+            total_doos: 51_000,
+            send_total_doos: 50_000,
+            change_doos: 0,
+            input_total_doos: 51_000,
+            num_inputs: 1,
+            recipient_address: "hs1qseller".into(),
+            payment_address: "hs1qseller".into(),
+            destination_address: "hs1qours".into(),
+            finalize_wait: "after a finalize".into(),
+            txid: "ab".into(),
+            warnings: Vec::new(),
+        };
+        let details =
+            confirm_details_for_draft(&draft(PURCHASE_ACTION, &serde_json::to_string(&s).unwrap()))
+                .unwrap();
+        assert_eq!(value_for(&details, "Market fee"), Some("0.050000 HNS"));
+        assert_eq!(value_for(&details, "Market fee to"), None);
+    }
+
+    #[test]
+    fn a_deadline_beyond_the_calendar_is_shown_as_unix_time() {
+        assert_eq!(deadline_text(i64::MAX), format!("{} (unix time)", i64::MAX));
+        assert_eq!(deadline_text(0), "1970-01-01 00:00 UTC");
+    }
 }
 
 #[cfg(test)]
@@ -3103,5 +3151,183 @@ mod pure_helper_tests {
     #[test]
     fn output_names_from_pairs_maps_an_empty_slice_to_an_empty_vec() {
         assert!(output_names_from_pairs(&[]).is_empty());
+    }
+
+    // ---------- explain_shortfall ------------------------------------------
+
+    const SHORT: &str = "insufficient funds to cover amount and fee";
+
+    /// A regtest profile `p1` holding one coin of `value` doos at its first
+    /// receive address; `coinbase` makes it a fresh, immature coinbase.
+    fn shortfall_db(value: u64, coinbase: bool) -> rusqlite::Connection {
+        let (conn, _) = crate::tests::command_helpers::mnemonic_profile_db(Network::Regtest);
+        let addr: String = conn
+            .query_row(
+                "SELECT address FROM derived_addresses
+                 WHERE wallet_profile_id = 'p1' AND branch = 0 AND child_index = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        crate::tests::command_helpers::insert_liquid_coin(&conn, 0xab, &addr, "00", value);
+        if coinbase {
+            conn.execute("UPDATE tracked_utxos SET coinbase = 1, height = 100", [])
+                .unwrap();
+        }
+        conn
+    }
+
+    fn short() -> AppError {
+        AppError::InvalidInput(SHORT.to_string())
+    }
+
+    #[test]
+    fn explain_shortfall_names_immature_coinbase_that_would_cover_the_send() {
+        let conn = shortfall_db(5_000_000, true);
+        let err = explain_shortfall(&conn, "p1", Network::Regtest, 1_000_000, &[], short());
+        match err {
+            AppError::InvalidInput(m) => {
+                assert!(
+                    m.starts_with("insufficient mature funds: 5000000 doos"),
+                    "{m}"
+                )
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn explain_shortfall_keeps_the_plain_message_without_immature_value() {
+        let conn = shortfall_db(5_000_000, false);
+        let err = explain_shortfall(&conn, "p1", Network::Regtest, 9_000_000, &[], short());
+        assert!(matches!(err, AppError::InvalidInput(m) if m == SHORT));
+    }
+
+    #[test]
+    fn explain_shortfall_passes_other_errors_through() {
+        let conn = shortfall_db(5_000_000, true);
+        let err = explain_shortfall(
+            &conn,
+            "p1",
+            Network::Regtest,
+            1_000_000,
+            &[],
+            AppError::Rpc("boom".into()),
+        );
+        assert!(matches!(err, AppError::Rpc(m) if m == "boom"));
+        let err = explain_shortfall(
+            &conn,
+            "p1",
+            Network::Regtest,
+            1_000_000,
+            &[],
+            AppError::InvalidInput("send amount must be greater than zero".into()),
+        );
+        assert!(matches!(err, AppError::InvalidInput(m) if m.starts_with("send amount")));
+    }
+
+    #[test]
+    fn explain_shortfall_keeps_the_message_when_balances_cannot_be_read() {
+        // No schema: the balance lookup fails and only improves nothing.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let err = explain_shortfall(&conn, "p1", Network::Regtest, 1_000_000, &[], short());
+        assert!(matches!(err, AppError::InvalidInput(m) if m == SHORT));
+    }
+
+    // ---------- TxIndexProbe -----------------------------------------------
+
+    use crate::tests::mock_node_rpc::{MockNodeRpc, RpcCall};
+
+    fn block_hash_calls(rpc: &MockNodeRpc) -> usize {
+        rpc.calls()
+            .iter()
+            .filter(|c| matches!(c, RpcCall::BlockHash(_)))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn tx_index_probe_asks_the_node_once_per_refresh() {
+        let rpc = MockNodeRpc::new()
+            .with_block_hash("aa".repeat(32))
+            .with_block(serde_json::json!({ "tx": [{ "txid": "cb".repeat(32) }] }))
+            .with_raw_transaction(serde_json::json!({ "txid": "cb".repeat(32) }));
+        let mut probe = TxIndexProbe::default();
+        assert_eq!(probe.get(&rpc, 120).await, Some(true));
+        assert_eq!(probe.get(&rpc, 121).await, Some(true));
+        assert_eq!(block_hash_calls(&rpc), 1);
+    }
+
+    #[tokio::test]
+    async fn tx_index_probe_remembers_an_unknown_answer_too() {
+        let rpc = MockNodeRpc::new().with_block_hash_err("node down");
+        let mut probe = TxIndexProbe::default();
+        assert_eq!(probe.get(&rpc, 120).await, None);
+        assert_eq!(probe.get(&rpc, 120).await, None);
+        assert_eq!(
+            block_hash_calls(&rpc),
+            1,
+            "an unknown answer is not re-asked"
+        );
+    }
+
+    // ---------- spent_elsewhere_note ---------------------------------------
+
+    #[test]
+    fn a_speed_up_child_with_an_unreadable_summary_gets_the_plain_note() {
+        let d = db::queries::TxDraftRow {
+            id: "c1".to_string(),
+            wallet_profile_id: "p1".to_string(),
+            action: SPEED_UP_ACTION.to_string(),
+            unsigned_tx_hex: String::new(),
+            signed_tx_hex: None,
+            signing_inputs_json: "{}".to_string(),
+            summary_json: "not json".to_string(),
+            status: DraftStatus::Broadcasted,
+            error_message: None,
+            txid: None,
+            confirmation_height: None,
+            created_at: "now".to_string(),
+        };
+        assert_eq!(spent_elsewhere_note(&d), SPENT_ELSEWHERE);
+    }
+
+    // ---------- recheck_purchase -------------------------------------------
+
+    #[tokio::test]
+    async fn a_purchase_whose_profile_is_gone_is_not_rechecked_or_sent() {
+        let p = db::queries::ShakedexPurchase {
+            id: "pu1".into(),
+            wallet_profile_id: "gone".into(),
+            name: "dexreviews".into(),
+            listing_json: "{}".into(),
+            lock_txid: "aa".repeat(32),
+            lock_vout: 0,
+            price_doos: 1_000_000,
+            purchase_draft_id: "d1".into(),
+            purchase_txid: "bb".repeat(32),
+            destination_address: "hs1qours".into(),
+            state: db::queries::PurchaseState::PendingSend,
+            purchase_height: None,
+            blocks_remaining: None,
+            missing_since_height: None,
+            rebroadcast_count: 0,
+            lost_reason: None,
+            finalize_draft_id: None,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        };
+        // Port 1 on loopback: a node read would fail, and none is made.
+        let client = NodeRpcClient::new(
+            "http://127.0.0.1:1",
+            "",
+            crate::noncustodial::rpc::ChainSource::LocalNode,
+        );
+        let err = recheck_purchase(&client, None, Some(&p), "{}")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, AppError::InvalidInput(m) if m == "the purchase's wallet profile is gone; the purchase was not sent"),
+            "{err:?}"
+        );
     }
 }
