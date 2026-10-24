@@ -91,6 +91,7 @@ pub(crate) fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn run() {
     // macOS: claim the notification sender identity as Namehold BEFORE the
     // notification plugin initializes. `notify_rust::set_application` is

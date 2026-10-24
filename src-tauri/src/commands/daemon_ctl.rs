@@ -163,6 +163,7 @@ fn pid_file_path() -> PathBuf {
 /// `None` when it cannot be opened: the daemon then starts with no log.
 pub(crate) const LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn daemon_log() -> Option<std::fs::File> {
     open_rotated_log(&pid_file_path().with_file_name("syncd.log"))
 }
