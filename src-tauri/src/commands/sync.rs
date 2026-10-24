@@ -2059,7 +2059,9 @@ mod db_hardening_tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!("namehold_sync_hardening_{tag}_{n}.db"))
+        // The pid keeps two test processes (two checkouts) from sharing a file.
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!("namehold_sync_hardening_{tag}_{pid}_{n}.db"))
     }
 
     /// [S4] `open_conn` — the helper every sync-thread step routes its

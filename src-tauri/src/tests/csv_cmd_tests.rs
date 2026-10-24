@@ -30,7 +30,10 @@ fn setup_state() -> AppState {
 }
 
 fn write_temp_csv(content: &str, suffix: &str) -> String {
-    let dir = std::env::temp_dir().join(format!("namehold_csv_cmd_test_{suffix}"));
+    let dir = std::env::temp_dir().join(format!(
+        "namehold_csv_cmd_test_{suffix}_{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("test.csv");
     let mut f = std::fs::File::create(&path).unwrap();
@@ -39,15 +42,19 @@ fn write_temp_csv(content: &str, suffix: &str) -> String {
 }
 
 fn temp_out_path(suffix: &str) -> String {
-    let dir = std::env::temp_dir().join(format!("namehold_csv_cmd_test_{suffix}"));
+    let dir = std::env::temp_dir().join(format!(
+        "namehold_csv_cmd_test_{suffix}_{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     dir.join("out.csv").to_str().unwrap().to_string()
 }
 
 fn cleanup(suffix: &str) {
-    let _ = std::fs::remove_dir_all(
-        std::env::temp_dir().join(format!("namehold_csv_cmd_test_{suffix}")),
-    );
+    let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!(
+        "namehold_csv_cmd_test_{suffix}_{}",
+        std::process::id()
+    )));
 }
 
 // --- import_csv tests ---

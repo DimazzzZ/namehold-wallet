@@ -67,7 +67,7 @@ fn test_read_log_tail_nonexistent_file() {
 
 #[test]
 fn test_read_log_tail_empty_file() {
-    let dir = std::env::temp_dir().join("namehold_test_log_tail");
+    let dir = std::env::temp_dir().join("namehold_test_log_tail_empty_file");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("empty.log");
     std::fs::write(&path, "").unwrap();
