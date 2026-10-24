@@ -904,3 +904,112 @@ fn a_change_of_the_active_wallet_names_the_node_to_start() {
         "autostart off"
     );
 }
+
+// ===========================================================================
+// Spec 2026-10-24 R9: quit treats every own node by one rule. With background
+// sync on, every own node is left for the daemon with its record; with it
+// off, every own node is stopped, an earlier session's included, and its
+// record removed.
+// ===========================================================================
+
+/// Two own children (regtest, testnet) and an earlier session's own node on
+/// mainnet, recorded by its pid file.
+async fn app_with_three_own_nodes(
+    h: &Harness,
+) -> (
+    tauri::App<tauri::test::MockRuntime>,
+    std::process::Child,
+    [mockito::ServerGuard; 2],
+) {
+    let (regtest_node, _f1, _u1) = spawn_then_up_server(1).await;
+    let (testnet_node, _f2, _u2) = spawn_then_up_server(1).await;
+    let conn = conn_for(h, NO_RPC);
+    add_profile_on(&conn, "p-regtest", "regtest", &regtest_node.url());
+    add_profile_on(&conn, "p-testnet", "testnet", &testnet_node.url());
+    let orphan = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    crate::commands::hsd_pid::write_pid_file(h.data_dir(), orphan.id()).unwrap();
+    let app = app_with(conn);
+    activate(&app, "p-regtest");
+    start_hsd(app.state()).await.expect("regtest starts");
+    activate(&app, "p-testnet");
+    start_hsd(app.state()).await.expect("testnet starts");
+    (app, orphan, [regtest_node, testnet_node])
+}
+
+fn pid_files(h: &Harness) -> [bool; 3] {
+    let f = crate::commands::hsd_pid::PID_FILE;
+    [
+        h.data_dir().join(f).exists(),
+        h.data_dir().join("regtest").join(f).exists(),
+        h.data_dir().join("testnet").join(f).exists(),
+    ]
+}
+
+#[tokio::test]
+#[serial(hsd_home)]
+async fn quit_with_background_sync_leaves_every_own_node() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let (app, mut orphan, _servers) = app_with_three_own_nodes(&h).await;
+    let pids: Vec<u32> = app
+        .state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .values()
+        .map(|c| c.id())
+        .collect();
+
+    crate::commands::node::release_own_nodes_on_quit(&app.state::<AppState>(), true);
+
+    assert!(
+        app.state::<AppState>()
+            .hsd_children
+            .lock()
+            .unwrap()
+            .is_empty(),
+        "handles let go"
+    );
+    for pid in &pids {
+        assert!(
+            crate::commands::hsd_pid::process_start_time(*pid).is_some(),
+            "{pid} left running"
+        );
+    }
+    assert!(
+        orphan.try_wait().unwrap().is_none(),
+        "the earlier session's node left running"
+    );
+    assert_eq!(
+        pid_files(&h),
+        [true, true, true],
+        "records kept for the next session"
+    );
+    for pid in pids {
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+    let _ = orphan.kill();
+}
+
+#[tokio::test]
+#[serial(hsd_home)]
+async fn quit_without_background_sync_stops_every_own_node() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let (app, mut orphan, _servers) = app_with_three_own_nodes(&h).await;
+
+    crate::commands::node::release_own_nodes_on_quit(&app.state::<AppState>(), false);
+
+    assert!(app
+        .state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .is_empty());
+    assert!(
+        !orphan.wait().unwrap().success(),
+        "the earlier session's node was stopped"
+    );
+    assert_eq!(pid_files(&h), [false, false, false], "records removed");
+}

@@ -209,3 +209,31 @@ fn shakedex_jobs_send_only_behind_may_broadcast() {
         "the child's resend is called once, after the gate"
     );
 }
+
+/// Spec 2026-10-24 R12: the background daemon never starts or stops hsd.
+/// Starting and stopping local nodes belongs to the app (`commands::node`);
+/// the daemon only reads the nodes that run.
+#[test]
+fn the_daemon_never_starts_or_stops_hsd() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon");
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).unwrap();
+        for forbidden in [
+            "start_hsd",
+            "stop_hsd",
+            "hsd_pid::terminate",
+            "find_hsd_binary",
+            "hsd_children",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{} names {forbidden}",
+                path.display()
+            );
+        }
+    }
+}

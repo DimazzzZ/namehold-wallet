@@ -61,9 +61,9 @@ Every requirement names the code that will enforce it and the test that will pin
 *To enforce:* `commands/node.rs::{start_hsd, stop_hsd}`, `src/queries/node.ts`, `src/components/Settings.tsx`, the tray menu in `lib.rs`.
 *To pin:* `node_cmd_tests::start_and_stop_act_on_the_active_profiles_network`, `settings-network-nodes.test.tsx`.
 
-**R9 — Quit keeps or stops every own node by one rule.** At quit, with background sync on, every own node is left running for the daemon, which syncs every profile; with it off, every own node is stopped. Outside nodes are left alone either way (R7). The pid file stays with a node left running, so the next session finds it own (R6).
-*To enforce:* the exit handler in `lib.rs`.
-*To pin:* `node_lifecycle_tests::{quit_with_background_sync_leaves_every_own_node, quit_without_background_sync_stops_every_own_node}`.
+**R9 — Quit keeps or stops every own node by one rule.** At quit, with background sync on, every own node is left running for the daemon, which syncs every profile, and keeps its pid file, so the next session finds it own (R6). With it off, every own node is stopped: this session's children of every network, and the nodes earlier sessions left, found by their pid files (SIGTERM), each record removed. Outside nodes are left alone either way (R7). Quitting is never blocked by a node.
+*Enforced:* `commands/node.rs::release_own_nodes_on_quit`, called from the `RunEvent::Exit` handler in `lib.rs`.
+*Pinned:* `node_lifecycle_tests::{quit_with_background_sync_leaves_every_own_node, quit_without_background_sync_stops_every_own_node}`.
 
 **R10 — Mode and autostart are settings of the network.** Settings shows a block per network that has at least one profile: mode (`Full node` / `SPV`) and "Start automatically". Every reader of the mode takes the network's: the spawn flags (`--spv`, or `--index-address --index-tx`) in `start_hsd`, the chain source derived from `chain_source` plus mode (`ChainSource::from_settings`: `local_node` + `spv` is `SpvNode`), and the SPV branches of sync, send and chain scan. They read it through one resolver of the profile's network (`resolve_node_mode_for`), and autostart at app start through `autostart_hsd_for`. The keys are `node_mode.<network>` (`main`, `testnet`, `regtest`, `simnet`, as `Network::as_str` spells them) and `autostart_hsd.<network>` in `settings`. A network with no key of its own reads the app-wide `node_mode` / `autostart_hsd`, so nobody's node changes on upgrade and no migration is needed; until the Settings block of step 7 writes the network keys, the connection-mode selector keeps writing the app-wide ones and every network follows them. Only a caller with no profile, and so no network, reads the app-wide mode alone (`NodeRpcClient::from_settings`, the no-profile arms of `get_write_capability`). SPV keeps its chain in `spvchain/` and a full node in `chain/` (`blockchain/chain.js:4012`), so changing a network's mode never overwrites the other chain.
 *Enforced:* `noncustodial/rpc.rs::{resolve_node_mode_for, autostart_hsd_for}`, `noncustodial/node_config.rs::effective_node_config_for_profile`, and the readers in `commands/node.rs::{start_hsd, node_status}`, `commands/node_readiness.rs::is_node_ready_for_local_reads`, `commands/sync.rs`, `commands/tx.rs::get_write_capability`, `commands/chain_scan.rs`, `lib.rs` (autostart at app start).
@@ -76,9 +76,9 @@ Every requirement names the code that will enforce it and the test that will pin
 *To enforce:* `commands/node.rs::node_status` (a `starting` field), `src/components/ui/StatusStrip.tsx`.
 *To pin:* `node_status_tests::a_spawned_node_not_answering_yet_is_starting`, `status-strip.test.tsx`.
 
-**R12 — The daemon never starts or stops hsd.** `namehold-syncd` reads the nodes that run; a profile whose node does not answer is skipped until the next cycle, as today. SECURITY.md's statement of what the daemon does stays true.
-*To enforce:* `daemon/mod.rs` (no spawn path).
-*To pin:* `shakedex_layering_tests`-style source check that `daemon/` names no spawn of hsd.
+**R12 — The daemon never starts or stops hsd.** `namehold-syncd` reads the nodes that run; a profile whose node does not answer is skipped until the next cycle, as before. SECURITY.md's statement of what the daemon does stays true.
+*Enforced:* the daemon module names no node start or stop.
+*Pinned:* `shakedex_layering_tests::the_daemon_never_starts_or_stops_hsd` (a source check over every Rust file of the daemon module for `start_hsd`, `stop_hsd`, `hsd_pid::terminate`, `find_hsd_binary`, `hsd_children`).
 
 ## 4. Explicitly not enforced
 
@@ -105,7 +105,7 @@ Each step is one PR-sized change with its tests, and leaves the app working on i
 | 3 | Pid file and own-node recognition by pid and process start time (macOS, Linux) | R6 | Done |
 | 4 | One own-node handle per network in `AppState`; Start/Stop per network; an outside node is never stopped | R3, R7 | Done |
 | 5 | Start on wallet activation and at app start; switching stops nothing | R4, R5 | Done |
-| 6 | Quit by one rule for every own node; source check that the daemon names no hsd spawn | R9, R12 | Not started |
+| 6 | Quit by one rule for every own node; source check that the daemon names no hsd spawn | R9, R12 | Done |
 | 7 | UI: per-network node block in Settings, Start/Stop and tray labels naming the network, "Starting…" in the status strip | R8, R10 (UI), R11 | Not started |
 | 8 | Live regtest + testnet side-by-side test, `docs/NODE_SETUP.md`, CHANGELOG | R3 (live), docs | Not started |
 

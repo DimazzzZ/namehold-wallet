@@ -802,6 +802,44 @@ pub(crate) fn autostart_on_profile_change(
     node_to_start_on_activation(conn, &active).ok().flatten()
 }
 
+/// What quit does with the app's own nodes (spec 2026-10-24 R9), by one rule
+/// for every network. With background sync on, every own node is left
+/// running for the daemon, which syncs every profile, and keeps its pid file
+/// so the next session still knows it (R6). With it off, every own node is
+/// stopped: this session's children, and the nodes earlier sessions left,
+/// found by their pid files. A node Namehold did not start is never touched
+/// (R7). Best-effort: quitting is never blocked by a node.
+pub(crate) fn release_own_nodes_on_quit(state: &AppState, background_sync_on: bool) {
+    let children: Vec<std::process::Child> = match state.hsd_children.lock() {
+        Ok(mut guard) => guard.drain().map(|(_, c)| c).collect(),
+        Err(poisoned) => poisoned.into_inner().drain().map(|(_, c)| c).collect(),
+    };
+    if background_sync_on {
+        // Dropping a handle leaves the process running.
+        drop(children);
+        return;
+    }
+    for mut child in children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    for network in [
+        Network::Main,
+        Network::Testnet,
+        Network::Regtest,
+        Network::Simnet,
+    ] {
+        let Ok(data_dir) = resolve_data_dir_for_network(state, network) else {
+            continue;
+        };
+        let data_dir = std::path::Path::new(&data_dir);
+        if let Some(pid) = crate::commands::hsd_pid::own_node_pid(data_dir) {
+            crate::commands::hsd_pid::terminate(pid);
+        }
+        crate::commands::hsd_pid::remove_pid_file(data_dir);
+    }
+}
+
 /// Why Stop refuses a node it did not start (spec 2026-10-24 R7).
 pub(crate) const OUTSIDE_NODE_NOT_STOPPED: &str =
     "This node was not started by Namehold, so Namehold does not stop it.";

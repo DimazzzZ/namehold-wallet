@@ -782,8 +782,8 @@ pub fn run() {
 
                     // If background sync is enabled, SKIP killing hsd — the daemon
                     // needs it alive to continue syncing after the app closes. The
-                    // hsd process becomes orphaned but alive; next app launch adopts
-                    // it via RPC probe (see start_hsd's existing adoption path).
+                    // hsd process becomes orphaned but alive; its pid file tells
+                    // the next launch it is the app's own (spec 2026-10-24 R6).
                     let background_sync_on = state
                         .db
                         .lock()
@@ -798,32 +798,15 @@ pub fn run() {
                         })
                         .unwrap_or(false);
 
-                    // Every network's own child, by one rule (spec 2026-10-24 R9).
-                    let children: Vec<_> = match state.hsd_children.lock() {
-                        Ok(mut guard) => guard.drain().map(|(_, c)| c).collect(),
-                        Err(poisoned) => poisoned.into_inner().drain().map(|(_, c)| c).collect(),
-                    };
-                    for mut child in children {
-                        if background_sync_on {
-                            // Detach: drop the handle without killing. The child
-                            // process continues running as an orphan.
-                            eprintln!(
-                            "hsd shutdown: background sync enabled — leaving hsd alive for daemon"
+                    // Every own node of every network, by one rule (spec
+                    // 2026-10-24 R9): left for the daemon, or stopped, earlier
+                    // sessions' included. Outside nodes are never touched.
+                    if background_sync_on {
+                        eprintln!(
+                            "hsd shutdown: background sync enabled — leaving own nodes alive for daemon"
                         );
-                            drop(child);
-                        } else {
-                            // Best-effort: never let a stuck hsd block the app from
-                            // closing. `kill()` + `wait()` on an already-exited child
-                            // are harmless no-ops (kill fails silently, wait returns
-                            // immediately), so this is safe to run unconditionally.
-                            if let Err(e) = child.kill() {
-                                eprintln!("hsd shutdown: kill failed (may already be dead): {e}");
-                            }
-                            if let Err(e) = child.wait() {
-                                eprintln!("hsd shutdown: wait failed: {e}");
-                            }
-                        }
                     }
+                    commands::node::release_own_nodes_on_quit(&state, background_sync_on);
                 }
                 _ => {}
             }
