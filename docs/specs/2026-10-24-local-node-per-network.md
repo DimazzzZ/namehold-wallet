@@ -36,13 +36,13 @@ Every requirement names the code that will enforce it and the test that will pin
 *Pinned:* `node_lifecycle_tests::{two_networks_run_side_by_side, a_second_start_of_the_same_network_is_refused}`.
 *To pin (step 8):* `live_node_it::live_regtest_and_testnet_nodes_run_side_by_side` (profiles are stored only for mainnet, testnet and regtest, so the pair is regtest and testnet).
 
-**R4 — A network's node starts when one of its wallets becomes active.** When a profile is activated (`activate_profile`, the one activation path) and at app start for the active profile, the app starts that profile's network node if the profile's `chain_source` is `local_node`, the network's autostart is on, and no own node or outside node of that network answers already. An outside node on the right chain is adopted for reading, as `start_hsd` does today; one on another chain is refused as today (`guard_probe_network`). A `remote_node` or `explorer` profile starts nothing, in either mode. The activation itself never waits for the node: it returns, and the banner shows the node starting (R11).
-*To enforce:* `commands/secure_wallet.rs::activate_profile`, `commands/node.rs::ensure_network_node`, the startup hook in `lib.rs`.
-*To pin:* `node_lifecycle_tests::{activating_a_local_node_wallet_starts_its_networks_node, activating_a_remote_node_wallet_starts_nothing, autostart_off_starts_nothing, an_answering_node_is_not_started_twice}`.
+**R4 — A network's node starts when one of its wallets becomes active.** Once a second the app looks at the active wallet; when it changed since the last look (the first look, at app start, counts as a change), and the wallet's `chain_source` is `local_node` and its network starts on its own (`autostart_hsd_for`), the app starts that network's node in the background with `start_hsd`. This catches every activation path (switching, creating, importing, Ledger) without the activation commands calling into `commands::node`. The activation never waits for the node, and the status strip shows it starting (R11). `start_hsd` adopts an outside node that answers on the right chain and refuses one on another chain, as before (`guard_probe_network`), and refuses only when this network's own node already runs (R3). A `remote_node` or `explorer` wallet starts nothing; before, the launch-time autostart started hsd for those too. The loop acts on a change only, so a node the user stopped is not started again until the active wallet changes: it is not a supervisor (§4).
+*Enforced:* `commands/node.rs::{autostart_on_profile_change, node_to_start_on_activation}`, the autostart loop in `lib.rs` (which replaced the one-shot autostart at launch), `noncustodial/node_config.rs` (`EffectiveNodeConfig::local_node`).
+*Pinned:* `node_lifecycle_tests::a_change_of_the_active_wallet_names_the_node_to_start`, `node_cmd_tests::{activating_a_local_node_wallet_names_its_networks_node, activating_a_remote_node_or_explorer_wallet_names_no_node}`.
 
-**R5 — Switching wallets stops nothing.** Activating a profile of another network leaves every running node as it is. A node lives until the user stops it (R8) or the app quits (R9).
-*To enforce:* `commands/secure_wallet.rs::activate_profile`.
-*To pin:* `node_lifecycle_tests::switching_to_another_network_leaves_the_first_node_running`.
+**R5 — Switching wallets stops nothing.** Activating a profile of another network leaves every running node as it is: nothing on the activation path stops a node, and starting the new network's node leaves the others (R3). A node lives until the user stops it (R8) or the app quits (R9).
+*Enforced:* `commands/node.rs::start_hsd` (one child per network).
+*Pinned:* `node_lifecycle_tests::two_networks_run_side_by_side`.
 
 ### 3.3 Own and outside nodes
 
@@ -104,7 +104,7 @@ Each step is one PR-sized change with its tests, and leaves the app working on i
 | 2 | Mode and autostart per network: one resolver of the profile's network with an app-wide fallback (no migration), every reader of the mode switched to it | R10 (backend) | Done |
 | 3 | Pid file and own-node recognition by pid and process start time (macOS, Linux) | R6 | Done |
 | 4 | One own-node handle per network in `AppState`; Start/Stop per network; an outside node is never stopped | R3, R7 | Done |
-| 5 | Start on wallet activation and at app start; switching stops nothing | R4, R5 | Not started |
+| 5 | Start on wallet activation and at app start; switching stops nothing | R4, R5 | Done |
 | 6 | Quit by one rule for every own node; source check that the daemon names no hsd spawn | R9, R12 | Not started |
 | 7 | UI: per-network node block in Settings, Start/Stop and tray labels naming the network, "Starting…" in the status strip | R8, R10 (UI), R11 | Not started |
 | 8 | Live regtest + testnet side-by-side test, `docs/NODE_SETUP.md`, CHANGELOG | R3 (live), docs | Not started |

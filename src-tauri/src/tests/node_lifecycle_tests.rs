@@ -848,3 +848,59 @@ async fn stop_ends_an_own_node_left_by_an_earlier_session() {
         .join(crate::commands::hsd_pid::PID_FILE)
         .exists());
 }
+
+// ===========================================================================
+// Spec 2026-10-24 R4/R5: a change of the active wallet names the network
+// whose node to start, once per change, and only for a local-node wallet
+// whose network starts on its own. The first look (app start) counts as a
+// change. Starting it is `start_hsd`'s job, which never stops another
+// network's node.
+// ===========================================================================
+#[test]
+fn a_change_of_the_active_wallet_names_the_node_to_start() {
+    use crate::commands::node::autostart_on_profile_change;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let conn = conn_for(&h, NO_RPC); // active: a mainnet local-node wallet
+    add_profile_on(&conn, "p-regtest", "regtest", NO_RPC);
+    add_profile_on(&conn, "p-remote", "testnet", NO_RPC);
+    crate::tests::command_helpers::set_profile_override(
+        &conn,
+        "p-remote",
+        "chain_source",
+        "remote_node",
+    );
+    let mut last = None;
+
+    assert_eq!(
+        autostart_on_profile_change(&conn, &mut last),
+        Some(Network::Main),
+        "app start"
+    );
+    assert_eq!(
+        autostart_on_profile_change(&conn, &mut last),
+        None,
+        "no change, no start"
+    );
+
+    db::queries::set_active_profile(&conn, "p-regtest").unwrap();
+    assert_eq!(
+        autostart_on_profile_change(&conn, &mut last),
+        Some(Network::Regtest)
+    );
+    assert_eq!(autostart_on_profile_change(&conn, &mut last), None);
+
+    db::queries::set_active_profile(&conn, "p-remote").unwrap();
+    assert_eq!(
+        autostart_on_profile_change(&conn, &mut last),
+        None,
+        "a remote node starts nothing"
+    );
+
+    db::queries::set_setting(&conn, "autostart_hsd.regtest", "false").unwrap();
+    db::queries::set_active_profile(&conn, "p-regtest").unwrap();
+    assert_eq!(
+        autostart_on_profile_change(&conn, &mut last),
+        None,
+        "autostart off"
+    );
+}

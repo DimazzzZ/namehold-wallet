@@ -44,6 +44,9 @@ pub struct EffectiveNodeConfig {
     /// to the value global happens to carry today has still chosen it, and
     /// global can change under them afterwards.
     pub from_override: bool,
+    /// True when the chain source is a local node (`local_node`, full or
+    /// SPV): the profile is served by its network's local node.
+    pub local_node: bool,
 }
 
 /// Resolve the effective node configuration for `profile_id`.
@@ -121,5 +124,6 @@ pub fn effective_node_config_for_profile(
         node_rpc_api_key,
         chain_source,
         from_override: NODE_CONFIG_KEYS.iter().any(|k| chosen_here(k)),
+        local_node,
     })
 }

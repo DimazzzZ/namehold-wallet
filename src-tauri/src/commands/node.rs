@@ -762,6 +762,46 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
     Ok(())
 }
 
+/// The network whose local node activating `profile_id` starts (spec
+/// 2026-10-24 R4): the profile's own network, when its chain source is a
+/// local node and that network starts its node on its own. A remote node or
+/// an explorer starts nothing.
+pub(crate) fn node_to_start_on_activation(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Option<Network>, AppError> {
+    let cfg =
+        crate::noncustodial::node_config::effective_node_config_for_profile(conn, profile_id)?;
+    let network = db::queries::get_wallet_profile(conn, profile_id)?
+        .and_then(|p| Network::from_str_opt(&p.network));
+    let settings = db::queries::get_settings(conn)?;
+    Ok(network
+        .filter(|n| cfg.local_node && crate::noncustodial::rpc::autostart_hsd_for(&settings, *n)))
+}
+
+/// One look at the active wallet for the autostart loop (spec 2026-10-24 R4):
+/// when it differs from `last` (the first look, at app start, always does),
+/// the network whose node to start, per [`node_to_start_on_activation`].
+/// Acts on a change only, so a node the user stopped is not started again,
+/// and starting it never stops another network's node (R5). A profile that
+/// cannot be read starts nothing and is looked at again on the next change.
+pub(crate) fn autostart_on_profile_change(
+    conn: &rusqlite::Connection,
+    last: &mut Option<String>,
+) -> Option<Network> {
+    let active = db::queries::get_active_profile_id(conn).ok()?;
+    if last.as_deref() == Some(active.as_str()) {
+        return None;
+    }
+    *last = Some(active.clone());
+    if active.is_empty() {
+        return None;
+    }
+    // Best-effort: this decides a background start, and a profile that does
+    // not resolve has its own error on the screens that read it.
+    node_to_start_on_activation(conn, &active).ok().flatten()
+}
+
 /// Why Stop refuses a node it did not start (spec 2026-10-24 R7).
 pub(crate) const OUTSIDE_NODE_NOT_STOPPED: &str =
     "This node was not started by Namehold, so Namehold does not stop it.";

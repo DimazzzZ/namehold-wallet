@@ -257,3 +257,53 @@ async fn test_node_status_command() {
     assert_eq!(val["process_alive"], serde_json::json!(false));
     assert_eq!(val["read_source"], serde_json::json!("explorer"));
 }
+
+// --- Spec 2026-10-24 R4: which node a wallet's activation starts ---------
+
+fn activation_db() -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::db::migrations::run(&conn).unwrap();
+    crate::db::queries::insert_wallet_profile(
+        &conn,
+        "p1",
+        "P",
+        "watch_only_xpub",
+        "regtest",
+        "xpub",
+        0,
+        true,
+    )
+    .unwrap();
+    conn
+}
+
+/// A local-node wallet starts its own network's node when that network
+/// starts on its own; nothing else does.
+#[test]
+fn activating_a_local_node_wallet_names_its_networks_node() {
+    let conn = activation_db();
+    assert_eq!(
+        node::node_to_start_on_activation(&conn, "p1").unwrap(),
+        Some(Network::Regtest)
+    );
+
+    crate::db::queries::set_setting(&conn, "autostart_hsd.regtest", "false").unwrap();
+    assert_eq!(
+        node::node_to_start_on_activation(&conn, "p1").unwrap(),
+        None,
+        "autostart off"
+    );
+}
+
+#[test]
+fn activating_a_remote_node_or_explorer_wallet_names_no_node() {
+    let conn = activation_db();
+    for source in ["remote_node", "explorer"] {
+        crate::db::queries::set_setting(&conn, "chain_source", source).unwrap();
+        assert_eq!(
+            node::node_to_start_on_activation(&conn, "p1").unwrap(),
+            None,
+            "{source}"
+        );
+    }
+}
