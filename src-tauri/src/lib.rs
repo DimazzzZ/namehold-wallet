@@ -542,9 +542,19 @@ pub fn run() {
                 let enabled = {
                     match state.db.lock() {
                         Ok(db) => match crate::db::queries::get_settings(&db) {
-                            // Missing key → default ON, matching DEFAULT_SETTINGS.
+                            // The active profile's network's own setting, else the
+                            // app-wide one; missing → default ON, matching
+                            // DEFAULT_SETTINGS (spec 2026-10-24 R10).
                             Ok(settings) => {
-                                settings.get("autostart_hsd").map(String::as_str) != Some("false")
+                                match crate::commands::active_profile::active_profile_network_opt_from_conn(&db) {
+                                    Some(network) => {
+                                        crate::noncustodial::rpc::autostart_hsd_for(&settings, network)
+                                    }
+                                    None => {
+                                        settings.get("autostart_hsd").map(String::as_str)
+                                            != Some("false")
+                                    }
+                                }
                             }
                             Err(e) => {
                                 eprintln!(

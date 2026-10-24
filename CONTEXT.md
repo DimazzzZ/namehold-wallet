@@ -21,7 +21,7 @@ Where the wallet reads chain state and broadcasts: `local_node`, `remote_node`, 
 _Avoid_: Connection mode (that's frontend terminology)
 
 **Node mode** (`node_mode.<network>` setting):
-For a `local_node` chain source, whether the network's local node runs as a full node (`full`) or SPV node (`spv`). A setting of the network, not of the app or the profile: every wallet of a network shares its one local node ([ADR-0005](./docs/adr/0005-one-local-hsd-per-network.md)). Meaningless for remote or explorer sources.
+For a `local_node` chain source, whether the network's local node runs as a full node (`full`) or SPV node (`spv`). A setting of the network, not of the app or the profile (a network with no `node_mode.<network>` of its own follows the app-wide `node_mode`): every wallet of a network shares its one local node ([ADR-0005](./docs/adr/0005-one-local-hsd-per-network.md)). Meaningless for remote or explorer sources.
 
 **Local node of a network**:
 The one hsd that serves a network's `local_node` wallets, at `127.0.0.1:<the network's RPC port>`, chain in the network's data directory. Nodes of different networks run side by side; switching wallets stops none of them.

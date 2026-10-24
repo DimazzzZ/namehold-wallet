@@ -654,3 +654,46 @@ async fn starting_a_node_leaves_the_global_url_as_it_was() {
     let url = db::queries::get_settings(&db).unwrap()["node_rpc_url"].clone();
     assert_eq!(url, "http://127.0.0.1:12037");
 }
+
+// ===========================================================================
+// Spec 2026-10-24 R10: the spawn flags come from the started network's own
+// mode. Regtest set to SPV starts `--spv` even while the app-wide mode is
+// full, and a network with no mode of its own follows the app-wide one.
+// ===========================================================================
+#[tokio::test]
+#[serial(hsd_home)]
+async fn the_networks_mode_picks_the_spawn_flags() {
+    let (server, _fail, _up) = spawn_then_up_server(3).await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let conn = conn_for(&h, &server.url());
+    db::queries::set_setting(&conn, "node_mode", "full").unwrap();
+    db::queries::set_setting(&conn, "node_mode.regtest", "spv").unwrap();
+    db::queries::insert_wallet_profile(
+        &conn,
+        "p-regtest",
+        "Regtest",
+        "watch_only_xpub",
+        "regtest",
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "p-regtest").unwrap();
+    let app = app_with(conn);
+
+    start_hsd(app.state()).await.expect("start_hsd ok");
+    let mut argv = None;
+    for _ in 0..50 {
+        if let Some(s) = h.recorded_argv() {
+            argv = Some(s);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    stop_hsd(app.state()).await.expect("stop ok");
+
+    let argv = argv.expect("fake hsd recorded its argv");
+    assert!(argv.contains("--spv"), "{argv}");
+    assert!(!argv.contains("--index-address"), "{argv}");
+}

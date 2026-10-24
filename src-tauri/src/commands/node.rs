@@ -294,7 +294,8 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     let node_mode = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&db)?;
-        crate::noncustodial::rpc::resolve_node_mode(&settings)
+        let network = crate::commands::active_profile::active_profile_network_opt_from_conn(&db);
+        crate::noncustodial::rpc::resolve_node_mode_for(&settings, network)
     };
     // When the RPC isn't answering, surface WHY the last start failed (the hsd log
     // persists past `start_hsd`'s short watch window), so a failed start never
@@ -507,14 +508,14 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // active profile (per-profile override -> global -> hsd.conf) so the node
     // we start and the node we talk to agree. Reading global settings here
     // handed a profile with its own key a node started with somebody else's.
-    // `node_mode` stays global: it is not part of the ADR-001 tuple.
+    // The mode is the started network's own (spec 2026-10-24 R10).
     let (api_key, node_mode) = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let profile_id = db::queries::get_active_profile_id(&db)?;
         let effective =
             crate::noncustodial::node_config::effective_node_config_for_profile(&db, &profile_id)?;
         let settings = db::queries::get_settings(&db)?;
-        let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
+        let node_mode = crate::noncustodial::rpc::resolve_node_mode_for(&settings, Some(network));
 
         // No URL is written here: a local-node profile reaches its own
         // network's port at resolution (spec 2026-10-24 R1), and the global

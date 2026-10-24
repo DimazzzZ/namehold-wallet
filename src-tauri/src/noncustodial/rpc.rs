@@ -171,6 +171,35 @@ pub fn resolve_node_mode(settings: &std::collections::HashMap<String, String>) -
     )
 }
 
+/// The local node mode of `network` (spec 2026-10-24 R10): every wallet of a
+/// network shares its one local node, so full or SPV is the network's choice,
+/// stored as `node_mode.<network>`. A network never set falls back to the
+/// app-wide `node_mode`, then to full. `None` (no profile to name a network)
+/// reads the app-wide value.
+pub fn resolve_node_mode_for(
+    settings: &std::collections::HashMap<String, String>,
+    network: Option<Network>,
+) -> NodeMode {
+    network
+        .and_then(|n| settings.get(&format!("node_mode.{}", n.as_str())))
+        .map(|v| NodeMode::from_setting(v))
+        .unwrap_or_else(|| resolve_node_mode(settings))
+}
+
+/// Whether `network`'s local node starts on its own (spec 2026-10-24 R10):
+/// `autostart_hsd.<network>`, else the app-wide `autostart_hsd`. Only an
+/// explicit "false" turns it off, as the app-wide setting always read.
+pub fn autostart_hsd_for(
+    settings: &std::collections::HashMap<String, String>,
+    network: Network,
+) -> bool {
+    settings
+        .get(&format!("autostart_hsd.{}", network.as_str()))
+        .or_else(|| settings.get("autostart_hsd"))
+        .map(String::as_str)
+        != Some("false")
+}
+
 /// A node-only JSON-RPC client.
 #[derive(Clone)]
 pub struct NodeRpcClient {
@@ -1398,6 +1427,45 @@ mod tests {
 
         settings.insert("node_mode".to_string(), "full".to_string());
         assert_eq!(resolve_node_mode(&settings), NodeMode::Full);
+    }
+
+    /// Spec 2026-10-24 R10: a network's own mode wins; a network never set
+    /// falls back to the app-wide mode, and to full with neither.
+    #[test]
+    fn a_networks_own_mode_wins_over_the_app_wide_one() {
+        let mut settings = HashMap::new();
+        assert_eq!(
+            resolve_node_mode_for(&settings, Some(Network::Main)),
+            NodeMode::Full
+        );
+        settings.insert("node_mode".to_string(), "spv".to_string());
+        assert_eq!(
+            resolve_node_mode_for(&settings, Some(Network::Main)),
+            NodeMode::Spv
+        );
+        settings.insert("node_mode.regtest".to_string(), "full".to_string());
+        assert_eq!(
+            resolve_node_mode_for(&settings, Some(Network::Regtest)),
+            NodeMode::Full
+        );
+        assert_eq!(
+            resolve_node_mode_for(&settings, Some(Network::Main)),
+            NodeMode::Spv
+        );
+        assert_eq!(resolve_node_mode_for(&settings, None), NodeMode::Spv);
+    }
+
+    /// Autostart follows the same rule, and only an explicit "false" turns it
+    /// off, as the app-wide setting always did.
+    #[test]
+    fn a_networks_own_autostart_wins_over_the_app_wide_one() {
+        let mut settings = HashMap::new();
+        assert!(autostart_hsd_for(&settings, Network::Main));
+        settings.insert("autostart_hsd".to_string(), "false".to_string());
+        assert!(!autostart_hsd_for(&settings, Network::Main));
+        settings.insert("autostart_hsd.regtest".to_string(), "true".to_string());
+        assert!(autostart_hsd_for(&settings, Network::Regtest));
+        assert!(!autostart_hsd_for(&settings, Network::Main));
     }
 
     #[test]

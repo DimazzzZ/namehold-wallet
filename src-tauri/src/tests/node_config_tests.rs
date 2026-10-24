@@ -360,3 +360,23 @@ fn a_profile_url_override_still_wins() {
     let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
     assert_eq!(cfg.node_rpc_url, "http://127.0.0.1:12037");
 }
+
+/// Spec 2026-10-24 R10: a local node's full or SPV mode is its network's, so
+/// a regtest wallet is SPV only when regtest's node is, whatever mainnet's is.
+#[test]
+fn a_profiles_chain_source_follows_its_networks_mode() {
+    let conn = db_with_profile(); // regtest, local_node
+    set_global(&conn, "node_mode.main", "spv");
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert_eq!(cfg.chain_source, ChainSource::LocalNode, "mainnet's mode");
+
+    set_global(&conn, "node_mode.regtest", "spv");
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert_eq!(cfg.chain_source, ChainSource::SpvNode);
+
+    // The network's own mode wins over the app-wide one.
+    set_global(&conn, "node_mode", "spv");
+    set_global(&conn, "node_mode.regtest", "full");
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert_eq!(cfg.chain_source, ChainSource::LocalNode);
+}

@@ -110,6 +110,10 @@ pub fn effective_node_config_for_profile(
             .unwrap_or_else(default_node_rpc_url),
     };
     let node_rpc_api_key = resolve_node_api_key(&merged);
+    // Full or SPV is the profile's network's (spec 2026-10-24 R10), so the
+    // chain source reads that network's mode rather than the app-wide one.
+    let mode = crate::noncustodial::rpc::resolve_node_mode_for(&merged, profile_network);
+    merged.insert("node_mode".to_string(), mode.as_str().to_string());
     let chain_source = ChainSource::from_settings(&merged);
 
     Ok(EffectiveNodeConfig {
