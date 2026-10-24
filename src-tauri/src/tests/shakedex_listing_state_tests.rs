@@ -3620,6 +3620,77 @@ async fn purchase_replacing_a_mined_cancel_is_sold() {
     }
 }
 
+/// R22, R28 for a lock restored by name (no payment address to find a
+/// purchase by): a reorg replaced our mined cancel with a mined price step's
+/// purchase of the stored lock coin (hsd's 404 for the cancel's TRANSFER and
+/// for the lock coin, the name's owner the purchase's TRANSFER committing to
+/// an address not ours, its lock input signed `0x84`): Sold with that txid,
+/// and our cancel released with the purchase as the spender, its funding
+/// coins free again, also while the tracker still calls it `confirmed`. The
+/// same transaction signed `0x83` (a same-seed cancel to an address past our
+/// window) is no sale: the listing keeps awaiting its cancel, which holds
+/// its coins.
+#[tokio::test]
+async fn price_step_replacing_a_mined_cancel_of_a_lock_restored_by_name_is_sold() {
+    let buy = txid("b1");
+    let stranger = address::encode_p2wpkh(NET, &[8; 20]).unwrap();
+    for (case, status, sighash) in [
+        ("broadcasted", "broadcasted", 0x84u8),
+        ("confirmed", "confirmed", 0x84),
+        ("0x83 cancel past our window", "broadcasted", 0x83),
+    ] {
+        let f = fx(ListingState::Listed);
+        restored_by_name(&f);
+        our_cancel(&f, status);
+        cancel_funding(&f);
+        cancel_mined_at(&f);
+        let purchase = witnessed(&purchase_rest(&f, &buy, TIP, &stranger), sighash);
+        run(
+            &f,
+            &with_our_cancel_as(
+                node(
+                    info((&buy, 0)),
+                    vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+                    purchase.clone(),
+                ),
+                purchase,
+                Value::Null,
+            ),
+        )
+        .await;
+        let l = listing(&f);
+        let d = queries::get_tx_draft(&f.conn, "cx").unwrap().unwrap();
+        if sighash == 0x84 {
+            assert_eq!(
+                (l.state, l.sold_txid.as_deref(), l.lock_txid.as_deref()),
+                (
+                    ListingState::Sold,
+                    Some(buy.as_str()),
+                    Some(f.lock_txid.as_str())
+                ),
+                "{case}"
+            );
+            assert_eq!(
+                (d.status.as_str(), d.error_message.as_deref()),
+                (
+                    "dropped",
+                    Some(crate::noncustodial::shakedex::cancel::CANCEL_LOST_TO_PURCHASE)
+                ),
+                "{case}"
+            );
+            assert_eq!(held_by_cancel(&f), 0, "{case}: its coins are free again");
+        } else {
+            assert_eq!(
+                (l.state, l.sold_txid),
+                (ListingState::CancelAwaitingFinalize, None),
+                "{case}"
+            );
+            assert_eq!(d.status, status, "{case}");
+            assert_eq!(held_by_cancel(&f), 1, "{case}");
+        }
+    }
+}
+
 /// R28: before freeing a cancel the draft tracker still calls `confirmed`,
 /// the job reads our cancel's own transaction on hsd again: not found, or
 /// in the mempool, it is out of every block and its coins are freed; shown
