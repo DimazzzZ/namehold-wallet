@@ -89,7 +89,22 @@ Every requirement names the code that will enforce it and the test that will pin
 - **Two full nodes cost memory and CPU.** Accepted: regtest and simnet are cheap, and the costly mainnet node is one the user already ran.
 - **A non-default local port needs an override.** A user who ran a local node on a custom port through the global URL keeps it only through a per-profile override after R1; the migration copies such a URL into the override of each local-node profile it served (ADR-0005), so their node does not change.
 
-## 6. Pointers
+## 6. Implementation plan
+
+Each step is one PR-sized change with its tests, and leaves the app working on its own.
+
+| Step | Change | Requirements | Status |
+|------|--------|--------------|--------|
+| 1 | A `local_node` profile without an override reaches its network's port; `start_hsd` stops writing `node_rpc_url`; a migration copies a non-default local global URL into the override of each local-node profile it served | R1, R2 | Not started |
+| 2 | Mode and autostart per network: migration, one resolver of the profile's network, every reader of the mode switched to it | R10 (backend) | Not started |
+| 3 | Pid file and own-node recognition by command line (macOS, Linux, Windows) | R6 | Not started |
+| 4 | One own-node handle per network in `AppState`; Start/Stop per network; an outside node is never stopped | R3, R7 | Not started |
+| 5 | Start on wallet activation and at app start; switching stops nothing | R4, R5 | Not started |
+| 6 | Quit by one rule for every own node; source check that the daemon names no hsd spawn | R9, R12 | Not started |
+| 7 | UI: per-network node block in Settings, Start/Stop and tray labels naming the network, "Starting…" in the status strip | R8, R10 (UI), R11 | Not started |
+| 8 | Live regtest + simnet side-by-side test, `docs/NODE_SETUP.md`, CHANGELOG | R3 (live), docs | Not started |
+
+## 7. Pointers
 
 - Code: `commands/node.rs`, `commands/secure_wallet.rs::activate_profile`, `noncustodial/node_config.rs`, `lib.rs` (startup, tray, exit), `src/components/Settings.tsx`, `src/components/ui/StatusStrip.tsx`.
 - Tests: `node_lifecycle_tests`, `node_cmd_tests`, `node_config_tests`, `node_status_tests`, `migration_tests`, `live_node_it`, `settings-network-nodes.test.tsx`, `status-strip.test.tsx`.
