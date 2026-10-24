@@ -165,9 +165,11 @@ pub(crate) async fn resolve_name_ownership_with_client(
         (Some(t), Some(v)) if !t.is_empty() && t != "0".repeat(t.len()) => {
             match client.get_tx_out(&t, v as u32).await {
                 Ok(Some(txo)) => {
+                    // Only the bech32 `string` is an address; `hash` is the
+                    // hash160, which no wallet address ever equals.
                     let addr = txo
                         .get("address")
-                        .and_then(|a| a.get("string").or_else(|| a.get("hash")))
+                        .and_then(|a| a.get("string"))
                         .and_then(|s| s.as_str())
                         .map(|s| s.to_string());
                     (addr, Some(t), Some(v as u32))

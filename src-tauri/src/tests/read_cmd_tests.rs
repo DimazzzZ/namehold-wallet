@@ -4045,7 +4045,7 @@ async fn repair_owned_names_via_node_asks_once_per_distinct_name() {
 
 /// `gettxout` without the address string (hsd always sends it beside the
 /// hash) does not make the name ours: only an address string is compared with
-/// the wallet's addresses.
+/// the wallet's addresses, never the hash, even when a stored row spells it.
 #[tokio::test]
 async fn repair_owned_names_via_node_needs_the_owner_address_string() {
     let mut server = mockito::Server::new_async().await;
@@ -4076,7 +4076,7 @@ async fn repair_owned_names_via_node_needs_the_owner_address_string() {
         "INSERT INTO derived_addresses
             (wallet_profile_id, account_index, branch, child_index,
              address, script_pubkey_hex, public_key_hex)
-         VALUES ('W1', 0, 0, 0, 'myaddr', '00', '00')",
+         VALUES ('W1', 0, 0, 0, '00112233445566778899aabbccddeeff00112233', '00', '00')",
         [],
     )
     .unwrap();
