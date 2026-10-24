@@ -17,7 +17,14 @@ pub(crate) fn client_builder() -> reqwest::ClientBuilder {
         // updater plugin), which is just as good.
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder();
+    // Tests reach only local mock servers. Reading the system proxy on macOS
+    // (`SCDynamicStoreCreate`) lists the directory the executable sits in,
+    // which for a test binary is cargo's `deps/`; nextest pays that once per
+    // test process.
+    #[cfg(test)]
+    let builder = builder.no_proxy();
+    builder
 }
 
 #[cfg(test)]
