@@ -4766,3 +4766,228 @@ fn my_listings_words_a_sale_and_a_cancel_from_another_device() {
         .unwrap();
     assert!(row(&g).cancelled_elsewhere, "another cancel was mined");
 }
+
+/// `GET /coin` of `(txid, vout)` as hsd would never send it: no address.
+fn coin_without_address(txid: &str, vout: u32, cov: u8) -> NodeCoin {
+    serde_json::from_value(json!({
+        "version": 0, "height": TIP, "value": 1_000_000,
+        "covenant": { "type": cov, "action": "", "items": [name_hash()] },
+        "coinbase": false, "hash": txid, "index": vout
+    }))
+    .unwrap()
+}
+
+fn name_reads(rpc: &MockNodeRpc) -> usize {
+    rpc.count_matching(|c| matches!(c, RpcCall::NameInfo(_)))
+}
+
+/// R28: the mined cancel's TRANSFER read back without its address, or as
+/// something that is not a TRANSFER of the name at the lock (here a
+/// FINALIZE), is not hsd's answer about our cancel: the listing is left as
+/// it is, and nothing further is read for it.
+#[tokio::test]
+async fn a_cancel_transfer_hsd_reports_unreadable_or_as_something_else_moves_nothing() {
+    for case in ["no address", "a FINALIZE"] {
+        let f = fx(ListingState::Listed);
+        let c = cancel_mined_at(&f);
+        let reply = match case {
+            "no address" => coin_without_address(&c.0, c.1, COV_TRANSFER),
+            _ => coin(
+                &c.0,
+                c.1,
+                &f.lock,
+                COV_FINALIZE,
+                vec![name_hash(), height_item(NAME_HEIGHT)],
+                TIP,
+            ),
+        };
+        let rpc = node(info((&c.0, c.1)), vec![reply], Value::Null);
+        run(&f, &rpc).await;
+        assert_eq!(
+            listing(&f).state,
+            ListingState::CancelAwaitingFinalize,
+            "{case}"
+        );
+        assert_eq!(name_reads(&rpc), 0, "{case}");
+    }
+}
+
+/// R28: the mined cancel's TRANSFER and the lock coin both hsd's 404 and
+/// hsd's `info: null` for the name: the registration is gone, the listing
+/// Expired.
+#[tokio::test]
+async fn a_mined_cancel_of_a_name_with_no_live_state_is_expired() {
+    let f = fx(ListingState::Listed);
+    cancel_mined_at(&f);
+    run(&f, &node(json!({ "info": null }), vec![], Value::Null)).await;
+    assert_eq!(listing(&f).state, ListingState::Expired);
+}
+
+/// R28: the lock coin spent and the name's owner a TRANSFER at our lock
+/// committing to our cancel address, mined, but whose transaction hsd finds
+/// neither by hash nor in the block at its height: no cancel is proven, and
+/// the listing stays Listed.
+#[tokio::test]
+async fn a_cancel_whose_transaction_hsd_cannot_find_is_no_verdict() {
+    let f = fx(ListingState::Listed);
+    let c1 = txid("c1");
+    let rpc = node(
+        info((&c1, 0)),
+        vec![transfer_out_of_lock(&f, &c1, &f.cancel, TIP)],
+        Value::Null,
+    )
+    .with_block_hash("ab".repeat(32))
+    .with_block(json!({ "height": TIP, "tx": [] }));
+    run(&f, &rpc).await;
+    let l = listing(&f);
+    assert_eq!(l.state, ListingState::Listed);
+    assert_eq!(l.cancel_txid, None);
+    assert!(rpc.calls().contains(&RpcCall::TxByHash(c1.clone())));
+}
+
+/// The name's owner coin (after the lock coin was spent) read back without
+/// its address is not hsd's answer: no cancel and no sale is judged, and
+/// the listing stays Listed.
+#[tokio::test]
+async fn an_owner_coin_without_its_address_leaves_the_listing_as_it_is() {
+    let f = fx(ListingState::Listed);
+    let c1 = txid("c1");
+    paid(&f, &c1, 2, TIP, false);
+    let rpc = node(
+        info((&c1, 0)),
+        vec![coin_without_address(&c1, 0, COV_TRANSFER)],
+        purchase_rest(&f, &c1, TIP, &f.payment),
+    );
+    run(&f, &rpc).await;
+    let l = listing(&f);
+    assert_eq!(l.state, ListingState::Listed);
+    assert_eq!(l.sold_txid, None);
+}
+
+/// R19 + R22: our FINALIZE into the lock is dead (`failed`), yet it was
+/// mined elsewhere and its lock coin bought: hsd's 404 for the lock coin and
+/// the lock TRANSFER, the name's owner the purchase's TRANSFER committing to
+/// the buyer, a coin of it at our payment address. Sold with that purchase,
+/// never Aborted.
+#[tokio::test]
+async fn a_dead_finalize_mined_after_all_and_bought_is_sold() {
+    let f = fx(ListingState::Finalizing);
+    queries::update_tx_draft_status(
+        &f.conn,
+        "fin",
+        queries::DraftStatus::Failed,
+        Some("refused"),
+        None,
+    )
+    .unwrap();
+    let buy = txid("b1");
+    paid(&f, &buy, 2, TIP, false);
+    run(
+        &f,
+        &node(
+            info((&buy, 0)),
+            vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+            purchase_rest(&f, &buy, TIP, &f.payment),
+        ),
+    )
+    .await;
+    let l = listing(&f);
+    assert_eq!(l.state, ListingState::Sold);
+    assert_eq!(l.sold_txid.as_deref(), Some(buy.as_str()));
+    assert_eq!(
+        (l.lock_txid.as_deref(), l.lock_vout),
+        (Some(f.lock_txid.as_str()), Some(0))
+    );
+}
+
+/// A row in the after-lock job without what it is followed by (a Listed
+/// listing without its lock outpoint; a Finalizing one with a dead FINALIZE
+/// but no lock TRANSFER txid) is left as it is, the node not asked about it.
+#[tokio::test]
+async fn an_after_lock_row_missing_its_outpoints_is_left_as_it_is() {
+    let f = fx(ListingState::Listed);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET lock_txid = NULL, lock_vout = NULL",
+            [],
+        )
+        .unwrap();
+    let rpc = node(info((&f.lock_txid, 0)), vec![], Value::Null);
+    run(&f, &rpc).await;
+    assert_eq!(listing(&f).state, ListingState::Listed);
+    assert_eq!(rpc.call_count(), 0, "no lock outpoint: nothing to read");
+
+    let f = fx(ListingState::Finalizing);
+    queries::update_tx_draft_status(&f.conn, "fin", queries::DraftStatus::Dropped, None, None)
+        .unwrap();
+    f.conn
+        .execute("UPDATE shakedex_listings SET lock_transfer_txid = NULL", [])
+        .unwrap();
+    let rpc = node(json!({ "info": null }), vec![], Value::Null);
+    run(&f, &rpc).await;
+    assert_eq!(listing(&f).state, ListingState::Finalizing);
+    assert_eq!(name_reads(&rpc), 0, "no lock TRANSFER to settle from");
+}
+
+/// R22's reorg rule from the lock coin's side: a Sold listing whose FINALIZE
+/// into the lock is in no block and no mempool (hsd's 404 for the lock coin,
+/// the lock TRANSFER a coin again) stays Sold while another listing of the
+/// name is open by then.
+#[tokio::test]
+async fn a_sold_listing_whose_finalize_is_gone_stays_sold_beside_an_open_listing() {
+    let f = fx(ListingState::Sold);
+    f.conn
+        .execute("UPDATE shakedex_listings SET sold_txid = ?1", [txid("b1")])
+        .unwrap();
+    let mut newer = listing(&f);
+    newer.id = "l2".into();
+    newer.state = ListingState::Locking;
+    newer.lock_txid = None;
+    newer.lock_vout = None;
+    newer.sold_txid = None;
+    queries::insert_shakedex_listing(&f.conn, &newer).unwrap();
+    let transfer_back = coin(
+        &f.transfer_txid,
+        0,
+        &f.payment,
+        COV_TRANSFER,
+        vec![],
+        TIP - 40,
+    );
+    run(
+        &f,
+        &node(
+            info((&f.transfer_txid, 0)),
+            vec![transfer_back],
+            Value::Null,
+        ),
+    )
+    .await;
+    let l = listing(&f);
+    assert_eq!(l.state, ListingState::Sold);
+    assert_eq!(l.sold_txid.as_deref(), Some(txid("b1").as_str()));
+}
+
+/// R22, R28: another device's mined cancel (no cancel draft here) replaced
+/// in a reorg by a mined purchase of the lock coin: Sold with the purchase;
+/// with no draft of ours there is nothing to release.
+#[tokio::test]
+async fn a_purchase_replacing_another_devices_mined_cancel_is_sold() {
+    let f = fx(ListingState::Listed);
+    cancel_mined_at(&f);
+    assert_eq!(listing(&f).cancel_draft_id, None);
+    let buy = txid("b1");
+    paid(&f, &buy, 2, TIP, false);
+    run(
+        &f,
+        &node(
+            info((&buy, 0)),
+            vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+            purchase_rest(&f, &buy, TIP, &f.payment),
+        ),
+    )
+    .await;
+    let l = listing(&f);
+    assert_eq!(l.state, ListingState::Sold);
+    assert_eq!(l.sold_txid.as_deref(), Some(buy.as_str()));
+}

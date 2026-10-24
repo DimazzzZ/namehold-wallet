@@ -2426,6 +2426,74 @@ mod tests {
             !is_home(transfer, 0, (BUY, 0)),
             "a TRANSFER, not a FINALIZE"
         );
+        assert!(
+            !is_home(home(130, &p2wpkh(5), &nh()), 2, (BUY, 0)),
+            "no input or output at k"
+        );
+    }
+
+    /// hsd links a TRANSFER to the input at its index: our lock coin spent
+    /// at an input with no output at that index is not a purchase, and the
+    /// spare input is skipped, not indexed past the outputs.
+    #[test]
+    fn purchase_in_skips_an_input_without_an_output_at_its_index() {
+        let (pay, la, n) = (p2wpkh(5), lock_addr(), nh());
+        let own: HashSet<String> = [pay.clone()].into();
+        let mut v = rest(120, 9, &pay);
+        let lock_input = v["inputs"][0].clone();
+        let funding = v["inputs"][1].clone();
+        v["inputs"] = serde_json::json!([funding, funding, funding, lock_input]);
+        let tx = spend_view_from_rest(&v).unwrap();
+        let at = lock_of(&la, &n);
+        let p = purchase_of(&own, Some((LOCK, 0)), &pay, &at);
+        assert_eq!(purchase_in(&tx, &p).unwrap(), None);
+    }
+
+    /// hsd links a TRANSFER to the input at its index: a lock coin spent at
+    /// an input with no output at that index is no cancel out of the lock.
+    #[test]
+    fn cancel_out_of_lock_needs_an_output_at_the_lock_inputs_index() {
+        let own: HashSet<String> = [p2wpkh(5)].into();
+        let at = lock_of(&lock_addr(), &nh());
+        let mut v = rest(120, 5, &p2wpkh(6));
+        let (lock_input, funding) = (v["inputs"][0].clone(), v["inputs"][1].clone());
+        v["inputs"] = serde_json::json!([funding, lock_input]);
+        v["outputs"].as_array_mut().unwrap().truncate(1);
+        let tx = spend_view_from_rest(&v).unwrap();
+        assert!(!cancel_out_of_lock(&tx, 1, (LOCK, 0), &at, Network::Regtest, &own).unwrap());
+    }
+
+    /// R32: a `getnameinfo` owner whose output index is missing or past u32
+    /// is not hsd's answer: could not check, never a restore.
+    #[test]
+    fn restore_owner_needs_the_owner_output_index() {
+        for index in [serde_json::Value::Null, (u64::from(u32::MAX) + 1).into()] {
+            let reply = serde_json::json!({ "info": {
+                "name": "dexreviews", "height": 50,
+                "owner": { "hash": LOCK, "index": index }
+            } });
+            let e = restore_owner(&reply, "dexreviews").unwrap_err();
+            assert!(matches!(e, AppError::Rpc(_)), "{e:?}");
+            assert!(e.to_string().contains("the name's owner output"), "{e}");
+        }
+    }
+
+    /// A step whose lock time no date can hold is said to be too far away,
+    /// never shown as a wrong date or a panic.
+    #[test]
+    fn step_validity_names_a_lock_time_past_any_date() {
+        assert_eq!(step_validity(0, 1_700_000_000), "valid at once");
+        assert_eq!(
+            step_validity(1_700_000_000, 1_600_000_000),
+            "valid from 2023-11-14 22:09 UTC"
+        );
+        for lock_time in [1u64 << 60, u64::MAX] {
+            assert_eq!(
+                step_validity(lock_time, 1_700_000_000),
+                "valid from a time too far away to show",
+                "{lock_time}"
+            );
+        }
     }
 
     /// R26: the Lower price prompt shows the current price, the new one

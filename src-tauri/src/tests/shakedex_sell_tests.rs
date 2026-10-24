@@ -5864,6 +5864,25 @@ async fn restore_lock_refuses_a_name_still_locking() {
     assert_eq!(count(&app, "shakedex_listings"), 0);
 }
 
+/// An owner coin elsewhere in a TRANSFER whose covenant does not say where
+/// it goes is no verdict: "could not check", neither "still locking" nor
+/// "not in this wallet's lock".
+#[tokio::test]
+async fn restore_lock_could_not_check_a_transfer_without_its_address() {
+    let mut coin = restored_coin(&addr00(Network::Regtest).0, COV_TRANSFER, NAME_HEIGHT, None);
+    coin["covenant"]["items"]
+        .as_array_mut()
+        .unwrap()
+        .truncate(2);
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(coin)).await;
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(
+        e.contains("did not report the transfer covenant's address"),
+        "{e}"
+    );
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
 /// The owner coin at our lock is a TRANSFER, not a FINALIZE: a cancel
 /// awaiting its finalize, or a mined purchase. Refused, so no listing and no
 /// FINALIZE exist for it (spec §5).

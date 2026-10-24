@@ -798,4 +798,40 @@ mod tests {
         assert_eq!(fin.change, 400_000_000 - fin.fee);
         assert_balanced(&fin);
     }
+
+    /// The market fee is paid only to a version 0, 20-byte program: any
+    /// other address is refused with what was wrong, never encoded as
+    /// something else.
+    #[test]
+    fn fee_address_other_than_v0_twenty_bytes_is_refused() {
+        let ok = OutputAddress {
+            version: 0,
+            hash: vec![9; 20],
+        };
+        assert_eq!(
+            addr_string(Network::Main, &ok).unwrap(),
+            address::encode_p2wpkh(Network::Main, &[9; 20]).unwrap()
+        );
+        let v1 = OutputAddress {
+            version: 1,
+            hash: vec![9; 20],
+        };
+        let e = addr_string(Network::Main, &v1).unwrap_err();
+        assert!(e.to_string().contains("address version 1"), "{e}");
+        let long = OutputAddress {
+            version: 0,
+            hash: vec![9; 32],
+        };
+        let e = addr_string(Network::Main, &long).unwrap_err();
+        assert!(e.to_string().contains("program length 32"), "{e}");
+    }
+
+    /// A purchase draft whose plan does not read back cannot have its price
+    /// re-checked: refused, and the purchase is not sent.
+    #[test]
+    fn unreadable_purchase_plan_has_no_lock_time() {
+        let e = plan_lock_time("{not json").unwrap_err();
+        assert!(matches!(e, AppError::InvalidInput(_)), "{e:?}");
+        assert!(e.to_string().contains("the purchase was not sent"), "{e}");
+    }
 }
