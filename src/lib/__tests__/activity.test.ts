@@ -121,6 +121,25 @@ describe("mergeActivity", () => {
     expect(unsent.find((r) => r.txid === parentRow.txid)!.spedUpBy).toBe("c".repeat(64));
   });
 
+  // The chain classifies a child as a plain send (it spends our change back to
+  // us); once the node reports its row, the draft still names it Speed up.
+  it.each(["broadcasted", "confirmed"] as const)(
+    "a %s Speed up child seen on chain stays a Speed up",
+    (status) => {
+      const childRow: ActionRow = { ...parentRow, txid: "c".repeat(64), valueDoos: -2_340 };
+      const merged = mergeActivity(
+        [parentRow, { ...childRow, confirmed: status === "confirmed" }],
+        [child(status)],
+      );
+      const kid = merged.find((r) => r.txid === "c".repeat(64))!;
+      expect(merged.filter((r) => r.txid === "c".repeat(64))).toHaveLength(1);
+      expect(kid.action).toBe("speed_up");
+      expect(kid.covenantAction).toBe("send");
+      expect(kid.speedsUp).toBe("p".repeat(64));
+      expect(merged.find((r) => r.txid === parentRow.txid)!.spedUpBy).toBe("c".repeat(64));
+    },
+  );
+
   it.each(["dropped", "failed"] as const)("a %s child speeds nothing up", (status) => {
     const merged = mergeActivity([parentRow], [child(status)]);
     expect(merged.find((r) => r.txid === parentRow.txid)!.spedUpBy).toBeNull();

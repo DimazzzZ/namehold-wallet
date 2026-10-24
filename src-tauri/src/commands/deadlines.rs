@@ -331,8 +331,9 @@ pub struct CancelFinalizeDeadline {
 }
 
 /// A cancel reorged back to Cancelling and mined again with the same txid
-/// keeps its key, so it reminds again only if a scan ran while it was out of
-/// the ready list (which drops the key from the persisted state).
+/// keeps its key, and the key stays claimed while the cancel is open
+/// (`queries::list_open_finalize_episodes`), so it does not remind twice; a
+/// sent FINALIZE that fails or is dropped reopens it and reminds again.
 fn cancel_finalize_key(d: &CancelFinalizeDeadline) -> String {
     format!(
         "cancel_finalize:{}:{}:{}",
@@ -593,6 +594,49 @@ fn scan_finalize_reminders(
     let cancels = scan_cancel_finalize_deadlines(&cancels, config, previously_notified);
     result.notifications.extend(cancels.notifications);
     result.active_episodes.extend(cancels.active_episodes);
+
+    // A reminder already sent stays claimed while its episode is open (its
+    // FINALIZE not sent), even when this pass does not find it ready: a sync
+    // that saw the lockup as still running for a moment would otherwise drop
+    // the key, and the next pass would send the same reminder again (QA of
+    // 0.6.0, J4). The listing keeps only today's key, so it still reminds
+    // once a day.
+    let open = queries::list_open_finalize_episodes(conn)?;
+    let still_open =
+        open.purchases
+            .into_iter()
+            .map(|(wallet_profile_id, name, purchase_txid)| {
+                purchase_finalize_key(&PurchaseFinalizeDeadline {
+                    wallet_profile_id,
+                    name,
+                    purchase_txid,
+                })
+            })
+            .chain(open.listings.into_iter().map(
+                |(wallet_profile_id, name, lock_transfer_txid)| {
+                    listing_ready_key(
+                        &ListingReadyDeadline {
+                            wallet_profile_id,
+                            name,
+                            lock_transfer_txid,
+                        },
+                        day,
+                    )
+                },
+            ))
+            .chain(
+                open.cancels
+                    .into_iter()
+                    .map(|(wallet_profile_id, name, cancel_txid)| {
+                        cancel_finalize_key(&CancelFinalizeDeadline {
+                            wallet_profile_id,
+                            name,
+                            cancel_txid,
+                        })
+                    }),
+            )
+            .filter(|k| previously_notified.contains(k));
+    result.active_episodes.extend(still_open);
     Ok(result)
 }
 

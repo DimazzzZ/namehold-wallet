@@ -18,6 +18,15 @@
 //! which takes a connection and an emitter and is tested in
 //! `tests::deadlines_cmd_tests`.
 
+/// One line of the daemon's log, stamped with the UTC time. The log is the
+/// daemon's stderr, which the app sends to `~/.namehold/syncd.log`
+/// (`commands::daemon_ctl::spawn_detached`).
+macro_rules! dlog {
+    ($($arg:tt)*) => {
+        eprintln!("{} {}", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ"), format_args!($($arg)*))
+    };
+}
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,7 +52,7 @@ pub fn run(db_path: &str) -> Result<(), AppError> {
     // Write PID to a file so the app can detect if we're alive.
     write_pid_file()?;
 
-    eprintln!("namehold-syncd: starting (PID {})", std::process::id());
+    dlog!("namehold-syncd: starting (PID {})", std::process::id());
 
     // Build a single tokio runtime for the whole daemon lifetime.
     // Each cycle uses `block_on` to drive the async sync steps.
@@ -54,7 +63,7 @@ pub fn run(db_path: &str) -> Result<(), AppError> {
 
     loop {
         if let Err(e) = rt.block_on(sync_all_profiles(db_path)) {
-            eprintln!("namehold-syncd: sync error: {e}");
+            dlog!("namehold-syncd: sync error: {e}");
         }
 
         // After syncing owned profiles, poll watched (non-owned) names and
@@ -78,7 +87,7 @@ fn run_finalize_reminders(db_path: &str) {
     let now = chrono::Utc::now().timestamp();
     let conn = match sync_cmd::open_conn(db_path) {
         Ok(conn) => conn,
-        Err(e) => return eprintln!("namehold-syncd: finalize reminders: {e}"),
+        Err(e) => return dlog!("namehold-syncd: finalize reminders: {e}"),
     };
     let result = send_finalize_reminders_with(&conn, now, &mut |summary, body| {
         watched_names::emit_os_notification(summary, body)
@@ -86,16 +95,18 @@ fn run_finalize_reminders(db_path: &str) {
     match result {
         Ok(outcome) => {
             if !outcome.notified.is_empty() {
-                eprintln!(
-                    "namehold-syncd: sent {} finalize reminder(s)",
-                    outcome.notified.len()
+                let keys: Vec<&str> = outcome.notified.iter().map(|n| n.key.as_str()).collect();
+                dlog!(
+                    "namehold-syncd: sent {} finalize reminder(s): {}",
+                    outcome.notified.len(),
+                    keys.join(", ")
                 );
             }
             if let Some(e) = outcome.delivery_error {
-                eprintln!("namehold-syncd: finalize reminder not shown: {e}");
+                dlog!("namehold-syncd: finalize reminder not shown: {e}");
             }
         }
-        Err(e) => eprintln!("namehold-syncd: finalize reminders: {e}"),
+        Err(e) => dlog!("namehold-syncd: finalize reminders: {e}"),
     }
 }
 
@@ -140,7 +151,7 @@ async fn sync_all_profiles(db_path: &str) -> Result<(), AppError> {
         };
         if !acquired {
             // Another process (app or another daemon instance) is syncing this profile.
-            eprintln!(
+            dlog!(
                 "namehold-syncd: skipping profile {} (lock held by another process)",
                 profile_id
             );
@@ -163,11 +174,11 @@ async fn sync_all_profiles(db_path: &str) -> Result<(), AppError> {
         // the daemon just moves on. `sync_profile` itself never errors.
         sync_profile(db_path, &profile_id, &lock_lost).await;
         if lock_lost.is_lost() {
-            eprintln!(
+            dlog!(
                 "namehold-syncd: stopped syncing profile {profile_id}: its sync lock was taken over"
             );
         } else {
-            eprintln!("namehold-syncd: synced profile {}", profile_id);
+            dlog!("namehold-syncd: synced profile {}", profile_id);
         }
 
         // Stop the heartbeat thread.
@@ -231,6 +242,6 @@ pub fn cleanup(db_path: &str) -> Result<(), AppError> {
         let pid_path = home.join(".namehold").join("syncd.pid");
         let _ = std::fs::remove_file(&pid_path);
     }
-    eprintln!("namehold-syncd: cleaned up locks");
+    dlog!("namehold-syncd: cleaned up locks");
     Ok(())
 }
