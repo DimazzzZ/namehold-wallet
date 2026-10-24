@@ -25,7 +25,7 @@ The frontend will offer a "Configure node for this profile" button in Settings w
 
 ## Interaction with N11 (`realign_loopback_rpc_url`)
 
-> Amended by [ADR-0005](./0005-one-local-hsd-per-network.md) (2026-10-24): a `local_node` profile without a URL override reaches its own network's port, so the realign below no longer writes the global setting. The override rule here is unchanged.
+> Amended by [ADR-0005](./0005-one-local-hsd-per-network.md) (2026-10-24): the realign below is gone. A `local_node` profile without a URL override reaches its own network's port whenever the global URL is only a default, and nothing writes the global setting. The override rule here is unchanged.
 
 The narrow auto-realign introduced by [ADR-002 / N11](../specs/2026-09-14-network-derived-behaviour.md) rewrites a stale loopback `node_rpc_url` at `start_hsd` time when the stored URL is a *default* loopback port for a *different* network. Per-profile override takes precedence: when a profile has an override set, `start_hsd` and every read/broadcast path resolves through `effective_node_config_for_profile` first, and realign is skipped for that profile. Realign continues to apply only when the resolved node config comes from the global fallback (no per-profile override), preserving the original safety net for users who never opted into per-profile config.
 

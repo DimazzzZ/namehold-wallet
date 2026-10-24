@@ -508,9 +508,6 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // we start and the node we talk to agree. Reading global settings here
     // handed a profile with its own key a node started with somebody else's.
     // `node_mode` stays global: it is not part of the ADR-001 tuple.
-    //
-    // The same resolution decides whether realign may touch the URL, so both
-    // are taken under one lock.
     let (api_key, node_mode) = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let profile_id = db::queries::get_active_profile_id(&db)?;
@@ -519,25 +516,9 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         let settings = db::queries::get_settings(&db)?;
         let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
 
-        // hsd will listen on this network's RPC port, but a globally seeded
-        // `node_rpc_url` keeps whatever it was given — the mainnet 12037. Left
-        // alone, the wallet starts a regtest node and then talks to a port
-        // nothing is listening on. Realign a stale loopback default now; a
-        // custom port or a remote host is left as the user set it (see
-        // `realign_loopback_rpc_url`).
-        //
-        // ADR-001 (Interaction with N11): a profile that supplies its own URL
-        // has made an explicit choice, and rewriting it — even a "stale
-        // default" — is the silent abandonment ADR-002 refuses. Realign
-        // therefore applies only to a URL that came from the global fallback,
-        // and it writes back to the global setting it came from.
-        if !effective.url_from_override {
-            if let Some(fixed) =
-                crate::noncustodial::rpc::realign_loopback_rpc_url(&effective.node_rpc_url, network)
-            {
-                db::queries::set_setting(&db, "node_rpc_url", &fixed)?;
-            }
-        }
+        // No URL is written here: a local-node profile reaches its own
+        // network's port at resolution (spec 2026-10-24 R1), and the global
+        // URL is every other profile's too (R2).
         (effective.node_rpc_api_key, node_mode)
     };
 

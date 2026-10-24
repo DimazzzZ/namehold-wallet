@@ -49,7 +49,7 @@ The node's reported chain (from `getblockchaininfo`) does not match the profile'
 _Avoid_: Chain mismatch (same thing, but "network" is the profile's term)
 
 **Effective node config**:
-The resolved node configuration for a profile after applying the resolution order, evaluated independently per key: per-profile override (if set and non-empty) → global settings (if set) → built-in default. The result is one `(node_rpc_url, node_rpc_api_key, chain_source)` tuple, plus whether the profile's own override supplied it — which is what keeps the loopback-port realign off a URL the user chose. A profile that does not resolve is an error, never a fallback to global.
+The resolved node configuration for a profile after applying the resolution order, evaluated independently per key: per-profile override (if set and non-empty) → global settings (if set) → built-in default. The result is one `(node_rpc_url, node_rpc_api_key, chain_source)` tuple, plus whether the profile's own override supplied any of it. A `local_node` profile with no URL of its own, over a global URL that is only a default (empty, or a loopback URL on a network's default port), takes its own network's port; a global URL that is not a default is kept. A profile that does not resolve is an error, never a fallback to global.
 _Avoid_: Resolved config (same meaning, but "effective" emphasizes the resolution order)
 
 ### Name sales (Shakedex)

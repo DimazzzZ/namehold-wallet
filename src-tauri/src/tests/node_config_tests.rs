@@ -4,7 +4,7 @@
 //!   1. Resolution order, per key: per-profile override -> global `settings`
 //!      -> built-in default.
 //!   2. A missing profile is [`AppError::NotFound`], never a silent default.
-//!   3. An override sets `from_override = true` so callers skip realign; a
+//!   3. An override sets `from_override = true`; a
 //!      pure global/default resolution sets it `false`.
 //!   4. Resolution is per-key: an override for one key falls through to global
 //!      for the others.
@@ -14,7 +14,7 @@ use rusqlite::Connection;
 
 use crate::db::queries::get_profile_settings;
 use crate::error::AppError;
-use crate::noncustodial::node_config::{default_node_rpc_url, effective_node_config_for_profile};
+use crate::noncustodial::node_config::effective_node_config_for_profile;
 use crate::noncustodial::rpc::ChainSource;
 
 /// A migrated in-memory DB with the migrations the resolver depends on, plus
@@ -91,10 +91,10 @@ fn missing_profile_is_not_found() {
 }
 
 #[test]
-fn falls_back_to_builtin_default_when_nothing_set() {
-    let conn = db_with_profile();
+fn a_local_node_profile_with_nothing_set_reaches_its_networks_default_port() {
+    let conn = db_with_profile(); // p1 is regtest
     let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
-    assert_eq!(cfg.node_rpc_url, default_node_rpc_url());
+    assert_eq!(cfg.node_rpc_url, "http://127.0.0.1:14037");
     assert_eq!(cfg.node_rpc_api_key, "");
     assert_eq!(cfg.chain_source, ChainSource::LocalNode);
     assert!(!cfg.from_override, "pure default must not be an override");
@@ -184,8 +184,10 @@ fn get_profile_settings_returns_only_that_profiles_rows() {
 #[test]
 fn empty_override_value_is_ignored_for_url() {
     // An override row with an empty URL must not blank out a good global URL;
-    // an empty string is not a meaningful endpoint choice.
+    // an empty string is not a meaningful endpoint choice. (A remote node: a
+    // local node reaches its network's port whatever the global URL says.)
     let conn = db_with_profile();
+    set_global(&conn, "chain_source", "remote_node");
     set_global(&conn, "node_rpc_url", "http://global.example:12037");
     set_override(&conn, "p1", "node_rpc_url", "");
     let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
@@ -215,12 +217,14 @@ fn for_profile_uses_override_url_key_and_source() {
 }
 
 #[test]
-fn for_profile_falls_through_to_global_then_default() {
-    let conn = db_with_profile();
-    // No override, no global url -> built-in default; global key present.
+fn for_profile_of_a_local_node_profile_talks_to_its_networks_port() {
+    let conn = db_with_profile(); // p1 is regtest
+                                  // The global URL points at the mainnet node started last; the key is
+                                  // still the global one.
+    set_global(&conn, "node_rpc_url", "http://127.0.0.1:12037");
     set_global(&conn, "node_rpc_api_key", "global-key");
     let client = NodeRpcClient::for_profile(&conn, "p1").unwrap();
-    assert_eq!(client.node_url(), default_node_rpc_url());
+    assert_eq!(client.node_url(), "http://127.0.0.1:14037");
     assert_eq!(client.api_key(), "global-key");
 }
 
@@ -245,58 +249,114 @@ fn from_effective_config_carries_resolved_fields() {
     assert_eq!(client.api_key(), "k");
 }
 
-// --- Which flag realign is allowed to consult (ADR-001, N11) ---
+// --- What counts as the profile's own URL (ADR-001) ---
 
 #[test]
 fn an_override_equal_to_global_is_still_the_users_choice() {
     // The flag used to mean "differs from global", so pinning a profile to the
-    // value global happens to hold today read as no override at all — and
-    // realign would then rewrite a URL the user had deliberately set. Global
-    // can also change under them afterwards.
-    let conn = db_with_profile();
+    // value global happens to hold today read as no override at all. A URL
+    // the profile chose is kept even when it is another network's default.
+    let conn = db_with_profile(); // regtest
     set_global(&conn, "node_rpc_url", "http://127.0.0.1:12037");
     set_override(&conn, "p1", "node_rpc_url", "http://127.0.0.1:12037");
     let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
     assert!(cfg.from_override, "choosing a value is choosing it");
-    assert!(cfg.url_from_override, "realign must leave this URL alone");
+    assert_eq!(cfg.node_rpc_url, "http://127.0.0.1:12037");
 }
 
 #[test]
-fn overriding_the_chain_source_alone_leaves_the_url_realignable() {
-    // Realign rewrites the URL and nothing else. A profile that only chose its
-    // chain source has expressed no opinion about the port, so a stale global
-    // loopback must still be fixable.
+fn overriding_the_chain_source_alone_still_reaches_the_networks_port() {
+    // A profile that only chose its chain source has expressed no opinion
+    // about the URL, so a default global URL still gives way to its port.
     let conn = db_with_profile();
     set_global(&conn, "node_rpc_url", "http://127.0.0.1:12037");
-    set_override(&conn, "p1", "chain_source", "remote_node");
+    set_override(&conn, "p1", "chain_source", "local_node");
     let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
     assert!(cfg.from_override, "the profile did choose something");
-    assert!(
-        !cfg.url_from_override,
-        "the URL still came from the global fallback"
-    );
+    assert_eq!(cfg.node_rpc_url, "http://127.0.0.1:14037");
 }
 
 #[test]
 fn a_per_profile_setting_outside_the_node_tuple_is_not_a_node_override() {
     // `profile_settings` is a general per-profile store. A key that says
     // nothing about which node this profile talks to must not make the node
-    // config read as overridden — and so must not disable realign.
+    // config read as overridden.
     let conn = db_with_profile();
     set_override(&conn, "p1", "some_unrelated_preference", "yes");
     let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
     assert!(!cfg.from_override);
-    assert!(!cfg.url_from_override);
 }
 
 #[test]
-fn an_empty_url_override_does_not_protect_the_url_from_realign() {
-    // An empty override is "no meaningful choice" for resolution, so it must
-    // be "no meaningful choice" for realign too, or the two disagree about
-    // whose URL is in play.
+fn an_empty_url_override_is_no_choice_of_url() {
+    // An empty override is "no meaningful choice": the default global URL
+    // still gives way to the network's port.
     let conn = db_with_profile();
     set_global(&conn, "node_rpc_url", "http://127.0.0.1:12037");
     set_override(&conn, "p1", "node_rpc_url", "");
     let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
-    assert!(!cfg.url_from_override);
+    assert_eq!(cfg.node_rpc_url, "http://127.0.0.1:14037");
+}
+
+// --- Local node per network (spec 2026-10-24 R1) ---------------------------
+
+/// A `local_node` profile without a URL override reaches its own network's
+/// node when the global URL is only a default: empty, or a loopback URL on some
+/// network's default RPC port, which is what the network started last left
+/// there. Another network's wallet must not follow it.
+#[test]
+fn a_local_node_profile_reaches_its_networks_port_over_a_default_global_url() {
+    let conn = db_with_profile(); // p1 is regtest
+    for global in [
+        "",
+        "http://127.0.0.1:12037",
+        "http://localhost:13037/",
+        "http://[::1]:15037",
+        "https://127.0.0.1:12037",
+    ] {
+        set_global(&conn, "node_rpc_url", global);
+        let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+        assert_eq!(
+            cfg.node_rpc_url, "http://127.0.0.1:14037",
+            "global {global:?}"
+        );
+    }
+}
+
+/// A global URL that is not a default (another host, or a port no network
+/// uses by default) is the user's choice, and a `local_node` profile without
+/// an override keeps it: a node on another machine of the LAN, or a node on a
+/// custom port, is not silently replaced by 127.0.0.1.
+#[test]
+fn a_local_node_profile_keeps_a_global_url_that_is_not_a_default() {
+    let conn = db_with_profile();
+    for global in [
+        "http://127.0.0.1:9999",
+        "http://192.168.1.5:12037",
+        "http://node.example:14037",
+    ] {
+        set_global(&conn, "node_rpc_url", global);
+        let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+        assert_eq!(cfg.node_rpc_url, global);
+    }
+}
+
+/// A remote node is not the profile's network's local node: it keeps the
+/// global URL even when that URL looks like a loopback default.
+#[test]
+fn a_remote_node_profile_keeps_the_global_url() {
+    let conn = db_with_profile();
+    set_global(&conn, "chain_source", "remote_node");
+    set_global(&conn, "node_rpc_url", "http://127.0.0.1:12037");
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert_eq!(cfg.node_rpc_url, "http://127.0.0.1:12037");
+}
+
+/// The profile's own URL wins over the network's port, as ADR-001 says.
+#[test]
+fn a_profile_url_override_still_wins() {
+    let conn = db_with_profile();
+    set_override(&conn, "p1", "node_rpc_url", "http://127.0.0.1:12037");
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert_eq!(cfg.node_rpc_url, "http://127.0.0.1:12037");
 }

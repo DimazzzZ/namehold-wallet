@@ -129,47 +129,36 @@ impl NodeMode {
     }
 }
 
-/// If `current` is a loopback node URL pointing at another network's default
-/// hsd RPC port, return the URL for `network`'s port. Otherwise `None`.
-///
-/// This exists because `start_hsd` launches hsd with `--regtest` / `--testnet`,
-/// which makes it listen on that network's port, while `node_rpc_url` keeps
-/// whatever was seeded (the mainnet 12037). The wallet then talks to a port
-/// nothing is listening on.
-///
-/// Deliberately narrow. It only rewrites a URL that is BOTH loopback AND on a
-/// recognised default port for a different network — i.e. one that is
-/// self-evidently a leftover default rather than a choice. A custom port, a
-/// non-loopback host, or a URL already on the right port is returned as `None`
-/// and left exactly as the user set it.
-pub fn realign_loopback_rpc_url(current: &str, network: Network) -> Option<String> {
-    let want = network.default_rpc_port();
-    let rest = current
+/// Whether `url` is a loopback node URL on some network's default hsd RPC port
+/// (12037 / 13037 / 14037 / 15037): a leftover default, not a choice. A
+/// `local_node` profile without its own URL then reaches its own network's
+/// port instead (spec 2026-10-24 R1). Another host, or a port no network uses
+/// by default, is the user's choice and is `false`.
+pub fn is_default_loopback_rpc_url(url: &str) -> bool {
+    let Some(rest) = url
         .strip_prefix("http://")
-        .or_else(|| current.strip_prefix("https://"))?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let (host, port) = authority.rsplit_once(':')?;
-    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]") {
-        return None;
-    }
-    let port: u16 = port.parse().ok()?;
-    if port == want {
-        return None;
-    }
-    // Only a port that is some OTHER network's default counts as a stale
-    // default; anything else is a deliberate choice we must not overwrite.
-    let is_other_default = [
-        Network::Main,
-        Network::Testnet,
-        Network::Regtest,
-        Network::Simnet,
-    ]
-    .iter()
-    .any(|n| n.default_rpc_port() == port);
-    if !is_other_default {
-        return None;
-    }
-    Some(format!("http://{host}:{want}"))
+        .or_else(|| url.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    let Some(authority) = rest.split(['/', '?', '#']).next() else {
+        return false;
+    };
+    let Some((host, port)) = authority.rsplit_once(':') else {
+        return false;
+    };
+    let Ok(port) = port.parse::<u16>() else {
+        return false;
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+        && [
+            Network::Main,
+            Network::Testnet,
+            Network::Regtest,
+            Network::Simnet,
+        ]
+        .iter()
+        .any(|n| n.default_rpc_port() == port)
 }
 
 /// Resolve node_mode from settings map.
@@ -1454,48 +1443,33 @@ mod tests {
         assert_eq!(client.source, ChainSource::Explorer);
     }
 
-    /// The bug this exists for: starting a regtest node rewrites the seeded
-    /// mainnet default to regtest's port, so the wallet reaches the node it
-    /// just launched.
+    /// A loopback URL on any network's default RPC port is a leftover
+    /// default, whichever network it names.
     #[test]
-    fn realign_rewrites_a_stale_default_for_the_target_network() {
-        assert_eq!(
-            realign_loopback_rpc_url("http://127.0.0.1:12037", Network::Regtest).as_deref(),
-            Some("http://127.0.0.1:14037")
-        );
-        assert_eq!(
-            realign_loopback_rpc_url("http://localhost:14037", Network::Main).as_deref(),
-            Some("http://localhost:12037")
-        );
+    fn a_loopback_url_on_a_default_port_is_a_default() {
+        for url in [
+            "http://127.0.0.1:12037",
+            "http://localhost:13037/",
+            "https://127.0.0.1:14037",
+            "http://[::1]:15037",
+        ] {
+            assert!(is_default_loopback_rpc_url(url), "{url}");
+        }
     }
 
-    /// Anything that is not self-evidently a leftover default is left alone: a
-    /// port the user chose, a host that is not loopback, and a URL already on
-    /// the right port. Overwriting any of these would silently redirect the
-    /// wallet away from the node the user configured.
+    /// Anything else is a choice: a port no network uses by default, a host
+    /// that is not loopback, or a URL with no port to compare.
     #[test]
-    fn realign_leaves_deliberate_urls_untouched() {
-        assert_eq!(
-            realign_loopback_rpc_url("http://127.0.0.1:14037", Network::Regtest),
-            None,
-            "already correct"
-        );
-        assert_eq!(
-            realign_loopback_rpc_url("http://127.0.0.1:9999", Network::Regtest),
-            None,
-            "a custom port is a choice, not a stale default"
-        );
-        assert_eq!(
-            realign_loopback_rpc_url("https://node.example.com:12037", Network::Regtest),
-            None,
-            "a remote host is never rewritten"
-        );
-        assert_eq!(
-            realign_loopback_rpc_url("http://127.0.0.1", Network::Regtest),
-            None,
-            "no port to compare"
-        );
-        assert_eq!(realign_loopback_rpc_url("", Network::Regtest), None);
+    fn a_custom_port_or_another_host_is_not_a_default() {
+        for url in [
+            "http://127.0.0.1:9999",
+            "https://node.example.com:12037",
+            "http://192.168.1.5:14037",
+            "http://127.0.0.1",
+            "",
+        ] {
+            assert!(!is_default_loopback_rpc_url(url), "{url}");
+        }
     }
 
     #[test]

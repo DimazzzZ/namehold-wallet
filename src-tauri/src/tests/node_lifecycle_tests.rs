@@ -617,3 +617,40 @@ async fn resync_hsd_chain_refuses_without_an_active_profile() {
         "the refusal should say what is missing, got: {err}"
     );
 }
+
+// ===========================================================================
+// Spec 2026-10-24 R2: starting a node never rewrites the global URL. The
+// global URL is read by every other profile, so a start for regtest must not
+// turn the mainnet wallet's default into 14037. A local-node profile already
+// reaches its own port (R1) and never asks for a rewrite; a remote-node
+// profile whose global URL happens to be another network's loopback default
+// is the case the old realign still wrote.
+// ===========================================================================
+#[tokio::test]
+#[serial(hsd_home)]
+async fn starting_a_node_leaves_the_global_url_as_it_was() {
+    let h = Harness::new(FakeMode::DieError, "8.5.0");
+    let conn = conn_for(&h, "http://127.0.0.1:12037");
+    db::queries::set_setting(&conn, "chain_source", "remote_node").unwrap();
+    db::queries::insert_wallet_profile(
+        &conn,
+        "p-regtest",
+        "Regtest",
+        "watch_only_xpub",
+        "regtest",
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "p-regtest").unwrap();
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+
+    // The fake exits at once; whatever the outcome, the setting is the point.
+    let _ = start_hsd(app.state()).await;
+
+    let db = state.db.lock().unwrap();
+    let url = db::queries::get_settings(&db).unwrap()["node_rpc_url"].clone();
+    assert_eq!(url, "http://127.0.0.1:12037");
+}

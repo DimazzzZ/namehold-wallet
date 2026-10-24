@@ -21,13 +21,13 @@ Every requirement names the code that will enforce it and the test that will pin
 
 ### 3.1 Which node a wallet reaches
 
-**R1 — A local-node wallet without an override reaches its own network's port.** For a profile whose effective `chain_source` is `local_node` and whose own override supplies no URL, the effective URL is `Network::default_rpc_url()` of the profile's network, whatever the global `node_rpc_url` says. A per-profile URL override still wins (ADR-001). A `remote_node` profile without an override keeps the global URL. hsd's per-network RPC ports are 12037, 13037, 14037 and 15037 (`protocol/networks.js:557, 789, 954, 1123`), already carried by `Network::default_rpc_port`.
-*To enforce:* `noncustodial/node_config.rs::effective_node_config_for_profile`.
-*To pin:* `node_config_tests::{a_local_node_profile_reaches_its_networks_port_whatever_the_global_url, a_profile_url_override_still_wins, a_remote_node_profile_keeps_the_global_url}`.
+**R1 — A local-node wallet without an override reaches its own network's port over a default global URL.** For a profile whose effective `chain_source` is `local_node` and whose own override supplies no URL, the effective URL is `Network::default_rpc_url()` of the profile's network when the global `node_rpc_url` is only a default: empty, or a loopback URL (`127.0.0.1`, `localhost`, `[::1]`) on some network's default RPC port, which is what the network started last left there. A global URL that is not a default (another host, a port no network uses by default) is the user's choice and is kept, so a node elsewhere on the LAN is never replaced by 127.0.0.1. A per-profile URL override still wins (ADR-001). A `remote_node` or `explorer` profile keeps the global URL. hsd's per-network RPC ports are 12037, 13037, 14037 and 15037 (`protocol/networks.js:557, 789, 954, 1123`), already carried by `Network::default_rpc_port`.
+*Enforced:* `noncustodial/node_config.rs::effective_node_config_for_profile`, `noncustodial/rpc.rs::is_default_loopback_rpc_url`.
+*Pinned:* `node_config_tests::{a_local_node_profile_reaches_its_networks_port_over_a_default_global_url, a_local_node_profile_keeps_a_global_url_that_is_not_a_default, a_remote_node_profile_keeps_the_global_url, a_profile_url_override_still_wins, an_override_equal_to_global_is_still_the_users_choice, overriding_the_chain_source_alone_still_reaches_the_networks_port, an_empty_url_override_is_no_choice_of_url, a_local_node_profile_with_nothing_set_reaches_its_networks_default_port, for_profile_of_a_local_node_profile_talks_to_its_networks_port}`, `rpc::tests::{a_loopback_url_on_a_default_port_is_a_default, a_custom_port_or_another_host_is_not_a_default}`.
 
-**R2 — Nothing rewrites the global URL.** `start_hsd` no longer calls `realign_loopback_rpc_url` to write `node_rpc_url`; R1 makes the rewrite unnecessary, and with several nodes it would flip a setting other profiles read. The function and its tests go, or stay only where they do not write a setting.
-*To enforce:* `commands/node.rs::start_hsd`.
-*To pin:* `node_lifecycle_tests::starting_a_node_leaves_the_global_url_as_it_was`.
+**R2 — Nothing rewrites the global URL.** `start_hsd` writes no setting: R1 makes a rewrite unnecessary for a local node, and with several nodes it would flip a setting other profiles read. `realign_loopback_rpc_url`, the one function that wrote it, is removed.
+*Enforced:* `commands/node.rs::start_hsd`.
+*Pinned:* `node_lifecycle_tests::starting_a_node_leaves_the_global_url_as_it_was` (a remote-node profile over another network's loopback default, the case the realign still wrote once R1 was in).
 
 ### 3.2 One node per network
 
@@ -87,7 +87,7 @@ Every requirement names the code that will enforce it and the test that will pin
 ## 5. Known gaps
 
 - **Two full nodes cost memory and CPU.** Accepted: regtest and simnet are cheap, and the costly mainnet node is one the user already ran.
-- **A non-default local port needs an override.** A user who ran a local node on a custom port through the global URL keeps it only through a per-profile override after R1; the migration copies such a URL into the override of each local-node profile it served (ADR-0005), so their node does not change.
+- **A custom global URL serves every local-node profile alike.** A global URL that is not a default is kept for every network's local-node profiles, so two networks pointed at one custom global URL still reach one node; the network guard refuses the wrong chain, and a per-profile override is the way to give each its own. Accepted: it is an explicit setting, and replacing it would reroute a user who configured a node by hand.
 
 ## 6. Implementation plan
 
@@ -95,7 +95,7 @@ Each step is one PR-sized change with its tests, and leaves the app working on i
 
 | Step | Change | Requirements | Status |
 |------|--------|--------------|--------|
-| 1 | A `local_node` profile without an override reaches its network's port; `start_hsd` stops writing `node_rpc_url`; a migration copies a non-default local global URL into the override of each local-node profile it served | R1, R2 | Not started |
+| 1 | A `local_node` profile without an override reaches its network's port over a default global URL; a custom global URL is kept; `start_hsd` stops writing `node_rpc_url` and the realign is removed | R1, R2 | Done |
 | 2 | Mode and autostart per network: migration, one resolver of the profile's network, every reader of the mode switched to it | R10 (backend) | Not started |
 | 3 | Pid file and own-node recognition by command line (macOS, Linux, Windows) | R6 | Not started |
 | 4 | One own-node handle per network in `AppState`; Start/Stop per network; an outside node is never stopped | R3, R7 | Not started |
