@@ -3189,6 +3189,12 @@ async fn finalize_and_sign_refused_when_the_name_left_its_lock_transfer() {
             "could not check",
         ),
         ("no info", no_info, Some(coin.clone()), "could not check"),
+        (
+            "no live name",
+            json!({ "info": null, "start": null }),
+            Some(coin.clone()),
+            "has no on-chain state or has expired",
+        ),
         ("coin spent", r.info(), None, "no longer unspent"),
         (
             "no TRANSFER block",
@@ -3295,7 +3301,11 @@ async fn finalize_and_sign_refused_before_the_lockup() {
             .err()
             .expect("one block early"),
     );
-    assert!(e.contains("lockup ends in 1 block"), "{e}");
+    assert!(e.ends_with("lockup ends in 1 block"), "{e}");
+    r.node(ready_tip(net) - 3, Some(SIGN_MTP), r.info(), Some(r.coin()))
+        .await;
+    let e = err_text(prepare(&r, &price("5")).await.err().expect("three early"));
+    assert!(e.ends_with("lockup ends in 3 blocks"), "{e}");
     r.node(ready_tip(net), Some(SIGN_MTP), r.info(), Some(r.coin()))
         .await;
     prepare(&r, &price("5")).await.expect("at the lockup's end");
@@ -9506,4 +9516,479 @@ async fn other_devices_file_that_is_not_this_listings_is_refused() {
     let after = l.r.listing();
     assert_eq!(after.steps_json, before.steps_json);
     assert!(after.managed_elsewhere_at.is_some());
+}
+
+// --- Rows changed between the node reads and the write -----------------------
+
+use crate::commands::shakedex::{
+    take_over_with_file_inner, upgrade_restored_lock_inner, OwnFileInput,
+};
+
+/// Answer the node's `method` from now on with `result`, first running
+/// `change` on the database: a sync (or another window) that writes the row
+/// while the command waits for the node, after the command read it.
+async fn change_row_when_asked(l: &mut Listed, method: &str, result: Value, change: &'static str) {
+    // `Listed::node` mocks the tip first and the block hash second; an
+    // unhit mock answers before a later one, so the old one goes.
+    let old = match method {
+        "getblockchaininfo" => 0,
+        "getblockhash" => 1,
+        other => panic!("not mocked by Listed::node: {other}"),
+    };
+    l.r.mocks.remove(old).remove_async().await;
+    let handle = l.r.app.handle().clone();
+    let id = l.r.listing_id.clone();
+    let m =
+        l.r.node
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(json!({ "method": method })))
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |_| {
+                handle
+                    .state::<AppState>()
+                    .db
+                    .lock()
+                    .unwrap()
+                    .execute(change, [&id])
+                    .unwrap();
+                rpc_ok(result.clone()).into_bytes()
+            })
+            .create_async()
+            .await;
+    l.r.mocks.push(m);
+}
+
+/// R28: the cancel is stored only while the listing is still as it was
+/// read: a row a sync moved on while the prompt was open is left as it is,
+/// the signed cancel is not kept, and the command says so.
+#[tokio::test]
+async fn cancel_saves_nothing_when_the_listing_changed_meanwhile() {
+    let l = listed_fixture().await;
+    let handle = l.r.app.handle().clone();
+    let id = l.r.listing_id.clone();
+    crate::commands::secure_prompt::on_next_test_answer(move || {
+        handle
+            .state::<AppState>()
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE shakedex_listings SET state = 'sale_pending' WHERE id = ?1",
+                [&id],
+            )
+            .unwrap();
+    });
+    answer(true);
+    let e = err_text(cancel(&l).await.expect_err("changed"));
+    assert!(e.contains("changed meanwhile"), "{e}");
+    assert_eq!(take_test_requests().len(), 1, "it was asked");
+    let s = l.r.listing();
+    assert_eq!(s.state, ListingState::SalePending, "the change is kept");
+    assert_eq!((s.cancel_draft_id, s.cancel_txid), (None, None));
+    assert_eq!(
+        count(&l.r.app, "wallet_tx_drafts"),
+        2,
+        "the signed cancel is rolled back"
+    );
+}
+
+/// A row with a cancel address but no index (or an index no receive branch
+/// has) is a corrupted row: the cancel is refused before the prompt, and no
+/// address is reserved in its place.
+#[tokio::test]
+async fn cancel_refuses_a_row_with_half_or_a_negative_cancel_index() {
+    for (sql, want) in [
+        (
+            "UPDATE shakedex_listings SET cancel_child_index = NULL",
+            "corrupted listing: no cancel address",
+        ),
+        (
+            "UPDATE shakedex_listings SET cancel_child_index = -1",
+            "corrupted listing: no cancel index",
+        ),
+    ] {
+        let l = listed_fixture().await;
+        let _ = take_test_requests();
+        let addresses = count(&l.r.app, "derived_addresses");
+        with_db(&l.r.app, |c| c.execute(sql, []).unwrap());
+        decline_if_asked();
+        let e = err_text(cancel(&l).await.expect_err(want));
+        assert!(e.contains(want), "{sql}: {e}");
+        assert_no_cancel(&l, ListingState::Listed);
+        assert_eq!(count(&l.r.app, "derived_addresses"), addresses, "{sql}");
+    }
+}
+
+/// R28, fail closed: a reply the FINALIZE out of the lock reads that leaves
+/// out a field (the cancel coin's address, the name's info, its owner, the
+/// owner's output, whether it was revoked) is "could not check" naming that
+/// field, a node error, and nothing is written.
+#[tokio::test]
+async fn finalize_cancel_cannot_check_a_reply_missing_a_field() {
+    let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
+    let tip = LISTED_TIP + lockup - 1;
+    type Change = fn(&mut Value, &mut Value);
+    let cases: [(Change, &str); 5] = [
+        (
+            |coin, _| {
+                coin.as_object_mut().unwrap().remove("address");
+            },
+            "the cancel transfer's address or covenant",
+        ),
+        (
+            |_, info| {
+                info.as_object_mut().unwrap().remove("info");
+            },
+            "the name's info",
+        ),
+        (
+            |_, info| {
+                info["info"]["owner"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("hash");
+            },
+            "the name's owner",
+        ),
+        (
+            |_, info| {
+                info["info"]["owner"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("index");
+            },
+            "the name's owner output",
+        ),
+        (
+            |_, info| {
+                info["info"].as_object_mut().unwrap().remove("revoked");
+            },
+            "whether the name was revoked",
+        ),
+    ];
+    for (change, what) in cases {
+        let (mut l, c) = cancel_mined_fixture(LISTED_TIP, tip, None).await;
+        let to = l.r.listing().cancel_address.unwrap();
+        let mut coin = transfer_at_lock(&c, &to, LISTED_TIP);
+        let mut info = name_info(RENEWAL, 0, &c);
+        info["info"]["transfer"] = LISTED_TIP.into();
+        change(&mut coin, &mut info);
+        l.node(tip, Some(LISTED_MTP), info, vec![(c, 0, Some(coin))])
+            .await;
+        let e = finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err(what);
+        assert!(
+            matches!(&e, crate::error::AppError::Rpc(m)
+                if *m == format!("node did not report {what}: could not check the cancel")),
+            "{what}: {e:?}"
+        );
+        assert_no_cancel_finalize(&l);
+    }
+}
+
+/// R28: the FINALIZE out of the lock is stored only while the listing is
+/// still as it was read: a row another device finalized while the node was
+/// read is left as it is, with no draft.
+#[tokio::test]
+async fn finalize_cancel_saves_nothing_when_the_listing_changed_meanwhile() {
+    let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
+    let (mut l, _c) = cancel_mined_fixture(LISTED_TIP, LISTED_TIP + lockup - 1, None).await;
+    change_row_when_asked(
+        &mut l,
+        "getblockhash",
+        json!(RENEWAL_BLOCK),
+        "UPDATE shakedex_listings SET state = 'cancelled' WHERE id = ?1",
+    )
+    .await;
+    let e = err_text(
+        finalize_cancel(&l.r.app.state(), &l.r.listing_id, None)
+            .await
+            .expect_err("changed"),
+    );
+    assert!(e.contains("changed meanwhile"), "{e}");
+    let s = l.r.listing();
+    assert_eq!(
+        (s.state, s.cancel_finalize_draft_id),
+        (ListingState::Cancelled, None)
+    );
+    assert_eq!(count(&l.r.app, "wallet_tx_drafts"), 3, "no FINALIZE draft");
+}
+
+/// R44: the take-over is stored only while the listing is still as it was
+/// read: a row a sync moved to SalePending while the node was read keeps its
+/// mark and steps.
+#[tokio::test]
+async fn manage_here_saves_nothing_when_the_listing_changed_meanwhile() {
+    let mut l = listed_fixture().await;
+    marked_listed(&l);
+    let before = l.r.listing();
+    change_row_when_asked(
+        &mut l,
+        "getblockchaininfo",
+        chain_info(Network::Regtest, LISTED_TIP, Some(LISTED_MTP)),
+        "UPDATE shakedex_listings SET state = 'sale_pending' WHERE id = ?1",
+    )
+    .await;
+    let e = err_text(manage_here(&l).await.expect_err("changed"));
+    assert!(e.contains("changed meanwhile"), "{e}");
+    assert_eq!(l.r.listing().state, ListingState::SalePending);
+    assert_not_taken_over(&l, &before);
+}
+
+/// R44, fail closed: a foreign step stored that does not read is no step to
+/// take over: refused before the node is read, in the words My listings
+/// shows, and nothing changes.
+#[tokio::test]
+async fn manage_here_refuses_a_foreign_step_that_does_not_read() {
+    let l = listed_fixture().await;
+    marked_listed(&l);
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET foreign_step_json = '{\"price\":' WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap()
+    });
+    let before = l.r.listing();
+    let want = "the price seen from the other device cannot be read here";
+    let e = err_text(manage_here(&l).await.expect_err("unreadable"));
+    assert!(e.contains(want), "{e}");
+    assert_not_taken_over(&l, &before);
+    let row = with_db(&l.r.app, |c| {
+        crate::commands::shakedex::my_listings_from_conn(c, PROFILE, Network::Regtest, None)
+            .unwrap()
+            .remove(0)
+    });
+    assert!(!row.actions.manage_here.allowed);
+    assert!(row
+        .actions
+        .manage_here
+        .reason
+        .as_deref()
+        .is_some_and(|r| r.contains(want)));
+    assert_eq!(row.foreign_step_price_doos, None);
+}
+
+/// R42: a listing managed elsewhere whose own stored steps do not read is
+/// still listed as managed elsewhere with the other device's price, its
+/// actions refused in the read's words.
+#[tokio::test]
+async fn an_unreadable_row_managed_elsewhere_still_shows_the_other_devices_price() {
+    let l = listed_fixture().await;
+    marked_listed(&l);
+    with_db(&l.r.app, |c| {
+        c.execute("UPDATE shakedex_listings SET steps_json = 'nope'", [])
+            .unwrap()
+    });
+    let row = with_db(&l.r.app, |c| {
+        crate::commands::shakedex::my_listings_from_conn(c, PROFILE, Network::Regtest, None)
+            .unwrap()
+            .remove(0)
+    });
+    assert!(matches!(
+        row.prices,
+        crate::commands::shakedex::ListingPrices::Unreadable { .. }
+    ));
+    assert!(!row.actions.manage_here.allowed);
+    assert!(row.managed_elsewhere);
+    assert_eq!(row.foreign_step_price_doos, Some(3_000_000));
+}
+
+/// The other device's file for a marked listing (its step added), the
+/// listing as read, and the lock coin as hsd reports it.
+fn take_over_inputs(l: &Listed) -> (ListingFile, ShakedexListing, NodeCoin) {
+    let step = marked_listed(l);
+    let file = ListingFile::parse(&other_devices_file(l, &[step]), Network::Regtest).unwrap();
+    let coin: NodeCoin = serde_json::from_value(l.lock_coin(TRANSFER_HEIGHT + 20)).unwrap();
+    (file, l.r.listing(), coin)
+}
+
+/// R45: the other device's file whose public key is not the lock key this
+/// wallet derives for the name takes nothing over.
+#[tokio::test]
+async fn take_over_with_a_file_refuses_another_lock_key() {
+    let l = listed_fixture().await;
+    let (file, listing, coin) = take_over_inputs(&l);
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    let e = with_db(&l.r.app, |c| {
+        take_over_with_file_inner(
+            c,
+            &OwnFileInput {
+                network: Network::Regtest,
+                listing: &listing,
+                file: &file,
+                key: &other,
+                coin: Some(&coin),
+            },
+        )
+        .unwrap_err()
+    });
+    let e = err_text(e);
+    assert!(
+        e.contains("is not the lock key this wallet derives for"),
+        "{e}"
+    );
+    assert_eq!(l.r.listing().steps_json, listing.steps_json);
+    assert!(l.r.listing().managed_elsewhere_at.is_some());
+}
+
+/// R45: the take-over by file is stored only while the row is still as it
+/// was read: a foreign step seen anew meanwhile is kept, nothing replaced.
+#[tokio::test]
+async fn take_over_with_a_file_saves_nothing_when_the_listing_changed_meanwhile() {
+    let l = listed_fixture().await;
+    let (file, listing, coin) = take_over_inputs(&l);
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET foreign_step_json = '{}' WHERE id = ?1",
+            [&l.r.listing_id],
+        )
+        .unwrap()
+    });
+    let e = with_db(&l.r.app, |c| {
+        take_over_with_file_inner(
+            c,
+            &OwnFileInput {
+                network: Network::Regtest,
+                listing: &listing,
+                file: &file,
+                key: &l.r.key(),
+                coin: Some(&coin),
+            },
+        )
+        .unwrap_err()
+    });
+    let e = err_text(e);
+    assert!(e.contains("changed meanwhile"), "{e}");
+    let after = l.r.listing();
+    assert_eq!(after.steps_json, listing.steps_json);
+    assert_eq!(after.listing_file_json, listing.listing_file_json);
+    assert_eq!(after.foreign_step_json.as_deref(), Some("{}"));
+}
+
+/// A row that lost a fact a command signs or stores over (the lock coin,
+/// the payment address, the listing file, the lock TRANSFER) is a corrupted
+/// row: each command refuses it in its own words, as an internal error, and
+/// nothing is asked, signed or written.
+#[tokio::test]
+async fn commands_refuse_a_row_that_lost_what_they_sign_over() {
+    type Run = for<'a> fn(
+        &'a Listed,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), crate::error::AppError>> + 'a>,
+    >;
+    let cancel_it: Run = |l| Box::pin(async move { cancel(l).await.map(|_| ()) });
+    let lower_it: Run = |l| Box::pin(async move { lower(l, "3").await.map(|_| ()) });
+    let take_it: Run = |l| Box::pin(async move { manage_here(l).await.map(|_| ()) });
+    for (case, column, run, marked, want) in [
+        ("cancel", "lock_txid", cancel_it, false, "no lock coin"),
+        ("lower", "lock_txid", lower_it, false, "no lock coin"),
+        (
+            "lower",
+            "payment_address",
+            lower_it,
+            false,
+            "no payment address",
+        ),
+        ("manage here", "lock_txid", take_it, true, "no lock coin"),
+        (
+            "manage here",
+            "listing_file_json",
+            take_it,
+            true,
+            "no listing file",
+        ),
+    ] {
+        let l = listed_fixture().await;
+        if marked {
+            marked_listed(&l);
+        }
+        with_db(&l.r.app, |c| {
+            c.execute(&format!("UPDATE shakedex_listings SET {column} = NULL"), [])
+                .unwrap()
+        });
+        let before = l.r.listing();
+        let _ = take_test_requests();
+        decline_if_asked();
+        let e = run(&l).await.expect_err(case);
+        assert!(
+            matches!(&e, crate::error::AppError::Other(m) if *m == format!("corrupted listing: {want}")),
+            "{case} without {column}: {e:?}"
+        );
+        assert!(take_test_requests().is_empty(), "{case}: nothing asked");
+        crate::commands::secure_prompt::clear_test_answers();
+        let after = l.r.listing();
+        assert_eq!(
+            (after.state, after.steps_json, after.cancel_draft_id),
+            (before.state, before.steps_json, before.cancel_draft_id),
+            "{case}"
+        );
+        assert_eq!(count(&l.r.app, "wallet_tx_drafts"), 2, "{case}");
+    }
+
+    // Finalize & sign, on a listing ready for it.
+    for (column, want) in [
+        ("lock_transfer_txid", "no lock transfer"),
+        ("payment_address", "no payment address"),
+    ] {
+        let r = ready_fixture("regtest").await;
+        with_db(&r.app, |c| {
+            c.execute(&format!("UPDATE shakedex_listings SET {column} = NULL"), [])
+                .unwrap()
+        });
+        let e = prepare(&r, &price("5")).await.err().expect(column);
+        assert!(
+            matches!(&e, crate::error::AppError::Other(m) if *m == format!("corrupted listing: {want}")),
+            "without {column}: {e:?}"
+        );
+        assert_eq!(r.listing().state, ListingState::ReadyToFinalize);
+    }
+}
+
+/// R32: a Restored lock is upgraded by its own file only while it is still
+/// the Restored lock read: one a sync ended meanwhile stays as it ended.
+#[tokio::test]
+async fn upgrade_saves_nothing_when_the_restored_lock_changed_meanwhile() {
+    let (_node, _mocks, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let listing = open_listing(&app).expect("the Restored lock");
+    with_db(&app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET state = 'sold' WHERE id = ?1",
+            [&listing.id],
+        )
+        .unwrap()
+    });
+    let file = ListingFile::parse(&good_file(), Network::Regtest).unwrap();
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let e = with_db(&app, |c| {
+        upgrade_restored_lock_inner(
+            c,
+            &OwnFileInput {
+                network: Network::Regtest,
+                listing: &listing,
+                file: &file,
+                key: &key,
+                coin: None,
+            },
+        )
+        .unwrap_err()
+    });
+    let e = err_text(e);
+    assert!(e.contains("this lock changed meanwhile"), "{e}");
+    let after = with_db(&app, |c| {
+        queries::get_shakedex_listing(c, &listing.id)
+            .unwrap()
+            .unwrap()
+    });
+    assert_eq!(after.state, ListingState::Sold);
+    assert_eq!(
+        (
+            after.payment_address,
+            after.steps_json,
+            after.listing_file_json
+        ),
+        (None, "[]".to_string(), None)
+    );
 }

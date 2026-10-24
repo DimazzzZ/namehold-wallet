@@ -532,6 +532,22 @@ async fn status_says_when_the_index_is_missing() {
     assert_eq!(s.candidates, 0);
 }
 
+/// A history read that fails for any other reason than the missing index is
+/// an error for the status line, never a count of zero candidates.
+#[tokio::test]
+async fn status_errs_on_a_history_read_failing_for_another_reason() {
+    let db = store();
+    let node =
+        node_with(vec![]).with_txs_by_address_fn(|_| Err(AppError::Rpc("connection reset".into())));
+    let e = lock_search_status_with(&node, &db, PROFILE, NET)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&e, AppError::Rpc(m) if m == "connection reset"),
+        "{e:?}"
+    );
+}
+
 /// hsd answers `GET /tx/address` with an empty list, not an error, when an
 /// index is off: the indexes are read from `GET /` first, and a node without
 /// them is refused with the sentence, the profile left not done.
