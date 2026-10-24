@@ -1775,7 +1775,9 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!("namehold_watched_scan_{tag}_{n}.db"))
+        // The pid keeps two test processes (two checkouts) from sharing a file.
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!("namehold_watched_scan_{tag}_{pid}_{n}.db"))
     }
 
     fn cleanup_db(path: &std::path::Path) {
@@ -1997,5 +1999,57 @@ mod tests {
         );
 
         cleanup_db(&path);
+    }
+
+    /// An active-profile id whose profile row is gone skips the pass: no error
+    /// for the daemon log every minute, and no fallback to the global node.
+    #[tokio::test]
+    async fn watched_scan_skips_the_pass_when_the_active_profile_is_gone() {
+        let mut server = mockito::Server::new_async().await;
+        let any_call = server.mock("POST", "/").expect(0).create_async().await;
+
+        let path = temp_watched_db("ghost_profile");
+        let _ = std::fs::remove_file(&path);
+        let conn = crate::commands::sync::open_conn(path.to_str().unwrap()).unwrap();
+        crate::db::queries::set_setting(&conn, SETTING_ENABLED, "true").unwrap();
+        crate::db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+        queries::set_active_profile(&conn, "ghost").unwrap();
+        conn.execute("INSERT INTO watched_names (name) VALUES ('example')", [])
+            .unwrap();
+        drop(conn);
+
+        let out = try_run_watched_scan(path.to_str().unwrap()).await;
+        assert!(
+            out.is_ok(),
+            "a vanished profile must skip, not fail: {out:?}"
+        );
+
+        let conn = crate::commands::sync::open_conn(path.to_str().unwrap()).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM watched_name_states", [], |r| r.get(0))
+            .unwrap();
+        drop(conn);
+        assert_eq!(count, 0);
+        any_call.assert_async().await;
+
+        cleanup_db(&path);
+    }
+
+    #[tokio::test]
+    async fn fetch_all_drops_a_name_the_node_fails_on_and_keeps_asking() {
+        use crate::tests::mock_node_rpc::{MockNodeRpc, RpcCall};
+        let node = MockNodeRpc::new().with_name_info_err("node hiccup");
+        let names = vec!["alpha".to_string(), "beta".to_string()];
+
+        let out = fetch_all(&node, &names).await;
+
+        assert!(out.is_empty());
+        assert_eq!(
+            node.calls(),
+            vec![
+                RpcCall::NameInfo("alpha".into()),
+                RpcCall::NameInfo("beta".into())
+            ]
+        );
     }
 }

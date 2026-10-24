@@ -1195,6 +1195,57 @@ async fn scan_block_assigns_correct_vout_index() {
     assert_eq!(bids[1].index, Some(1));
 }
 
+#[tokio::test]
+async fn scan_block_skips_a_bid_whose_start_height_is_not_a_u32_push() {
+    let (path, conn) = temp_db();
+    let nh = "starthash";
+    let raw_name_hex = hex::encode("start");
+
+    // vout 0 names its auction with a 6-byte item (not a u32 push), vout 1
+    // with a well-formed one. Only the second is an indexable bid, and the
+    // malformed one must not be filed under some invented height either.
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "txid": "txstart",
+                "vout": [
+                    {
+                        "value": 1,
+                        "address": "rs1qa",
+                        "covenant": {
+                            "type": COV_BID as u64,
+                            "items": [nh, "640000000000", &raw_name_hex, "blind"]
+                        }
+                    },
+                    {
+                        "value": 2,
+                        "address": "rs1qb",
+                        "covenant": {
+                            "type": COV_BID as u64,
+                            "items": [nh, START_HEX, &raw_name_hex, "blind"]
+                        }
+                    }
+                ]
+            }]
+        }));
+    scan_block(&mock, path.to_str().unwrap(), NET, 20)
+        .await
+        .unwrap();
+
+    let bids = read_indexed_bids(&conn, NET, START, nh).unwrap();
+    assert_eq!(bids.len(), 1);
+    assert_eq!(bids[0].index, Some(1));
+    let rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM name_bid_outpoints WHERE name_hash_hex = ?1",
+            params![nh],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 1);
+}
+
 // --- Per-profile node config resolution for chain_scan ----------------------
 
 #[test]

@@ -456,3 +456,40 @@ async fn test_export_csv_propagates_query_error() {
         "export should fail when assets table is missing"
     );
 }
+
+#[tokio::test]
+async fn export_csv_writes_hns_received_and_expiry_height_as_plain_numbers() {
+    let suffix = format!("exp_numbers_{}", std::process::id());
+    let in_path = write_temp_csv("Name\nexport_n\nexport_m\n", &suffix);
+    let out = temp_out_path(&suffix);
+    let app = mock_app_with(setup_state());
+    crate::commands::csv::import_csv(app.state(), in_path)
+        .await
+        .unwrap();
+    {
+        let state = app.state::<AppState>();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "UPDATE assets SET hns_received = 1234567, expires_at_height = 250000
+             WHERE tld = 'export_n'",
+            [],
+        )
+        .unwrap();
+    }
+
+    crate::commands::csv::export_csv(app.state(), out.clone(), None, None, None)
+        .await
+        .unwrap();
+
+    let mut rdr = csv::Reader::from_path(&out).unwrap();
+    let headers = rdr.headers().unwrap().clone();
+    let col = |h: &str| headers.iter().position(|x| x == h).unwrap();
+    let (name, hns, exp) = (col("Name"), col("HNS Received"), col("Expires At Height"));
+    let rows: Vec<csv::StringRecord> = rdr.records().map(|r| r.unwrap()).collect();
+    cleanup(&suffix);
+    let row = |tld: &str| rows.iter().find(|r| &r[name] == tld).unwrap().clone();
+    assert_eq!(&row("export_n")[hns], "1234567");
+    assert_eq!(&row("export_n")[exp], "250000");
+    assert_eq!(&row("export_m")[hns], "");
+    assert_eq!(&row("export_m")[exp], "");
+}

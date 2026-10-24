@@ -273,6 +273,53 @@ fn get_watchlist_status_returns_cached_state_and_expiry() {
     assert_eq!(statuses[0].expiry, Some(200000));
 }
 
+#[test]
+fn csv_export_writes_the_cached_state_and_expiry_height() {
+    let path_str = tmp_csv_path("cached_export");
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(path_str.clone());
+
+    let app = app();
+    add_to_watchlist(app.state(), "cached".into(), None, None).unwrap();
+    {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        db::queries::insert_wallet_profile(
+            &conn,
+            "wp1",
+            "W",
+            "mnemonic_hot",
+            "regtest",
+            "xpubFAKE",
+            0,
+            false,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state, renewal_height)
+             VALUES ('wp1', 'cached', 'deadbeef', 'CLOSED', 200000)",
+            [],
+        )
+        .unwrap();
+    }
+
+    assert_eq!(
+        export_watchlist_csv(app.state(), path_str.clone()).unwrap(),
+        1
+    );
+
+    let content = std::fs::read_to_string(&path_str).unwrap();
+    let row = content.lines().nth(1).unwrap();
+    assert!(row.starts_with("cached,"), "{row}");
+    assert!(row.ends_with(",CLOSED,200000"), "{row}");
+}
+
 // --- coverage: csv_split_row escaped-quote handling (lines 199-200) ----------
 
 #[test]

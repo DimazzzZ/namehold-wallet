@@ -691,6 +691,36 @@ async fn test_get_names_skips_failed_lookups() {
     assert_eq!(result[0].name, "known");
 }
 
+#[tokio::test]
+async fn get_names_keeps_one_row_when_two_watch_entries_resolve_to_one_name() {
+    let mut server = Server::new_async().await;
+    let lower = server
+        .mock("GET", "/api/names/alpha")
+        .with_status(200)
+        .with_body(r#"{"name":"alpha","state":"CLOSED"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+    let upper = server
+        .mock("GET", "/api/names/ALPHA")
+        .with_status(200)
+        .with_body(r#"{"name":"alpha","state":"CLOSED"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let client = HnsFansClient::new(&server.url());
+    let result = client
+        .get_names(&[], &["alpha".to_string(), "ALPHA".to_string()])
+        .await
+        .expect("get_names should succeed");
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].name, "alpha");
+    lower.assert_async().await;
+    upper.assert_async().await;
+}
+
 // --- get_name_info (non-optional) error path (lines 282-286) ---
 
 #[tokio::test]

@@ -847,6 +847,47 @@ mod tests {
         // No counterparty since it's not a TRANSFER.
         assert!(row.counterparty.is_none());
     }
+
+    /// A coinbase input carries no `coin` (hsd's `Input#getJSON` omits it when
+    /// the view has none), so it is neither ours nor a foreign coin.
+    #[test]
+    fn classify_coinbase_paying_us_is_a_receive() {
+        let ours = addrs(&["hs1qmine"]);
+        let tx = json!({
+            "hash": "cb",
+            "height": 12,
+            "inputs": [
+                {"prevout": {"hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                             "index": 4294967295u32},
+                 "witness": [], "sequence": 4294967295u32}
+            ],
+            "outputs": [
+                {"value": 2_000_000_000, "address": "hs1qmine",
+                 "covenant": {"type": 0, "action": "NONE", "items": []}}
+            ]
+        });
+        let row = classify_tx(&tx, &ours).unwrap();
+        assert_eq!(row.action, "receive");
+        assert_eq!(row.direction, "receive");
+        assert_eq!(row.value_doos, 2_000_000_000);
+    }
+
+    #[test]
+    fn classify_drops_a_tx_without_a_hash() {
+        let ours = addrs(&["hs1qmine"]);
+        let mut tx = json!({
+            "hash": "aa",
+            "height": 100,
+            "inputs": [],
+            "outputs": [
+                {"value": 1_000, "address": "hs1qmine",
+                 "covenant": {"type": 0, "action": "NONE", "items": []}}
+            ]
+        });
+        assert!(classify_tx(&tx, &ours).is_some());
+        tx.as_object_mut().unwrap().remove("hash");
+        assert!(classify_tx(&tx, &ours).is_none());
+    }
 }
 
 #[cfg(test)]
