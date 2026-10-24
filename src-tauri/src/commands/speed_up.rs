@@ -392,7 +392,9 @@ pub(crate) async fn speed_up_check_with(
     }
 }
 
-/// The node of the profile a draft belongs to (ADR-001).
+/// The node of the profile a draft belongs to (ADR-001). An IO shell (locks
+/// `state.db`) like the commands that call it.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn client_for_draft(
     state: &State<'_, AppState>,
     draft_id: &str,
