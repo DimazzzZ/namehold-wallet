@@ -2452,8 +2452,11 @@ pub struct MyListing {
 /// R43: whether `l`, Sold, was bought at a price none of its stored
 /// `steps` names: the wallet's coin at its payment address in the sale
 /// transaction (a `0x84` step commits to that output, worth exactly the
-/// step's price) is worth another amount. No coin recorded, or no payment
-/// address (a lock restored by name), is no such fact: `false`.
+/// step's price) is worth another amount. No steps stored here (the lock
+/// was finalized and sold from another device while this one still had it
+/// before the lock) names no price, so any paid amount is another device's.
+/// No coin recorded, or no payment address (a lock restored by name), is no
+/// such fact: `false`.
 fn sold_elsewhere(
     conn: &rusqlite::Connection,
     l: &ShakedexListing,
@@ -2466,9 +2469,6 @@ fn sold_elsewhere(
     ) else {
         return Ok(false);
     };
-    if steps.is_empty() {
-        return Ok(false);
-    }
     Ok(
         queries::own_coin_value_in_tx(conn, &l.wallet_profile_id, txid, address)?
             .is_some_and(|paid| !steps.iter().any(|s| i64::try_from(s.price) == Ok(paid))),

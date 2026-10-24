@@ -4735,6 +4735,13 @@ fn my_listings_words_a_sale_and_a_cancel_from_another_device() {
         .execute("UPDATE tracked_utxos SET value_doos = 3000000", [])
         .unwrap();
     assert!(row(&f).sold_elsewhere, "paid at a price we never signed");
+    // Finalized and sold from another device while this one had no steps.
+    f.conn
+        .execute("UPDATE shakedex_listings SET steps_json = '[]'", [])
+        .unwrap();
+    assert!(row(&f).sold_elsewhere, "no step of ours names any price");
+    f.conn.execute("DELETE FROM tracked_utxos", []).unwrap();
+    assert!(!row(&f).sold_elsewhere, "no coin of ours is no such fact");
 
     let g = fx(ListingState::Listed);
     g.conn
