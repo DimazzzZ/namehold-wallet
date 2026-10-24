@@ -329,7 +329,7 @@ it from dragging down the overall number, while the pure logic it orchestrates
 
 **Why is `run()` in `lib.rs` `coverage(off)`?** `tauri::generate_handler!` inside it expands one IPC wrapper per command, and llvm-cov counts each wrapper on its `#[tauri::command]` line in the command's own file, where it only runs through the real IPC dispatcher. Unit tests call the command function directly, so without the attribute every command showed one red line (134 of them) that no test can reach.
 
-**What are the remaining ~2.2% uncovered lines?** After Phases 1–5, the residual
+**What are the remaining ~1.6% uncovered lines?** After Phases 1–5, the residual
 uncovered lines fall into structurally-untestable categories that are documented
 in-place (via `coverage(off)` annotations) or intentionally left as-is:
 
