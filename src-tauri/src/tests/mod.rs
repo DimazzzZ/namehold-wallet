@@ -39,6 +39,7 @@ mod explorer_sync_timestamp_tests;
 mod history_cmd_tests;
 mod hsd_extra_tests;
 mod hsd_parity_tests;
+mod hsd_pid_tests;
 mod hsd_types_tests;
 mod learnhns_tests;
 mod ledger_hid_transport_tests;

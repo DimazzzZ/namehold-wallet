@@ -8,13 +8,13 @@ We will run one local hsd per network, side by side. hsd gives every network its
 
 Full or SPV, and whether to start the node on its own, become settings of the network rather than of the whole app: every wallet of a network shares its one node, so the mode cannot belong to a wallet, and a single global mode would force regtest and mainnet into the same one.
 
-The app stops only a node it started. A node it did not start — the user's own hsd, or one a test run left — is used when it answers on the network's port on the right chain, as today, but no button and no quit stops it. A node the app started in an earlier session and left running for the background daemon still counts as the app's, recognised by a pid file in the network's data directory whose process is hsd with the app's prefix and network.
+The app stops only a node it started. A node it did not start — the user's own hsd, or one a test run left — is used when it answers on the network's port on the right chain, as today, but no button and no quit stops it. A node the app started in an earlier session and left running for the background daemon still counts as the app's, recognised by a pid file in the network's data directory that names a live process with the recorded start time (hsd overwrites its command line, so its arguments cannot tell).
 
 ## Consequences
 
 - `AppState` holds one child per network instead of one child. Status, Start and Stop take a network; the UI and the tray act on the active wallet's network and name it.
 - `stop_hsd` no longer sends RPC `stop` to whatever answers on the port: a node outside Namehold is never stopped.
-- A pid file `<data_dir>/namehold-hsd.pid` is written at spawn and removed at stop. A pid whose process is not hsd with the expected `--prefix` and `--network` is stale and ignored, since pids are reused.
+- A pid file `<data_dir>/namehold-hsd.pid` holds the child's pid and process start time; it is written at spawn and removed at stop. A pid whose process started at another time is stale and ignored, since pids are reused.
 - `node_mode` and `autostart_hsd` move from global settings to per-network settings. A network with no key of its own reads the app-wide value, so nobody's behaviour changes on upgrade and no migration is needed. Every reader of the mode (spawn flags, `ChainSource::from_settings`, the SPV branches of sync, send and chain scan) reads the profile's network's.
 - The realign of ADR-001's N11 section is gone, and with it the only code that wrote `node_rpc_url` behind the user's back. Because a custom global URL is kept, nobody who configured a node by hand reaches another node after upgrading, and no migration is needed. (The first draft of this ADR ignored the global URL for every local-node profile and copied custom URLs into overrides; a full test run showed that every hand-set local URL, a LAN host included, would have been replaced by 127.0.0.1 unless the copy was perfect.)
 - With background sync on, every node the app started is left running at quit, so the daemon can sync every profile; with it off, every node the app started is stopped. The daemon never starts or stops hsd.

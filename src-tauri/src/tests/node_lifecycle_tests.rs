@@ -697,3 +697,31 @@ async fn the_networks_mode_picks_the_spawn_flags() {
     assert!(argv.contains("--spv"), "{argv}");
     assert!(!argv.contains("--index-address"), "{argv}");
 }
+
+// ===========================================================================
+// Spec 2026-10-24 R6: the node the app spawns is recorded in the network's
+// data directory as its own, and a stop forgets it.
+// ===========================================================================
+#[tokio::test]
+#[serial(hsd_home)]
+async fn a_spawned_node_is_recorded_as_own_until_it_is_stopped() {
+    let (server, _fail, _up) = spawn_then_up_server(5).await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let app = app_with(conn_for(&h, &server.url())); // mainnet: data dir = base
+    let state = app.state::<AppState>();
+
+    start_hsd(app.state()).await.expect("start_hsd ok");
+    let child_pid = state.hsd_child.lock().unwrap().as_ref().map(|c| c.id());
+    assert!(child_pid.is_some());
+    assert_eq!(
+        crate::commands::hsd_pid::own_node_pid(h.data_dir()),
+        child_pid,
+        "the child is the network's own node"
+    );
+
+    stop_hsd(app.state()).await.expect("stop ok");
+    assert!(!h
+        .data_dir()
+        .join(crate::commands::hsd_pid::PID_FILE)
+        .exists());
+}

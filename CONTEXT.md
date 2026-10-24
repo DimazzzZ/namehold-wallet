@@ -28,7 +28,7 @@ The one hsd that serves a network's `local_node` wallets, at `127.0.0.1:<the net
 _Avoid_: The node (when more than one network is in play)
 
 **Own node** / **Outside node**:
-An own node is a local node the app started: a child of this session, or the process its pid file names when that process is hsd with the app's prefix and network. An outside node answers on the network's port on the right chain but was not started by the app (the user's hsd, a test run's). The app uses both and stops only own nodes.
+An own node is a local node the app started: a child of this session, or the process its pid file names when that process has the start time the file recorded. An outside node answers on the network's port on the right chain but was not started by the app (the user's hsd, a test run's). The app uses both and stops only own nodes.
 _Avoid_: Sync mode
 
 **Node configuration**:

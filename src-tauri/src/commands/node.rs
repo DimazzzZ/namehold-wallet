@@ -607,6 +607,14 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     let child = cmd
         .spawn()
         .map_err(|e| AppError::Other(format!("failed to start hsd ({binary}): {e}")))?;
+    // Record the child as this network's own node, so a later session still
+    // knows it started it (spec 2026-10-24 R6). Best-effort: without the
+    // record the node only counts as outside later, which stops nothing.
+    if let Err(e) =
+        crate::commands::hsd_pid::write_pid_file(std::path::Path::new(&data_dir), child.id())
+    {
+        eprintln!("start_hsd: could not record the node's pid: {e}");
+    }
 
     {
         let mut guard = state
@@ -716,6 +724,9 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
     if let Some(mut child) = child {
         let _ = child.kill();
         let _ = child.wait();
+        if let Ok(data_dir) = resolve_data_dir(&state) {
+            crate::commands::hsd_pid::remove_pid_file(std::path::Path::new(&data_dir));
+        }
     }
 
     // Snapshot settings (no lock held across the await), then ask any node still

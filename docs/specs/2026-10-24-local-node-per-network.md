@@ -11,7 +11,7 @@ hsd facts here are pinned to hsd 8.0.0; paths are relative to its `lib/`.
 ## 2. Terms
 
 - **Local node of a network** — the hsd that serves wallets of that network whose `chain_source` is `local_node` (full or SPV, by the network's mode): at `127.0.0.1:<the network's RPC port>`, chain in the network's data directory (`network_scoped_data_dir`). At most one per network.
-- **Own node** — a local node the app started: a child of this app session, or the process named by the network's pid file when it is hsd with the app's `--prefix` and `--network` (R6).
+- **Own node** — a local node the app started: a child of this app session, or the process named by the network's pid file when its start time is the recorded one (R6).
 - **Outside node** — a local node that answers on the network's port on the right chain but is not an own node: the user's hsd, or one a test run left. Used, never stopped.
 - **Network node settings** — per network: mode (`full` or `spv`) and autostart (on or off).
 
@@ -45,13 +45,9 @@ Every requirement names the code that will enforce it and the test that will pin
 
 ### 3.3 Own and outside nodes
 
-**R6 — An own node is recognised across sessions by its pid file.** At spawn the app writes `<data_dir>/namehold-hsd.pid` with the child's pid, and removes it when it stops the node. A node is own when it is this session's child, or when the pid file names a live process whose command line is the hsd binary with `--prefix=<the app's base>` and `--network=<the network>`. A pid file naming a dead process, or a process that is not that hsd (pids are reused), is stale: it is ignored and removed. Reading the command line is per platform (`/proc/<pid>/cmdline` on Linux, `sysctl KERN_PROCARGS2` on macOS, the process snapshot on Windows); a platform where it cannot be read treats the node as outside, never as own.
-*To enforce:* `commands/node.rs::{write_pid_file, own_node_pid, is_our_hsd_cmdline}`.
-*To pin:* `node_lifecycle_tests::{a_node_left_by_the_last_session_is_own, a_stale_pid_file_is_ignored_and_removed, a_reused_pid_running_something_else_is_not_own}`, `node_tests::is_our_hsd_cmdline_matches_only_our_prefix_and_network`.
-
-**R7 — An outside node is never stopped.** Stop, the tray and quit act only on own nodes. For an outside node the Stop button is disabled with "This node was not started by Namehold, so Namehold does not stop it.", the tray item reads the same, and `stop_hsd` sends no RPC `stop` to it (today it sends one to whatever answers on the profile's URL).
-*To enforce:* `commands/node.rs::stop_node`, `src/components/Settings.tsx`, the tray menu in `lib.rs`.
-*To pin:* `node_cmd_tests::stopping_an_outside_node_sends_nothing` (mockito `.expect(0)` on the `stop` call), `settings-network-nodes.test.tsx` for the disabled button and its sentence.
+**R6 — An own node is recognised across sessions by its pid and start time.** hsd overwrites its own command line (`process.title = 'hsd'`), so a process's arguments cannot tell the app's hsd from another. At spawn the app writes `<data_dir>/namehold-hsd.pid` with the child's pid and its process start time as the OS reports it, and removes the file when it stops that node. A node is own when it is this session's child, or when the pid file names a live process whose start time is the recorded one: a reused pid belongs to a process that started at another time. A pid file naming a dead process, another start time, or that cannot be read is stale: it is ignored and removed. The start time is read with `proc_pidinfo(PROC_PIDTBSDINFO)` on macOS and field 22 of `/proc/<pid>/stat` on Linux; elsewhere it is not read, nothing is recorded, and an orphan counts as outside (§5).
+*Enforced:* `commands/hsd_pid.rs::{process_start_time, write_pid_file, own_node_pid, remove_pid_file}`, called from `commands/node.rs::{start_hsd, stop_hsd}`.
+*Pinned:* `hsd_pid_tests::{a_live_process_has_one_start_time, an_exited_process_has_no_start_time, a_pid_file_of_a_live_process_names_it, a_stale_pid_file_is_ignored_and_removed, no_pid_file_names_nothing}`, `node_lifecycle_tests::a_spawned_node_is_recorded_as_own_until_it_is_stopped`.
 
 ### 3.4 Controls
 
@@ -90,6 +86,8 @@ Every requirement names the code that will enforce it and the test that will pin
 - **Two full nodes cost memory and CPU.** Accepted: regtest and simnet are cheap, and the costly mainnet node is one the user already ran.
 - **A custom global URL serves every local-node profile alike.** A global URL that is not a default is kept for every network's local-node profiles, so two networks pointed at one custom global URL still reach one node; the network guard refuses the wrong chain, and a per-profile override is the way to give each its own. Accepted: it is an explicit setting, and replacing it would reroute a user who configured a node by hand.
 
+- **No own-node record on Windows.** The start time is read on macOS and Linux only, so on Windows a node left running for the daemon counts as outside after a restart and cannot be stopped from the app. Accepted for now: reading it needs `GetProcessTimes` and a Windows test run.
+
 ## 6. Implementation plan
 
 Each step is one PR-sized change with its tests, and leaves the app working on its own.
@@ -98,7 +96,7 @@ Each step is one PR-sized change with its tests, and leaves the app working on i
 |------|--------|--------------|--------|
 | 1 | A `local_node` profile without an override reaches its network's port over a default global URL; a custom global URL is kept; `start_hsd` stops writing `node_rpc_url` and the realign is removed | R1, R2 | Done |
 | 2 | Mode and autostart per network: one resolver of the profile's network with an app-wide fallback (no migration), every reader of the mode switched to it | R10 (backend) | Done |
-| 3 | Pid file and own-node recognition by command line (macOS, Linux, Windows) | R6 | Not started |
+| 3 | Pid file and own-node recognition by pid and process start time (macOS, Linux) | R6 | Done |
 | 4 | One own-node handle per network in `AppState`; Start/Stop per network; an outside node is never stopped | R3, R7 | Not started |
 | 5 | Start on wallet activation and at app start; switching stops nothing | R4, R5 | Not started |
 | 6 | Quit by one rule for every own node; source check that the daemon names no hsd spawn | R9, R12 | Not started |
