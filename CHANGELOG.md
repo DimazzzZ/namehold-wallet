@@ -18,6 +18,9 @@
 - **A Speed up stays a Speed up in Activity once the node reports it.** The child transaction of a Speed up read "Send" as soon as its row came from the node (sent or confirmed), and showed a disabled Speed up button of its own. It now reads Speed up, linked to the transaction it speeds up, with no button. Purchases sped up showed the same.
 - **A "Ready to finalize" reminder comes once, not again after a restart.** A purchase, listing or cancel whose lockup a sync briefly saw as still running (as can happen while the app syncs on launch) lost its "already reminded" mark, and the next check sent the same reminder a second time. The mark now stays until the FINALIZE is sent; a FINALIZE that fails or is dropped still reminds again, and a listing still reminds once a day. The background daemon also writes a log at `~/.namehold/syncd.log` (each sync, each reminder sent, a listing going back to Locking, errors), kept under 2 MB.
 
+### CI / tooling
+- Take `zod` `4.6.7` to clear GHSA-mrhx-c7xc-m3w5 (memory exhaustion validating a large array), which failed the `pnpm audit --prod` gate; no 3.x release is patched. The app parses nothing with zod at run time (its schemas give types and tests only), and the schemas needed no change.
+
 ## [0.6.0] - 2026-10-23
 
 > **Highlights:** buy and sell Handshake names through Shakedex, speed up a stuck transaction, connect to a remote node or SPV from the first screen, place several bids on one name, and a long round of fixes to bids, reveals, redeems, transfers and fees.
