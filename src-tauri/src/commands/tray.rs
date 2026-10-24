@@ -151,18 +151,21 @@ fn snapshot(app: &AppHandle) -> TraySnapshot {
     let state = app.state::<AppState>();
 
     // Node running: the backend probe loop updates `node_rpc_alive` every ~5s
-    // (and start/stop actions flip it immediately). We OR it with the child
-    // handle so a freshly-spawned node shows "Running" even before the first
-    // probe tick fires.
+    // (and start/stop actions flip it immediately). We OR it with the active
+    // network's child handle so a freshly-spawned node shows "Running" even
+    // before the first probe tick fires.
     let node_running = state
         .node_rpc_alive
         .load(std::sync::atomic::Ordering::Relaxed)
-        || state
-            .hsd_child
-            .lock()
-            .ok()
-            .map(|g| g.is_some())
-            .unwrap_or(false);
+        || crate::commands::active_profile::active_profile_network_opt(&state).is_some_and(
+            |network| {
+                state
+                    .hsd_children
+                    .lock()
+                    .ok()
+                    .is_some_and(|g| g.contains_key(&network))
+            },
+        );
 
     // "Syncing" state proxy: whether a wallet full-sync run is active. This is
     // the cheapest in-process signal (no RPC round-trip on every 5s tick).
@@ -330,7 +333,7 @@ mod tests {
                 db: std::sync::Mutex::new(conn),
                 signer: std::sync::Mutex::new(None),
                 secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-                hsd_child: std::sync::Mutex::new(None),
+                hsd_children: std::sync::Mutex::new(std::collections::HashMap::new()),
                 node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
                 sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                     crate::commands::sync::SyncStatus::default(),

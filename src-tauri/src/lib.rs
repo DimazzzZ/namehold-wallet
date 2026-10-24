@@ -66,9 +66,11 @@ pub struct AppState {
     /// In-flight secure prompts, keyed by prompt id. Holds secret request
     /// material (e.g. a mnemonic to reveal) in memory only, until answered.
     pub secure_prompts: Mutex<HashMap<String, PendingPrompt>>,
-    /// Handle to the hsd node the app started this session, if any. Used to
-    /// report running state and to stop the node. Not persisted across restarts.
-    pub hsd_child: Mutex<Option<std::process::Child>>,
+    /// Handles to the hsd nodes the app started this session, one per network
+    /// (spec 2026-10-24 R3): nodes of different networks run side by side.
+    /// Used to report running state and to stop a node. A node left running
+    /// by an earlier session is known by its pid file instead (R6).
+    pub hsd_children: Mutex<HashMap<crate::noncustodial::network::Network, std::process::Child>>,
     /// Whether the hsd RPC endpoint is currently reachable. Updated by the
     /// backend probe loop (every ~5s) and immediately after start/stop actions.
     /// Read by the tray to determine whether to show "Running" or "Stopped",
@@ -192,7 +194,7 @@ pub fn run() {
                 db: Mutex::new(conn),
                 signer: Mutex::new(None),
                 secure_prompts: Mutex::new(HashMap::new()),
-                hsd_child: Mutex::new(None),
+                hsd_children: Mutex::new(HashMap::new()),
                 node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
                 sync_status: Arc::new(AsyncMutex::new(SyncStatus::default())),
             });
@@ -251,16 +253,18 @@ pub fn run() {
                                         // Match tray snapshot: reachable RPC OR
                                         // a child we spawned counts as running.
                                         // Fixes the adopted-node case where hsd
-                                        // is up but hsd_child is None.
+                                        // is up but no child of ours runs.
                                         state
                                             .node_rpc_alive
                                             .load(std::sync::atomic::Ordering::Relaxed)
-                                            || state
-                                                .hsd_child
-                                                .lock()
-                                                .ok()
-                                                .map(|g| g.is_some())
-                                                .unwrap_or(false)
+                                            || crate::commands::active_profile::active_profile_network_opt(&state)
+                                                .is_some_and(|network| {
+                                                    state
+                                                        .hsd_children
+                                                        .lock()
+                                                        .ok()
+                                                        .is_some_and(|g| g.contains_key(&network))
+                                                })
                                     };
                                     let result = if running {
                                         commands::node::stop_hsd(app.state::<AppState>())
@@ -812,11 +816,12 @@ pub fn run() {
                         })
                         .unwrap_or(false);
 
-                    let child = match state.hsd_child.lock() {
-                        Ok(mut guard) => guard.take(),
-                        Err(poisoned) => poisoned.into_inner().take(),
+                    // Every network's own child, by one rule (spec 2026-10-24 R9).
+                    let children: Vec<_> = match state.hsd_children.lock() {
+                        Ok(mut guard) => guard.drain().map(|(_, c)| c).collect(),
+                        Err(poisoned) => poisoned.into_inner().drain().map(|(_, c)| c).collect(),
                     };
-                    if let Some(mut child) = child {
+                    for mut child in children {
                         if background_sync_on {
                             // Detach: drop the handle without killing. The child
                             // process continues running as an orphan.

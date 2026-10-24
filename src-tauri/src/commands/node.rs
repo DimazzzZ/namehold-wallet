@@ -188,23 +188,23 @@ pub(crate) fn network_scoped_data_dir(base: &str, network: Network) -> String {
     }
 }
 
-/// Whether the hsd we started this session is still alive. Reaps a child that has
-/// exited (clearing the handle) so the status reflects reality.
+/// Whether the hsd we started this session for `network` is still alive. Reaps
+/// a child that has exited (clearing its handle) so the status reflects
+/// reality.
 // The `Some(child)` arm calls child.try_wait() on a real OS process handle,
 // reachable only after start_hsd has spawned a child. Exercised by the
 // fake-hsd integration tests in tests/node_lifecycle_tests.rs.
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn is_running(state: &AppState) -> Result<bool, AppError> {
-    let mut guard = state
-        .hsd_child
+fn is_running(state: &AppState, network: Network) -> Result<bool, AppError> {
+    let mut children = state
+        .hsd_children
         .lock()
         .map_err(|e| AppError::Lock(e.to_string()))?;
-    let running = match guard.as_mut() {
-        Some(child) => matches!(child.try_wait(), Ok(None)),
-        None => false,
-    };
+    let running = children
+        .get_mut(&network)
+        .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
     if !running {
-        *guard = None;
+        children.remove(&network);
     }
     Ok(running)
 }
@@ -283,7 +283,10 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     let binary = find_hsd_binary(configured_hsd_path(&state).as_deref());
     let version = get_hsd_version(&binary);
     let data_dir = resolve_data_dir(&state)?;
-    let process_alive = is_running(&state)?;
+    let process_alive = match active_profile_network_opt(&state) {
+        Some(network) => is_running(&state, network)?,
+        None => false,
+    };
     let probe = probe_node(&state).await;
     // Keep the shared liveness flag in sync — the tray reads this to decide
     // whether to show "Running" or "Stopped" without doing its own RPC probe.
@@ -453,9 +456,6 @@ pub(crate) fn node_start_error(data_dir: &str) -> Option<(String, bool)> {
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    if is_running(&state)? {
-        return Err(AppError::Other("hsd is already running.".to_string()));
-    }
     // Refuse rather than default. Spawning hsd is the one place where guessing
     // mainnet is an action with consequences: it starts a full mainnet chain
     // sync into a data dir the user prepared for another network, and the
@@ -471,6 +471,14 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
                 .to_string(),
         )
     })?;
+    // One own node per network (spec 2026-10-24 R3): only this network's own
+    // node already running stops a start; another network's does not.
+    if is_running(&state, network)? {
+        return Err(AppError::Other(format!(
+            "The {} node is already running.",
+            network.as_str()
+        )));
+    }
 
     // A node may already be running (e.g. one started in a previous app session,
     // or the user's own). If its RPC already answers AND it is on the right
@@ -485,7 +493,7 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
             .store(true, std::sync::atomic::Ordering::Relaxed);
         return Ok(serde_json::json!({
             "connected": true,
-            "process_alive": is_running(&state)?,
+            "process_alive": is_running(&state, network)?,
             "height": probe.height,
             "network": network.as_str(),
             "chain": probe.chain,
@@ -617,11 +625,11 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     }
 
     {
-        let mut guard = state
-            .hsd_child
+        let mut children = state
+            .hsd_children
             .lock()
             .map_err(|e| AppError::Lock(e.to_string()))?;
-        *guard = Some(child);
+        children.insert(network, child);
     }
     {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -637,17 +645,17 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     for _ in 0..30 {
         // Did the child die during startup?
         {
-            let mut guard = state
-                .hsd_child
+            let mut children = state
+                .hsd_children
                 .lock()
                 .map_err(|e| AppError::Lock(e.to_string()))?;
-            let exited = match guard.as_mut() {
+            let exited = match children.get_mut(&network) {
                 Some(child) => matches!(child.try_wait(), Ok(Some(_))),
                 None => true,
             };
             if exited {
-                *guard = None;
-                drop(guard);
+                children.remove(&network);
+                drop(children);
                 let tail = read_log_tail(&log_path);
                 // A data-dir lock means another hsd already owns this directory.
                 if tail.contains("LOCK") || tail.contains("Resource temporarily unavailable") {
@@ -714,42 +722,32 @@ pub(crate) fn read_log_tail(path: &std::path::Path) -> String {
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
+    // The active wallet's network's own node, and only that (spec 2026-10-24
+    // R7, R8). With no active profile there is no network and nothing to stop.
+    let Some(network) = active_profile_network_opt(&state) else {
+        return Ok(());
+    };
+    let data_dir = resolve_data_dir_for_network(&state, network)?;
+    let data_dir = std::path::Path::new(&data_dir);
     let child = {
-        let mut guard = state
-            .hsd_child
+        let mut children = state
+            .hsd_children
             .lock()
             .map_err(|e| AppError::Lock(e.to_string()))?;
-        guard.take()
+        children.remove(&network)
     };
     if let Some(mut child) = child {
         let _ = child.kill();
         let _ = child.wait();
-        if let Ok(data_dir) = resolve_data_dir(&state) {
-            crate::commands::hsd_pid::remove_pid_file(std::path::Path::new(&data_dir));
-        }
+        crate::commands::hsd_pid::remove_pid_file(data_dir);
+    } else if let Some(pid) = crate::commands::hsd_pid::own_node_pid(data_dir) {
+        // Started by an earlier session and left for the daemon (R6).
+        crate::commands::hsd_pid::terminate(pid);
+        crate::commands::hsd_pid::remove_pid_file(data_dir);
+    } else if probe_node(&state).await.is_some() {
+        // A node answers, but Namehold did not start it: never stopped.
+        return Err(AppError::InvalidInput(OUTSIDE_NODE_NOT_STOPPED.to_string()));
     }
-
-    // Snapshot settings (no lock held across the await), then ask any node still
-    // answering to stop. Best-effort: if nothing's reachable, that's fine.
-    // Per-profile node override routing (ADR-001): stop the node the active
-    // profile is actually pointed at (per-profile override -> global settings
-    // -> built-in default). With no active profile there is no override to
-    // honour; a profile whose own config will not resolve is returned as the
-    // configuration error it is, because "stop the node" aimed at the wrong
-    // endpoint can stop somebody else's.
-    let client = {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        match db::queries::get_active_profile_id(&db)? {
-            // No active profile — the id is stored as an empty string, not an
-            // error — so there is nothing that could override.
-            id if id.is_empty() => {
-                let settings = db::queries::get_settings(&db)?;
-                NodeRpcClient::from_settings(&settings)
-            }
-            profile_id => NodeRpcClient::for_profile(&db, &profile_id)?,
-        }
-    };
-    let _ = client.stop().await;
     // Mark the node as offline. The backend probe loop will confirm in ~5s,
     // but we set it immediately so the tray + UI flip right away.
     state
@@ -759,10 +757,14 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db.execute(
         "INSERT INTO audit_log (action, detail) VALUES ('stop_hsd', ?1)",
-        ["{}"],
+        [serde_json::json!({ "network": network.as_str() }).to_string()],
     )?;
     Ok(())
 }
+
+/// Why Stop refuses a node it did not start (spec 2026-10-24 R7).
+pub(crate) const OUTSIDE_NODE_NOT_STOPPED: &str =
+    "This node was not started by Namehold, so Namehold does not stop it.";
 
 /// The on-disk chain artifacts to move aside for a re-sync, by network. Mainnet
 /// stores them at the prefix root; other networks under a per-network subdir.
@@ -956,12 +958,13 @@ pub(crate) fn guard_probe_network(
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     // 1. Stop any node we manage so the chain files aren't locked.
-    {
-        let mut guard = state
-            .hsd_child
+    if let Some(network) = active_profile_network_opt(&state) {
+        let child = state
+            .hsd_children
             .lock()
-            .map_err(|e| AppError::Lock(e.to_string()))?;
-        if let Some(mut child) = guard.take() {
+            .map_err(|e| AppError::Lock(e.to_string()))?
+            .remove(&network);
+        if let Some(mut child) = child {
             let _ = child.kill();
             let _ = child.wait();
         }

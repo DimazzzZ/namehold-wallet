@@ -6,7 +6,7 @@
 //!   - lib/hd/mnemonic.js        (standard BIP39 PBKDF2-HMAC-SHA512, 2048 iters)
 
 /// Handshake network selector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Network {
     #[default]
     Main,

@@ -16,7 +16,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsd_children: std::sync::Mutex::new(std::collections::HashMap::new()),
             node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
@@ -376,7 +376,12 @@ async fn start_hsd_refuses_hsd_below_minimum_version() {
     );
 
     // The gate must trip before `cmd.spawn()` — no child left behind.
-    assert!(app.state::<AppState>().hsd_child.lock().unwrap().is_none());
+    assert!(app
+        .state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -401,12 +406,12 @@ fn chain_paths_are_network_scoped() {
 // ---------------------------------------------------------------------------
 // node_rpc_alive: the tray reads this flag to decide "Running" vs "Stopped".
 // It must reflect the REAL RPC connection — not whether we spawned a child —
-// so an ADOPTED node (RPC up, hsd_child None) still shows as running. This is
+// so an ADOPTED node (RPC up, no child) still shows as running. This is
 // the exact bug where the tray showed "Start Node" for a node that was up.
 // ---------------------------------------------------------------------------
 
 /// Adopted node: RPC answers `getblockchaininfo` but we never spawned a child
-/// (`hsd_child` is None). After a probe, `node_rpc_alive` must be true — this
+/// (no child in `hsd_children`). After a probe, `node_rpc_alive` must be true — this
 /// is what makes the tray show "Running"/"Stop Node" for an adopted node.
 #[tokio::test]
 async fn node_rpc_alive_true_for_adopted_node() {
@@ -430,9 +435,9 @@ async fn node_rpc_alive_true_for_adopted_node() {
     let state = app.state::<AppState>();
 
     // Precondition: no child handle — this simulates the adoption path where
-    // start_hsd found a running node and returned without setting hsd_child.
+    // start_hsd found a running node and returned without storing a child.
     assert!(
-        state.hsd_child.lock().unwrap().is_none(),
+        state.hsd_children.lock().unwrap().is_empty(),
         "adopted node must have no child handle"
     );
 
@@ -1023,12 +1028,30 @@ async fn probe_and_update_clears_flag_when_unreachable() {
 
 use crate::commands::node::stop_hsd;
 
-/// stop_hsd with no reachable node still succeeds (best-effort RPC stop),
-/// flips node_rpc_alive → false, and records an audit log row.
+/// A regtest wallet, so stop_hsd has a network to act on.
+fn conn_with_active_regtest(node_url: &str) -> rusqlite::Connection {
+    let conn = blank_conn();
+    db::queries::insert_wallet_profile(
+        &conn,
+        "p1",
+        "P",
+        "watch_only_xpub",
+        "regtest",
+        "xpub",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "p1").unwrap();
+    crate::tests::command_helpers::set_profile_override(&conn, "p1", "node_rpc_url", node_url);
+    conn
+}
+
+/// stop_hsd with no node of the network reachable still succeeds, flips
+/// node_rpc_alive → false, and records an audit log row.
 #[tokio::test]
 async fn stop_hsd_soft_succeeds_when_no_node_reachable() {
-    let conn = blank_conn();
-    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    let conn = conn_with_active_regtest("http://127.0.0.1:1");
     let app = app_with(conn);
     let state = app.state::<AppState>();
     // Pretend it was alive; stop_hsd must flip it false regardless of RPC outcome.
@@ -1059,34 +1082,38 @@ async fn stop_hsd_soft_succeeds_when_no_node_reachable() {
     assert_eq!(count, 1, "one stop_hsd audit row per stop");
 }
 
-/// stop_hsd against a live (mocked) RPC — the stop RPC is invoked; the flag
-/// still ends up false; the audit row is written. Best-effort semantics:
-/// success/failure of the RPC call is opaque to the caller.
+/// Spec 2026-10-24 R7: a node that answers on the network's URL but that
+/// Namehold did not start (no child of this session, no pid file) is never
+/// stopped: Stop refuses with the reason and sends the node no `stop`.
 #[tokio::test]
-async fn stop_hsd_calls_rpc_stop_and_clears_flag() {
+async fn stopping_an_outside_node_sends_nothing() {
     let mut server = mockito::Server::new_async().await;
-    // The node accepts the RPC stop call.
-    let _m = server
+    let _info = server
         .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("stop".into()))
-        .with_body(r#"{"result":"Stopping","error":null,"id":1}"#)
-        .expect_at_least(1)
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"regtest","blocks":5,"headers":5,"verificationprogress":1.0},"error":null,"id":1}"#)
         .create_async()
         .await;
+    let stop = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex(r#""method":"stop""#.into()))
+        .expect(0)
+        .create_async()
+        .await;
+    let app = app_with(conn_with_active_regtest(&server.url()));
 
-    let conn = blank_conn();
-    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
-    let app = app_with(conn);
-    let state = app.state::<AppState>();
-    state
-        .node_rpc_alive
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let err = stop_hsd(app.state())
+        .await
+        .expect_err("an outside node is not stopped");
 
-    stop_hsd(app.state()).await.expect("stop_hsd ok");
-
-    assert!(!state
-        .node_rpc_alive
-        .load(std::sync::atomic::Ordering::Relaxed));
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Invalid input: {}",
+            crate::commands::node::OUTSIDE_NODE_NOT_STOPPED
+        )
+    );
+    stop.assert_async().await;
 }
 
 // ===========================================================================
@@ -1132,7 +1159,7 @@ async fn start_hsd_adopts_already_running_node() {
     assert_eq!(v["connected"], serde_json::json!(true));
     assert_eq!(v["height"], serde_json::json!(777));
     // No child was spawned — the adoption path returns immediately.
-    assert!(state.hsd_child.lock().unwrap().is_none());
+    assert!(state.hsd_children.lock().unwrap().is_empty());
     // The alive flag was set as a side-effect.
     assert!(state
         .node_rpc_alive
@@ -1183,7 +1210,7 @@ async fn start_hsd_refuses_to_adopt_node_on_wrong_chain() {
         "expected mismatch error, got: {msg}"
     );
     // No child spawned, and we did not mark the (wrong) node alive.
-    assert!(state.hsd_child.lock().unwrap().is_none());
+    assert!(state.hsd_children.lock().unwrap().is_empty());
     assert!(!state
         .node_rpc_alive
         .load(std::sync::atomic::Ordering::Relaxed));

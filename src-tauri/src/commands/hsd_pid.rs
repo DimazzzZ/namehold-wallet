@@ -83,3 +83,18 @@ pub(crate) fn own_node_pid(data_dir: &std::path::Path) -> Option<u32> {
         }
     }
 }
+
+/// Ask process `pid` to exit (SIGTERM, so hsd closes its chain cleanly).
+/// Called only for a pid `own_node_pid` vouched for.
+#[cfg(unix)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn terminate(pid: u32) {
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    }
+}
+
+/// No own-node record is ever written off macOS and Linux, so there is no
+/// pid to stop.
+#[cfg(not(unix))]
+pub(crate) fn terminate(_pid: u32) {}

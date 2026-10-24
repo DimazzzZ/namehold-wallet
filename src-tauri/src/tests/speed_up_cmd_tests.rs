@@ -882,7 +882,7 @@ fn app_with(conn: Connection) -> tauri::App<tauri::test::MockRuntime> {
             db: Mutex::new(conn),
             signer: Mutex::new(None),
             secure_prompts: Mutex::new(std::collections::HashMap::new()),
-            hsd_child: Mutex::new(None),
+            hsd_children: Mutex::new(std::collections::HashMap::new()),
             node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),

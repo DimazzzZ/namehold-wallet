@@ -32,6 +32,7 @@ use tauri::Manager;
 
 use crate::commands::node::{resync_hsd_chain, start_hsd, stop_hsd};
 use crate::db;
+use crate::noncustodial::network::Network;
 use crate::AppState;
 
 /// Behavior of the fake hsd when spawned as the node (not `--version`).
@@ -167,7 +168,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsd_children: std::sync::Mutex::new(std::collections::HashMap::new()),
             node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
@@ -230,7 +231,7 @@ async fn start_hsd_spawns_binary_and_reports_connected_when_rpc_answers() {
     assert_eq!(v["process_alive"], serde_json::json!(true));
     assert_eq!(v["height"], serde_json::json!(42));
     // A child WAS spawned this time (unlike the pure-adoption path).
-    assert!(state.hsd_child.lock().unwrap().is_some());
+    assert!(!state.hsd_children.lock().unwrap().is_empty());
     assert!(state
         .node_rpc_alive
         .load(std::sync::atomic::Ordering::Relaxed));
@@ -288,7 +289,7 @@ async fn start_hsd_passes_regtest_flag_and_scoped_prefix_for_regtest_profile() {
 
     let v = start_hsd(app.state()).await.expect("start_hsd ok");
     assert_eq!(v["network"], serde_json::json!("regtest"));
-    assert!(state.hsd_child.lock().unwrap().is_some());
+    assert!(!state.hsd_children.lock().unwrap().is_empty());
 
     // The child had a moment to run its `echo` before it started sleeping;
     // the RPC probe loop in start_hsd waits until mockito answers, which is
@@ -385,7 +386,7 @@ async fn start_hsd_spawns_in_spv_mode_on_testnet() {
     let v = start_hsd(app.state()).await.expect("start_hsd ok");
     assert_eq!(v["connected"], serde_json::json!(true));
     assert_eq!(v["network"], serde_json::json!("testnet"));
-    assert!(state.hsd_child.lock().unwrap().is_some());
+    assert!(!state.hsd_children.lock().unwrap().is_empty());
 
     stop_hsd(app.state()).await.expect("stop ok");
 }
@@ -407,7 +408,7 @@ async fn start_hsd_proceeds_when_version_unparseable() {
         .await
         .expect("start_hsd ok despite bad version");
     assert_eq!(v["connected"], serde_json::json!(true));
-    assert!(state.hsd_child.lock().unwrap().is_some());
+    assert!(!state.hsd_children.lock().unwrap().is_empty());
 
     stop_hsd(app.state()).await.expect("stop ok");
 }
@@ -438,7 +439,7 @@ async fn start_hsd_surfaces_data_dir_lock_when_child_dies_with_lock() {
         "expected log tail with LOCK, got: {msg}"
     );
     // The dead child was reaped from the handle.
-    assert!(state.hsd_child.lock().unwrap().is_none());
+    assert!(state.hsd_children.lock().unwrap().is_empty());
 }
 
 // ===========================================================================
@@ -464,7 +465,7 @@ async fn start_hsd_surfaces_generic_exit_when_child_dies() {
         msg.contains("something went wrong"),
         "expected log tail in error, got: {msg}"
     );
-    assert!(state.hsd_child.lock().unwrap().is_none());
+    assert!(state.hsd_children.lock().unwrap().is_empty());
 }
 
 // ===========================================================================
@@ -488,7 +489,7 @@ async fn start_hsd_refuses_too_old_version_before_spawn() {
         "expected version-gate message, got: {msg}"
     );
     // No child spawned: we bailed before the spawn.
-    assert!(state.hsd_child.lock().unwrap().is_none());
+    assert!(state.hsd_children.lock().unwrap().is_empty());
 }
 
 // ===========================================================================
@@ -503,7 +504,7 @@ async fn stop_hsd_kills_spawned_child_and_clears_handle() {
     let state = app.state::<AppState>();
 
     start_hsd(app.state()).await.expect("start ok");
-    assert!(state.hsd_child.lock().unwrap().is_some());
+    assert!(!state.hsd_children.lock().unwrap().is_empty());
     state
         .node_rpc_alive
         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -511,7 +512,7 @@ async fn stop_hsd_kills_spawned_child_and_clears_handle() {
     stop_hsd(app.state()).await.expect("stop ok");
 
     // The child handle was taken + killed.
-    assert!(state.hsd_child.lock().unwrap().is_none());
+    assert!(state.hsd_children.lock().unwrap().is_empty());
     // The alive flag was cleared.
     assert!(!state
         .node_rpc_alive
@@ -711,7 +712,13 @@ async fn a_spawned_node_is_recorded_as_own_until_it_is_stopped() {
     let state = app.state::<AppState>();
 
     start_hsd(app.state()).await.expect("start_hsd ok");
-    let child_pid = state.hsd_child.lock().unwrap().as_ref().map(|c| c.id());
+    let child_pid = state
+        .hsd_children
+        .lock()
+        .unwrap()
+        .values()
+        .next()
+        .map(|c| c.id());
     assert!(child_pid.is_some());
     assert_eq!(
         crate::commands::hsd_pid::own_node_pid(h.data_dir()),
@@ -722,6 +729,122 @@ async fn a_spawned_node_is_recorded_as_own_until_it_is_stopped() {
     stop_hsd(app.state()).await.expect("stop ok");
     assert!(!h
         .data_dir()
+        .join(crate::commands::hsd_pid::PID_FILE)
+        .exists());
+}
+
+// ===========================================================================
+// Spec 2026-10-24 R3/R5: one own node per network. Starting testnet's node
+// leaves regtest's running, and stopping testnet's leaves regtest's alone.
+// ===========================================================================
+
+fn add_profile_on(conn: &rusqlite::Connection, id: &str, network: &str, url: &str) {
+    db::queries::insert_wallet_profile(
+        conn,
+        id,
+        id,
+        "watch_only_xpub",
+        network,
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    crate::tests::command_helpers::set_profile_override(conn, id, "node_rpc_url", url);
+}
+
+fn activate(app: &tauri::App<tauri::test::MockRuntime>, id: &str) {
+    let state = app.state::<AppState>();
+    let db = state.db.lock().unwrap();
+    db::queries::set_active_profile(&db, id).unwrap();
+}
+
+fn child_alive(app: &tauri::App<tauri::test::MockRuntime>, network: Network) -> bool {
+    let state = app.state::<AppState>();
+    let mut children = state.hsd_children.lock().unwrap();
+    children
+        .get_mut(&network)
+        .is_some_and(|c| matches!(c.try_wait(), Ok(None)))
+}
+
+#[tokio::test]
+#[serial(hsd_home)]
+async fn two_networks_run_side_by_side() {
+    let (regtest_node, _f1, _u1) = spawn_then_up_server(1).await;
+    let (testnet_node, _f2, _u2) = spawn_then_up_server(1).await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let conn = conn_for(&h, NO_RPC);
+    add_profile_on(&conn, "p-regtest", "regtest", &regtest_node.url());
+    add_profile_on(&conn, "p-testnet", "testnet", &testnet_node.url());
+    let app = app_with(conn);
+
+    activate(&app, "p-regtest");
+    start_hsd(app.state()).await.expect("regtest starts");
+    activate(&app, "p-testnet");
+    start_hsd(app.state())
+        .await
+        .expect("testnet starts beside regtest");
+    assert!(
+        child_alive(&app, Network::Regtest),
+        "starting testnet stopped regtest"
+    );
+    assert!(child_alive(&app, Network::Testnet));
+
+    stop_hsd(app.state()).await.expect("stop testnet");
+    assert!(!child_alive(&app, Network::Testnet));
+    assert!(
+        child_alive(&app, Network::Regtest),
+        "stopping testnet stopped regtest"
+    );
+
+    activate(&app, "p-regtest");
+    stop_hsd(app.state()).await.expect("stop regtest");
+}
+
+/// Only this network's own node already running stops a start.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn a_second_start_of_the_same_network_is_refused() {
+    let (node, _f, _u) = spawn_then_up_server(1).await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let conn = conn_for(&h, NO_RPC);
+    add_profile_on(&conn, "p-regtest", "regtest", &node.url());
+    let app = app_with(conn);
+    activate(&app, "p-regtest");
+
+    start_hsd(app.state()).await.expect("regtest starts");
+    let err = start_hsd(app.state()).await.expect_err("already running");
+    assert_eq!(err.to_string(), "The regtest node is already running.");
+    stop_hsd(app.state()).await.expect("stop");
+}
+
+/// Spec 2026-10-24 R6/R7: a node an earlier session started and left for the
+/// daemon is still the app's own, so Stop ends it and forgets its record.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn stop_ends_an_own_node_left_by_an_earlier_session() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let conn = conn_for(&h, NO_RPC);
+    add_profile_on(&conn, "p-regtest", "regtest", NO_RPC);
+    let regtest_dir = h.data_dir().join("regtest");
+    std::fs::create_dir_all(&regtest_dir).unwrap();
+    // The "earlier session's" node: a process this test started itself.
+    let mut orphan = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    crate::commands::hsd_pid::write_pid_file(&regtest_dir, orphan.id()).unwrap();
+    let app = app_with(conn);
+    activate(&app, "p-regtest");
+
+    stop_hsd(app.state()).await.expect("stop the own orphan");
+
+    let status = orphan.wait().unwrap();
+    assert!(
+        !status.success(),
+        "the orphan was terminated, not left to finish"
+    );
+    assert!(!regtest_dir
         .join(crate::commands::hsd_pid::PID_FILE)
         .exists());
 }

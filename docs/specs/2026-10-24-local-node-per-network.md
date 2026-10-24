@@ -32,8 +32,9 @@ Every requirement names the code that will enforce it and the test that will pin
 ### 3.2 One node per network
 
 **R3 — Nodes of different networks run side by side.** The app keeps one own-node handle per network (`AppState`), and starting a network's node never stops another network's. hsd gives every network distinct RPC, p2p, brontide, wallet and DNS ports (`protocol/networks.js`: p2p 12038 / 13038 / 14038 / 15038, ns 5349 / 15349 / 25349 / 35349, rs 5350 / 15350 / 25350 / 35350), and each network has its own data directory, so two networks never share a port or a chain lock.
-*To enforce:* `commands/node.rs::{start_node, stop_node}`, `AppState::hsd_children`.
-*To pin:* `node_lifecycle_tests::two_networks_run_side_by_side`, `live_node_it::live_regtest_and_simnet_nodes_run_side_by_side`.
+*Enforced:* `commands/node.rs::{start_hsd, stop_hsd, is_running}` over `AppState::hsd_children`; the tray snapshot and toggle (`commands/tray.rs`, `lib.rs`) read the active network's child, and quit drains every child.
+*Pinned:* `node_lifecycle_tests::{two_networks_run_side_by_side, a_second_start_of_the_same_network_is_refused}`.
+*To pin (step 8):* `live_node_it::live_regtest_and_testnet_nodes_run_side_by_side` (profiles are stored only for mainnet, testnet and regtest, so the pair is regtest and testnet).
 
 **R4 — A network's node starts when one of its wallets becomes active.** When a profile is activated (`activate_profile`, the one activation path) and at app start for the active profile, the app starts that profile's network node if the profile's `chain_source` is `local_node`, the network's autostart is on, and no own node or outside node of that network answers already. An outside node on the right chain is adopted for reading, as `start_hsd` does today; one on another chain is refused as today (`guard_probe_network`). A `remote_node` or `explorer` profile starts nothing, in either mode. The activation itself never waits for the node: it returns, and the banner shows the node starting (R11).
 *To enforce:* `commands/secure_wallet.rs::activate_profile`, `commands/node.rs::ensure_network_node`, the startup hook in `lib.rs`.
@@ -48,6 +49,11 @@ Every requirement names the code that will enforce it and the test that will pin
 **R6 — An own node is recognised across sessions by its pid and start time.** hsd overwrites its own command line (`process.title = 'hsd'`), so a process's arguments cannot tell the app's hsd from another. At spawn the app writes `<data_dir>/namehold-hsd.pid` with the child's pid and its process start time as the OS reports it, and removes the file when it stops that node. A node is own when it is this session's child, or when the pid file names a live process whose start time is the recorded one: a reused pid belongs to a process that started at another time. A pid file naming a dead process, another start time, or that cannot be read is stale: it is ignored and removed. The start time is read with `proc_pidinfo(PROC_PIDTBSDINFO)` on macOS and field 22 of `/proc/<pid>/stat` on Linux; elsewhere it is not read, nothing is recorded, and an orphan counts as outside (§5).
 *Enforced:* `commands/hsd_pid.rs::{process_start_time, write_pid_file, own_node_pid, remove_pid_file}`, called from `commands/node.rs::{start_hsd, stop_hsd}`.
 *Pinned:* `hsd_pid_tests::{a_live_process_has_one_start_time, an_exited_process_has_no_start_time, a_pid_file_of_a_live_process_names_it, a_stale_pid_file_is_ignored_and_removed, no_pid_file_names_nothing}`, `node_lifecycle_tests::a_spawned_node_is_recorded_as_own_until_it_is_stopped`.
+
+**R7 — An outside node is never stopped.** Stop, the tray and quit act only on own nodes. `stop_hsd` stops this session's child of the active network, or the own node its pid file names (SIGTERM, R6); a node that answers but is neither is refused with "This node was not started by Namehold, so Namehold does not stop it." and sent no RPC `stop` (before, `stop_hsd` sent one to whatever answered on the profile's URL). Until step 7 disables the button, Settings and the status strip show that refusal as an error toast; afterwards the Stop button is disabled with the same sentence and the tray item reads the same.
+*Enforced:* `commands/node.rs::{stop_hsd, OUTSIDE_NODE_NOT_STOPPED}`, `commands/hsd_pid.rs::terminate`.
+*Pinned:* `node_status_tests::stopping_an_outside_node_sends_nothing` (mockito `.expect(0)` on the `stop` call), `node_lifecycle_tests::stop_ends_an_own_node_left_by_an_earlier_session`.
+*To enforce (step 7):* the disabled Stop button and tray item, in `src/components/Settings.tsx` and the tray menu in `lib.rs`. *To pin:* `settings-network-nodes.test.tsx`.
 
 ### 3.4 Controls
 
@@ -97,11 +103,11 @@ Each step is one PR-sized change with its tests, and leaves the app working on i
 | 1 | A `local_node` profile without an override reaches its network's port over a default global URL; a custom global URL is kept; `start_hsd` stops writing `node_rpc_url` and the realign is removed | R1, R2 | Done |
 | 2 | Mode and autostart per network: one resolver of the profile's network with an app-wide fallback (no migration), every reader of the mode switched to it | R10 (backend) | Done |
 | 3 | Pid file and own-node recognition by pid and process start time (macOS, Linux) | R6 | Done |
-| 4 | One own-node handle per network in `AppState`; Start/Stop per network; an outside node is never stopped | R3, R7 | Not started |
+| 4 | One own-node handle per network in `AppState`; Start/Stop per network; an outside node is never stopped | R3, R7 | Done |
 | 5 | Start on wallet activation and at app start; switching stops nothing | R4, R5 | Not started |
 | 6 | Quit by one rule for every own node; source check that the daemon names no hsd spawn | R9, R12 | Not started |
 | 7 | UI: per-network node block in Settings, Start/Stop and tray labels naming the network, "Starting…" in the status strip | R8, R10 (UI), R11 | Not started |
-| 8 | Live regtest + simnet side-by-side test, `docs/NODE_SETUP.md`, CHANGELOG | R3 (live), docs | Not started |
+| 8 | Live regtest + testnet side-by-side test, `docs/NODE_SETUP.md`, CHANGELOG | R3 (live), docs | Not started |
 
 ## 7. Pointers
 
