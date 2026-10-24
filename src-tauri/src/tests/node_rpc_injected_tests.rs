@@ -524,6 +524,18 @@ async fn read_name_info_node_synthesizes_available_for_null_info() {
     assert_eq!(out.registered, Some(false));
 }
 
+/// An `info` the node sent but that cannot be read (here: no `name`) is no
+/// answer, so the caller asks the explorer. It is never AVAILABLE: a CLOSED,
+/// owned name read that way would offer "Open auction".
+#[tokio::test]
+async fn read_name_info_node_returns_none_for_an_unreadable_info() {
+    let mock = MockNodeRpc::new().with_name_info(json!({
+        "info": { "state": "CLOSED", "height": 500, "owner": { "hash": "aa", "index": 0 } }
+    }));
+    let out = crate::commands::read::read_name_info_node_with_client(&mock, "taken").await;
+    assert!(out.is_none(), "{out:?}");
+}
+
 #[tokio::test]
 async fn read_name_info_node_returns_none_on_rpc_error() {
     // RPC error → helper returns None so caller falls back to explorer.

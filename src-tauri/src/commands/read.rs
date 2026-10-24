@@ -829,7 +829,9 @@ pub(crate) fn synthesize_available_name(name: &str) -> crate::hsd::types::HsdNam
 ///   (`info` present and normalizable);
 /// - `Some(AVAILABLE)` when the node answers but `info` is null (name never
 ///   opened on-chain) — a synthesized available entry;
-/// - `None` when the RPC fails (caller then falls back to the explorer path).
+/// - `None` when the RPC fails, or when `info` is present but cannot be read
+///   (caller then falls back to the explorer path). An unreadable `info` is
+///   never AVAILABLE: the name has on-chain state we could not parse.
 ///
 /// Testable against a mock — covers the normalize path, the null-info
 /// synthesize path, and the RPC-error fallthrough without a live node.
@@ -839,13 +841,12 @@ pub(crate) async fn read_name_info_node_with_client(
 ) -> Option<crate::hsd::types::HsdName> {
     let raw = node.get_name_info(name).await.ok()?;
     // The node knows the name — `info` is present and carries auction state.
+    // If it cannot be read, say nothing rather than call the name AVAILABLE.
     if let Some(info) = raw.get("info").filter(|v| !v.is_null()) {
-        if let Some(normalized) = crate::providers::hnsfans::normalize_name(info) {
-            return Some(normalized);
-        }
+        return crate::providers::hnsfans::normalize_name(info);
     }
-    // `info` is null (or unnormalizable) → the name exists in the HNS namespace
-    // but has never been opened. Synthesize an AVAILABLE entry.
+    // `info` is null → the name exists in the HNS namespace but has never
+    // been opened. Synthesize an AVAILABLE entry.
     Some(synthesize_available_name(name))
 }
 
