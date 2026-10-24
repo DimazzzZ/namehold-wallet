@@ -4585,6 +4585,78 @@ pub fn list_purchases_ready_to_finalize(
     Ok(rows)
 }
 
+/// The finalize episodes still open, keyed as the three ready lists are
+/// (`list_purchases_ready_to_finalize`, `list_listings_ready_to_finalize`,
+/// `list_cancels_ready_to_finalize`): every purchase, listing and cancel whose
+/// FINALIZE has not reached the chain, from before its transfer lockup is
+/// over up to ready. A reminder already sent for one of these stays claimed
+/// while a sync sees its lockup as running again for a moment
+/// (`deadlines::scan_finalize_reminders`); it ends when the FINALIZE is sent,
+/// so a FINALIZE that fails or is dropped reminds again (R28).
+pub struct OpenFinalizeEpisodes {
+    pub purchases: Vec<(String, String, String)>,
+    pub listings: Vec<(String, String, String)>,
+    pub cancels: Vec<(String, String, String)>,
+}
+
+pub fn list_open_finalize_episodes(
+    conn: &rusqlite::Connection,
+) -> Result<OpenFinalizeEpisodes, AppError> {
+    let rows = |sql: &str, p: &[&dyn rusqlite::ToSql]| -> Result<Vec<_>, AppError> {
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(p, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    };
+    let purchases = rows(
+        &format!(
+            "SELECT p.wallet_profile_id, p.name, p.purchase_txid FROM shakedex_purchases p
+             WHERE p.state IN (?1, ?2)
+               AND NOT EXISTS (
+                   SELECT 1 FROM wallet_tx_drafts d
+                   WHERE d.id = p.finalize_draft_id AND d.status IN {})",
+            reached_chain_sql()
+        ),
+        &[
+            &PurchaseState::Unconfirmed,
+            &PurchaseState::AwaitingFinalize,
+        ],
+    )?;
+    let listings = rows(
+        &format!(
+            "SELECT wallet_profile_id, name, lock_transfer_txid FROM shakedex_listings
+             WHERE lock_transfer_txid IS NOT NULL
+               AND (state IN (?1, ?2)
+                    OR (state = ?3 AND EXISTS (
+                        SELECT 1 FROM wallet_tx_drafts d
+                        WHERE d.id = shakedex_listings.lock_finalize_draft_id
+                          AND d.status IN {})))",
+            unsent_sql()
+        ),
+        &[
+            &ListingState::Locking,
+            &ListingState::ReadyToFinalize,
+            &ListingState::Finalizing,
+        ],
+    )?;
+    let cancels = rows(
+        &format!(
+            "SELECT wallet_profile_id, name, cancel_txid FROM shakedex_listings
+             WHERE cancel_txid IS NOT NULL AND (state = ?1 OR state IN {})
+               AND NOT EXISTS (
+                   SELECT 1 FROM wallet_tx_drafts d
+                   WHERE d.id = shakedex_listings.cancel_finalize_draft_id AND d.status IN {})",
+            ListingState::cancel_mined_sql(),
+            reached_chain_sql()
+        ),
+        &[&ListingState::Cancelling],
+    )?;
+    Ok(OpenFinalizeEpisodes {
+        purchases,
+        listings,
+        cancels,
+    })
+}
+
 /// Fetch one purchase, or `None`.
 pub fn get_shakedex_purchase(
     conn: &rusqlite::Connection,

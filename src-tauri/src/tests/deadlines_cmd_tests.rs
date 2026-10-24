@@ -962,6 +962,61 @@ fn finalize_shell_sends_each_key_once() {
     );
 }
 
+/// A reminder already sent is not sent again when its episode steps back and
+/// forward without its FINALIZE being sent: a sync that sees the lockup as
+/// still running for a moment (a listing back to Locking, a purchase or a
+/// cancel with blocks left again) and the next one that sees it over are one
+/// episode, not two (QA of 0.6.0, J4: a second "Ready to finalize" for the
+/// same listing after the app was reopened).
+#[test]
+fn finalize_shell_does_not_repeat_an_episode_that_stepped_back() {
+    let conn = create_full_test_db();
+    let id = insert_valid_profile(&conn, "mainnet");
+    enable_notifications(&conn, "144", "30");
+    seed_all_finalize_ready(&conn, &id);
+    let sent = std::cell::RefCell::new(Vec::<String>::new());
+    let mut notify = |n: &PendingNotification| {
+        sent.borrow_mut().push(n.key.clone());
+        None
+    };
+    deliver_finalize_reminders(&conn, 20_000, &mut notify).unwrap();
+    assert_eq!(sent.borrow().len(), 3, "{:?}", sent.borrow());
+
+    let step = |purchase_blocks: i64, listing: &str, cancel_blocks: i64| {
+        conn.execute(
+            "UPDATE shakedex_purchases SET blocks_remaining = ?1 WHERE id = 'p1'",
+            [purchase_blocks],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE shakedex_listings SET state = ?1 WHERE id = 'l1'",
+            [listing],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE shakedex_listings SET cancel_blocks_remaining = ?1 WHERE id = 'l2'",
+            [cancel_blocks],
+        )
+        .unwrap();
+    };
+    step(3, "locking", 2);
+    deliver_finalize_reminders(&conn, 20_000, &mut notify).unwrap();
+    step(0, "ready_to_finalize", 0);
+    deliver_finalize_reminders(&conn, 20_000, &mut notify).unwrap();
+    assert_eq!(
+        sent.borrow().len(),
+        3,
+        "sent again after stepping back: {:?}",
+        sent.borrow()
+    );
+    // The listing's daily reminder still comes the next day.
+    deliver_finalize_reminders(&conn, 20_001, &mut notify).unwrap();
+    assert_eq!(
+        sent.borrow().last(),
+        Some(&format!("listing_ready:{id}:forsale:l1-tx:20001"))
+    );
+}
+
 /// Off, the shell neither sends nor touches the stored state.
 #[test]
 fn finalize_shell_respects_the_disabled_setting() {
