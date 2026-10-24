@@ -524,6 +524,18 @@ async fn read_name_info_node_synthesizes_available_for_null_info() {
     assert_eq!(out.registered, Some(false));
 }
 
+/// An `info` the node sent but that cannot be read (here: no `name`) is no
+/// answer, so the caller asks the explorer. It is never AVAILABLE: a CLOSED,
+/// owned name read that way would offer "Open auction".
+#[tokio::test]
+async fn read_name_info_node_returns_none_for_an_unreadable_info() {
+    let mock = MockNodeRpc::new().with_name_info(json!({
+        "info": { "state": "CLOSED", "height": 500, "owner": { "hash": "aa", "index": 0 } }
+    }));
+    let out = crate::commands::read::read_name_info_node_with_client(&mock, "taken").await;
+    assert!(out.is_none(), "{out:?}");
+}
+
 #[tokio::test]
 async fn read_name_info_node_returns_none_on_rpc_error() {
     // RPC error → helper returns None so caller falls back to explorer.
@@ -618,6 +630,29 @@ async fn discover_names_falls_back_to_raw_name_when_hash_unresolved() {
     let out = crate::commands::read::discover_names_via_node_with_client(&mock, &hashes).await;
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].0, "example");
+}
+
+/// A hash that resolves to nothing but whitespace (a blank rawName) is no name
+/// to look up: the node is asked about no name for it.
+#[tokio::test]
+async fn discover_names_skips_a_blank_raw_name() {
+    let mock = MockNodeRpc::new()
+        .with_name_by_hash(None)
+        .with_name_info(json!({ "info": { "name": "example" } }));
+    let hashes = vec![crate::db::queries::WalletNameHash {
+        name_hash_hex: "aa".repeat(32),
+        raw_name_hex: Some(hex::encode("  ")),
+    }];
+    let out = crate::commands::read::discover_names_via_node_with_client(&mock, &hashes).await;
+    assert!(out.is_empty(), "{out:?}");
+    assert!(
+        !mock
+            .calls()
+            .iter()
+            .any(|c| matches!(c, crate::tests::mock_node_rpc::RpcCall::NameInfo(_))),
+        "{:?}",
+        mock.calls()
+    );
 }
 
 #[tokio::test]
@@ -1102,6 +1137,26 @@ async fn write_probe_unsynced_downgrades_with_progress_pct() {
     assert!(reason.contains("still syncing"));
 }
 
+/// A node with no sync target yet (header height 0) and no progress figure
+/// is not synced, and the reason says 0% rather than dividing by zero.
+#[tokio::test]
+async fn write_probe_without_a_sync_target_reports_zero_percent() {
+    let mock = MockNodeRpc::new().with_blockchain_info(BlockchainInfo {
+        chain: Some("regtest".to_string()),
+        blocks: 5,
+        headers: Some(0),
+        verification_progress: None,
+        bestblockhash: None,
+        mediantime: None,
+    });
+    let mut cap = writable_cap();
+    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
+        .await;
+    assert!(!cap.can_write);
+    let reason = cap.reason.as_deref().unwrap();
+    assert!(reason.contains("still syncing (0%)"), "{reason}");
+}
+
 /// A synced node whose status cannot be read (a failed read, or a reply
 /// without both index flags as booleans) is not known to be address-indexed:
 /// no sends through it, and the reason says the status was not read rather
@@ -1289,10 +1344,8 @@ async fn fetch_coins_and_txs_empty_addresses_returns_empty() {
 }
 
 #[tokio::test]
-async fn fetch_coins_and_txs_http_error_maps_to_start_hsd_hint() {
-    let mock = MockNodeRpc::new().with_coins_by_address_err("__http_error_marker__");
-    // We can't easily inject Http vs Rpc via with_coins_by_address_err (it wraps
-    // in AppError::Rpc), so test the Rpc branch: message includes index-address hint.
+async fn fetch_coins_and_txs_rpc_error_names_the_address_and_the_index_flag() {
+    let mock = MockNodeRpc::new().with_coins_by_address_err("__rpc_error_marker__");
     let addresses = vec!["hs1qmine".to_string()];
     let err = crate::commands::tx::fetch_wallet_coins_and_txs_with_client(
         &mock,
@@ -1302,7 +1355,35 @@ async fn fetch_coins_and_txs_http_error_maps_to_start_hsd_hint() {
     .await
     .unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("index-address") || msg.contains("Start hsd"));
+    assert!(
+        msg.contains(
+            "getcoinsbyaddress failed for hs1qmine (is the node's --index-address enabled?)"
+        ) && msg.contains("__rpc_error_marker__"),
+        "{msg}"
+    );
+}
+
+#[tokio::test]
+async fn fetch_coins_and_txs_http_error_maps_to_start_hsd_hint() {
+    let mock = MockNodeRpc::new().with_coins_by_address_http_err();
+    let addresses = vec!["hs1qmine".to_string()];
+    let err = crate::commands::tx::fetch_wallet_coins_and_txs_with_client(
+        &mock,
+        &addresses,
+        "http://localhost:12037",
+    )
+    .await
+    .unwrap_err();
+    match err {
+        AppError::Rpc(msg) => {
+            assert!(
+                msg.starts_with("Can't reach your local node at http://localhost:12037. Start hsd"),
+                "{msg}"
+            );
+            assert!(!msg.contains("getcoinsbyaddress failed"), "{msg}");
+        }
+        other => panic!("expected Rpc, got {other:?}"),
+    }
 }
 
 #[tokio::test]

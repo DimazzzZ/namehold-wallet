@@ -4358,3 +4358,422 @@ async fn daemon_and_app_upload_nothing_for_a_listing_managed_elsewhere() {
         assert!(after.managed_elsewhere_at.is_some(), "{caller:?}");
     }
 }
+
+/// hsd's `GET /coin` of `f`'s lock outpoint answering `coin` (`None`: its
+/// 404), and its median time `mtp`.
+fn node_with_lock_coin(coin: Option<serde_json::Value>, mtp: Option<u64>) -> MockNodeRpc {
+    let mut info = tip();
+    info.mediantime = mtp;
+    let coin: Option<NodeCoin> = coin.map(|c| serde_json::from_value(c).unwrap());
+    MockNodeRpc::new()
+        .with_blockchain_info(info)
+        .with_get_coin(move |_, _| Ok(coin.clone()))
+}
+
+/// `f`'s lock coin as hsd sends it, under covenant `cov` at `height`.
+fn lock_coin_json(f: &Fx, cov: u8, height: i64) -> serde_json::Value {
+    json!({
+        "version": 0, "height": height, "value": LOCK_VALUE, "address": f.lock,
+        "covenant": { "type": cov, "action": "FINALIZE",
+                      "items": [hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap()), "32000000"] },
+        "coinbase": false, "hash": txid("f1"), "index": 0
+    })
+}
+
+/// A market that must see no request at all, read or write.
+struct NoMarketCall(mockito::Mock, mockito::Mock);
+
+impl NoMarketCall {
+    async fn assert_async(&self) {
+        self.0.assert_async().await;
+        self.1.assert_async().await;
+    }
+}
+
+async fn no_market_call(s: &mut ServerGuard) -> NoMarketCall {
+    NoMarketCall(
+        s.mock("GET", Matcher::Any).expect(0).create_async().await,
+        s.mock("POST", Matcher::Any).expect(0).create_async().await,
+    )
+}
+
+fn not_now_reason(c: crate::shakedex_jobs::MarketCopy) -> String {
+    match c {
+        crate::shakedex_jobs::MarketCopy::NotNow(why) => why,
+        crate::shakedex_jobs::MarketCopy::Ready { .. } => panic!("expected NotNow, got Ready"),
+        crate::shakedex_jobs::MarketCopy::StepsUnverified(why) => {
+            panic!("expected NotNow, got StepsUnverified: {why}")
+        }
+    }
+}
+
+/// R23, R25: what the node cannot show this sync is no verdict on the
+/// listing: no median time, the lock coin spent (404), a coin there that is
+/// not this listing's FINALIZE, or a FINALIZE not mined yet. Nothing is
+/// written for any of them.
+#[tokio::test]
+async fn market_copy_is_no_verdict_when_the_node_cannot_show_the_lock() {
+    let f = fx(ListingState::Listed, true);
+    let before = listing(&f);
+    let cases = [
+        (
+            node_with_lock_coin(Some(lock_coin_json(&f, COV_FINALIZE, TIP)), None),
+            "no median time",
+        ),
+        (node_with_lock_coin(None, Some(MTP)), "lock coin spent"),
+        (
+            node_with_lock_coin(Some(lock_coin_json(&f, 9, TIP)), Some(MTP)),
+            "something else than this listing's lock coin",
+        ),
+        (
+            node_with_lock_coin(Some(lock_coin_json(&f, COV_FINALIZE, -1)), Some(MTP)),
+            "not mined",
+        ),
+    ];
+    for (node, want) in cases {
+        let c = crate::shakedex_jobs::market_copy(&f.conn, &node, NET, &before, NOW)
+            .await
+            .unwrap();
+        let why = not_now_reason(c);
+        assert!(why.contains(want), "{want}: {why}");
+    }
+    let after = listing(&f);
+    assert_eq!(after.listing_file_json, before.listing_file_json);
+    assert_eq!(after.market_status, None);
+}
+
+/// R23: an expiry refresh over a row that changed since the job read it
+/// (here its file) writes nothing and gives no copy: no verdict this sync.
+#[tokio::test]
+async fn expiry_refresh_over_a_row_changed_meanwhile_writes_nothing() {
+    let f = listed_on_market(MarketStatus::Listed);
+    set_expiry(&f, (NOW + 86_400) as u64);
+    let read = listing(&f);
+    set_expiry(&f, (NOW + 2 * 86_400) as u64);
+    let stored = listing(&f).listing_file_json;
+    let c = crate::shakedex_jobs::market_copy(&f.conn, &node(&f, TIP), NET, &read, NOW)
+        .await
+        .unwrap();
+    assert!(not_now_reason(c).contains("changed meanwhile"));
+    let l = listing(&f);
+    assert_eq!(l.listing_file_json, stored);
+    assert_eq!(l.expires_at, Some(NOW + 2 * 86_400));
+}
+
+/// R36: a market copy is searched for a foreign step only against a row
+/// that stores its lock coin, and only when the copy is of this listing
+/// (name, lock outpoint, key): otherwise none, though the copy's step
+/// verifies over our lock.
+#[tokio::test]
+async fn foreign_step_in_needs_a_stored_lock_and_a_copy_of_this_listing() {
+    let f = listed_on_market(MarketStatus::Listed);
+    let (step, theirs) = foreign_copy(&f, 3_000_000);
+    let theirs = ListingFile::parse(&theirs, NET).unwrap();
+    let l = listing(&f);
+    let found = crate::shakedex_jobs::foreign_step_in(&theirs, &l, LOCK_VALUE, NET).unwrap();
+    assert_eq!(found, Some(as_foreign(&f, &step)), "the step verifies");
+    let no_lock = ShakedexListing {
+        lock_txid: None,
+        lock_vout: None,
+        ..l.clone()
+    };
+    assert_eq!(
+        crate::shakedex_jobs::foreign_step_in(&theirs, &no_lock, LOCK_VALUE, NET).unwrap(),
+        None
+    );
+    let mut other_name = theirs.clone();
+    other_name.name = "dexother".into();
+    assert_eq!(
+        crate::shakedex_jobs::foreign_step_in(&other_name, &l, LOCK_VALUE, NET).unwrap(),
+        None
+    );
+    let mut other_vout = theirs;
+    other_vout.lock_vout = 1;
+    assert_eq!(
+        crate::shakedex_jobs::foreign_step_in(&other_vout, &l, LOCK_VALUE, NET).unwrap(),
+        None
+    );
+}
+
+/// R24: a node that reports no median time advances no reverse auction:
+/// no market call, nothing written.
+#[tokio::test]
+async fn advance_waits_for_the_nodes_median_time() {
+    let (f, _) = auction_on_market().await;
+    let before = bookkeeping(&f);
+    let mut s = market().await;
+    let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+    let n = node_with_lock_coin(Some(lock_coin_json(&f, COV_FINALIZE, TIP)), None);
+    advance(&f, &n, &s, moved().1).await;
+    any.assert_async().await;
+    get.assert_async().await;
+    assert_eq!(bookkeeping(&f), before);
+    assert_eq!(n.count_matching(|c| matches!(c, RpcCall::GetCoin(..))), 0);
+}
+
+/// R24: a reverse auction whose step moved but whose lock coin the node
+/// fails to answer for is left for the next sync: the run goes on, no
+/// market call, nothing written.
+#[tokio::test]
+async fn advance_failure_on_a_listing_leaves_it_for_the_next_sync() {
+    let (f, _) = auction_on_market().await;
+    let before = bookkeeping(&f);
+    let (mtp, later) = moved();
+    let mut info = tip();
+    info.mediantime = Some(mtp);
+    let n = MockNodeRpc::new()
+        .with_blockchain_info(info)
+        .with_get_coin(|_, _| Err(crate::error::AppError::Rpc("connection reset".into())));
+    let mut s = market().await;
+    let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+    advance(&f, &n, &s, later).await;
+    any.assert_async().await;
+    get.assert_async().await;
+    assert_eq!(bookkeeping(&f), before);
+    assert_eq!(n.count_matching(|c| matches!(c, RpcCall::GetCoin(..))), 1);
+}
+
+/// SECURITY: a market client not told it is on mainnet refuses every write
+/// itself. The publish job's report, day-0 announce and first upload each
+/// fail on that refusal, logged: no write reaches the market, and nothing
+/// is recorded as if the market had answered.
+#[tokio::test]
+async fn market_writes_refused_by_the_client_are_logged_and_not_recorded() {
+    let mut s = market().await;
+    let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    let _get = s
+        .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_status(404)
+        .with_body(PROOF_NOT_FOUND)
+        .create_async()
+        .await;
+    let no_network = LearnHnsClient::with_base_url(&s.url()).unwrap();
+    async fn run(f: &Fx, c: &LearnHnsClient) {
+        publish_listings_with_client(
+            &f.conn,
+            &node(f, TIP),
+            c,
+            PROFILE,
+            NOW,
+            &LockLost::default(),
+        )
+        .await
+        .unwrap();
+    }
+    // Day 0: the pending post.
+    let announce = fx(ListingState::Locking, true);
+    run(&announce, &no_network).await;
+    // Listed, never taken: the first upload.
+    let first = fx(ListingState::Listed, true);
+    run(&first, &no_network).await;
+    // A mined cancel of a listing the market took: the report.
+    let told = listed_on_market(MarketStatus::Listed);
+    cancelling(&told, "signed");
+    cancel_mined(&told, ListingState::CancelAwaitingFinalize);
+    let before = bookkeeping(&told);
+    run(&told, &no_network).await;
+    post.assert_async().await;
+    for (f, want) in [
+        (&announce, (None, None, None)),
+        (&first, (None, None, None)),
+    ] {
+        assert_eq!(bookkeeping(f), want);
+    }
+    assert_eq!(bookkeeping(&told), before);
+}
+
+/// R25: a kept listing whose node read fails is left as it is: no market
+/// call, nothing written, the next sync tries again.
+#[tokio::test]
+async fn keep_listed_failure_on_a_listing_leaves_it_for_the_next_sync() {
+    let f = listed_on_market(MarketStatus::Listed);
+    let before = bookkeeping(&f);
+    let n = MockNodeRpc::new().with_blockchain_info_err("connection reset");
+    let mut s = market().await;
+    let any = no_market_call(&mut s).await;
+    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
+        .await
+        .unwrap();
+    any.assert_async().await;
+    assert_eq!(bookkeeping(&f), before);
+}
+
+/// R25: a kept listing whose lock coin the node shows spent (404) gets no
+/// verdict this sync: the market is not asked and nothing is written.
+#[tokio::test]
+async fn kept_listing_with_its_lock_coin_spent_is_not_checked_now() {
+    let f = listed_on_market(MarketStatus::Listed);
+    let before = bookkeeping(&f);
+    let mut s = market().await;
+    let any = no_market_call(&mut s).await;
+    let n = node_with_lock_coin(None, Some(MTP));
+    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
+        .await
+        .unwrap();
+    any.assert_async().await;
+    assert_eq!(bookkeeping(&f), before);
+}
+
+/// R23: the expiry just refreshed and the market gives no answer for its
+/// copy: what is sent changed, so the refreshed file goes up anyway.
+#[tokio::test]
+async fn refreshed_expiry_is_uploaded_when_the_copy_gets_no_answer() {
+    let f = listed_on_market(MarketStatus::Listed);
+    set_expiry(&f, (NOW + 29 * 86_400) as u64);
+    let mut s = market().await;
+    let get = s
+        .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_status(502)
+        .with_body("<html>Application failed to respond</html>")
+        .expect(1)
+        .create_async()
+        .await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    keep(&f, &s, NOW).await;
+    get.assert_async().await;
+    m.assert_async().await;
+    let want = MTP + sell::LISTING_LIFETIME_SECS;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(
+        ListingFile::parse(&sent, NET).unwrap().expires_at,
+        Some(want)
+    );
+    let l = listing(&f);
+    assert_eq!(l.market_status, Some(MarketStatus::Listed));
+    assert_eq!(l.expires_at, Some(want as i64));
+}
+
+/// R23: a Refused Listed listing whose stored file does not read is taken
+/// as near its expiry, so it is looked at, and recorded as StepsUnverified
+/// from the row, with no node read of its lock and no market call.
+#[tokio::test]
+async fn refused_listing_with_an_unreadable_file_is_recorded_from_the_row() {
+    let f = listed_on_market(MarketStatus::Refused);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET market_retry_at = NULL, listing_file_json = 'not json'",
+            [],
+        )
+        .unwrap();
+    let mut s = market().await;
+    let any = no_market_call(&mut s).await;
+    let n = node(&f, TIP);
+    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
+        .await
+        .unwrap();
+    any.assert_async().await;
+    assert_eq!(n.call_count(), 0);
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_attempts),
+        (Some(MarketStatus::StepsUnverified), 1)
+    );
+    assert!(l.market_error.unwrap().contains("does not read"));
+}
+
+/// R23: a Refused Listed listing near its expiry whose lock coin the node
+/// shows spent is not refreshed this sync: nothing written, no market call.
+#[tokio::test]
+async fn refused_listing_with_its_lock_coin_spent_is_not_refreshed_now() {
+    let f = listed_on_market(MarketStatus::Refused);
+    f.conn
+        .execute("UPDATE shakedex_listings SET market_retry_at = NULL", [])
+        .unwrap();
+    set_expiry(&f, (NOW + 86_400) as u64);
+    let before = listing(&f);
+    let mut s = market().await;
+    let any = no_market_call(&mut s).await;
+    let n = node_with_lock_coin(None, Some(MTP));
+    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
+        .await
+        .unwrap();
+    any.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(l.listing_file_json, before.listing_file_json);
+    assert_eq!(
+        (l.market_status, l.market_retry_at),
+        (Some(MarketStatus::Refused), None)
+    );
+}
+
+/// R38: a listing managed elsewhere is read only once due, only while the
+/// node shows its lock coin, and only while its row reads: otherwise no
+/// market call, and its mark and next read stay as they were.
+#[tokio::test]
+async fn a_listing_managed_elsewhere_is_read_only_when_due_and_checkable() {
+    let mark = |f: &Fx| {
+        let l = listing(f);
+        (
+            l.managed_elsewhere_at,
+            l.market_retry_at,
+            l.foreign_step_json,
+        )
+    };
+    // Not due yet (the mark's next read is at NOW).
+    let f = listed_on_market(MarketStatus::Listed);
+    mark_elsewhere(&f);
+    let before = mark(&f);
+    let mut s = market().await;
+    let any = no_market_call(&mut s).await;
+    let n = node(&f, TIP);
+    keep_listed_with_client(
+        &f.conn,
+        &n,
+        &client(&s),
+        PROFILE,
+        NOW - 1,
+        &LockLost::default(),
+    )
+    .await
+    .unwrap();
+    any.assert_async().await;
+    assert_eq!(n.call_count(), 0, "not due: no node read");
+    assert_eq!(mark(&f), before);
+
+    // Due, the lock coin spent (404): no verdict.
+    let n = node_with_lock_coin(None, Some(MTP));
+    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
+        .await
+        .unwrap();
+    any.assert_async().await;
+    assert_eq!(mark(&f), before);
+
+    // Due, its row does not read: logged, nothing read or written.
+    f.conn
+        .execute("UPDATE shakedex_listings SET steps_json = 'not json'", [])
+        .unwrap();
+    let n = node(&f, TIP);
+    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &LockLost::default())
+        .await
+        .unwrap();
+    any.assert_async().await;
+    assert_eq!(n.call_count(), 0);
+    assert_eq!(mark(&f), before);
+}
+
+/// The sync lock taken over by another process stops the keep job before
+/// a listing managed elsewhere too: no node read, no market call, the mark
+/// as it was.
+#[tokio::test]
+async fn a_listing_managed_elsewhere_is_not_read_once_the_sync_lock_is_lost() {
+    let f = listed_on_market(MarketStatus::Listed);
+    mark_elsewhere(&f);
+    let before = listing(&f);
+    let mut s = market().await;
+    let any = no_market_call(&mut s).await;
+    let n = node(&f, TIP);
+    let lost = LockLost::default();
+    lost.raise();
+    keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW, &lost)
+        .await
+        .unwrap();
+    any.assert_async().await;
+    assert_eq!(n.call_count(), 0);
+    let after = listing(&f);
+    assert_eq!(
+        (after.managed_elsewhere_at, after.market_retry_at),
+        (before.managed_elsewhere_at, before.market_retry_at)
+    );
+}

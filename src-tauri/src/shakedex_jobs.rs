@@ -155,6 +155,7 @@ pub enum Rebroadcast {
 /// it only when the profile's node is authoritative (connected, synced, on the
 /// profile's network, not SPV): anywhere else, a transaction the node does not
 /// know proves nothing.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn refresh_purchases_step(db_path: &str, profile_id: &str, rebroadcast: Rebroadcast) {
     let conn = match crate::db::connection::open_migrated(db_path) {
         Ok(c) => c,
@@ -1516,6 +1517,7 @@ fn relock(conn: &rusqlite::Connection, l: &queries::ShakedexListing) -> Result<(
 /// database, so the daemon runs it as the app does; the caller runs it only
 /// when the node is authoritative, since a node that is behind would show a
 /// mined cancel's lock TRANSFER as unspent and a mined purchase as missing.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn refresh_listings_step(db_path: &str, profile_id: &str) {
     let conn = match crate::db::connection::open_migrated(db_path) {
         Ok(c) => c,

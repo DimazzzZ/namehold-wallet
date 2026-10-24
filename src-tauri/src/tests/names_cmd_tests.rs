@@ -4925,3 +4925,19 @@ async fn capabilities_report_a_stranded_candidate_the_node_could_not_answer_for(
     assert_eq!(caps.stranded_bid_count, 0, "{caps:?}");
     assert_eq!(caps.stranded_unchecked_count, 1);
 }
+
+/// With no wallet profile to read for, a name gets the conservative answer:
+/// every action refused with the reason, nothing claimed as owned.
+#[tokio::test]
+async fn capabilities_without_a_wallet_profile_refuse_every_action() {
+    let app = mock_app_with(create_full_test_state());
+    let caps = names::get_name_action_capabilities(app.state(), "nobody".into(), None)
+        .await
+        .unwrap();
+    assert_eq!(caps.name, "nobody");
+    assert!(!caps.owns_name);
+    for cap in [&caps.can_open, &caps.can_bid, &caps.can_finalize] {
+        assert!(!cap.allowed);
+        assert_eq!(cap.reason.as_deref(), Some("no active wallet profile"));
+    }
+}

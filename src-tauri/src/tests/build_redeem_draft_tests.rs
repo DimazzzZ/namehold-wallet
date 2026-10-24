@@ -438,3 +438,20 @@ fn build_redeem_draft_refuses_when_every_reveal_is_from_an_earlier_auction() {
     }
     assert!(reserved_reveal_txids(&conn).is_empty(), "nothing reserved");
 }
+
+/// With no reveal coin at all the builder says there is nothing to redeem,
+/// rather than building a transaction with no name input.
+#[test]
+fn build_redeem_draft_without_a_reveal_coin_is_not_found() {
+    let (conn, ctx, _coin) = setup(2_000_000, 10_000_000);
+    let err = build_redeem_draft_inner(&conn, &ctx, NAME, Some(10), &closed_name_state(), &[])
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::NotFound(m) if m.contains("no unspent losing reveal coin for 'example'")),
+        "{err:?}"
+    );
+    let drafts: i64 = conn
+        .query_row("SELECT COUNT(*) FROM wallet_tx_drafts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(drafts, 0);
+}

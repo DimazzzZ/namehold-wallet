@@ -690,3 +690,183 @@ async fn unreachable_market_is_no_answer() {
     let copy = c.proof_copy("dexreviews").await.unwrap();
     assert!(matches!(copy, ProofCopy::NoAnswer(_)), "{copy:?}");
 }
+
+/// A market page or fee info the market answers 404 for is an error naming
+/// the 404: unlike a listing file, there is no "none" to read it as.
+#[tokio::test]
+async fn a_404_market_page_or_fee_info_is_an_error() {
+    let mut s = mockito::Server::new_async().await;
+    let _a = s
+        .mock(
+            "GET",
+            "/api/v2/auctions?availability=available&page=1&per_page=100",
+        )
+        .with_status(404)
+        .create_async()
+        .await;
+    let _f = s
+        .mock("GET", "/api/v2/fee_info")
+        .with_status(404)
+        .create_async()
+        .await;
+    let c = LearnHnsClient::with_base_url(&s.url()).unwrap();
+    for err in [
+        c.list_available(1, 100).await.unwrap_err().to_string(),
+        c.fee_info().await.unwrap_err().to_string(),
+    ] {
+        assert!(err.contains("HTTP 404 Not Found"), "{err}");
+    }
+}
+
+/// A body sent in chunks (no Content-Length to refuse up front) is still cut
+/// at the cap: the read refuses it, and the keep-listed copy read takes it
+/// for no answer, never for the market's copy.
+#[tokio::test]
+async fn an_oversized_chunked_body_is_refused_as_it_is_read() {
+    use crate::noncustodial::shakedex::listing_file::MAX_LISTING_FILE_BYTES;
+    let mut s = mockito::Server::new_async().await;
+    let p = s
+        .mock("GET", "/listing/big/proof.json")
+        .with_chunked_body(|w| {
+            let chunk = vec![b' '; 4096];
+            for _ in 0..=MAX_LISTING_FILE_BYTES / 4096 {
+                w.write_all(&chunk)?;
+            }
+            Ok(())
+        })
+        .expect(2)
+        .create_async()
+        .await;
+    let c = LearnHnsClient::with_base_url(&s.url()).unwrap();
+    let err = c.listing_file("big").await.unwrap_err().to_string();
+    assert!(err.contains("larger than"), "{err}");
+    let copy = c.proof_copy("big").await.unwrap();
+    assert!(
+        matches!(&copy, ProofCopy::NoAnswer(why) if why.contains("larger than")),
+        "{copy:?}"
+    );
+    p.assert_async().await;
+}
+
+/// A name that is not a valid Handshake name never reaches a market URL:
+/// each call is our own refusal, before any HTTP.
+#[tokio::test]
+async fn an_invalid_name_is_refused_before_any_http() {
+    let mut s = mockito::Server::new_async().await;
+    let get = s
+        .mock("GET", mockito::Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    let post = s
+        .mock("POST", mockito::Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    let c = mainnet(&s);
+    let bad = "a/../api";
+    let cancel = StatusReport::Cancelled {
+        cancel_txid: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    };
+    let errs = [
+        c.listing_file(bad).await.unwrap_err(),
+        c.proof_copy(bad).await.unwrap_err(),
+        c.refresh_status(bad, &cancel).await.unwrap_err(),
+        c.post_pending_listing(&PendingListing {
+            name: bad,
+            ..pending()
+        })
+        .await
+        .unwrap_err(),
+    ];
+    for e in errs {
+        assert!(
+            matches!(&e, crate::error::AppError::InvalidInput(m) if m == "not a valid Handshake name"),
+            "{e:?}"
+        );
+    }
+    get.assert_async().await;
+    post.assert_async().await;
+}
+
+/// A read from a market that cannot be reached is an error saying the
+/// request failed (an import shows it), not a "none".
+#[tokio::test]
+async fn an_unreachable_market_read_is_a_request_failure() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let c = LearnHnsClient::with_base_url(&format!("http://127.0.0.1:{port}")).unwrap();
+    let err = c.listing_file("dexreviews").await.unwrap_err().to_string();
+    assert!(err.contains("LearnHNS Market request failed"), "{err}");
+}
+
+/// The test seam takes an IPv6 loopback host as it takes 127.0.0.1, and no
+/// other IPv6 host; a loopback host is still http or https only.
+#[test]
+fn base_url_takes_the_ipv6_loopback_only() {
+    assert!(LearnHnsClient::with_base_url("http://[::1]:1234").is_ok());
+    assert!(LearnHnsClient::with_base_url("http://[2001:db8::1]:1234").is_err());
+    let e = LearnHnsClient::with_base_url("ftp://127.0.0.1:1234").unwrap_err();
+    assert!(
+        e.to_string().contains("must be the LearnHNS Market host"),
+        "{e}"
+    );
+}
+
+/// A market page or fee info that is not the shape the market sends is
+/// "bad data", an error, never an empty page or a zero fee.
+#[tokio::test]
+async fn a_market_page_or_fee_info_of_another_shape_is_bad_data() {
+    let mut s = mockito::Server::new_async().await;
+    let _a = s
+        .mock(
+            "GET",
+            "/api/v2/auctions?availability=available&page=1&per_page=100",
+        )
+        .with_body("<!doctype html><h1>Maintenance</h1>")
+        .create_async()
+        .await;
+    let _f = s
+        .mock("GET", "/api/v2/fee_info")
+        .with_body(r#"{"address":null}"#)
+        .create_async()
+        .await;
+    let c = LearnHnsClient::with_base_url(&s.url()).unwrap();
+    for err in [
+        c.list_available(1, 100).await.unwrap_err().to_string(),
+        c.fee_info().await.unwrap_err().to_string(),
+    ] {
+        assert!(err.contains("LearnHNS Market returned bad data"), "{err}");
+    }
+}
+
+/// A listing file served as bytes that are not UTF-8 is refused as such,
+/// not read lossily.
+#[tokio::test]
+async fn a_listing_file_that_is_not_utf8_is_refused() {
+    let mut s = mockito::Server::new_async().await;
+    let _p = s
+        .mock("GET", "/listing/dexreviews/proof.json")
+        .with_body(b"{\"name\":\"\xff\"}")
+        .create_async()
+        .await;
+    let c = LearnHnsClient::with_base_url(&s.url()).unwrap();
+    let err = c.listing_file("dexreviews").await.unwrap_err().to_string();
+    assert!(err.contains("not UTF-8"), "{err}");
+}
+
+/// A market URL that is not a listing's (another path on the host) names
+/// no listing.
+#[test]
+fn a_market_link_to_another_page_names_no_listing() {
+    for url in [
+        "https://market.learnhns.com/",
+        "https://market.learnhns.com/auctions/dexreviews",
+        "https://market.learnhns.com/listingdexreviews",
+    ] {
+        assert_eq!(name_from_listing_link(url), None, "{url}");
+    }
+}

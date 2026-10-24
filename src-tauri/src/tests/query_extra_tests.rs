@@ -1121,3 +1121,295 @@ mod branch_cov_extra {
         );
     }
 }
+
+mod listings_and_coins {
+    use crate::db::queries::{self, DraftStatus, ListingState, ShakedexListing};
+    use crate::noncustodial::network::Network;
+    use crate::noncustodial::speed_up::SPEED_UP_ACTION;
+    use crate::noncustodial::sync::cache_transaction;
+    use crate::tests::shakedex_sell_tests::{listing, store_conn};
+    use rusqlite::{params, Connection};
+
+    const PROFILE: &str = "sell1";
+
+    fn reserved_by(conn: &Connection, draft: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = ?1",
+            [draft],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn coin(conn: &Connection, txid: &str, cov_type: i64, cov: Option<&str>, height: Option<i64>) {
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex, value_doos,
+                 height, covenant_type, covenant_json, spend_class, spent_by_txid)
+             VALUES (?1, 0, ?2, 'rs1qname', '00', 0, ?3, ?4, ?5, 'name_control', NULL)",
+            params![txid, PROFILE, height, cov_type, cov],
+        )
+        .unwrap();
+    }
+
+    fn reserve(conn: &Connection, txid: &str, draft: &str) {
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex, value_doos,
+                 covenant_type, spend_class, spent_by_txid, reserved_by_draft_id)
+             VALUES (?1, 0, ?2, 'rs1qfund', '00', 1000, 0, 'liquid_hns', NULL, ?3)",
+            params![txid, PROFILE, draft],
+        )
+        .unwrap();
+    }
+
+    fn insert(conn: &Connection, l: &ShakedexListing) {
+        queries::insert_shakedex_listing(conn, l).unwrap();
+    }
+
+    /// An Owned Names row shows one listing per name, the newest: an older
+    /// Sold listing of a name relisted since does not add a second row.
+    #[test]
+    fn listing_names_show_only_the_newest_listing_of_a_name() {
+        let conn = store_conn();
+        insert(&conn, &listing("old", "dexsale", ListingState::Sold));
+        insert(&conn, &listing("new", "dexsale", ListingState::Listed));
+        insert(&conn, &listing("solo", "other", ListingState::Listed));
+        conn.execute(
+            "UPDATE shakedex_listings SET created_at = '2026-01-01 00:00:00' WHERE id = 'old'",
+            [],
+        )
+        .unwrap();
+        let rows = queries::read_shakedex_listing_names(
+            &conn,
+            PROFILE,
+            Network::Regtest.name_params(),
+            100,
+            30,
+        )
+        .unwrap();
+        let shown: Vec<(&str, &str, ListingState)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.listing.listing_id.as_str(),
+                    r.listing.state,
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("dexsale", "new", ListingState::Listed),
+                ("other", "solo", ListingState::Listed)
+            ]
+        );
+    }
+
+    /// A Sold listing whose cancel draft row is gone has no cancel to
+    /// release: both releases say nothing changed and leave the coin the id
+    /// still names reserved.
+    #[test]
+    fn releasing_a_cancel_whose_draft_row_is_gone_changes_nothing() {
+        let conn = store_conn();
+        let mut l = listing("l1", "dexsale", ListingState::Sold);
+        l.cancel_draft_id = Some("cx".into());
+        l.cancel_txid = Some("c1".repeat(32));
+        insert(&conn, &l);
+        reserve(&conn, &"cx".repeat(32), "cx");
+        let other = "d2".repeat(32);
+        assert!(!queries::release_losing_cancel(&conn, "l1", &other, "x").unwrap());
+        assert!(!queries::release_replaced_cancel(&conn, "l1", &other, "x").unwrap());
+        assert_eq!(reserved_by(&conn, "cx"), 1);
+        let after = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+        assert_eq!(after.state, ListingState::Sold);
+        assert_eq!(after.cancel_draft_id.as_deref(), Some("cx"));
+    }
+
+    fn speed_up_child(conn: &Connection, id: &str, parent: &str, status: &str) {
+        let summary = serde_json::json!({ "action": SPEED_UP_ACTION, "parentTxid": parent });
+        queries::insert_tx_draft(
+            conn,
+            id,
+            PROFILE,
+            SPEED_UP_ACTION,
+            "00",
+            "[]",
+            &summary.to_string(),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = ?2",
+            params![status, id],
+        )
+        .unwrap();
+        reserve(conn, &id.repeat(32), id);
+    }
+
+    /// R15: a dead parent drops its live Speed up child and frees the child's
+    /// coin; a confirmed child is left alone, and a parent without a child
+    /// drops nothing.
+    #[test]
+    fn a_dead_parent_drops_only_a_live_speed_up_child() {
+        let conn = store_conn();
+        speed_up_child(&conn, "su", "parent1", "confirmed");
+        assert_eq!(
+            queries::drop_live_speed_up_child(&conn, PROFILE, "parent1", "parent died").unwrap(),
+            0
+        );
+        let d = queries::get_tx_draft(&conn, "su").unwrap().unwrap();
+        assert_eq!(d.status, DraftStatus::Confirmed);
+        assert_eq!(reserved_by(&conn, "su"), 1);
+
+        speed_up_child(&conn, "sv", "parent2", "broadcasted");
+        assert_eq!(
+            queries::drop_live_speed_up_child(&conn, PROFILE, "parent2", "parent died").unwrap(),
+            1
+        );
+        let d = queries::get_tx_draft(&conn, "sv").unwrap().unwrap();
+        assert_eq!(d.status, DraftStatus::Dropped);
+        assert_eq!(d.error_message.as_deref(), Some("parent died"));
+        assert_eq!(reserved_by(&conn, "sv"), 0);
+
+        assert_eq!(
+            queries::drop_live_speed_up_child(&conn, PROFILE, "parent3", "parent died").unwrap(),
+            0
+        );
+    }
+
+    /// An OPEN in flight is an unconfirmed coin of that covenant carrying the
+    /// name's hash: an unconfirmed coin of another name, a hashless one, or a
+    /// confirmed one of this name is not one.
+    #[test]
+    fn an_open_in_flight_needs_an_unconfirmed_coin_of_the_same_name() {
+        let conn = store_conn();
+        let cov = |hash: &str| {
+            serde_json::json!({ "type": 2, "action": "OPEN", "items": [hash, "00000000", "6e616d65"] })
+                .to_string()
+        };
+        coin(&conn, "t1", 2, Some(&cov("bbbb")), None);
+        coin(&conn, "t2", 2, Some(&cov("aaaa")), Some(120));
+        coin(&conn, "t3", 2, None, Some(-1));
+        let in_flight = |cov_type: i64, hash: &str| {
+            queries::has_unconfirmed_covenant_utxo_by_name_hash(&conn, PROFILE, cov_type, hash)
+                .unwrap()
+        };
+        assert!(!in_flight(2, "AAAA"));
+        coin(&conn, "t4", 2, Some(&cov("aaaa")), Some(-1));
+        assert!(in_flight(2, "AAAA"));
+        assert!(!in_flight(3, "aaaa"), "another covenant type");
+    }
+
+    /// A cached tx that spends our coin but lists no outputs pays no one we
+    /// can name, so it reads as "other", never as a send.
+    #[test]
+    fn a_cached_spend_without_outputs_reads_as_other() {
+        let conn = store_conn();
+        coin(&conn, "prevtx", 0, None, Some(5));
+        cache_transaction(
+            &conn,
+            PROFILE,
+            "spendtx",
+            Some(10),
+            None,
+            r#"{"inputs":[{"prevout":{"hash":"prevtx","index":0}}]}"#,
+        )
+        .unwrap();
+        let txs = queries::read_cached_transactions(&conn, PROFILE).unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0]["direction"], "other");
+        assert_eq!(txs[0]["value"], 0);
+        assert_eq!(txs[0]["address"], "");
+    }
+
+    /// A cached tx funded by someone else's coin that pays our address is a
+    /// receive: a foreign input does not make it a spend of ours.
+    #[test]
+    fn a_cached_tx_with_a_foreign_input_paying_us_is_a_receive() {
+        let conn = store_conn();
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES (?1, 0, 0, 0, 'rs1qmine', '0014', '02')",
+            [PROFILE],
+        )
+        .unwrap();
+        coin(&conn, "ourprev", 0, None, Some(5));
+        cache_transaction(
+            &conn,
+            PROFILE,
+            "rxtx",
+            Some(10),
+            None,
+            r#"{"outputs":[{"value":250000,"address":"rs1qmine"},{"value":90000,"address":"rs1qthem"}],
+                "inputs":[{"prevout":{"hash":"ourprev","index":1}},{"prevout":{"hash":"theirprev","index":0}}]}"#,
+        )
+        .unwrap();
+        let txs = queries::read_cached_transactions(&conn, PROFILE).unwrap();
+        assert_eq!(txs[0]["direction"], "receive");
+        assert_eq!(txs[0]["value"], 250000);
+    }
+
+    fn read_as<T: rusqlite::types::FromSql>(conn: &Connection, sql: &str) -> rusqlite::Error {
+        match conn.query_row(sql, [], |r| r.get::<_, T>(0)) {
+            Ok(_) => panic!("{sql} decoded"),
+            Err(e) => e,
+        }
+    }
+
+    /// A stored domain enum decodes only from a known spelling: an unknown
+    /// one fails the read naming the value, and a non-text value fails as a
+    /// wrong column type, never as some default state.
+    #[test]
+    fn stored_enums_refuse_an_unknown_spelling_and_a_non_text_value() {
+        use crate::db::queries::{ListingMode, MarketStatus, PurchaseState};
+        let conn = store_conn();
+        let unknown = [
+            (
+                read_as::<DraftStatus>(&conn, "SELECT 'bogus'"),
+                "unknown draft status 'bogus'",
+            ),
+            (
+                read_as::<PurchaseState>(&conn, "SELECT 'bogus'"),
+                "unknown purchase state 'bogus'",
+            ),
+            (
+                read_as::<ListingState>(&conn, "SELECT 'bogus'"),
+                "unknown listing state 'bogus'",
+            ),
+            (
+                read_as::<ListingMode>(&conn, "SELECT 'bogus'"),
+                "unknown listing mode 'bogus'",
+            ),
+            (
+                read_as::<MarketStatus>(&conn, "SELECT 'bogus'"),
+                "unknown market status 'bogus'",
+            ),
+        ];
+        for (e, want) in unknown {
+            assert!(
+                matches!(e, rusqlite::Error::FromSqlConversionFailure(..)),
+                "{e:?}"
+            );
+            assert!(e.to_string().contains(want), "{e} lacks {want}");
+        }
+        let non_text = [
+            read_as::<DraftStatus>(&conn, "SELECT 1"),
+            read_as::<PurchaseState>(&conn, "SELECT 1"),
+            read_as::<ListingState>(&conn, "SELECT 1"),
+            read_as::<ListingMode>(&conn, "SELECT 1"),
+            read_as::<MarketStatus>(&conn, "SELECT 1"),
+        ];
+        for e in non_text {
+            assert!(
+                matches!(
+                    e,
+                    rusqlite::Error::InvalidColumnType(0, _, rusqlite::types::Type::Integer)
+                ),
+                "{e:?}"
+            );
+        }
+    }
+}

@@ -196,6 +196,22 @@ async fn finalize_refused_before_lockup() {
     assert!(purchase(&app).finalize_draft_id.is_none());
 }
 
+/// More than one block short of the lockup counts the blocks in the plural.
+#[tokio::test]
+async fn finalize_refused_before_lockup_counts_the_blocks_left() {
+    let mut node = mockito::Server::new_async().await;
+    let tip = ready_tip(Network::Regtest) - 3;
+    let (app, _m) = regtest_app(&mut node, tip, "awaiting_finalize", None).await;
+    let err = shakedex_build_purchase_finalize_draft(app.state(), PURCHASE_ID.into(), None)
+        .await
+        .unwrap_err();
+    assert!(
+        err_text(err).ends_with("the purchase can be finalized in 3 blocks"),
+        "plural"
+    );
+    assert_eq!(draft_count(&app), 0);
+}
+
 #[tokio::test]
 async fn finalize_built_one_block_before_the_lockup_height() {
     let mut node = mockito::Server::new_async().await;

@@ -1217,6 +1217,35 @@ mod tests {
         assert_eq!(extract_amount(&json!({"c": -100}), &["c"]), -100);
     }
 
+    #[test]
+    fn with_fallback_ignores_a_blank_fallback_and_trims_a_real_one() {
+        let blank = HnsFansClient::with_fallback("https://a.example/", "   ");
+        assert_eq!(blank.fallback_url, None);
+        let real = HnsFansClient::with_fallback("https://a.example/", " https://b.example/ ");
+        assert_eq!(real.fallback_url.as_deref(), Some("https://b.example"));
+    }
+
+    #[test]
+    fn extract_amount_passes_over_a_key_that_is_not_a_number() {
+        let body = json!({ "confirmed": "12", "balance": 7 });
+        assert_eq!(extract_amount(&body, &["confirmed", "balance"]), 7);
+    }
+
+    #[test]
+    fn newest_owner_outpoint_skips_an_entry_without_an_outpoint() {
+        let body = json!({
+            "result": [
+                { "action": "Open", "txid": "aa" },
+                { "action": "Bid", "index": 3 },
+                { "action": "Finalize", "txid": "bb", "index": 1 }
+            ]
+        });
+        assert_eq!(newest_owner_outpoint(&body), Some(("bb".to_string(), 1)));
+        // No entry carries both halves → None.
+        let none = json!({ "result": [{ "txid": "aa" }] });
+        assert_eq!(newest_owner_outpoint(&none), None);
+    }
+
     #[tokio::test]
     async fn get_name_info_optional_returns_error_on_http_failure() {
         // A 4xx status (other than 404) surfaces the "HNSFans name lookup failed"

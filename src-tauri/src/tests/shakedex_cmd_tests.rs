@@ -2130,3 +2130,174 @@ async fn list_market_reads_the_profile_it_is_given() {
     assert!(!page.network_has_market, "the named profile's network");
     asked.assert_async().await;
 }
+
+/// A named profile that does not exist (or a blank name) reads the active
+/// profile, as the read commands resolve it: here the mainnet one, whose
+/// market page is read.
+#[tokio::test]
+async fn list_market_reads_the_active_profile_for_an_unknown_name() {
+    let mut market = mockito::Server::new_async().await;
+    let page_mock = market
+        .mock(
+            "GET",
+            "/api/v2/auctions?availability=available&page=1&per_page=100",
+        )
+        .with_header("content-type", "application/json")
+        .with_body(json!({ "auctions": [], "total": 0 }).to_string())
+        .expect(2)
+        .create_async()
+        .await;
+    let conn = mainnet("http://127.0.0.1:1");
+    set(&conn, "learnhns_base_url", &market.url());
+    set(&conn, "node_mode", "spv");
+    let app = app_with(conn);
+    for name in ["no-such-profile", "  "] {
+        let page = shakedex_list_market(app.state(), None, Some(name.into()))
+            .await
+            .expect("page");
+        assert!(
+            page.network_has_market,
+            "{name:?}: the active mainnet profile"
+        );
+    }
+    page_mock.assert_async().await;
+}
+
+/// A market link the market has no listing for (its 404) is "not found",
+/// naming the name, not an empty or unverified row.
+#[tokio::test]
+async fn import_link_the_market_has_no_listing_for_is_not_found() {
+    let node = mockito::Server::new_async().await;
+    let mut market = mockito::Server::new_async().await;
+    let _p = market
+        .mock("GET", "/listing/dexreviews/proof.json")
+        .with_status(404)
+        .create_async()
+        .await;
+    let conn = mainnet(&node.url());
+    set(&conn, "learnhns_base_url", &market.url());
+    let app = app_with(conn);
+    let err = shakedex_import_listing(
+        app.state(),
+        ImportSource::Link {
+            url: "https://market.learnhns.com/listing/dexreviews".into(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, AppError::NotFound(m) if m == "LearnHNS Market has no listing for dexreviews"),
+        "{err:?}"
+    );
+}
+
+/// In SPV mode an imported listing is returned unverified, its prices not
+/// read, and the node is never asked.
+#[tokio::test]
+async fn import_text_in_spv_is_unverified_without_asking_the_node() {
+    let mut node = mockito::Server::new_async().await;
+    let rpc = node
+        .mock("POST", Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    let coin = node
+        .mock("GET", Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    let conn = mainnet(&node.url());
+    set(&conn, "node_mode", "spv");
+    let app = app_with(conn);
+    let row = shakedex_import_listing(
+        app.state(),
+        ImportSource::Text {
+            json: LISTING_FILE.into(),
+        },
+    )
+    .await
+    .expect("import");
+    assert_eq!(
+        serde_json::to_value(&row).unwrap()["verdict"],
+        json!({ "verdict": "hidden", "kind": "unverified" })
+    );
+    assert_eq!((row.current_price, row.next_price), (None, None));
+    rpc.assert_async().await;
+    coin.assert_async().await;
+}
+
+/// R33: a stored lock key that does not decode (not hex, or not 33 bytes)
+/// names no address and is skipped: the other rows' keys still mark a
+/// listing as ours, and the import does not fail on it.
+#[tokio::test]
+async fn own_lock_keys_that_do_not_decode_are_skipped() {
+    let conn = mainnet("http://127.0.0.1:1");
+    set(&conn, "node_mode", "spv");
+    let app = app_with(conn);
+    let key = hex::encode(
+        crate::noncustodial::shakedex::listing_file::ListingFile::parse(
+            LISTING_FILE,
+            Network::Main,
+        )
+        .unwrap()
+        .public_key,
+    );
+    // One open listing per name and profile: each row its own profile.
+    with_db(&app, |c| {
+        for (profile, key) in [("shk2", "zz"), ("shk3", "02ab")] {
+            db::queries::insert_wallet_profile(
+                c,
+                profile,
+                profile,
+                "mnemonic_hot",
+                "mainnet",
+                "x",
+                1,
+                false,
+            )
+            .unwrap();
+            own_listing_row(c, profile, profile, key);
+        }
+    });
+    let import = || {
+        shakedex_import_listing(
+            app.state(),
+            ImportSource::Text {
+                json: LISTING_FILE.into(),
+            },
+        )
+    };
+    assert!(!import().await.expect("import").own);
+    with_db(&app, |c| own_listing_row(c, PROFILE, "mine", &key));
+    assert!(import().await.expect("import").own);
+}
+
+/// A name that expires soon after the purchase (inside the warning window,
+/// outside the finalize margin) is bought with the warning in the draft's
+/// summary, which the secure window shows.
+#[tokio::test]
+async fn purchase_of_a_name_expiring_soon_carries_the_expiry_warning() {
+    let mut node = mockito::Server::new_async().await;
+    let renewal = fixture_name()["info"]["renewal"].as_i64().unwrap();
+    let end = renewal + i64::from(Network::Main.name_params().renewal_window);
+    let _m = [
+        mock_blockchain_info(&mut node, end - 144 * 10, Some(fixture_mtp())).await,
+        mock_name_info(&mut node, fixture_name()).await,
+        mock_coin(&mut node, LOCK_TXID, fixture_coin()).await,
+    ];
+    let app = app_with(mainnet(&node.url()));
+    let preview = shakedex_preview_purchase(app.state(), LISTING_FILE.into(), false, false, None)
+        .await
+        .expect("preview");
+    assert!(preview.warn_expiry);
+    let d = shakedex_build_purchase_draft(app.state(), LISTING_FILE.into(), None, false, None)
+        .await
+        .expect("purchase builds");
+    let warnings = d.summary["warnings"].as_array().unwrap();
+    assert_eq!(
+        warnings,
+        &vec![json!(
+            "This name expires soon after the purchase: finalize it in time or it is lost."
+        )]
+    );
+}

@@ -353,6 +353,70 @@ fn build_finalize_draft_includes_weak_flag_in_covenant() {
     let summary =
         build_finalize_draft_inner(&conn, &ctx, NAME, Some(10), &ns, &coin, &rblock).unwrap();
     assert_eq!(summary.action, "finalize");
-    // The draft persists successfully; the weak flag is encoded into the
-    // covenant (not directly visible in the summary, but the plan is built).
+    // The weak flag is the FINALIZE covenant's flags byte, `items[3]`.
+    let plan_json: String = conn
+        .query_row(
+            "SELECT signing_inputs_json FROM wallet_tx_drafts LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let plan: serde_json::Value = serde_json::from_str(&plan_json).unwrap();
+    let finalize = plan["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["covenant_type"].as_u64() == Some(sync::COV_FINALIZE as u64))
+        .expect("a FINALIZE output");
+    assert_eq!(finalize["covenant_items_hex"][3], "01");
+}
+
+/// The FINALIZE output goes to the target the TRANSFER recorded
+/// (`items = [nameHash, height, version, addrHash]`). An owner covenant that
+/// does not carry a p2wpkh target is refused with the reason, and nothing is
+/// persisted: a guessed target would hand the name to someone else.
+#[test]
+fn build_finalize_draft_refuses_an_owner_covenant_without_a_p2wpkh_target() {
+    let (conn, ctx, coin, rblock, target_h160) = setup(5_000_000, 10_000_000);
+    let ns = closed_name_state(false);
+    let nh_hex = hex::encode(names::hash_name(NAME).unwrap());
+    let target = hex::encode(target_h160);
+    let cases = [
+        (
+            serde_json::json!({"type": sync::COV_TRANSFER}),
+            "owner coin has no covenant items",
+        ),
+        (
+            serde_json::json!({"type": sync::COV_TRANSFER, "items": [nh_hex, "e8030000", "00"]}),
+            "owner coin is not a TRANSFER",
+        ),
+        (
+            serde_json::json!({"type": sync::COV_TRANSFER, "items": [nh_hex, "e8030000", "00", "zz"]}),
+            "bad transfer target",
+        ),
+        (
+            serde_json::json!({"type": sync::COV_TRANSFER, "items": [nh_hex, "e8030000", "01", target]}),
+            "finalize target must be p2wpkh",
+        ),
+        (
+            serde_json::json!({"type": sync::COV_TRANSFER, "items": [nh_hex, "e8030000", "00", "ab".repeat(32)]}),
+            "finalize target must be p2wpkh",
+        ),
+    ];
+    for (cov, want) in cases {
+        let bad = NameCoin {
+            covenant_json: Some(cov.to_string()),
+            ..coin.clone()
+        };
+        let err = build_finalize_draft_inner(&conn, &ctx, NAME, Some(10), &ns, &bad, &rblock)
+            .unwrap_err();
+        assert!(
+            matches!(&err, AppError::InvalidInput(m) if m.contains(want)),
+            "{cov}: {err:?}"
+        );
+    }
+    let drafts: i64 = conn
+        .query_row("SELECT COUNT(*) FROM wallet_tx_drafts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(drafts, 0);
 }

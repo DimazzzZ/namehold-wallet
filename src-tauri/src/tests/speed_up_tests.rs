@@ -543,3 +543,16 @@ fn a_childs_death_names_its_parent() {
         )
     );
 }
+
+// --- R9: where the target came from ------------------------------------------
+
+#[test]
+fn each_target_source_names_itself_in_the_confirmation() {
+    assert_eq!(TargetSource::Estimate.text(), "your node's estimate");
+    assert_eq!(TargetSource::Setting.text(), "your fee rate setting");
+    assert_eq!(
+        TargetSource::Fallback.text(),
+        "your node has no fee estimate yet; the minimum rate"
+    );
+    assert_eq!(TargetSource::Typed.text(), "the rate you chose");
+}

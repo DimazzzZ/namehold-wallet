@@ -795,3 +795,125 @@ async fn buyable_blocks_by_name_reads_each_names_expiry_once() {
     let expired = verify::buyable_blocks_by_name(&m, Network::Main, &names, 440_000).await;
     assert_eq!(expired.get("dexreviews"), Some(&0));
 }
+
+/// R35: a `getnameinfo` reply without the `info` key is not hsd's reply for
+/// any name, expired or not: the name is left out (unknown), not counted as 0.
+#[tokio::test]
+async fn buyable_blocks_by_name_leaves_out_a_reply_without_info() {
+    let names = vec!["dexreviews".to_string()];
+    let m = MockNodeRpc::new().with_name_info(serde_json::json!({ "start": null }));
+    let left = verify::buyable_blocks_by_name(&m, Network::Main, &names, 440_000).await;
+    assert_eq!(left.get("dexreviews"), None);
+}
+
+/// A lock coin still in its TRANSFER covenant (hsd type 9) does not yet
+/// hold the name at the lock: the listing fails verification.
+#[tokio::test]
+async fn lock_coin_in_a_transfer_covenant_fails_verification() {
+    let l = listing();
+    let mut c = coin_value();
+    c["covenant"] = serde_json::json!({
+        "type": 9,
+        "action": "TRANSFER",
+        "items": [
+            "55731c3d821c3b845e3943d7485b3321a39e6ed1de290518d43240438d40b5c1",
+            "333f0100",
+            "00",
+            "b85dd54723edb4b04f8d5535d595de5315572a7a"
+        ]
+    });
+    let v = verdict(&mock(Some(c), Some(late_mtp(&l)), tip_from_fixture()), &l).await;
+    match v {
+        Verdict::Hidden(Hidden::FailedVerification { reason }) => {
+            assert!(reason.contains("does not hold this name"), "{reason}")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The node answered for the lock coin but not for the name: the listing
+/// could not be checked, with the node's error as the reason.
+#[tokio::test]
+async fn name_info_error_could_not_be_checked() {
+    let l = listing();
+    let coin: NodeCoin = serde_json::from_value(coin_value()).unwrap();
+    let m = MockNodeRpc::new()
+        .with_get_coin(move |_, _| Ok(Some(coin.clone())))
+        .with_name_info_err("name lookup timed out")
+        .with_blockchain_info(BlockchainInfo {
+            blocks: tip_from_fixture(),
+            mediantime: Some(late_mtp(&l)),
+            ..Default::default()
+        });
+    match verdict(&m, &l).await {
+        Verdict::Hidden(Hidden::CouldNotCheck { reason }) => {
+            assert!(reason.contains("name lookup timed out"), "{reason}")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A listing built other than by `ListingFile::parse` still fails closed:
+/// an unusable payment address or no price steps is a failed verification,
+/// never a buyable listing.
+#[tokio::test]
+async fn listing_with_bad_payment_address_or_no_steps_fails_verification() {
+    let m = mock(
+        Some(coin_value()),
+        Some(late_mtp(&listing())),
+        tip_from_fixture(),
+    );
+    let mut bad_pay = listing();
+    bad_pay.payment_addr = "hs1nope".into();
+    let mut no_steps = listing();
+    no_steps.steps.clear();
+    for (l, want) in [
+        (bad_pay, "payment address is invalid"),
+        (no_steps, "no price steps"),
+    ] {
+        match verdict(&m, &l).await {
+            Verdict::Hidden(Hidden::FailedVerification { reason }) => {
+                assert!(reason.contains(want), "{reason}")
+            }
+            other => panic!("{want}: {other:?}"),
+        }
+    }
+}
+
+/// A purchase whose (price, lock time) is no step of its listing cannot be
+/// re-checked: refused before the node is asked for its median time.
+#[tokio::test]
+async fn paid_step_of_no_listed_step_is_refused() {
+    use crate::tests::mock_node_rpc::RpcCall;
+    let l = listing();
+    let (price, lock_time) = l.encoded_steps().unwrap()[0];
+    let m = mock(Some(coin_value()), Some(late_mtp(&l)), tip_from_fixture());
+    for (paid, at) in [(price + 1, lock_time), (price, lock_time + 1)] {
+        let e = verify::paid_step(&m, Network::Main, LISTING_FILE, paid, at)
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("pays no step of its listing"), "{e}");
+    }
+    assert_eq!(
+        m.count_matching(|c| matches!(c, RpcCall::BlockchainInfo)),
+        0
+    );
+    let e = verify::paid_step(&m, Network::Main, "{}", price, lock_time)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(e, crate::error::AppError::InvalidInput(_)),
+        "{e:?}"
+    );
+    assert_eq!(
+        m.count_matching(|c| matches!(c, RpcCall::BlockchainInfo)),
+        0,
+        "an unreadable listing is refused before the node is read"
+    );
+    assert_eq!(
+        verify::paid_step(&m, Network::Main, LISTING_FILE, price, lock_time)
+            .await
+            .unwrap(),
+        verify::PaidStep::Current
+    );
+}

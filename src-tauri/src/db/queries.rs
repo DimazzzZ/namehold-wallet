@@ -9646,4 +9646,26 @@ mod noncustodial_query_tests {
         assert!(lock_search_done(&conn, "p1").unwrap());
         assert!(!lock_search_done(&conn, "p2").unwrap());
     }
+
+    /// The dead-FINALIZE clause joins the condition only for a write that
+    /// takes Finalizing: a write from other states moves exactly those, and
+    /// Finalizing never sits in the plain state list.
+    #[test]
+    fn ends_before_lock_sql_adds_the_dead_finalize_clause_only_from_finalizing() {
+        let plain = ends_before_lock_sql(ListingWrite::Unabort);
+        assert_eq!(
+            plain,
+            format!("(state IN ('{}'))", ListingState::Aborted.as_str())
+        );
+        let abort = ends_before_lock_sql(ListingWrite::Abort);
+        assert!(abort.starts_with(&format!(
+            "(state IN ('{}', '{}')",
+            ListingState::Locking.as_str(),
+            ListingState::ReadyToFinalize.as_str()
+        )));
+        assert!(abort.contains(&format!(
+            " OR (state = '{}' AND NOT EXISTS",
+            ListingState::Finalizing.as_str()
+        )));
+    }
 }

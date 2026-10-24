@@ -235,4 +235,86 @@ mod tests {
     fn lock_time_over_40_bits_refused() {
         assert!(encode_lock_time(1u64 << 40).is_err());
     }
+
+    fn template_for<'a>(pubkey: &'a [u8; 33], lock_time_secs: u64) -> StepTemplate<'a> {
+        StepTemplate {
+            lock_outpoint: ([4u8; 32], 0),
+            lock_value: 1_000_000,
+            lock_pubkey: pubkey,
+            payment: OutputAddress {
+                version: 0,
+                hash: vec![9; 20],
+            },
+            price: 5_000_000,
+            lock_time_secs,
+        }
+    }
+
+    fn signed_by(secret: &SecretKey, t: &StepTemplate) -> [u8; 65] {
+        t.sign(secret).unwrap()
+    }
+
+    /// A step whose lock time has no encoding is neither signed nor hashed
+    /// nor verified: each says so rather than signing a truncated time.
+    #[test]
+    fn unencodable_lock_time_is_never_signed_or_verified() {
+        let secret = SecretKey::from_byte_array([7u8; 32]).unwrap();
+        let pubkey = PublicKey::from_secret_key(&Secp256k1::new(), &secret).serialize();
+        let good = template_for(&pubkey, 1_700_000_000);
+        let sig = signed_by(&secret, &good);
+        assert!(verify_step_signature(&good, &sig).is_ok());
+        let bad = template_for(&pubkey, 1u64 << 40);
+        for e in [
+            bad.sign(&secret).unwrap_err(),
+            step_sighash(&bad).unwrap_err(),
+            verify_step_signature(&bad, &sig).unwrap_err(),
+        ] {
+            assert!(e.to_string().contains("40 bits"), "{e}");
+        }
+    }
+
+    /// Verification refuses, each with its reason: an `r` or `s` past the
+    /// group order (malformed), a high-S signature, and a lock key that is
+    /// not a curve point.
+    #[test]
+    fn verify_refuses_malformed_high_s_and_bad_key() {
+        let secret = SecretKey::from_byte_array([7u8; 32]).unwrap();
+        let pubkey = PublicKey::from_secret_key(&Secp256k1::new(), &secret).serialize();
+        let t = template_for(&pubkey, 1_700_000_000);
+        let reason = |t: &StepTemplate, sig: &[u8; 65]| {
+            verify_step_signature(t, sig).unwrap_err().to_string()
+        };
+        let mut malformed = [0xffu8; 65];
+        malformed[64] = 0x84;
+        assert!(reason(&t, &malformed).contains("malformed"));
+        let low = signed_by(&secret, &t);
+        let mut sig = Signature::from_compact(&low[..64]).unwrap();
+        let mut high = [0u8; 65];
+        // `normalize_s` only ever lowers: negate by hand via the compact form.
+        let compact = sig.serialize_compact();
+        let n = secp256k1::constants::CURVE_ORDER;
+        let mut s = [0u8; 32];
+        let mut borrow = 0i16;
+        for i in (0..32).rev() {
+            let d = i16::from(n[i]) - i16::from(compact[32 + i]) - borrow;
+            borrow = i16::from(d < 0);
+            s[i] = (d + 256 * borrow) as u8;
+        }
+        high[..32].copy_from_slice(&compact[..32]);
+        high[32..64].copy_from_slice(&s);
+        high[64] = 0x84;
+        sig.normalize_s();
+        assert_eq!(
+            Signature::from_compact(&high[..64]).map(|mut h| {
+                h.normalize_s();
+                h
+            }),
+            Ok(sig),
+            "the same signature, high-S"
+        );
+        assert!(reason(&t, &high).contains("not low-S"));
+        let not_a_point = [0u8; 33];
+        let t = template_for(&not_a_point, 1_700_000_000);
+        assert!(reason(&t, &low).contains("public key is invalid"));
+    }
 }

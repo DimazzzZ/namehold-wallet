@@ -327,14 +327,12 @@ live database and a running event loop. Excluding it from coverage metrics preve
 it from dragging down the overall number, while the pure logic it orchestrates
 (in `daemon::*` submodules and `commands::*`) is independently tested and counted.
 
-**What are the remaining ~2.2% uncovered lines?** After Phases 1–5, the residual
+**Why is `run()` in `lib.rs` `coverage(off)`?** `tauri::generate_handler!` inside it expands one IPC wrapper per command, and llvm-cov counts each wrapper on its `#[tauri::command]` line in the command's own file, where it only runs through the real IPC dispatcher. Unit tests call the command function directly, so without the attribute every command showed one red line (134 of them) that no test can reach.
+
+**What are the remaining ~1.6% uncovered lines?** After Phases 1–5, the residual
 uncovered lines fall into structurally-untestable categories that are documented
 in-place (via `coverage(off)` annotations) or intentionally left as-is:
 
-- **`#[tauri::command]` macro-attribute lines** — each Tauri command emits a
-  small IPC wrapper via macro expansion. Those wrappers only execute when the
-  frontend invokes the command through the real IPC dispatcher; unit tests call
-  the inner function directly.
 - **Interactive webview orchestration** (e.g., wallet-secure-prompt flows in
   `commands/secure_wallet.rs`) — requires a live OS window and user input; no
   injectable seam exists at the current abstraction level.

@@ -3848,3 +3848,243 @@ async fn renewals_leave_out_a_name_locking_at_our_address() {
     assert!(!names.contains(&"alpha"), "{names:?}");
     assert!(names.contains(&"echo"), "{names:?}");
 }
+
+// --- graceful degradation of the node and explorer reads ---------------------
+
+/// Coin values whose sum, or whose difference with the outputs, leaves i64
+/// give no fee rather than a wrapped one: the fee is unknown, shown as `—`.
+#[test]
+fn tx_fee_is_unknown_when_the_coin_arithmetic_overflows() {
+    use crate::commands::read::compute_tx_fee_and_total;
+    let sum_overflows = json!({
+        // Wrapped, these three would sum to 18 and read as a fee of 8.
+        "inputs": [
+            { "coin": { "value": i64::MAX } },
+            { "coin": { "value": i64::MAX } },
+            { "coin": { "value": 20 } },
+        ],
+        "outputs": [ { "value": 10 } ],
+    });
+    assert_eq!(compute_tx_fee_and_total(&sum_overflows), (None, 10));
+    let difference_overflows = json!({
+        "inputs": [ { "coin": { "value": -i64::MAX } } ],
+        "outputs": [ { "value": 2 } ],
+    });
+    assert_eq!(compute_tx_fee_and_total(&difference_overflows), (None, 2));
+}
+
+/// A synced node that cannot answer `getnameinfo` is not the last word: the
+/// explorer's answer is served, not a synthesized AVAILABLE.
+#[tokio::test]
+async fn read_name_info_falls_back_to_the_explorer_when_the_node_cannot_answer() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_status(500)
+        .with_body(r#"{"result":null,"error":{"message":"boom"},"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    let ex = server
+        .mock("GET", "/api/names/foo")
+        .with_body(r#"{"name":"foo","state":"CLOSED","height":100}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = read_name_info(app.state(), "foo".into()).await.unwrap();
+    ni.assert_async().await;
+    ex.assert_async().await;
+    assert_eq!(val["state"], "CLOSED");
+}
+
+/// An explorer that fails is an error, never a name shown as AVAILABLE.
+#[tokio::test]
+async fn read_name_info_surfaces_an_explorer_failure() {
+    let mut server = mockito::Server::new_async().await;
+    let _ex = server
+        .mock("GET", "/api/names/foo")
+        .with_status(500)
+        .with_body("boom")
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    read_name_info(app.state(), "foo".into())
+        .await
+        .expect_err("a failed explorer read is not an answer");
+}
+
+/// With no active profile there is neither a node client nor a network to
+/// pick an explorer by: the resource is served empty and nothing is asked.
+#[tokio::test]
+async fn get_resource_without_an_active_profile_asks_nobody() {
+    let mut server = mockito::Server::new_async().await;
+    let none = server
+        .mock("GET", mockito::Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    let conn = empty_db();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = get_resource(app.state(), "foo".into()).await.unwrap();
+    none.assert_async().await;
+    assert_eq!(val["name"], "foo");
+    assert_eq!(val["state"], "");
+    assert!(val["height"].is_null());
+    assert_eq!(val["data"]["records"], json!([]));
+}
+
+/// The node is ready by the global settings, but with no active profile there
+/// is no profile's node to read a block or a transaction from: both degrade to
+/// null without asking the node for them.
+#[tokio::test]
+async fn block_and_tx_info_without_an_active_profile_are_null() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let reads = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex(
+            "getblockhash|getrawtransaction|gettransaction".into(),
+        ))
+        .expect(0)
+        .create_async()
+        .await;
+    let conn = empty_db();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    assert!(read_block_info(app.state(), 42).await.unwrap().is_null());
+    assert!(read_tx_info(app.state(), "aa".repeat(32))
+        .await
+        .unwrap()
+        .is_null());
+    reads.assert_async().await;
+}
+
+/// A profile whose stored xpub does not parse cannot provision addresses, so
+/// the explorer has nothing to look up and is not asked: the (empty) cached
+/// balance is served.
+#[tokio::test]
+async fn read_balance_with_an_unparsable_xpub_serves_the_cache() {
+    let mut server = mockito::Server::new_async().await;
+    let none = server
+        .mock("GET", mockito::Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    let conn = empty_db();
+    add_profile(&conn, "B3", "regtest");
+    db::queries::set_active_profile(&conn, "B3").unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = read_balance(app.state(), Some("B3".into())).await.unwrap();
+    none.assert_async().await;
+    assert_eq!(val["confirmed"], 0);
+    let derived: i64 = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM derived_addresses WHERE wallet_profile_id = 'B3'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(derived, 0, "nothing derived from an unparsable xpub");
+}
+
+/// Repair asks the node once per distinct name: an inventory TLD that is also
+/// tracked (in another case, with padding) is one candidate, and a blank one
+/// is none.
+#[tokio::test]
+async fn repair_owned_names_via_node_asks_once_per_distinct_name() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(r#"{"result":{"info":null},"error":null,"id":1}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    conn.execute(
+        "INSERT INTO assets (tld, status) VALUES (' Foo ', 'not_started'), ('  ', 'not_started')",
+        [],
+    )
+    .unwrap();
+    add_owned_name(&conn, "W1", "foo", "txfoo");
+
+    let app = app_with(conn);
+    let val = repair_owned_names(app.state()).await.unwrap();
+    ni.assert_async().await;
+    assert_eq!(val["candidates"], 1);
+}
+
+/// `gettxout` without the address string (hsd always sends it beside the
+/// hash) does not make the name ours: only an address string is compared with
+/// the wallet's addresses, never the hash, even when a stored row spells it.
+#[tokio::test]
+async fn repair_owned_names_via_node_needs_the_owner_address_string() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(
+            r#"{"result":{"info":{"name":"foo","state":"CLOSED","height":100,"owner":{"hash":"aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44","index":0},"weak":false}},"error":null,"id":1}"#,
+        )
+        .create_async()
+        .await;
+    let txo = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("gettxout".into()))
+        .with_body(
+            r#"{"result":{"address":{"version":0,"hash":"00112233445566778899aabbccddeeff00112233"}},"error":null,"id":1}"#,
+        )
+        .expect(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    conn.execute(
+        "INSERT INTO derived_addresses
+            (wallet_profile_id, account_index, branch, child_index,
+             address, script_pubkey_hex, public_key_hex)
+         VALUES ('W1', 0, 0, 0, '00112233445566778899aabbccddeeff00112233', '00', '00')",
+        [],
+    )
+    .unwrap();
+    add_owned_name(&conn, "W1", "foo", "txfoo");
+
+    let app = app_with(conn);
+    let val = repair_owned_names(app.state()).await.unwrap();
+    txo.assert_async().await;
+    assert_eq!(val["repaired"], 0);
+    assert_eq!(val["errors"], json!([]));
+}

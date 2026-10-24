@@ -153,4 +153,27 @@ mod tests {
         std::fs::remove_dir_all(&d).unwrap();
         assert!(err.to_string().contains(SAVE_TO_NON_FILE), "{err:?}");
     }
+
+    /// A device opens for writing, so the post-open check is what refuses it.
+    #[cfg(unix)]
+    #[test]
+    fn the_open_refuses_a_device_on_its_own() {
+        let err = open_regular(Path::new("/dev/null"), false).unwrap_err();
+        assert!(err.to_string().contains(SAVE_TO_NON_FILE), "{err:?}");
+    }
+
+    /// A lookup error other than "not found" is not a free pass.
+    #[test]
+    fn a_path_under_a_regular_file_is_refused_by_the_check() {
+        let d = dir("notdir");
+        let parent = d.join("plain.txt");
+        std::fs::write(&parent, "keep").unwrap();
+        let res = refuse_unless_regular(&parent.join("child.json"));
+        let kept = std::fs::read_to_string(&parent).unwrap();
+        std::fs::remove_dir_all(&d).unwrap();
+        let err = res.unwrap_err();
+        assert!(!err.to_string().contains(SAVE_TO_SYMLINK), "{err:?}");
+        assert!(!err.to_string().contains(SAVE_TO_NON_FILE), "{err:?}");
+        assert_eq!(kept, "keep");
+    }
 }

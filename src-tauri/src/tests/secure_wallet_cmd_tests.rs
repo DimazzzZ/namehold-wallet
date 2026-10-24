@@ -741,6 +741,33 @@ fn test_provision_addresses_invalid_xpub_errors() {
 }
 
 #[test]
+fn provision_addresses_for_a_profile_with_no_row_fails_and_stores_nothing() {
+    let conn = create_full_test_db();
+    let xpub_str = secure_wallet::account_xpub_from_seed(
+        crate::noncustodial::network::Network::Main,
+        &test_seed_32(),
+        0,
+    )
+    .unwrap();
+
+    let result = secure_wallet::provision_addresses(
+        &conn,
+        "wp_missing",
+        crate::noncustodial::network::Network::Main,
+        &xpub_str,
+        3,
+    );
+
+    assert!(result.is_err(), "{result:?}");
+    let count: i32 = conn
+        .query_row("SELECT COUNT(*) FROM derived_addresses", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
 fn test_provision_addresses_idempotent() {
     let conn = create_full_test_db();
     let seed = test_seed_32();

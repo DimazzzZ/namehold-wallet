@@ -297,4 +297,62 @@ mod tests {
         assert!(!msg.contains("need 0"), "{msg}");
         assert!(msg.ends_with("have 0.000000 HNS"), "{msg}");
     }
+
+    /// Outputs, or the lead and the funding it takes, that sum past u64 are
+    /// refused as an overflow, never wrapped into a plan that looks funded.
+    #[test]
+    fn amounts_past_u64_are_refused_not_wrapped() {
+        let change = address::encode_p2wpkh(Network::Main, &[3u8; 20]).unwrap();
+        let lead = |value| PlanInput {
+            txid: hex::encode([9u8; 32]),
+            vout: 0,
+            value,
+            branch: 0,
+            child_index: 1,
+            sighash_type: 1,
+            sequence: FINAL_SEQUENCE,
+            foreign_witness_hex: None,
+            lock_key_name: None,
+        };
+        let coin = SpendableCoin {
+            txid: hex::encode([1u8; 32]),
+            vout: 0,
+            value: 100_000_000,
+            branch: 0,
+            child_index: 0,
+        };
+        let overflowed = |res: Result<PlanResult, AppError>| match res {
+            Err(AppError::InvalidInput(m)) => m.contains("amounts overflow"),
+            _ => false,
+        };
+        // The outputs alone.
+        let res = fund(
+            Network::Main,
+            0,
+            0,
+            lead(1_000_000),
+            vec![plain(u64::MAX, change.clone()), plain(1, change.clone())],
+            vec![],
+            std::slice::from_ref(&coin),
+            &change,
+            7,
+            None,
+        );
+        assert!(overflowed(res));
+        // The lead alone does not cover the outputs; with the first coin
+        // the inputs pass u64.
+        let res = fund(
+            Network::Main,
+            0,
+            0,
+            lead(u64::MAX - 10_000_000),
+            vec![plain(u64::MAX - 1_000_000, change.clone())],
+            vec![],
+            std::slice::from_ref(&coin),
+            &change,
+            7,
+            None,
+        );
+        assert!(overflowed(res));
+    }
 }

@@ -988,6 +988,23 @@ mod tests {
     }
 
     #[test]
+    fn decode_reads_a_four_byte_varint_count() {
+        // hsd's varint reader accepts a 0xfe prefix for any value; the input
+        // count (byte 4, right after the version) re-encoded that way must
+        // decode to the same transaction.
+        let tx = two_in_two_out();
+        let raw = tx.serialize();
+        assert_eq!(raw[4], 2, "fixture has two inputs");
+        let mut wide = raw[..4].to_vec();
+        wide.extend_from_slice(&[0xfe, 2, 0, 0, 0]);
+        wide.extend_from_slice(&raw[5..]);
+        let back = Transaction::decode(&wide).unwrap();
+        assert_eq!(back.serialize(), raw);
+        // A 0xfe prefix with fewer than four bytes after it is truncated.
+        assert!(Transaction::decode(&[0, 0, 0, 0, 0xfe, 2, 0]).is_err());
+    }
+
+    #[test]
     fn multi_input_sighashes_are_distinct_and_value_committed() {
         let (_sk, h160) = test_key();
         let tx = two_in_two_out();

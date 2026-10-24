@@ -525,6 +525,12 @@ mod base_url_guard_tests {
     }
 
     #[test]
+    fn rejects_a_non_loopback_ipv6_host() {
+        // The parsed-IP check must not wave through any IPv6 literal.
+        assert!(validate_base_url("http://[2001:db8::1]:8080").is_err());
+    }
+
+    #[test]
     fn rejects_garbage_url() {
         assert!(validate_base_url("not a url").is_err());
     }
@@ -602,5 +608,30 @@ mod cookie_helper_tests {
         // "bare-token" has no `=`, so `split_once('=')` returns None → return.
         apply_set_cookie(&mut jar, "bare-token");
         assert!(jar.is_empty());
+    }
+
+    // -- set_cookie_is_expired: what keeps a cookie --
+
+    #[test]
+    fn a_positive_or_unparseable_max_age_keeps_the_cookie() {
+        assert!(!set_cookie_is_expired(" Path=/; Max-Age=3600"));
+        assert!(!set_cookie_is_expired(" max-age=soon"));
+    }
+
+    #[test]
+    fn a_future_or_unparseable_expires_keeps_the_cookie() {
+        assert!(!set_cookie_is_expired(
+            " Expires=Fri, 01 Jan 2100 00:00:00 GMT; HttpOnly"
+        ));
+        assert!(!set_cookie_is_expired(" expires=next tuesday"));
+    }
+
+    #[test]
+    fn a_later_expired_attribute_still_drops_the_cookie() {
+        // The scan goes on past an attribute that keeps the cookie.
+        assert!(set_cookie_is_expired(" Max-Age=3600; Max-Age=0"));
+        assert!(set_cookie_is_expired(
+            " Expires=garbage; Expires=Wed, 09 Jun 2021 10:18:14 GMT"
+        ));
     }
 }

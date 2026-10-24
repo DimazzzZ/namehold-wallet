@@ -604,6 +604,27 @@ async fn test_set_cookie_expires_in_past_deletes_cookie() {
     m.assert_async().await;
 }
 
+/// A `Set-Cookie` value that is not visible ASCII is skipped, and the next
+/// header on the same response is still applied.
+#[tokio::test]
+async fn set_cookie_with_non_ascii_value_is_skipped_and_the_next_one_applied() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/account")
+        .with_status(200)
+        .with_header("set-cookie", "nb-sunset=caf\u{e9}")
+        .with_header("set-cookie", "fresh=1")
+        .with_body(r#"{"email":"a@b.com"}"#)
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("nb-sunset=OLD", &server.url()).unwrap();
+    client.get_account().await.expect("should succeed");
+
+    assert_eq!(client.current_cookie(), "nb-sunset=OLD; fresh=1");
+    m.assert_async().await;
+}
+
 /// Bare (non `name=value`) cookie fixtures — as used by the constructor tests
 /// above — must round-trip byte-for-byte when nothing touches them.
 #[tokio::test]

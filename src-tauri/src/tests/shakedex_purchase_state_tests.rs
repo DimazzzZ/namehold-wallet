@@ -2266,3 +2266,425 @@ async fn old_owned_purchases_are_not_looked_up() {
     run(&conn, &rpc).await;
     assert_eq!(row(&conn).state, crate::db::queries::PurchaseState::Owned);
 }
+
+/// An unspent TRANSFER of an owned purchase that commits to another address
+/// is not this purchase's coin coming back: the purchase stays owned.
+#[tokio::test]
+async fn owned_purchase_whose_unspent_transfer_commits_elsewhere_stays_owned() {
+    let conn = owned("-1 day");
+    let rpc = MockNodeRpc::new()
+        .with_blockchain_info(tip(1010))
+        .with_get_coin(|txid, vout| {
+            assert_eq!((txid, vout), (PURCHASE_TXID, 0));
+            let mut c = coin(PURCHASE_TXID, 0, "hs1qlock", transfer_to(&elsewhere()));
+            c.height = Some(1000);
+            Ok(Some(c))
+        });
+    run(&conn, &rpc).await;
+    let p = row(&conn);
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Owned);
+    assert_eq!(p.purchase_height, Some(1000));
+}
+
+/// A reorg deep enough to take the purchase itself back to the mempool: its
+/// TRANSFER is unspent and unmined again, so the owned purchase is
+/// unconfirmed, not awaiting a finalize whose lockup has not begun.
+#[tokio::test]
+async fn owned_purchase_whose_transfer_is_back_in_the_mempool_is_unconfirmed() {
+    let conn = owned("-1 day");
+    let dest = destination();
+    let rpc = MockNodeRpc::new()
+        .with_blockchain_info(tip(1010))
+        .with_get_coin(move |txid, vout| {
+            assert_eq!((txid, vout), (PURCHASE_TXID, 0));
+            Ok(Some(coin(PURCHASE_TXID, 0, "hs1qlock", transfer_to(&dest))))
+        });
+    run(&conn, &rpc).await;
+    let p = row(&conn);
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Unconfirmed);
+    assert_eq!(p.blocks_remaining, None);
+    assert_eq!(p.lost_reason, None);
+}
+
+/// A lost purchase the node fails to answer for is left as it was: the
+/// failure is that purchase's alone, and the run goes on.
+#[tokio::test]
+async fn lost_purchase_the_node_cannot_answer_for_stays_lost() {
+    let conn = lost_unpaid("-1 day");
+    let rpc = MockNodeRpc::new()
+        .with_blockchain_info(tip(1010))
+        .with_get_coin(|_, _| Err(AppError::Rpc("connection reset".into())));
+    run(&conn, &rpc).await;
+    let p = row(&conn);
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Lost);
+    assert!(p.lost_reason.is_some_and(|r| r.contains("never confirmed")));
+}
+
+/// A refused purchase (draft `failed`) whose TRANSFER was mined to us after
+/// all, for a name that has expired since, did pay and can never be
+/// finalized: lost as expired, its refused draft kept failed.
+#[tokio::test]
+async fn refused_purchase_mined_for_a_name_since_expired_is_lost_as_paid() {
+    let conn = seeded("failed", "pending_send");
+    run(&conn, &mined_and_committed(json!({"info": null}))).await;
+    let p = row(&conn);
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Lost);
+    assert!(
+        p.lost_reason
+            .as_deref()
+            .is_some_and(|r| r.contains("the name expired before it was finalized")),
+        "{:?}",
+        p.lost_reason
+    );
+    assert_eq!(draft_status(&conn).0, "failed");
+}
+
+/// A refused purchase whose TRANSFER is gone and whose name's owner coin
+/// pays our destination arrived after all: owned, never lost.
+#[tokio::test]
+async fn refused_purchase_with_the_name_at_our_destination_is_owned() {
+    let conn = seeded("failed", "pending_send");
+    let dest = destination();
+    let rpc = MockNodeRpc::new()
+        .with_blockchain_info(tip(1010))
+        .with_name_info(json!({"info": {"name": NAME, "owner": {"hash": OTHER_TXID, "index": 0}}}))
+        .with_get_coin(move |txid, vout| match (txid, vout) {
+            (PURCHASE_TXID, 0) => Ok(None),
+            (OTHER_TXID, 0) => Ok(Some(coin(
+                OTHER_TXID,
+                0,
+                &dest,
+                json!({"type": 10, "items": []}),
+            ))),
+            other => panic!("unexpected coin lookup {other:?}"),
+        });
+    run(&conn, &rpc).await;
+    let p = row(&conn);
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Owned);
+    assert_eq!(p.lost_reason, None);
+    assert_eq!(draft_status(&conn).0, "failed");
+}
+
+/// A refused purchase whose TRANSFER is on chain committing to another
+/// address paid and sent the name elsewhere: lost as transferred elsewhere,
+/// its draft kept failed (it was not dropped: it paid).
+#[tokio::test]
+async fn refused_purchase_whose_transfer_commits_elsewhere_is_lost_as_paid() {
+    let conn = seeded("failed", "pending_send");
+    let rpc = MockNodeRpc::new()
+        .with_blockchain_info(tip(1010))
+        .with_get_coin(|txid, vout| {
+            assert_eq!((txid, vout), (PURCHASE_TXID, 0));
+            let mut c = coin(PURCHASE_TXID, 0, "hs1qlock", transfer_to(&elsewhere()));
+            c.height = Some(1000);
+            Ok(Some(c))
+        });
+    run(&conn, &rpc).await;
+    let p = row(&conn);
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Lost);
+    assert!(
+        p.lost_reason
+            .as_deref()
+            .is_some_and(|r| r.contains("transferred the name elsewhere")),
+        "{:?}",
+        p.lost_reason
+    );
+    assert_eq!(draft_status(&conn).0, "failed");
+}
+
+/// A refused purchase, no TRANSFER coin, and hsd's `info: null` for the
+/// name: nothing on chain traces to it, so hsd's refusal stands and the
+/// coins are released.
+#[tokio::test]
+async fn refused_purchase_of_an_expired_name_is_lost_as_refused() {
+    let conn = seeded("failed", "pending_send");
+    let rpc = MockNodeRpc::new()
+        .with_blockchain_info(tip(1010))
+        .with_name_info(json!({"info": null}))
+        .with_get_coin(|txid, vout| {
+            assert_eq!((txid, vout), (PURCHASE_TXID, 0));
+            Ok(None)
+        });
+    run(&conn, &rpc).await;
+    let p = row(&conn);
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Lost);
+    assert!(
+        p.lost_reason
+            .as_deref()
+            .is_some_and(|r| r.contains("the node refused to take the purchase")),
+        "{:?}",
+        p.lost_reason
+    );
+    assert_eq!(reservation(&conn), None, "funding coin released");
+    assert_eq!(draft_status(&conn).0, "failed");
+}
+
+/// A confirmed draft whose purchase the node no longer finds (no tx index),
+/// with the lock coin spent and nothing tracing to us, is lost to the other
+/// buyer, but its draft keeps its `confirmed` status: Activity is not told
+/// a mined transaction was dropped.
+#[tokio::test]
+async fn lost_purchase_with_a_confirmed_draft_keeps_the_draft_confirmed() {
+    let conn = seeded("confirmed", "unconfirmed");
+    let rpc = MockNodeRpc::new()
+        .with_blockchain_info(tip(1010))
+        .with_tx_by_hash(Value::Null)
+        .with_name_info(foreign_owner())
+        .with_get_coin(|txid, vout| untraced(txid, vout, None));
+    run(&conn, &rpc).await;
+    let p = row(&conn);
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Lost);
+    assert!(p
+        .lost_reason
+        .is_some_and(|r| r.contains("someone else bought the name first")));
+    assert_eq!(draft_status(&conn), ("confirmed".to_string(), None));
+}
+
+/// A stored lock output index that is no output index is an error for that
+/// purchase: it keeps its state and the lock coin is never looked up.
+#[tokio::test]
+async fn purchase_with_an_invalid_lock_output_index_is_left_as_it_is() {
+    let conn = seeded("broadcasted", "unconfirmed");
+    conn.execute("UPDATE shakedex_purchases SET lock_vout = -1", [])
+        .unwrap();
+    let rpc = missing_at(1000);
+    run(&conn, &rpc).await;
+    let p = row(&conn);
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Unconfirmed);
+    assert_eq!(p.missing_since_height, None);
+    assert_eq!(rpc.count_matching(|c| matches!(c, RpcCall::GetCoin(..))), 0);
+}
+
+/// A sent purchase whose draft holds no signed bytes cannot be rebroadcast:
+/// once it has been missing long enough it is lost as never confirmed, and
+/// nothing is sent.
+#[tokio::test]
+async fn missing_purchase_without_signed_bytes_is_lost_without_a_send() {
+    let conn = seeded("broadcasted", "unconfirmed");
+    conn.execute("UPDATE wallet_tx_drafts SET signed_tx_hex = NULL", [])
+        .unwrap();
+    conn.execute(
+        "UPDATE shakedex_purchases SET missing_since_height = 1000",
+        [],
+    )
+    .unwrap();
+    let rpc = missing_at(1006).with_send_raw_transaction(PURCHASE_TXID.to_string());
+    run(&conn, &rpc).await;
+    let p = row(&conn);
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Lost);
+    assert!(p.lost_reason.is_some_and(|r| r.contains("never confirmed")));
+    assert_eq!(p.rebroadcast_count, 0);
+    assert_eq!(
+        rpc.count_matching(|c| matches!(c, RpcCall::SendRawTransaction(_))),
+        0
+    );
+}
+
+/// Our destination's history holds other transactions too (here one that
+/// spends another coin, listed first): they are passed over, and the
+/// FINALIZE of the purchase's TRANSFER after them still makes it owned.
+#[tokio::test]
+async fn finalize_found_past_unrelated_history_is_owned() {
+    let conn = seeded("broadcasted", "awaiting_finalize");
+    let unrelated = json!({
+        "hash": "7".repeat(64),
+        "height": 1100,
+        "inputs": [{"prevout": {"hash": PURCHASE_TXID, "index": 1}},
+                   {"prevout": {"hash": OTHER_TXID, "index": 0}}],
+        "outputs": [{"address": destination(), "covenant": {"type": 0, "items": []}}],
+    });
+    let rpc = transfer_spent_and_name_elsewhere(vec![unrelated.clone()]);
+    run(&conn, &rpc).await;
+    assert_eq!(
+        row(&conn).state,
+        crate::db::queries::PurchaseState::AwaitingFinalize,
+        "no FINALIZE listed: no verdict"
+    );
+    let rpc = transfer_spent_and_name_elsewhere(vec![unrelated, finalize_at(1290)]);
+    run(&conn, &rpc).await;
+    let p = row(&conn);
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Owned);
+    assert_eq!(p.purchase_height, Some(1000));
+}
+
+/// A purchase missing since 1000, at 1006: due its one rebroadcast.
+fn due_for_rebroadcast() -> Connection {
+    let conn = seeded("broadcasted", "unconfirmed");
+    conn.execute(
+        "UPDATE shakedex_purchases SET missing_since_height = 1000",
+        [],
+    )
+    .unwrap();
+    conn
+}
+
+fn sent_hexes(rpc: &MockNodeRpc) -> Vec<String> {
+    rpc.calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            RpcCall::SendRawTransaction(h) => Some(h),
+            _ => None,
+        })
+        .collect()
+}
+
+/// R15: only a child already sent (`broadcasted` or `broadcast_pending`)
+/// with its signed bytes follows the rebroadcast; an unsigned, merely
+/// signed or confirmed child is not sent.
+#[tokio::test]
+async fn rebroadcast_sends_no_child_that_was_not_sent_or_has_no_bytes() {
+    for (status, bytes) in [
+        ("draft", None),
+        ("signed", Some(CHILD_HEX)),
+        ("confirmed", Some(CHILD_HEX)),
+    ] {
+        let conn = due_for_rebroadcast();
+        add_child(&conn, status);
+        conn.execute(
+            "UPDATE wallet_tx_drafts SET signed_tx_hex = ?2 WHERE id = ?1",
+            params![CHILD_ID, bytes],
+        )
+        .unwrap();
+        let rpc = missing_at(1006)
+            .with_send_raw_transaction(PURCHASE_TXID.to_string())
+            .with_raw_transaction(json!({"hash": PURCHASE_TXID}));
+        run(&conn, &rpc).await;
+        assert_eq!(sent_hexes(&rpc), vec![SIGNED_HEX.to_string()], "{status}");
+        assert_eq!(row(&conn).rebroadcast_count, 1, "{status}");
+        assert_eq!(child_status(&conn), (status.to_string(), None), "{status}");
+    }
+}
+
+/// R15: a child whose row has no txid is looked up by the txid its summary
+/// names, and marked `broadcasted` with it once the node has it.
+#[tokio::test]
+async fn rebroadcast_child_without_a_txid_is_checked_by_its_summary_txid() {
+    let conn = due_for_rebroadcast();
+    add_child(&conn, "broadcast_pending");
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET txid = NULL WHERE id = ?1",
+        params![CHILD_ID],
+    )
+    .unwrap();
+    let rpc = missing_at(1006)
+        .with_send_raw_transaction(PURCHASE_TXID.to_string())
+        .with_raw_transaction(json!({"hash": CHILD_TXID}));
+    run(&conn, &rpc).await;
+    assert_eq!(
+        sent_hexes(&rpc),
+        vec![SIGNED_HEX.to_string(), CHILD_HEX.to_string()]
+    );
+    assert!(rpc
+        .calls()
+        .contains(&RpcCall::RawTransaction(CHILD_TXID.to_string())));
+    assert_eq!(child_status(&conn), ("broadcasted".to_string(), None));
+    let child = queries::get_tx_draft(&conn, CHILD_ID).unwrap().unwrap();
+    assert_eq!(child.txid.as_deref(), Some(CHILD_TXID));
+}
+
+/// R15: no answer about the child after its send (the look-up failed) and
+/// a send that failed in transport both leave the child as it was; the
+/// purchase's own rebroadcast still counts.
+#[tokio::test]
+async fn rebroadcast_child_without_an_answer_is_left_as_it_is() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    // The purchase is found (call 0); the child's look-up fails (call 1).
+    let conn = due_for_rebroadcast();
+    add_child(&conn, "broadcasted");
+    let n = Arc::new(AtomicUsize::new(0));
+    let rpc = missing_at(1006)
+        .with_send_raw_transaction(PURCHASE_TXID.to_string())
+        .with_raw_transaction_fn(move || match n.fetch_add(1, Ordering::SeqCst) {
+            0 => Ok(json!({"hash": PURCHASE_TXID})),
+            _ => Err(AppError::Rpc("connection reset".into())),
+        });
+    run(&conn, &rpc).await;
+    assert_eq!(sent_hexes(&rpc).len(), 2);
+    assert_eq!(row(&conn).rebroadcast_count, 1);
+    assert_eq!(child_status(&conn), ("broadcasted".to_string(), None));
+
+    // The child's send fails in transport: not hsd's answer, nothing known.
+    let conn = due_for_rebroadcast();
+    add_child(&conn, "broadcasted");
+    let rpc = missing_at(1006)
+        .with_raw_transaction(json!({"hash": PURCHASE_TXID}))
+        .with_send_raw_transaction_fn(|hex| {
+            if hex == CHILD_HEX {
+                Err(AppError::Lock("connection reset".into()))
+            } else {
+                Ok(PURCHASE_TXID.to_string())
+            }
+        });
+    run(&conn, &rpc).await;
+    assert_eq!(sent_hexes(&rpc).len(), 2);
+    assert_eq!(row(&conn).rebroadcast_count, 1);
+    assert_eq!(child_status(&conn), ("broadcasted".to_string(), None));
+}
+
+/// R15: a child the node answered for but never shows (every look-up not
+/// found, its coins unspent) was not taken: `broadcast_pending` with the
+/// not-taken note, for the confirmation poll.
+#[tokio::test]
+async fn rebroadcast_child_not_taken_is_left_pending_with_the_note() {
+    use crate::noncustodial::tx::{Covenant, Input, Outpoint, Output, OutputAddress, Transaction};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let mut child = Transaction::new();
+    child.inputs.push(Input::new(Outpoint {
+        hash: [0x33; 32],
+        index: 2,
+    }));
+    child.outputs.push(Output {
+        value: 1,
+        address: OutputAddress {
+            version: 0,
+            hash: vec![0xaa; 20],
+        },
+        covenant: Covenant::default(),
+    });
+    let (child_hex, child_txid) = (child.to_hex(), child.txid());
+    let conn = due_for_rebroadcast();
+    add_child(&conn, "broadcasted");
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET signed_tx_hex = ?2, txid = ?3 WHERE id = ?1",
+        params![CHILD_ID, child_hex, child_txid],
+    )
+    .unwrap();
+    let n = Arc::new(AtomicUsize::new(0));
+    let own = child_txid.clone();
+    let rpc = MockNodeRpc::new()
+        .with_blockchain_info(tip(1006))
+        .with_tx_by_hash(Value::Null)
+        .with_name_info(foreign_owner())
+        .with_send_raw_transaction(PURCHASE_TXID.to_string())
+        .with_raw_transaction_fn(move || match n.fetch_add(1, Ordering::SeqCst) {
+            0 => Ok(json!({"hash": PURCHASE_TXID})),
+            _ => Err(AppError::NodeRefused {
+                message: "Transaction not found.".into(),
+                code: -1,
+            }),
+        })
+        .with_get_coin(move |txid, vout| {
+            if txid == own {
+                Ok(None)
+            } else if txid == PURCHASE_TXID && vout == 2 {
+                Ok(Some(coin(
+                    PURCHASE_TXID,
+                    2,
+                    &leaf(0).0,
+                    json!({"type": 0, "items": []}),
+                )))
+            } else {
+                untraced(txid, vout, Some(lock_coin()))
+            }
+        });
+    run(&conn, &rpc).await;
+    assert_eq!(row(&conn).rebroadcast_count, 1);
+    let (status, note) = child_status(&conn);
+    assert_eq!(status, "broadcast_pending");
+    assert_eq!(
+        note.as_deref(),
+        Some(crate::noncustodial::tx_evidence::NOT_TAKEN)
+    );
+}

@@ -354,3 +354,67 @@ fn batch_finalize_rejects_non_p2wpkh_target() {
         other => panic!("expected InvalidInput, got {other:?}"),
     }
 }
+
+/// An owner covenant without `items`, or whose target is not hex, names the
+/// name it refuses, and no draft is persisted for any name of the batch.
+#[test]
+fn batch_finalize_refuses_an_owner_covenant_without_a_readable_target() {
+    for (items, want) in [
+        (None, "'bravo' owner coin has no covenant items"),
+        (Some("zz"), "'bravo' bad transfer target"),
+    ] {
+        let (conn, ctx, mut per_name, rblock) = setup(&["alpha", "bravo"]);
+        let nh_hex = hex::encode(names::hash_name("bravo").unwrap());
+        let cov = match items {
+            None => serde_json::json!({"type": sync::COV_TRANSFER}),
+            Some(target) => serde_json::json!({
+                "type": sync::COV_TRANSFER,
+                "items": [nh_hex, "e8030000", "00", target]
+            }),
+        };
+        per_name[1].3.covenant_json = Some(cov.to_string());
+        let err = build_batch_finalize_draft_inner(&conn, &ctx, per_name, &rblock, 10).unwrap_err();
+        assert!(
+            matches!(&err, AppError::InvalidInput(m) if m.contains(want)),
+            "{err:?}"
+        );
+        let drafts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wallet_tx_drafts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(drafts, 0, "{want}");
+    }
+}
+
+/// Each FINALIZE carries its own name's flags byte (`items[3]`): 1 for a weak
+/// name, 0 otherwise. hsd checks it against the name state, so a weak name
+/// finalized with 0 (or the reverse) is refused.
+#[test]
+fn batch_finalize_writes_each_names_weak_flag() {
+    let (conn, ctx, mut per_name, rblock) = setup(&["alpha", "bravo"]);
+    per_name[1].4.weak = true;
+    build_batch_finalize_draft_inner(&conn, &ctx, per_name, &rblock, 10).unwrap();
+
+    let plan_json: String = conn
+        .query_row(
+            "SELECT signing_inputs_json FROM wallet_tx_drafts LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let plan: serde_json::Value = serde_json::from_str(&plan_json).unwrap();
+    let mut flags = HashMap::new();
+    for out in plan["outputs"].as_array().expect("plan has outputs") {
+        if out["covenant_type"].as_u64() != Some(sync::COV_FINALIZE as u64) {
+            continue;
+        }
+        let items = out["covenant_items_hex"].as_array().unwrap();
+        flags.insert(
+            items[0].as_str().unwrap().to_string(),
+            items[3].as_str().unwrap().to_string(),
+        );
+    }
+    let nh = |n: &str| hex::encode(names::hash_name(n).unwrap());
+    assert_eq!(flags.len(), 2, "one FINALIZE per name");
+    assert_eq!(flags[&nh("alpha")], "00");
+    assert_eq!(flags[&nh("bravo")], "01");
+}

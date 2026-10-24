@@ -791,3 +791,41 @@ fn a_thousand_step_schedule_round_trips_under_the_size_limit() {
     assert!(json.len() <= MAX_LISTING_FILE_BYTES, "{} bytes", json.len());
     assert_eq!(ListingFile::parse(&json, network).unwrap().steps, steps);
 }
+
+/// A price step asking 0 HNS is refused at import, before any verification:
+/// it would hand the name away for nothing.
+#[test]
+fn zero_price_step_refused_at_import() {
+    let mut j = v(DEX);
+    j["data"][0]["price"] = 0.into();
+    let e = ListingFile::parse(&j.to_string(), Network::Main).unwrap_err();
+    assert!(e.to_string().contains("zero price"), "{e}");
+}
+
+/// A lock output index past u32 and a signature that is not hex are refused
+/// at import, each naming its field.
+#[test]
+fn out_of_range_lock_output_and_non_hex_signature_refused_at_import() {
+    let mut j = v(DEX);
+    j["lockingOutputIdx"] = (u64::from(u32::MAX) + 1).into();
+    let e = ListingFile::parse(&j.to_string(), Network::Main).unwrap_err();
+    assert!(
+        e.to_string().contains("lockingOutputIdx out of range"),
+        "{e}"
+    );
+    let mut j = v(DEX);
+    j["data"][0]["signature"] = "zz".repeat(65).into();
+    let e = ListingFile::parse(&j.to_string(), Network::Main).unwrap_err();
+    assert!(e.to_string().contains("signature is not hex"), "{e}");
+}
+
+/// We never write a market fee (R26): a lower price carrying one is refused,
+/// not added.
+#[test]
+fn a_step_with_a_fee_is_not_added_to_a_listing_file() {
+    let network = Network::Main;
+    let (json, _, _, mut step) = written(network);
+    step.fee = 1;
+    let e = add_step_to_listing_file(&json, &step, 0, ListingMode::BuyNow, network).unwrap_err();
+    assert!(e.to_string().contains("fee must be 0"), "{e}");
+}

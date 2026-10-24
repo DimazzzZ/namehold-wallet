@@ -2044,6 +2044,96 @@ mod tests {
         }
     }
 
+    #[test]
+    fn debug_output_redacts_the_api_key() {
+        let client = NodeRpcClient::new(
+            "https://node.example:12037",
+            "s3cret-key",
+            ChainSource::RemoteNode,
+        );
+        let dbg = format!("{client:?}");
+        assert!(!dbg.contains("s3cret-key"), "api key leaked: {dbg}");
+        assert!(dbg.contains("<redacted>"));
+        assert!(dbg.contains("https://node.example:12037"));
+        assert!(dbg.contains("RemoteNode"));
+    }
+
+    // --- void test-only RPCs (hsd answers `null` on success) ---
+
+    async fn void_rpc_server(method: &str, body: &str) -> (mockito::ServerGuard, mockito::Mock) {
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({ "method": method }),
+            ))
+            .with_body(body)
+            .expect(1)
+            .create_async()
+            .await;
+        (server, m)
+    }
+
+    const NULL_RESULT: &str = r#"{"result":null,"error":null,"id":1}"#;
+    const REFUSED: &str =
+        r#"{"result":null,"error":{"message":"Block not found.","code":-1},"id":1}"#;
+
+    #[tokio::test]
+    async fn void_rpcs_treat_a_null_result_as_success() {
+        let (server, m) = void_rpc_server("invalidateblock", NULL_RESULT).await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        client.invalidate_block("ab").await.unwrap();
+        m.assert_async().await;
+
+        let (server, m) = void_rpc_server("reconsiderblock", NULL_RESULT).await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        client.reconsider_block("ab").await.unwrap();
+        m.assert_async().await;
+
+        let (server, m) = void_rpc_server("setmocktime", NULL_RESULT).await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        client.set_mock_time(1_700_000_000).await.unwrap();
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn void_rpcs_accept_a_non_null_result() {
+        let (server, m) =
+            void_rpc_server("setmocktime", r#"{"result":true,"error":null,"id":1}"#).await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        client.set_mock_time(1_700_000_000).await.unwrap();
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn void_rpcs_surface_a_node_refusal() {
+        for method in ["invalidateblock", "reconsiderblock", "setmocktime"] {
+            let (server, _m) = void_rpc_server(method, REFUSED).await;
+            let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+            let res = match method {
+                "invalidateblock" => client.invalidate_block("ab").await,
+                "reconsiderblock" => client.reconsider_block("ab").await,
+                _ => client.set_mock_time(1).await,
+            };
+            match res {
+                Err(AppError::NodeRefused { message, code }) => {
+                    assert_eq!(
+                        (message.as_str(), code),
+                        ("Block not found.", -1),
+                        "{method}"
+                    );
+                }
+                other => panic!("{method}: expected NodeRefused, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn void_rpc_keeps_rpc_errors_other_than_no_result() {
+        let err = void_rpc(Err(AppError::Rpc("node returned non-JSON body".into()))).unwrap_err();
+        assert!(matches!(err, AppError::Rpc(m) if m.contains("non-JSON")));
+    }
+
     // --- RPC method wrappers (POST /) ---
 
     #[tokio::test]

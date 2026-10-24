@@ -2452,8 +2452,11 @@ pub struct MyListing {
 /// R43: whether `l`, Sold, was bought at a price none of its stored
 /// `steps` names: the wallet's coin at its payment address in the sale
 /// transaction (a `0x84` step commits to that output, worth exactly the
-/// step's price) is worth another amount. No coin recorded, or no payment
-/// address (a lock restored by name), is no such fact: `false`.
+/// step's price) is worth another amount. No steps stored here (the lock
+/// was finalized and sold from another device while this one still had it
+/// before the lock) names no price, so any paid amount is another device's.
+/// No coin recorded, or no payment address (a lock restored by name), is no
+/// such fact: `false`.
 fn sold_elsewhere(
     conn: &rusqlite::Connection,
     l: &ShakedexListing,
@@ -2466,9 +2469,6 @@ fn sold_elsewhere(
     ) else {
         return Ok(false);
     };
-    if steps.is_empty() {
-        return Ok(false);
-    }
     Ok(
         queries::own_coin_value_in_tx(conn, &l.wallet_profile_id, txid, address)?
             .is_some_and(|paid| !steps.iter().any(|s| i64::try_from(s.price) == Ok(paid))),
@@ -4258,6 +4258,20 @@ mod tests {
         assert_eq!(line.percent_text, None);
     }
 
+    /// A step the listing does not have pays no fee and shows no line,
+    /// whatever its other steps' fees.
+    #[test]
+    fn a_step_past_the_listing_has_no_fee_line() {
+        let (line, pay) = decide_market_fee(
+            &listing(4_350_000, Some(addr())),
+            1,
+            Network::Main,
+            true,
+            true,
+        );
+        assert!(line.is_none() && pay.is_none());
+    }
+
     #[test]
     fn zero_fee_has_no_line() {
         let (line, pay) =
@@ -4322,6 +4336,63 @@ mod tests {
             first_valid_in_secs: 61,
         });
         assert!(e.to_string().contains("2 minutes"));
+    }
+
+    /// Every hidden reason the buy path refuses on is its own sentence, and
+    /// every one is our refusal (InvalidInput), never a node error.
+    #[test]
+    fn each_hidden_reason_is_its_own_refusal() {
+        for (h, words) in [
+            (Hidden::SoldOrCancelled, "already sold or cancelled"),
+            (
+                Hidden::FailedVerification {
+                    reason: "bad signature".into(),
+                },
+                "failed verification: bad signature",
+            ),
+            (
+                Hidden::ExpiresBeforeFinalize,
+                "expires before the purchase could be finalized",
+            ),
+            (Hidden::Unverified, "buying needs a full or remote node"),
+        ] {
+            let e = hidden_to_error(h.clone());
+            assert!(
+                matches!(&e, AppError::InvalidInput(m) if m.contains(words)),
+                "{h:?}: {e:?}"
+            );
+        }
+    }
+
+    /// Each hidden reason tallies in its own counter; an Unverified row (never
+    /// hidden in practice) lands with "could not check", the nearest one.
+    #[test]
+    fn hidden_counts_tally_each_reason_in_its_own_counter() {
+        let mut c = HiddenCounts::default();
+        c.count(&Hidden::SoldOrCancelled);
+        for _ in 0..2 {
+            c.count(&Hidden::FailedVerification { reason: "x".into() });
+        }
+        for _ in 0..3 {
+            c.count(&Hidden::ExpiresBeforeFinalize);
+        }
+        for _ in 0..4 {
+            c.count(&Hidden::NotYetValid {
+                first_valid_in_secs: 1,
+            });
+        }
+        c.count(&Hidden::CouldNotCheck { reason: "x".into() });
+        c.count(&Hidden::Unverified);
+        assert_eq!(
+            (
+                c.sold_or_cancelled,
+                c.failed_verification,
+                c.expires_before_finalize,
+                c.not_yet_valid,
+                c.could_not_check
+            ),
+            (1, 2, 3, 4, 2)
+        );
     }
 
     fn info(renewal: u64, claimed: u64) -> serde_json::Value {
