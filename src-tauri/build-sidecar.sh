@@ -27,4 +27,7 @@ fi
 # Stage with target-triple suffix for Tauri's externalBin.
 DEST="binaries/namehold-syncd-${TARGET_TRIPLE}"
 cp "$SRC" "$DEST"
+# build.rs leaves an empty 0644 placeholder here, and cp onto an existing file
+# keeps its mode: the bundles copy the sidecar as it is, so make it executable.
+chmod 0755 "$DEST"
 echo "Staged: $DEST ($(du -h "$DEST" | cut -f1))"
