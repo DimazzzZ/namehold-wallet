@@ -145,8 +145,12 @@ export function mergeActivity(rows: ActionRow[], drafts: TxDraftSummary[]): Merg
       txid: row.txid,
       draftId: draft?.id ?? null,
       // A Shakedex draft's covenant is a plain TRANSFER, FINALIZE or UPDATE
-      // on chain; the draft knows it was a lock, a purchase or a cancel.
-      action: draft?.action.startsWith("shakedex_") ? draft.action : row.action,
+      // on chain, and a Speed up child a plain send of our own change; the
+      // draft knows it was a lock, a purchase, a cancel or a Speed up.
+      action:
+        draft && (draft.action.startsWith("shakedex_") || draft.action === SPEED_UP_ACTION)
+          ? draft.action
+          : row.action,
       covenantAction: row.action,
       // The chain row's name comes from the covenant, which only carries a raw
       // name for OPEN, BID and FINALIZE. For every other name action the draft

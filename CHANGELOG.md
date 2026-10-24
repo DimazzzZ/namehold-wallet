@@ -15,6 +15,7 @@
 
 ### Fixed
 - **Linux AppImage: background sync runs, and the app starts for any user.** The 0.6.0 AppImage shipped the background sync daemon (`namehold-syncd`) without its executable bit, so background sync and the finalize reminders with the app closed could not run from it, and its launcher could be started only by the user who mounted the image, so it failed under firejail and in the AppImage catalog's test ("AppRun.wrapped: Permission denied"). Both files are now executable by everyone, and the release build checks every AppImage for this before it is published. The `.deb`, `.rpm`, macOS and Windows builds were not affected.
+- **A Speed up stays a Speed up in Activity once the node reports it.** The child transaction of a Speed up read "Send" as soon as its row came from the node (sent or confirmed), and showed a disabled Speed up button of its own. It now reads Speed up, linked to the transaction it speeds up, with no button. Purchases sped up showed the same.
 
 ## [0.6.0] - 2026-10-23
 
