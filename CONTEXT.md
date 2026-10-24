@@ -20,8 +20,15 @@ _Avoid_: Server, RPC endpoint (those are implementation details)
 Where the wallet reads chain state and broadcasts: `local_node`, `remote_node`, or `explorer`. Only `local_node` can be paired with a node mode (full or SPV).
 _Avoid_: Connection mode (that's frontend terminology)
 
-**Node mode** (`node_mode` setting):
-For a `local_node` chain source, whether it runs as a full node (`full`) or SPV node (`spv`). Meaningless for remote or explorer sources.
+**Node mode** (`node_mode.<network>` setting):
+For a `local_node` chain source, whether the network's local node runs as a full node (`full`) or SPV node (`spv`). A setting of the network, not of the app or the profile: every wallet of a network shares its one local node ([ADR-0005](./docs/adr/0005-one-local-hsd-per-network.md)). Meaningless for remote or explorer sources.
+
+**Local node of a network**:
+The one hsd that serves a network's `local_node` wallets, at `127.0.0.1:<the network's RPC port>`, chain in the network's data directory. Nodes of different networks run side by side; switching wallets stops none of them.
+_Avoid_: The node (when more than one network is in play)
+
+**Own node** / **Outside node**:
+An own node is a local node the app started: a child of this session, or the process its pid file names when that process is hsd with the app's prefix and network. An outside node answers on the network's port on the right chain but was not started by the app (the user's hsd, a test run's). The app uses both and stops only own nodes.
 _Avoid_: Sync mode
 
 **Node configuration**:

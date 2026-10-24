@@ -131,6 +131,7 @@ that will not help would be a lie. Pinned by the three `shortfall_message_*` tes
 ### Connection defaults
 
 **N11 — The local node's RPC port follows the profile's network.**
+*Amended by [2026-10-24 Local node per network](./2026-10-24-local-node-per-network.md) R1–R2: the port now comes from the profile's network at resolution time, and the realign no longer writes `node_rpc_url`.*
 `Network::default_rpc_port` carries hsd's per-network `rpcPort` (12037 / 13037 /
 14037 / 15037). `start_hsd` launches hsd with the profile's network flag, so hsd
 listens on that port; before spawning it now realigns a stale `node_rpc_url` via
