@@ -157,6 +157,24 @@ fn pid_file_path() -> PathBuf {
         .join("syncd.pid")
 }
 
+/// The daemon's log: its stderr, appended to `~/.namehold/syncd.log` (one
+/// line per sync, reminder sent or error, stamped in UTC). Over
+/// [`LOG_MAX_BYTES`] it is moved to `syncd.log.1` first, so it stays small.
+/// `None` when it cannot be opened: the daemon then starts with no log.
+const LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+fn daemon_log() -> Option<std::fs::File> {
+    let path = pid_file_path().with_file_name("syncd.log");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX_BYTES) {
+        let _ = std::fs::rename(&path, path.with_extension("log.1"));
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()
+}
+
 fn read_pid_file() -> Option<u32> {
     let content = std::fs::read_to_string(pid_file_path()).ok()?;
     content.trim().parse().ok()
@@ -274,7 +292,7 @@ fn spawn_detached(path: &PathBuf) -> Result<(), AppError> {
     let mut cmd = Command::new(path);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(daemon_log().map_or_else(Stdio::null, Stdio::from));
 
     // SAFETY: setsid() creates a new session, making the child immune to
     // the parent's terminal signals (SIGHUP, etc.) and process group signals.
@@ -308,7 +326,7 @@ fn spawn_detached(path: &PathBuf) -> Result<(), AppError> {
     let child = Command::new(path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(daemon_log().map_or_else(Stdio::null, Stdio::from))
         .creation_flags(FLAGS)
         .spawn()
         .map_err(|e| AppError::Other(format!("failed to spawn daemon: {e}")))?;

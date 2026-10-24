@@ -1263,12 +1263,20 @@ async fn refresh_before_lock(
                     queries::mark_listing_ready(conn, &l.id)?;
                 }
                 (queries::ListingState::ReadyToFinalize, false) => {
+                    eprintln!(
+                        "shakedex: listing {} back to Locking: transfer at {height}, tip {tip}",
+                        l.name
+                    );
                     queries::mark_listing_locking_again(conn, &l.id)?;
                 }
                 _ => {}
             }
         }
         LockOnChain::Pending if l.state == queries::ListingState::ReadyToFinalize => {
+            eprintln!(
+                "shakedex: listing {} back to Locking: its lock TRANSFER is unmined",
+                l.name
+            );
             queries::mark_listing_locking_again(conn, &l.id)?;
         }
         _ => {}
