@@ -425,3 +425,66 @@ async fn the_redeem_guard_takes_a_revoked_name_until_it_expires_with_the_next_bl
         "{err:?}"
     );
 }
+
+// --- node_name_info: the reply every consensus guard reads ---------------------
+
+/// hsd always sends `info`: a reply without the key is not its answer and is
+/// an RPC error, while `info: null` is hsd saying the name has no state. Every
+/// guard that reads the name's info tells the two apart the same way.
+#[tokio::test]
+async fn consensus_guards_tell_a_missing_info_key_from_a_name_with_no_state() {
+    let coins = || vec![reveal(OWNER_TXID, 1)];
+    for (reply, rpc) in [(json!({}), true), (json!({"info": null}), false)] {
+        let node = node_at(20_000, reply.clone());
+        let errs = [
+            ensure_renew_not_premature(&node, Network::Regtest, "gone")
+                .await
+                .unwrap_err(),
+            ensure_finalize_matured(&node, Network::Regtest, "gone")
+                .await
+                .unwrap_err(),
+            ensure_redeem_window_open(&node, "gone").await.unwrap_err(),
+            exclude_owner_reveal(&node, "gone", coins())
+                .await
+                .unwrap_err(),
+        ];
+        for err in errs {
+            if rpc {
+                assert!(
+                    matches!(&err, AppError::Rpc(m) if m.contains("did not report the name's info for 'gone'")),
+                    "{reply}: {err:?}"
+                );
+            } else {
+                assert!(
+                    matches!(&err, AppError::InvalidInput(m) if m.contains("'gone' has no on-chain state")),
+                    "{reply}: {err:?}"
+                );
+            }
+        }
+    }
+}
+
+// --- recheck_lock_expiry ------------------------------------------------------
+
+use crate::commands::draft_ctx::{recheck_lock_expiry, LockSend};
+
+/// A lock draft sent without the node's tip cannot be judged again: the send
+/// is refused with an RPC error that names the name, never let through.
+#[tokio::test]
+async fn lock_recheck_without_the_node_tip_is_an_rpc_error() {
+    let node = MockNodeRpc::new()
+        .with_name_info(regtest_name_info())
+        .with_blockchain_info_err("connection refused");
+    for send in [LockSend::Transfer, LockSend::Finalize] {
+        let err = recheck_lock_expiry(&node, Network::Regtest, "shkreg2205014174", send)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Rpc(m)
+                if m.contains("node did not report its tip")
+                    && m.contains("'shkreg2205014174'")
+                    && m.contains("connection refused")),
+            "{send:?}: {err:?}"
+        );
+    }
+}

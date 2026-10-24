@@ -1386,3 +1386,103 @@ fn conservative_capabilities_raise_no_closed_redeem_flag() {
     assert_eq!(caps.task_state, AuctionTaskState::UnavailableOther);
     assert!(!caps.redeem_window_closing);
 }
+
+/// Finalize is offered once a FINALIZE built on the tip is judged at
+/// `tip + 1 >= transfer + transferLockup`: one tip earlier it is refused with
+/// "1 more block", two earlier with "2 more blocks".
+#[test]
+fn finalize_is_offered_from_the_block_the_transfer_lockup_ends_in() {
+    let lockup = i64::from(Network::Regtest.name_params().transfer_lockup);
+    let transfer = 1_000;
+    let open_tip = transfer + lockup - 1;
+    for (tip, want) in [
+        (
+            open_tip - 2,
+            Some("the transfer is still locked for 2 more blocks"),
+        ),
+        (
+            open_tip - 1,
+            Some("the transfer is still locked for 1 more block"),
+        ),
+        (open_tip, None),
+    ] {
+        let action_ctx = NameActionContext {
+            transfer_height: Some(transfer),
+            current_height: Some(tip),
+            ..ctx(
+                false,
+                false,
+                false,
+                true,
+                Some(COV_TRANSFER as i64),
+                None,
+                Some(true),
+                0,
+                false,
+                None,
+                None,
+                None,
+            )
+        };
+        let caps = build_name_action_capabilities(
+            "example".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &action_ctx,
+            true,
+            false,
+            None,
+            Network::Regtest,
+        );
+        assert_eq!(caps.can_finalize.reason.as_deref(), want, "tip {tip}");
+        assert_eq!(caps.can_finalize.allowed, want.is_none(), "tip {tip}");
+    }
+}
+
+/// Renew is offered once a RENEW built on the tip is judged at
+/// `tip + 1 >= renewal + treeInterval`, with the block count in the refusal.
+#[test]
+fn renew_is_offered_from_the_block_the_tree_interval_ends_in() {
+    let interval = i64::from(Network::Regtest.name_params().tree_interval);
+    let renewal = 1_000;
+    let open_tip = renewal + interval - 1;
+    let reason = |n: &str| format!("the name was renewed too recently — it can be renewed in {n}");
+    for (tip, want) in [
+        (open_tip - 2, Some(reason("2 blocks"))),
+        (open_tip - 1, Some(reason("1 block"))),
+        (open_tip, None),
+    ] {
+        let action_ctx = NameActionContext {
+            renewal_height: Some(renewal),
+            current_height: Some(tip),
+            ..ctx(
+                false,
+                false,
+                false,
+                true,
+                Some(COV_REGISTER as i64),
+                None,
+                None,
+                0,
+                false,
+                None,
+                None,
+                None,
+            )
+        };
+        let caps = build_name_action_capabilities(
+            "example".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &action_ctx,
+            true,
+            false,
+            None,
+            Network::Regtest,
+        );
+        assert_eq!(caps.can_renew.reason, want, "tip {tip}");
+        assert_eq!(caps.can_renew.allowed, want.is_none(), "tip {tip}");
+    }
+}

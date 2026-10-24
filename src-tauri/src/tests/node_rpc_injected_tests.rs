@@ -620,6 +620,29 @@ async fn discover_names_falls_back_to_raw_name_when_hash_unresolved() {
     assert_eq!(out[0].0, "example");
 }
 
+/// A hash that resolves to nothing but whitespace (a blank rawName) is no name
+/// to look up: the node is asked about no name for it.
+#[tokio::test]
+async fn discover_names_skips_a_blank_raw_name() {
+    let mock = MockNodeRpc::new()
+        .with_name_by_hash(None)
+        .with_name_info(json!({ "info": { "name": "example" } }));
+    let hashes = vec![crate::db::queries::WalletNameHash {
+        name_hash_hex: "aa".repeat(32),
+        raw_name_hex: Some(hex::encode("  ")),
+    }];
+    let out = crate::commands::read::discover_names_via_node_with_client(&mock, &hashes).await;
+    assert!(out.is_empty(), "{out:?}");
+    assert!(
+        !mock
+            .calls()
+            .iter()
+            .any(|c| matches!(c, crate::tests::mock_node_rpc::RpcCall::NameInfo(_))),
+        "{:?}",
+        mock.calls()
+    );
+}
+
 #[tokio::test]
 async fn discover_names_dedupes_multiple_hashes_for_same_name() {
     let mock = MockNodeRpc::new()

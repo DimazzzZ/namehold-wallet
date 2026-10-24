@@ -1656,6 +1656,66 @@ fn migrate_adopts_legacy_nested_subdir_into_scoped_root() {
     );
 }
 
+#[test]
+fn migrate_of_a_partial_layout_never_overwrites_what_the_scoped_root_has() {
+    // A half-migrated layout: the scoped root already has a `chain` dir (but no
+    // blocks/tree, so it is not a chain root) while the legacy subdir still
+    // holds a full chain. The entry already present is kept, the rest moves.
+    let s = Scratch::new("partial");
+    let scoped = s.path().join("regtest");
+    let nested = scoped.join("regtest");
+    make_chain_root(&nested);
+    std::fs::write(nested.join("chain").join("LEGACY"), b"legacy").unwrap();
+    std::fs::create_dir_all(scoped.join("chain")).unwrap();
+    std::fs::write(scoped.join("chain").join("KEEP"), b"scoped").unwrap();
+
+    let app = app_with_prefix_and_regtest(s.path());
+    migrate_network_prefix(&app.state(), Network::Regtest, scoped.to_str().unwrap()).unwrap();
+
+    assert!(scoped.join("chain").join("KEEP").exists(), "kept as it was");
+    assert!(
+        !scoped.join("chain").join("LEGACY").exists(),
+        "the scoped chain dir is not overwritten by the legacy one"
+    );
+    assert!(
+        nested.join("chain").join("LEGACY").exists(),
+        "the legacy chain dir stays where it was"
+    );
+    assert!(
+        scoped.join("blocks").is_dir() && !nested.join("blocks").exists(),
+        "an entry the scoped root lacks is moved up"
+    );
+}
+
+#[test]
+fn migrate_reports_a_scoped_root_it_cannot_create() {
+    // A file where the scoped root should be: creating the directory fails, and
+    // the error names the data dir, for both plans that create it.
+    let s = Scratch::new("blocked");
+    let blocker = s.path().join("blocker");
+    std::fs::write(&blocker, b"not a dir").unwrap();
+    let scoped = blocker.join("regtest");
+    let scoped_dir = scoped.to_str().unwrap();
+    let app = app_with_prefix_and_regtest(s.path());
+
+    // CreateScopedRoot: no legacy chain anywhere.
+    let err = migrate_network_prefix(&app.state(), Network::Regtest, scoped_dir).unwrap_err();
+    assert!(
+        matches!(&err, crate::error::AppError::Other(m) if m.contains(&format!("cannot create data dir {scoped_dir}"))),
+        "{err:?}"
+    );
+
+    // AdoptLegacySubdir: a legacy chain under the base, scoped root blocked.
+    let nested = s.path().join("regtest").join("regtest");
+    make_chain_root(&nested);
+    let err = migrate_network_prefix(&app.state(), Network::Regtest, scoped_dir).unwrap_err();
+    assert!(
+        matches!(&err, crate::error::AppError::Other(m) if m.contains(&format!("cannot create data dir {scoped_dir}"))),
+        "{err:?}"
+    );
+    assert!(nested.join("chain").is_dir(), "nothing was moved");
+}
+
 // --- Which hsd log lines mean the node failed to start ---
 
 use crate::commands::node::is_fatal_startup_line;
@@ -1716,4 +1776,19 @@ fn a_broad_matcher_is_documented_rather_than_quietly_wrong() {
     assert!(is_fatal_startup_line(
         "[info] (chain) Cannot find checkpoint."
     ));
+}
+
+/// A background probe whose database cannot be opened has no profile to
+/// route by, so no node is authoritative for it.
+#[tokio::test]
+async fn probe_of_a_database_that_cannot_be_opened_is_not_ready() {
+    let missing = std::env::temp_dir()
+        .join(format!("namehold_no_such_dir_{}", std::process::id()))
+        .join("wallet.db");
+    let path = missing.to_str().unwrap();
+    assert_eq!(
+        node_tip_height_if_synced_from_profile_with_network(path, "W1", Some("mainnet")).await,
+        None
+    );
+    assert!(!node_ready_from_profile(path, "W1", Some("mainnet")).await);
 }

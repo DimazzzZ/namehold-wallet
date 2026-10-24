@@ -1236,3 +1236,56 @@ fn daemon_step_writes_its_heartbeat_with_reminders_off() {
     );
     assert!(!settings.contains_key("deadline_notify_state"));
 }
+
+/// A profile with no known height (never synced, no persisted estimate) has
+/// no honest blocks-remaining or days-remaining figure: its reveal and renewal
+/// deadlines are skipped, while a profile that does know its height is still
+/// notified in the same pass.
+#[tokio::test]
+async fn reveal_deadline_of_a_profile_without_a_known_height_is_skipped() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        enable_notifications(&conn, "144", "30");
+        let unsynced = insert_valid_profile(&conn, "mainnet");
+        // Close enough to height 0 to be imminent if a missing height were
+        // read as zero.
+        seed_pending_bid(&conn, &unsynced, "noheight", 50);
+        // Without a height its owned name has no days-until-expiry either.
+        seed_owned_name_near_renewal(&conn, &unsynced, "noexpiry", 1);
+        db::queries::insert_wallet_profile(
+            &conn,
+            "synced",
+            "synced",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubDUMMY",
+            1,
+            false,
+        )
+        .unwrap();
+        seed_current_height(&conn, "synced", 1_000);
+        db::queries::insert_bid_commitment(
+            &conn,
+            "synced",
+            "hasheight",
+            "aabb",
+            "rs1qaddr",
+            0,
+            0,
+            1000,
+            2000,
+            &"33".repeat(32),
+            &"44".repeat(32),
+        )
+        .unwrap();
+        db::queries::set_auction_heights(&conn, "synced", &"44".repeat(32), 0, 1_050).unwrap();
+    }
+
+    let app = mock_app_with(state);
+    let outcome = scan_deadline_notifications(app.handle().clone(), app.state())
+        .await
+        .unwrap();
+    let keys: Vec<&str> = outcome.notified.iter().map(|n| n.key.as_str()).collect();
+    assert_eq!(keys, ["reveal:synced:hasheight:1050"]);
+}

@@ -1970,6 +1970,80 @@ async fn an_expired_auction_claims_no_lockup_without_the_nodes_word() {
     }
 }
 
+/// Every field of the node's coin is matched: a reply without the covenant,
+/// or with no address (hsd sends `null` for a script with none), is not our
+/// coin and claims no lockup.
+#[tokio::test]
+async fn a_node_coin_missing_a_field_claims_no_lockup() {
+    let conn = test_db();
+    lapsed_bid_and_reveal(&conn);
+    let full: serde_json::Value =
+        serde_json::from_str(&node_bid_coin("bidold", OLD_ADDR, sync::COV_BID)).unwrap();
+    let mut no_covenant = full.clone();
+    no_covenant.as_object_mut().unwrap().remove("covenant");
+    let mut no_address = full.clone();
+    no_address["address"] = serde_json::Value::Null;
+    for (label, body) in [("no covenant", no_covenant), ("no address", no_address)] {
+        let mut node = mockito::Server::new_async().await;
+        let bid = node
+            .mock("GET", "/coin/bidold/0")
+            .with_body(body.to_string())
+            .expect(1)
+            .create_async()
+            .await;
+        let _r = node
+            .mock("GET", "/coin/revold/0")
+            .with_status(404)
+            .create_async()
+            .await;
+        let ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Lapsed)
+            .unwrap()
+            .with_node_stranded_coins(&client(&node.url()))
+            .await;
+        bid.assert_async().await;
+        assert_eq!(ctx.stranded_bid_count, 0, "{label}");
+        assert_eq!(ctx.stranded_lockup_doos, 0, "{label}");
+        assert_eq!(
+            ctx.stranded_unchecked_count, 0,
+            "{label}: the node answered"
+        );
+    }
+}
+
+/// A candidate whose covenant type is no covenant hsd has is not asked about,
+/// and one whose own covenant no longer names the name cannot be matched to
+/// the node's coin even when the node holds it: neither is counted stranded.
+#[tokio::test]
+async fn a_stranded_candidate_we_cannot_place_claims_no_lockup() {
+    let conn = test_db();
+    lapsed_bid_and_reveal(&conn);
+    let mut ctx = find_name_action_context(&conn, PROFILE, NAME, AuctionScope::Lapsed).unwrap();
+    for c in ctx.stranded_candidates.iter_mut() {
+        match c.txid.as_str() {
+            "bidold" => c.covenant_type = 256,
+            "revold" => c.covenant_json = None,
+            other => panic!("unexpected candidate {other}"),
+        }
+    }
+    let mut node = mockito::Server::new_async().await;
+    let bid = node
+        .mock("GET", "/coin/bidold/0")
+        .expect(0)
+        .create_async()
+        .await;
+    let reveal = node
+        .mock("GET", "/coin/revold/0")
+        .with_body(node_reveal_coin())
+        .expect(1)
+        .create_async()
+        .await;
+    let ctx = ctx.with_node_stranded_coins(&client(&node.url())).await;
+    bid.assert_async().await;
+    reveal.assert_async().await;
+    assert_eq!(ctx.stranded_bid_count, 0);
+    assert_eq!(ctx.stranded_lockup_doos, 0);
+}
+
 // ============================================================================
 // Every stranded lockup rests on the node's word
 // ============================================================================

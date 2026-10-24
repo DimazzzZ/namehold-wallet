@@ -7,6 +7,7 @@
 
 use crate::commands::{bids, names};
 use crate::db;
+use crate::error::AppError;
 use crate::noncustodial::bids::{compute_blind, compute_nonce};
 use crate::noncustodial::hd::{ExtendedPrivKey, ExtendedPubKey, HARDENED_OFFSET};
 use crate::noncustodial::network::Network;
@@ -467,6 +468,35 @@ async fn brute_force_errors_when_no_bid_coin_exists() {
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
     assert!(msg.contains("no unspent bid coin"));
+}
+
+#[tokio::test]
+async fn brute_force_without_a_wallet_profile_is_refused() {
+    let app = mock_app_with(create_full_test_state());
+    let err = bids::brute_force_recover_bid(app.state(), None, "namea".into())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::InvalidInput(m) if m.contains("no active wallet profile")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn brute_force_of_an_invalid_name_is_refused() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest")
+    };
+    let app = mock_app_with(state);
+    let err = bids::brute_force_recover_bid(app.state(), Some(profile_id), "Not A Name".into())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::InvalidInput(m) if m.contains("invalid name 'Not A Name'")),
+        "{err:?}"
+    );
 }
 
 #[tokio::test]

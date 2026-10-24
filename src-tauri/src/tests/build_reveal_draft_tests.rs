@@ -377,3 +377,25 @@ fn build_reveal_draft_fails_with_insufficient_funds() {
         AppError::InvalidInput(_) | AppError::Other(_)
     ));
 }
+
+/// With no bid coin to spend the builder says so, and stamps no commitment
+/// as revealed: a stamped bid falls out of the reveal-deadline scanner.
+#[test]
+fn build_reveal_draft_without_a_bid_coin_is_not_found() {
+    let (conn, ctx, _bid, _coin) = setup();
+    let err = build_reveal_draft_inner(&conn, &ctx, NAME, Some(10), &reveal_name_state(), &[])
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::NotFound(m) if m.contains("no unspent bid coin for 'example'")),
+        "{err:?}"
+    );
+    let (drafts, stamped): (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM wallet_tx_drafts),
+                    (SELECT COUNT(*) FROM bid_commitments WHERE reveal_txid IS NOT NULL)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((drafts, stamped), (0, 0));
+}
