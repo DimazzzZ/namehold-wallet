@@ -326,7 +326,14 @@ impl MockNodeRpc {
     pub fn with_coins_by_address_http_err(mut self) -> Self {
         self.coins_by_address = Box::new(|| {
             Err(AppError::Http(
-                reqwest::Client::new().get("not a url").build().unwrap_err(),
+                // Through `client_builder`, which installs the rustls
+                // provider: nextest runs this test in a process of its own.
+                crate::http::client_builder()
+                    .build()
+                    .unwrap()
+                    .get("not a url")
+                    .build()
+                    .unwrap_err(),
             ))
         });
         self
