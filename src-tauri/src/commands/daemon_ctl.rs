@@ -161,17 +161,24 @@ fn pid_file_path() -> PathBuf {
 /// line per sync, reminder sent or error, stamped in UTC). Over
 /// [`LOG_MAX_BYTES`] it is moved to `syncd.log.1` first, so it stays small.
 /// `None` when it cannot be opened: the daemon then starts with no log.
-const LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
+pub(crate) const LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
 
 fn daemon_log() -> Option<std::fs::File> {
-    let path = pid_file_path().with_file_name("syncd.log");
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX_BYTES) {
-        let _ = std::fs::rename(&path, path.with_extension("log.1"));
+    open_rotated_log(&pid_file_path().with_file_name("syncd.log"))
+}
+
+/// Opens `path` for appending, first moving it to `<path>.1` (replacing the
+/// previous one) when it is over [`LOG_MAX_BYTES`].
+pub(crate) fn open_rotated_log(path: &std::path::Path) -> Option<std::fs::File> {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > LOG_MAX_BYTES) {
+        let mut rotated = path.as_os_str().to_owned();
+        rotated.push(".1");
+        let _ = std::fs::rename(path, rotated);
     }
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&path)
+        .open(path)
         .ok()
 }
 

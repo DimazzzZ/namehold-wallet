@@ -20,8 +20,9 @@
 
 use crate::commands::daemon_ctl::{
     check_daemon_alive, daemon_bin_name, ensure_daemon_if_enabled, find_binary_in_dirs,
-    is_background_sync_enabled, is_daemon_alive, set_background_sync_enabled, spawn_daemon,
-    BACKGROUND_SYNC_DEFAULT, RESOURCE_REL_DIRS, SETTING_BACKGROUND_SYNC,
+    is_background_sync_enabled, is_daemon_alive, open_rotated_log, set_background_sync_enabled,
+    spawn_daemon, BACKGROUND_SYNC_DEFAULT, LOG_MAX_BYTES, RESOURCE_REL_DIRS,
+    SETTING_BACKGROUND_SYNC,
 };
 use crate::db;
 use crate::tests::command_helpers::create_test_state;
@@ -348,5 +349,68 @@ fn find_binary_in_dirs_finds_platform_suffixed_name() {
 
     let hit = find_binary_in_dirs(&name, std::slice::from_ref(&dir)).expect("expected match");
     assert_eq!(hit, bin);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- open_rotated_log: the daemon's syncd.log stays under LOG_MAX_BYTES ---
+
+fn log_dir(tag: &str) -> std::path::PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("namehold_daemon_log_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn a_log_under_the_limit_is_appended_to() {
+    use std::io::Write;
+    let dir = log_dir("under");
+    let path = dir.join("syncd.log");
+    std::fs::write(&path, "first\n").unwrap();
+
+    let mut f = open_rotated_log(&path).expect("opens");
+    f.write_all(b"second\n").unwrap();
+    drop(f);
+
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\nsecond\n");
+    assert!(!dir.join("syncd.log.1").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_log_at_the_limit_is_kept_and_one_over_it_moves_to_dot_one() {
+    use std::io::Write;
+    let dir = log_dir("over");
+    let path = dir.join("syncd.log");
+    let old = dir.join("syncd.log.1");
+    std::fs::write(&old, "older rotation").unwrap();
+
+    std::fs::write(&path, vec![b'x'; LOG_MAX_BYTES as usize]).unwrap();
+    drop(open_rotated_log(&path).expect("opens"));
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), LOG_MAX_BYTES);
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), "older rotation");
+
+    std::fs::write(&path, vec![b'x'; LOG_MAX_BYTES as usize + 1]).unwrap();
+    let mut f = open_rotated_log(&path).expect("opens");
+    f.write_all(b"fresh\n").unwrap();
+    drop(f);
+
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "fresh\n");
+    assert_eq!(
+        std::fs::metadata(&old).unwrap().len(),
+        LOG_MAX_BYTES + 1,
+        "the full log replaces the older rotation"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_log_that_cannot_be_opened_is_none() {
+    let dir = log_dir("unopenable");
+    // A directory where the file should be: the daemon then starts with no log.
+    let path = dir.join("syncd.log");
+    std::fs::create_dir_all(&path).unwrap();
+    assert!(open_rotated_log(&path).is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
