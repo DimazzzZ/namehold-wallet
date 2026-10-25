@@ -1921,3 +1921,43 @@ async fn resync_refuses_an_outside_node_and_moves_nothing() {
     );
     assert!(chain.exists(), "the chain stays where it was");
 }
+
+/// An own node that answers is own and not starting: the answer, not the
+/// process, ends "starting" (R11), and an answering node of ours is never
+/// taken for an outside one (R7), which would disable its Stop.
+#[tokio::test]
+#[serial_test::serial(hsd_home)]
+async fn an_own_node_that_answers_is_own_and_not_starting() {
+    let mut server = mockito::Server::new_async().await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(regtest_info_mock_body())
+        .create_async()
+        .await;
+    let app = app_with(conn_with_active_regtest(&server.url()));
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    app.state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .insert(crate::noncustodial::network::Network::Regtest, child);
+
+    let v = node_status(app.state()).await.unwrap();
+
+    assert_eq!(v["ownership"], "own");
+    assert_eq!(v["starting"], false);
+    assert_eq!(v["connected"], true);
+    let mut child = app
+        .state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .remove(&crate::noncustodial::network::Network::Regtest)
+        .unwrap();
+    let _ = child.kill();
+    let _ = child.wait();
+}

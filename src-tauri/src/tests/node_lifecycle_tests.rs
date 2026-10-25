@@ -1123,3 +1123,36 @@ async fn an_autostart_for_a_network_the_wallet_left_starts_nothing() {
         .unwrap()
         .is_empty());
 }
+
+/// R9 off the pid-file path: a child of this session with no record (its
+/// start time could not be read, so none was written) is still stopped at a
+/// quit without background sync.
+#[test]
+fn quit_without_background_sync_stops_a_child_that_has_no_record() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let app = app_with(conn_for(&h, NO_RPC));
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    app.state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .insert(Network::Regtest, child);
+
+    crate::commands::node::release_own_nodes_on_quit(&app.state::<AppState>(), false);
+
+    assert!(app
+        .state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        crate::commands::local_node::process_start_time(pid),
+        None,
+        "stopped and reaped"
+    );
+}

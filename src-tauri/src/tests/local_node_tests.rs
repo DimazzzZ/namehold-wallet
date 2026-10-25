@@ -11,6 +11,9 @@ fn a_live_process_has_one_start_time() {
     let me = std::process::id();
     let first = process_start_time(me).expect("this process has a start time");
     assert_eq!(process_start_time(me), Some(first));
+    // A real start time is never 0: on Linux that tells field 22 of
+    // /proc/<pid>/stat (starttime) from its neighbour 21, which is always 0.
+    assert_ne!(first, 0);
 }
 
 /// A process that has exited and been reaped has no start time.
