@@ -196,40 +196,66 @@ pub(crate) fn own_node(state: &AppState, network: Network) -> Option<OwnNode> {
     own_node_pid_of(state, network).map(OwnNode::Left)
 }
 
-/// Stop `network`'s own node, whichever it is, and forget its record: kill
-/// this session's child, or SIGTERM the node an earlier session left.
-/// `false` when the network has no own node; a node Namehold did not start
-/// is never touched (R7).
-pub(crate) fn stop_own_node(state: &AppState, network: Network) -> bool {
-    let child = match state.hsd_children.lock() {
-        Ok(mut g) => g.remove(&network),
-        Err(poisoned) => poisoned.into_inner().remove(&network),
-    };
-    // Best-effort: with no data dir to resolve there is no record to read or
-    // remove, and a child of this session is still stopped.
-    let data_dir = resolve_data_dir_for_network(state, network).ok();
-    let data_dir = data_dir.as_deref().map(std::path::Path::new);
-    let stopped = if let Some(mut child) = child {
-        let _ = child.kill();
-        let _ = child.wait();
-        true
-    } else if let Some(pid) = data_dir.and_then(own_node_pid) {
-        terminate(pid);
-        // SIGTERM returns at once; hsd closes its chain before it exits.
-        // Wait for that (up to 10 s), so a caller that goes on to move the
-        // chain aside (re-sync) never moves it from under a live node.
-        for _ in 0..100 {
-            if process_start_time(pid).is_none() {
-                break;
+/// What [`stop_own_node`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stopped {
+    /// The network has no own node: nothing was touched (R7).
+    NoOwnNode,
+    /// This session's child was killed and its record removed.
+    Child,
+    /// The node an earlier session left was sent SIGTERM. Its record stays
+    /// while it runs, so it is still own; once it exits the record names
+    /// nothing, and the next start replaces it.
+    Signalled,
+}
+
+/// Stop `network`'s own node, per [`own_node`]: kill this session's child, or
+/// SIGTERM the node an earlier session left. Never waits, so a stop or a quit
+/// is never held up by a node; a caller that must know the node is gone
+/// (re-sync) waits with [`until_no_own_node`].
+pub(crate) fn stop_own_node(state: &AppState, network: Network) -> Stopped {
+    match own_node(state, network) {
+        None => Stopped::NoOwnNode,
+        Some(OwnNode::Child) => {
+            let child = match state.hsd_children.lock() {
+                Ok(mut g) => g.remove(&network),
+                Err(poisoned) => poisoned.into_inner().remove(&network),
+            };
+            if let Some(mut child) = child {
+                let _ = child.kill();
+                let _ = child.wait();
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            // Best-effort: with no data dir to resolve there is no record.
+            if let Ok(dir) = resolve_data_dir_for_network(state, network) {
+                remove_pid_file(std::path::Path::new(&dir));
+            }
+            Stopped::Child
         }
-        true
-    } else {
-        false
-    };
-    if let Some(dir) = data_dir {
-        remove_pid_file(dir);
+        Some(OwnNode::Left(pid)) => {
+            terminate(pid);
+            Stopped::Signalled
+        }
     }
-    stopped
+}
+
+/// How long [`until_no_own_node`] waits for a node to exit after SIGTERM.
+/// hsd closes its chain first, which takes seconds; tests use a short wait.
+#[cfg(not(test))]
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+#[cfg(test)]
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Wait (without blocking the runtime) until `network` has no own node, up
+/// to [`STOP_WAIT`]; `false` if one still runs then.
+pub(crate) async fn until_no_own_node(state: &AppState, network: Network) -> bool {
+    let step = std::time::Duration::from_millis(100);
+    let mut waited = std::time::Duration::ZERO;
+    while own_node(state, network).is_some() {
+        if waited >= STOP_WAIT {
+            return false;
+        }
+        tokio::time::sleep(step).await;
+        waited += step;
+    }
+    true
 }

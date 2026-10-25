@@ -10,13 +10,32 @@ use crate::commands::node::node_status;
 use crate::db;
 use crate::AppState;
 
+/// The app under test, with hsd data under a temporary prefix of this
+/// process unless the test set its own: no test here may read, stop or
+/// change a node of the developer's real `~/.hsd`. The one test of the
+/// `$HOME/.hsd` fallback uses [`app_with_real_home`].
 fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> {
+    if !db::queries::get_settings(&conn)
+        .unwrap()
+        .contains_key("hsd_prefix")
+    {
+        let prefix = std::env::temp_dir().join(format!("namehold_status_{}", std::process::id()));
+        std::fs::create_dir_all(&prefix).unwrap();
+        db::queries::set_setting(&conn, "hsd_prefix", prefix.to_str().unwrap()).unwrap();
+    }
+    app_with_real_home(conn)
+}
+
+/// [`app_with`] without the temporary prefix: hsd data resolves to
+/// `$HOME/.hsd` when the test sets no `hsd_prefix`.
+fn app_with_real_home(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> {
     mock_builder()
         .manage(AppState {
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
             hsd_children: std::sync::Mutex::new(std::collections::HashMap::new()),
+            hsd_starting: std::sync::Mutex::new(std::collections::HashSet::new()),
             node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
@@ -322,6 +341,7 @@ use crate::commands::node::start_hsd;
 
 #[cfg(unix)]
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn start_hsd_refuses_hsd_below_minimum_version() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1133,6 +1153,7 @@ async fn stopping_an_outside_node_sends_nothing() {
 // ===========================================================================
 
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn start_hsd_adopts_already_running_node() {
     let mut server = mockito::Server::new_async().await;
     let _m = server
@@ -1181,6 +1202,7 @@ async fn start_hsd_adopts_already_running_node() {
 /// mainnet node answering on the same port. Regression cover for the bug where
 /// a mainnet chain ended up driving a regtest wallet.
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn start_hsd_refuses_to_adopt_node_on_wrong_chain() {
     let mut server = mockito::Server::new_async().await;
     let _m = server
@@ -1233,6 +1255,7 @@ async fn start_hsd_refuses_to_adopt_node_on_wrong_chain() {
 // ===========================================================================
 
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn node_status_reflects_seeded_profile_network_regtest() {
     let conn = blank_conn();
     db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
@@ -1258,6 +1281,7 @@ async fn node_status_reflects_seeded_profile_network_regtest() {
 }
 
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn node_status_reflects_seeded_profile_network_testnet() {
     let conn = blank_conn();
     db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
@@ -1290,7 +1314,8 @@ async fn node_status_data_dir_defaults_to_home_dot_hsd_when_prefix_unset() {
     let conn = blank_conn();
     db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
     // Do NOT set hsd_prefix — resolve_data_dir must fall back to $HOME/.hsd.
-    let app = app_with(conn);
+    // (No active wallet: no network, so no node of it is read.)
+    let app = app_with_real_home(conn);
     let v = node_status(app.state()).await.expect("node_status ok");
     let data_dir = v["data_dir"].as_str().unwrap();
     // HOME is always set in the test env; the fallback path should end in ".hsd".
@@ -1960,4 +1985,44 @@ async fn an_own_node_that_answers_is_own_and_not_starting() {
         .unwrap();
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// A child of this session that has exited is no own node (R6), so a
+/// re-sync with an outside node answering is refused like any outside node,
+/// not treated as "our node, now stopped".
+#[tokio::test]
+#[serial_test::serial(hsd_home)]
+async fn resync_refuses_an_outside_node_when_our_child_has_exited() {
+    let mut server = mockito::Server::new_async().await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(regtest_info_mock_body())
+        .create_async()
+        .await;
+    let conn = conn_with_active_regtest(&server.url());
+    let prefix = db::queries::get_settings(&conn).unwrap()["hsd_prefix"].clone();
+    let chain = std::path::Path::new(&prefix).join("regtest").join("chain");
+    std::fs::create_dir_all(&chain).unwrap();
+    let app = app_with(conn);
+    let mut dead = std::process::Command::new("true").spawn().unwrap();
+    let _ = dead.wait();
+    app.state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .insert(crate::noncustodial::network::Network::Regtest, dead);
+
+    let err = crate::commands::node::resync_hsd_chain(app.state())
+        .await
+        .expect_err("the answering node is not ours");
+
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Invalid input: {}",
+            crate::commands::local_node::OUTSIDE_NODE_NOT_STOPPED
+        )
+    );
+    assert!(chain.exists(), "the chain stays where it was");
 }

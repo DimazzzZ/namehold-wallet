@@ -169,6 +169,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
             hsd_children: std::sync::Mutex::new(std::collections::HashMap::new()),
+            hsd_starting: std::sync::Mutex::new(std::collections::HashSet::new()),
             node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
@@ -855,9 +856,11 @@ async fn stop_ends_an_own_node_left_by_an_earlier_session() {
         !status.success(),
         "the orphan was terminated, not left to finish"
     );
-    assert!(!regtest_dir
-        .join(crate::commands::local_node::PID_FILE)
-        .exists());
+    // Its record names nothing once it has exited (the next start replaces it).
+    assert_eq!(
+        crate::commands::local_node::own_node_pid(&regtest_dir),
+        None
+    );
 }
 
 // ===========================================================================
@@ -1022,7 +1025,17 @@ async fn quit_without_background_sync_stops_every_own_node() {
         !orphan.wait().unwrap().success(),
         "the earlier session's node was stopped"
     );
-    assert_eq!(pid_files(&h), [false, false, false], "records removed");
+    // The children's records are removed; the earlier session's node's
+    // record names nothing now that it has exited.
+    assert_eq!(
+        pid_files(&h)[1..],
+        [false, false],
+        "the children's records removed"
+    );
+    assert_eq!(
+        crate::commands::local_node::own_node_pid(h.data_dir()),
+        None
+    );
 }
 
 // ===========================================================================
@@ -1073,6 +1086,7 @@ async fn a_start_leaves_an_earlier_sessions_own_node_that_is_still_loading() {
 
 /// A child of this session that has exited is no own node of its network.
 #[test]
+#[serial(hsd_home)]
 fn an_exited_child_is_no_own_node() {
     let h = Harness::new(FakeMode::StayAlive, "8.5.0");
     let conn = conn_for(&h, NO_RPC);
@@ -1128,6 +1142,7 @@ async fn an_autostart_for_a_network_the_wallet_left_starts_nothing() {
 /// start time could not be read, so none was written) is still stopped at a
 /// quit without background sync.
 #[test]
+#[serial(hsd_home)]
 fn quit_without_background_sync_stops_a_child_that_has_no_record() {
     let h = Harness::new(FakeMode::StayAlive, "8.5.0");
     let app = app_with(conn_for(&h, NO_RPC));
@@ -1154,5 +1169,100 @@ fn quit_without_background_sync_stops_a_child_that_has_no_record() {
         crate::commands::local_node::process_start_time(pid),
         None,
         "stopped and reaped"
+    );
+}
+
+/// A re-sync stops the network's own node before it moves the chain aside.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn resync_stops_the_networks_own_child_before_moving_its_chain() {
+    let (server, _fail, _up) = spawn_then_up_server_after(1, 1).await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    std::fs::create_dir_all(h.data_dir().join("chain")).unwrap();
+    let app = app_with(conn_for(&h, &server.url())); // mainnet: data dir = base
+    let own = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let own_pid = own.id();
+    app.state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .insert(Network::Main, own);
+
+    resync_hsd_chain(app.state()).await.expect("resync ok");
+
+    assert_eq!(
+        crate::commands::local_node::process_start_time(own_pid),
+        None,
+        "the own node was stopped (and reaped) first"
+    );
+    assert!(
+        !h.data_dir().join("chain").exists(),
+        "then the chain was moved"
+    );
+    stop_hsd(app.state())
+        .await
+        .expect("stop the respawned node");
+}
+
+/// An own node an earlier session left that ignores SIGTERM: Stop keeps its
+/// record (it is still running, so still own, not "outside"), and a re-sync
+/// refuses rather than move the chain from under it.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn a_left_node_that_ignores_sigterm_keeps_its_record_and_blocks_a_resync() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    std::fs::create_dir_all(h.data_dir().join("chain")).unwrap();
+    let app = app_with(conn_for(&h, NO_RPC)); // mainnet: data dir = base
+    let mut stubborn = std::process::Command::new("sh")
+        .args(["-c", "trap '' TERM; exec sleep 60"])
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100)); // let the trap install
+    crate::commands::local_node::write_pid_file(h.data_dir(), stubborn.id()).unwrap();
+
+    stop_hsd(app.state()).await.expect("a SIGTERM was sent");
+    assert_eq!(
+        crate::commands::local_node::own_node(&app.state::<AppState>(), Network::Main),
+        Some(crate::commands::local_node::OwnNode::Left(stubborn.id())),
+        "still running, still own"
+    );
+
+    let err = resync_hsd_chain(app.state())
+        .await
+        .expect_err("not stopped yet");
+    assert!(err.to_string().contains("still shutting down"), "{err}");
+    assert!(
+        h.data_dir().join("chain").exists(),
+        "the chain stays where it was"
+    );
+
+    let _ = stubborn.kill();
+    let _ = stubborn.wait();
+}
+
+/// A start of a network whose start is already under way is refused at once,
+/// before it touches that network's log, data dir or record.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn a_start_while_one_is_under_way_is_refused() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let app = app_with(conn_for(&h, NO_RPC));
+    app.state::<AppState>()
+        .hsd_starting
+        .lock()
+        .unwrap()
+        .insert(Network::Main);
+
+    let err = start_hsd(app.state())
+        .await
+        .expect_err("one start at a time");
+
+    assert_eq!(err.to_string(), "The mainnet node is already starting.");
+    assert!(
+        !h.data_dir().join("namehold-hsd.log").exists(),
+        "nothing touched"
     );
 }

@@ -235,12 +235,18 @@ fn the_daemon_never_starts_or_stops_hsd() {
     );
     for path in files {
         let src = std::fs::read_to_string(&path).unwrap();
+        // The whole category, not a list of today's entry points: the node
+        // commands and the local-node helpers (start, stop, re-sync, quit,
+        // autostart, own-node records), the process handles, the binary
+        // finder, and any signal or spawn.
         for forbidden in [
-            "start_hsd",
-            "stop_hsd",
-            "local_node::terminate",
-            "find_hsd_binary",
+            "commands::node::",
+            "local_node",
             "hsd_children",
+            "hsd_starting",
+            "find_hsd_binary",
+            "libc::kill",
+            "Command::new",
         ] {
             assert!(
                 !src.contains(forbidden),

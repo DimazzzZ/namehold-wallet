@@ -229,6 +229,19 @@ async fn probe_node(state: &AppState) -> Option<NodeProbe> {
             Err(_) => return None,
         }
     };
+    probe_with(&client).await
+}
+
+/// [`probe_node`] for one wallet profile's node, whichever wallet is active.
+async fn probe_profile_node(state: &AppState, profile_id: &str) -> Option<NodeProbe> {
+    let client = {
+        let db = state.db.lock().ok()?;
+        NodeRpcClient::for_profile(&db, profile_id).ok()?
+    };
+    probe_with(&client).await
+}
+
+async fn probe_with(client: &NodeRpcClient) -> Option<NodeProbe> {
     client
         .get_blockchain_info()
         .await
@@ -453,16 +466,46 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
                 .to_string(),
         )
     })?;
-    // One own node per network (spec 2026-10-24 R3): only this network's own
-    // node already running stops a start; another network's does not. That
-    // includes one an earlier session left (R6) that is still loading and
-    // silent: a second hsd over its data dir would take its record.
+    // One start of a network at a time (spec 2026-10-24 R3): a second one is
+    // refused here, before it resets this network's log, migrates its data
+    // dir or writes its record. Released however this function returns.
+    struct Reservation<'a>(&'a AppState, Network);
+    impl Drop for Reservation<'_> {
+        fn drop(&mut self) {
+            match self.0.hsd_starting.lock() {
+                Ok(mut g) => g.remove(&self.1),
+                Err(poisoned) => poisoned.into_inner().remove(&self.1),
+            };
+        }
+    }
+    if !state
+        .hsd_starting
+        .lock()
+        .map_err(|e| AppError::Lock(e.to_string()))?
+        .insert(network)
+    {
+        return Err(AppError::Other(format!(
+            "The {} node is already starting.",
+            network.display_name()
+        )));
+    }
+    let _reservation = Reservation(&state, network);
+    // One own node per network: only this network's own node already
+    // running stops a start; another network's does not. That includes one
+    // an earlier session left (R6) that is still loading and silent: a
+    // second hsd over its data dir would take its record.
     if crate::commands::local_node::own_node(&state, network).is_some() {
         return Err(AppError::Other(format!(
             "The {} node is already running.",
-            network.as_str()
+            network.display_name()
         )));
     }
+    // The wallet this start is for, read once: a switch while hsd comes up
+    // must not make the start probe, or key, another wallet's node.
+    let profile_id = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::get_active_profile_id(&db)?
+    };
 
     // A node may already be running (e.g. one started in a previous app session,
     // or the user's own). If its RPC already answers AND it is on the right
@@ -470,7 +513,7 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // would only collide on the data-dir lock. A chain mismatch is refused
     // rather than silently adopted: a wallet talking to the wrong chain would
     // treat unrelated coins as its own.
-    if let Some(probe) = probe_node(&state).await {
+    if let Some(probe) = probe_profile_node(&state, &profile_id).await {
         guard_probe_network(network, probe.chain.as_deref())?;
         state
             .node_rpc_alive
@@ -503,7 +546,6 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // The mode is the started network's own (spec 2026-10-24 R10).
     let (api_key, node_mode) = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let profile_id = db::queries::get_active_profile_id(&db)?;
         let effective =
             crate::noncustodial::node_config::effective_node_config_for_profile(&db, &profile_id)?;
         let settings = db::queries::get_settings(&db)?;
@@ -617,7 +659,7 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
                 let _ = child.wait();
                 return Err(AppError::Other(format!(
                     "The {} node is already running.",
-                    network.as_str()
+                    network.display_name()
                 )));
             }
         }
@@ -668,7 +710,7 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
                 return Err(AppError::Other(format!("hsd exited on startup.{tail}")));
             }
         }
-        if let Some(probe) = probe_node(&state).await {
+        if let Some(probe) = probe_profile_node(&state, &profile_id).await {
             // The node we spawned answered — confirm it came up on the network we
             // asked for before reporting success. A mismatch here means the data
             // dir already held a foreign chain (e.g. a mainnet chain synced into a
@@ -728,7 +770,8 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
         return Ok(());
     };
     // This session's child, or the node an earlier session left (R6).
-    if !crate::commands::local_node::stop_own_node(&state, network)
+    if crate::commands::local_node::stop_own_node(&state, network)
+        == crate::commands::local_node::Stopped::NoOwnNode
         && probe_node(&state).await.is_some()
     {
         // A node answers, but Namehold did not start it: never stopped.
@@ -998,23 +1041,13 @@ pub(crate) fn guard_probe_network(
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    // 1. Stop any node we manage so the chain files aren't locked.
-    // Only an own node's chain is moved aside (spec 2026-10-24 R7): stop it
-    // first, this session's child or one an earlier session left; a node
-    // Namehold did not start is refused before any file is touched.
-    if let Some(network) = active_profile_network_opt(&state) {
-        if !crate::commands::local_node::stop_own_node(&state, network)
-            && probe_node(&state).await.is_some()
-        {
-            return Err(AppError::InvalidInput(OUTSIDE_NODE_NOT_STOPPED.to_string()));
-        }
-    }
-
     // Resolved once and refused when unknown. This command moves chain data
     // out of the way, so a guess of mainnet would back up — and then re-sync
     // over — a directory belonging to a network the user is not on. Reading the
     // network and the data dir separately also let the two disagree, with the
-    // backup aimed at whichever answer came first.
+    // backup aimed at whichever answer came first; the stop below acts on the
+    // same network, so a wallet switch meanwhile cannot move another
+    // network's chain from under its running node.
     let network =
         crate::commands::active_profile::active_profile_network_opt(&state).ok_or_else(|| {
             AppError::InvalidInput(
@@ -1024,6 +1057,29 @@ pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::
             )
         })?;
     let data_dir = resolve_data_dir_for_network(&state, network)?;
+
+    // 1. Only an own node's chain is moved aside (spec 2026-10-24 R7): stop
+    // it first, this session's child or one an earlier session left, and
+    // wait until it is gone; a node Namehold did not start is refused before
+    // any file is touched.
+    use crate::commands::local_node::{stop_own_node, until_no_own_node, Stopped};
+    match stop_own_node(&state, network) {
+        Stopped::NoOwnNode => {
+            if probe_node(&state).await.is_some() {
+                return Err(AppError::InvalidInput(OUTSIDE_NODE_NOT_STOPPED.to_string()));
+            }
+        }
+        Stopped::Child => {}
+        Stopped::Signalled => {
+            if !until_no_own_node(&state, network).await {
+                return Err(AppError::Other(format!(
+                    "The {} node is still shutting down; its chain is left in place. Try the \
+                     re-sync again in a moment.",
+                    network.display_name()
+                )));
+            }
+        }
+    }
 
     // 2. Move existing chain artifacts into a timestamped backup dir.
     let ts = std::time::SystemTime::now()

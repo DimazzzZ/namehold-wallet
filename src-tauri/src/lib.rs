@@ -71,6 +71,10 @@ pub struct AppState {
     /// Used to report running state and to stop a node. A node left running
     /// by an earlier session is known by its pid file instead (R6).
     pub hsd_children: Mutex<HashMap<crate::noncustodial::network::Network, std::process::Child>>,
+    /// Networks whose `start_hsd` is under way: a second start of one of them
+    /// is refused at once, before it touches that network's log, data dir or
+    /// record (spec 2026-10-24 R3).
+    pub hsd_starting: Mutex<std::collections::HashSet<crate::noncustodial::network::Network>>,
     /// Whether the hsd RPC endpoint is currently reachable. Updated by the
     /// backend probe loop (every ~5s) and immediately after start/stop actions.
     /// Read by the tray to determine whether to show "Running" or "Stopped",
@@ -195,6 +199,7 @@ pub fn run() {
                 signer: Mutex::new(None),
                 secure_prompts: Mutex::new(HashMap::new()),
                 hsd_children: Mutex::new(HashMap::new()),
+                hsd_starting: Mutex::new(std::collections::HashSet::new()),
                 node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
                 sync_status: Arc::new(AsyncMutex::new(SyncStatus::default())),
             });
