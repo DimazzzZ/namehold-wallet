@@ -1,0 +1,78 @@
+name: AppImage
+
+# Builds the Linux AppImage the way a release does and checks that it runs for
+# a user other than the one who built it (scripts/check-appimage.sh). A release
+# runs the same check, but only when it is cut; this catches a broken image on
+# the pull request that breaks it. Nothing is signed, uploaded or published.
+
+on:
+  pull_request:
+    paths:
+      - "src-tauri/tauri.conf.json"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/build.rs"
+      - "src-tauri/src/bin/**"
+      - "src-tauri/src/daemon/**"
+      - "scripts/stage-sidecar.sh"
+      - "scripts/preseed-apprun.sh"
+      - "scripts/check-appimage.sh"
+      - ".github/workflows/appimage.yml"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    name: AppImage runs for another user
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Refresh apt package index
+        run: sudo timeout 120 apt-get update || echo "::warning::apt-get update failed — proceeding with stale index"
+      - name: Install Tauri system dependencies
+        # Same package list as release.yml's Linux build, plus xvfb for the
+        # app-start check.
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libsecret-1-dev \
+            libudev-dev patchelf build-essential libssl-dev mold xvfb
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.17.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: src-tauri
+          shared-key: appimage
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build sidecar
+        run: bash scripts/stage-sidecar.sh
+      - name: Pre-seed the AppImage launcher
+        run: bash scripts/preseed-apprun.sh
+      # No updater artifacts: they need the release signing key, which a pull
+      # request does not get.
+      - name: Build the AppImage
+        run: pnpm tauri build --bundles appimage --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Check the AppImage runs for another user
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(src-tauri/target/release/bundle/appimage/*.AppImage)
+          [ "${#images[@]}" -eq 1 ] || { echo "::error::expected one AppImage, found ${#images[@]}"; exit 1; }
+          bash scripts/check-appimage.sh "${images[0]}"
