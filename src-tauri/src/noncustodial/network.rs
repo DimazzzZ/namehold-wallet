@@ -161,8 +161,8 @@ impl Network {
 }
 
 /// True when two network names refer to the same Handshake network, tolerating
-/// the `"main"` ↔ `"mainnet"` spelling difference between hsd
-/// (`getblockchaininfo.chain`) and the wallet profile schema.
+/// the `"main"` ↔ `"mainnet"` and `"test"` ↔ `"testnet"` spelling differences
+/// between hsd (`getblockchaininfo.chain`) and the wallet profile schema.
 ///
 /// Deliberately string-based rather than `Network::from_str_opt(a) ==
 /// Network::from_str_opt(b)`: two *different* unknown strings must not compare
@@ -171,6 +171,9 @@ pub fn network_name_matches(profile_network: &str, node_chain: &str) -> bool {
     fn canonical(s: &str) -> &str {
         match s {
             "mainnet" => "main",
+            // hsd's getblockchaininfo names testnet `test`
+            // (lib/node/rpc.js: `type !== 'testnet' ? type : 'test'`).
+            "test" => "testnet",
             other => other,
         }
     }
