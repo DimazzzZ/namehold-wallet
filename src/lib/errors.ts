@@ -30,14 +30,14 @@ const ERROR_MAP: Record<string, string> = {
   // NEEDS_ADDRESS_AND_TX_INDEX): listed before "index-address", which their
   // remedy also contains.
   "address and transaction indexes not enabled":
-    "Your node has neither the address nor the transaction index. Restart hsd with --index-address and --index-tx (Settings → Start hsd) and let it finish syncing.",
+    "Your node has neither the address nor the transaction index. Restart hsd with --index-address and --index-tx (Settings → Start node) and let it finish syncing.",
   "transaction index not enabled":
-    "Your node has no transaction index. Restart hsd with --index-address and --index-tx (Settings → Start hsd) and let it finish syncing.",
+    "Your node has no transaction index. Restart hsd with --index-address and --index-tx (Settings → Start node) and let it finish syncing.",
   // Node not address-indexed (getcoinsbyaddress unavailable) — blocks all spends.
   getcoinsbyaddress:
-    "Your node isn't address-indexed. Restart hsd with address indexing (Settings → Start hsd) and let it finish syncing.",
+    "Your node isn't address-indexed. Restart hsd with address indexing (Settings → Start node) and let it finish syncing.",
   "index-address":
-    "Your node isn't address-indexed. Restart hsd with address indexing (Settings → Start hsd) and let it finish syncing.",
+    "Your node isn't address-indexed. Restart hsd with address indexing (Settings → Start node) and let it finish syncing.",
   // The name's coin isn't in the wallet's synced set yet.
   "does not hold":
     "This wallet hasn't synced this name's coin yet — make sure your node is fully synced and address-indexed (Settings), Refresh, then try again.",

@@ -4,6 +4,7 @@
 //! or wrong-network address BEFORE making the Namebase call. Validation happens
 //! first (no cookie needed), so these assert the rejection without any network.
 
+use serial_test::serial;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
@@ -23,7 +24,8 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsd_children: std::sync::Mutex::new(std::collections::HashMap::new()),
+            hsd_starting: std::sync::Mutex::new(std::collections::HashSet::new()),
             node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
@@ -34,7 +36,17 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
 }
 
 /// In-memory DB with an active MAINNET profile.
+/// A fixed test DEK, so the Namebase cookie these commands read is decrypted
+/// without the OS keychain (a real keychain read waits on a permission prompt
+/// for every newly built test binary). Every test in this file carries
+/// `#[serial(cookie_vault)]`, the key shared with every other writer and
+/// reader of the process-global test DEK slot.
+fn install_test_dek() {
+    crate::noncustodial::cookie_vault::set_test_dek(Some((0..32u8).collect()));
+}
+
 fn seeded_conn() -> rusqlite::Connection {
+    install_test_dek();
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
@@ -54,6 +66,7 @@ fn seeded_conn() -> rusqlite::Connection {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn rejects_malformed_destination_before_namebase_call() {
     let app = app_with(seeded_conn());
     let err = namebase_transfer_domain(
@@ -70,6 +83,7 @@ async fn rejects_malformed_destination_before_namebase_call() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn rejects_wrong_network_destination() {
     // A valid REGTEST address (rs1…) must be rejected for a mainnet profile.
     let app = app_with(seeded_conn());
@@ -87,6 +101,7 @@ async fn rejects_wrong_network_destination() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn accepts_valid_mainnet_address_past_validation() {
     // A well-formed mainnet address passes validation; it then proceeds to the
     // Namebase call, which fails because no cookie is configured. The point is it
@@ -113,6 +128,7 @@ async fn accepts_valid_mainnet_address_past_validation() {
 // --- namebase_withdraw_hns guards (mirror the domain-transfer guards) -------
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn withdraw_rejects_malformed_destination() {
     let app = app_with(seeded_conn());
     let err = namebase_withdraw_hns(
@@ -129,6 +145,7 @@ async fn withdraw_rejects_malformed_destination() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn withdraw_rejects_wrong_network_destination() {
     let app = app_with(seeded_conn());
     let err = namebase_withdraw_hns(
@@ -142,6 +159,7 @@ async fn withdraw_rejects_wrong_network_destination() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn withdraw_rejects_nonpositive_amount() {
     // Valid mainnet address, but amount 0 / non-numeric → rejected before the call.
     let app = app_with(seeded_conn());
@@ -162,6 +180,7 @@ async fn withdraw_rejects_nonpositive_amount() {
 const GOOD_ADDR: &str = "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8";
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn transfer_domain_posts_to_namebase_with_the_address() {
     let mut server = mockito::Server::new_async().await;
     let m = server
@@ -190,6 +209,7 @@ async fn transfer_domain_posts_to_namebase_with_the_address() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn withdraw_hns_posts_currency_amount_and_address() {
     let mut server = mockito::Server::new_async().await;
     // The create endpoint expects the amount in HNS (not doos) — guard the unit.
@@ -217,6 +237,7 @@ async fn withdraw_hns_posts_currency_amount_and_address() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn fetch_renewals_returns_the_expiring_calendar() {
     // The renewal calendar (/api/domains/renewals) is now surfaced in the UI;
     // lock the contract: the command returns Namebase's `{ expiring: [...] }`.
@@ -257,6 +278,7 @@ async fn fetch_renewals_returns_the_expiring_calendar() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn withdraw_accepts_decimal_hns_amount_past_validation() {
     // HNS amounts are decimal — "1.5" must pass validation (it then fails later
     // at the Namebase call since there's no cookie, which is fine here).
@@ -278,6 +300,7 @@ async fn withdraw_accepts_decimal_hns_amount_past_validation() {
 // --- disconnect_namebase tests -----------------------------------------------
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn disconnect_clears_cookie_and_logs_audit() {
     let conn = seeded_conn();
     db::queries::set_setting(&conn, "namebase_cookie", "old-cookie").unwrap();
@@ -299,6 +322,7 @@ async fn disconnect_clears_cookie_and_logs_audit() {
 // --- transfer_domain error from Namebase API ---------------------------------
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn transfer_domain_propagates_namebase_error() {
     let mut server = mockito::Server::new_async().await;
     let _m = server
@@ -326,6 +350,7 @@ async fn transfer_domain_propagates_namebase_error() {
 // --- withdraw_hns error from Namebase API ------------------------------------
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn withdraw_hns_propagates_namebase_error() {
     let mut server = mockito::Server::new_async().await;
     let _m = server
@@ -353,6 +378,7 @@ async fn withdraw_hns_propagates_namebase_error() {
 // --- transfer_domain audit log test ------------------------------------------
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn transfer_domain_writes_audit_log() {
     let mut server = mockito::Server::new_async().await;
     let _m = server
@@ -386,6 +412,7 @@ async fn transfer_domain_writes_audit_log() {
 // --- withdraw_hns audit log test ---------------------------------------------
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn withdraw_hns_writes_audit_log() {
     let mut server = mockito::Server::new_async().await;
     let _m = server
@@ -430,6 +457,7 @@ async fn withdraw_hns_writes_audit_log() {
 // `namebase_client_tests.rs`.
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn status_reports_not_connected_when_no_cookie() {
     let app = app_with(seeded_conn());
     let v = get_namebase_status(app.state::<AppState>())
@@ -452,6 +480,7 @@ async fn status_reports_not_connected_when_no_cookie() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn namebase_client_no_base_url_uses_default() {
     let conn = seeded_conn();
     let app = app_with(conn);
@@ -464,6 +493,7 @@ async fn namebase_client_no_base_url_uses_default() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn namebase_client_with_base_url_uses_custom() {
     let mut server = mockito::Server::new_async().await;
     let conn = seeded_conn();

@@ -212,7 +212,8 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsd_children: std::sync::Mutex::new(std::collections::HashMap::new()),
+            hsd_starting: std::sync::Mutex::new(std::collections::HashSet::new()),
             node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
@@ -10633,4 +10634,134 @@ async fn live_cpfp_child_of_a_vanished_parent_says_so() {
         )
         .unwrap();
     assert_eq!(held, 0, "the child's reservation is released");
+}
+
+// ===========================================================================
+// Spec 2026-10-24 R3, R6, R7 against real hsd processes. Skipped unless
+// `HNS_IT_SPAWN_HSD=1`: unlike the tests above it starts its own nodes (a
+// regtest and a testnet hsd under a temporary prefix), so nothing may listen
+// on 14037 or 13037 when it runs. The testnet node reaches out to testnet
+// peers for the few seconds it lives.
+//
+//   HNS_IT_SPAWN_HSD=1 cargo test --manifest-path src-tauri/Cargo.toml \
+//     live_regtest_and_testnet_nodes_run_side_by_side -- --nocapture
+// ===========================================================================
+
+#[tokio::test]
+#[serial_test::serial(hsd_home)]
+async fn live_regtest_and_testnet_nodes_run_side_by_side() {
+    if std::env::var("HNS_IT_SPAWN_HSD").as_deref() != Ok("1") {
+        eprintln!("skipping: set HNS_IT_SPAWN_HSD=1 to start real hsd nodes");
+        return;
+    }
+    use crate::commands::node::{node_status, start_hsd, stop_hsd};
+    use crate::noncustodial::network::Network;
+    for port in [14037u16, 13037] {
+        assert!(
+            std::net::TcpListener::bind(("127.0.0.1", port)).is_ok(),
+            "port {port} is in use: stop the node on it before this test"
+        );
+    }
+
+    let prefix =
+        std::env::temp_dir().join(format!("namehold_live_two_nodes_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&prefix);
+    std::fs::create_dir_all(&prefix).unwrap();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    db::migrations::run(&conn).unwrap();
+    db::queries::set_setting(&conn, "hsd_prefix", prefix.to_str().unwrap()).unwrap();
+    db::queries::set_setting(&conn, "node_rpc_api_key", "live-two-nodes").unwrap();
+    for (id, network) in [("p-regtest", "regtest"), ("p-testnet", "testnet")] {
+        db::queries::insert_wallet_profile(
+            &conn,
+            id,
+            id,
+            "watch_only_xpub",
+            network,
+            "xpub",
+            0,
+            true,
+        )
+        .unwrap();
+    }
+    let app = app_with(conn);
+    // Real hsd processes outlive a failed assertion: kill whatever is left
+    // when the test ends, however it ends.
+    struct KillOnDrop<'a>(&'a tauri::App<tauri::test::MockRuntime>, std::path::PathBuf);
+    impl Drop for KillOnDrop<'_> {
+        fn drop(&mut self) {
+            let state = self.0.state::<AppState>();
+            let mut children = match state.hsd_children.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            for (_, mut child) in children.drain() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            let _ = std::fs::remove_dir_all(&self.1);
+        }
+    }
+    let _cleanup = KillOnDrop(&app, prefix.clone());
+    let activate = |id: &str| {
+        let state = app.state::<AppState>();
+        let db = state.db.lock().unwrap();
+        db::queries::set_active_profile(&db, id).unwrap();
+    };
+    let wait_connected = |label: &'static str| {
+        let app = &app;
+        async move {
+            for _ in 0..120 {
+                let v = node_status(app.state()).await.unwrap();
+                if v["connected"] == true {
+                    return v;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            panic!("{label} node never answered");
+        }
+    };
+
+    activate("p-regtest");
+    start_hsd(app.state()).await.expect("regtest starts");
+    let regtest = wait_connected("regtest").await;
+    assert_eq!(regtest["ownership"], "own");
+
+    activate("p-testnet");
+    start_hsd(app.state())
+        .await
+        .expect("testnet starts beside regtest");
+    let testnet = wait_connected("testnet").await;
+    assert_eq!(testnet["ownership"], "own");
+
+    // Both run, each on its own port (R3), and each real hsd is recognised by
+    // its pid file although hsd overwrites its own command line (R6).
+    let children: Vec<(Network, u32)> = app
+        .state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(n, c)| (*n, c.id()))
+        .collect();
+    assert_eq!(children.len(), 2, "{children:?}");
+    for (network, pid) in &children {
+        let dir = crate::commands::local_node::resolve_data_dir_for_network(
+            &app.state::<AppState>(),
+            *network,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::commands::local_node::own_node_pid(std::path::Path::new(&dir)),
+            Some(*pid),
+            "{network:?}'s real hsd is recorded as own"
+        );
+    }
+
+    // Stopping testnet's node leaves regtest's answering (R5, R8).
+    stop_hsd(app.state()).await.expect("stop testnet");
+    activate("p-regtest");
+    let regtest = node_status(app.state()).await.unwrap();
+    assert_eq!(regtest["connected"], true, "regtest's node kept running");
+    stop_hsd(app.state()).await.expect("stop regtest");
 }

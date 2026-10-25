@@ -2519,7 +2519,10 @@ pub async fn get_write_capability(
     // SPV mode is explicitly read-only — override whatever the signer evaluated
     // with a clear SPV-specific message. This must run before the generic
     // "broadcaster_available" check so the SPV-specific reason is shown.
-    let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
+    let network = expected_network
+        .as_deref()
+        .and_then(crate::noncustodial::network::Network::from_str_opt);
+    let node_mode = crate::noncustodial::rpc::resolve_node_mode_for(&settings, network);
     if node_mode.is_spv() {
         cap.broadcaster_available = false;
         cap.can_write = false;
@@ -2624,7 +2627,7 @@ pub(crate) async fn apply_node_write_probe_with_client(
                     Ok(_) => {
                         cap.can_write = false;
                         cap.reason = Some(
-                            "Your node isn't address-indexed — restart hsd with address indexing (Settings → Start hsd) and let it finish syncing."
+                            "Your node isn't address-indexed — restart hsd with address indexing (Settings → Start node) and let it finish syncing."
                                 .to_string(),
                         );
                     }

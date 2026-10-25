@@ -8,21 +8,17 @@
 //! default, evaluated independently per key.
 //!
 //! A per-profile override is an explicit user choice: when present it is used
-//! verbatim and never silently rewritten (e.g. `realign_loopback_rpc_url` is
-//! skipped for an overridden URL — see
-//! [`EffectiveNodeConfig::url_from_override`]).
+//! verbatim and never rewritten. A `local_node` profile without one reaches
+//! its own network's port over a default global URL (spec 2026-10-24 R1).
 
 use crate::error::AppError;
 use crate::noncustodial::rpc::{resolve_node_api_key, ChainSource};
 
 /// The built-in default node RPC URL when neither an override nor a global
 /// setting supplies one: mainnet's default hsd port, from
-/// [`Network::default_rpc_url`] rather than spelled out again here. Realign
-/// fixes the port for other networks when this came from the global fallback.
-///
-/// Resolution has no profile network to consult — it resolves the endpoint
-/// tuple and deliberately does not touch the profile's network — so mainnet is
-/// the only defensible default, and realign is what corrects it.
+/// [`Network::default_rpc_url`] rather than spelled out again here. Only a
+/// remote-node profile with no URL anywhere ends up here: a local-node profile
+/// takes its own network's port instead.
 pub fn default_node_rpc_url() -> String {
     crate::noncustodial::network::Network::Main.default_rpc_url()
 }
@@ -48,12 +44,9 @@ pub struct EffectiveNodeConfig {
     /// to the value global happens to carry today has still chosen it, and
     /// global can change under them afterwards.
     pub from_override: bool,
-    /// True when the profile's own `profile_settings` supplied the resolved
-    /// `node_rpc_url`. This is the one realign must consult: it rewrites the
-    /// URL and nothing else, so an override of `chain_source` alone is no
-    /// reason to leave a stale global loopback port pointing at the wrong
-    /// network (ADR-001, "Interaction with N11").
-    pub url_from_override: bool,
+    /// True when the chain source is a local node (`local_node`, full or
+    /// SPV): the profile is served by its network's local node.
+    pub local_node: bool,
 }
 
 /// Resolve the effective node configuration for `profile_id`.
@@ -93,11 +86,40 @@ pub fn effective_node_config_for_profile(
         merged.insert(k.clone(), v.clone());
     }
 
-    let node_rpc_url = merged
+    // A local node without a URL of the profile's own, over a global URL that
+    // is only a default, is the local node of the profile's network
+    // (ADR-0005): that default belongs to whichever network was started last,
+    // and following it sent a mainnet wallet to a regtest node. A global URL
+    // that is not a default (another host, a custom port) is the user's choice
+    // and is kept.
+    let local_node = !matches!(
+        merged.get("chain_source").map(String::as_str),
+        Some("remote_node" | "explorer")
+    );
+    // `None` is an unknown network (a spelling the parser does not know):
+    // with no network to name a port, the URL falls back to the merged one.
+    let profile_network = crate::db::queries::get_wallet_profile(conn, profile_id)?
+        .and_then(|p| crate::noncustodial::network::Network::from_str_opt(&p.network));
+    // The merged URL: the profile's own when it set one, else the app-wide.
+    let url_setting = merged
         .get("node_rpc_url")
-        .map(String::to_string)
-        .unwrap_or_else(default_node_rpc_url);
+        .map(|u| u.trim())
+        .filter(|u| !u.is_empty());
+    let url_is_a_default =
+        url_setting.is_none_or(crate::noncustodial::rpc::is_default_loopback_rpc_url);
+    let node_rpc_url = match profile_network {
+        Some(network) if local_node && !chosen_here("node_rpc_url") && url_is_a_default => {
+            network.default_rpc_url()
+        }
+        _ => url_setting
+            .map(str::to_string)
+            .unwrap_or_else(default_node_rpc_url),
+    };
     let node_rpc_api_key = resolve_node_api_key(&merged);
+    // Full or SPV is the profile's network's (spec 2026-10-24 R10), so the
+    // chain source reads that network's mode rather than the app-wide one.
+    let mode = crate::noncustodial::rpc::resolve_node_mode_for(&merged, profile_network);
+    merged.insert("node_mode".to_string(), mode.as_str().to_string());
     let chain_source = ChainSource::from_settings(&merged);
 
     Ok(EffectiveNodeConfig {
@@ -105,6 +127,6 @@ pub fn effective_node_config_for_profile(
         node_rpc_api_key,
         chain_source,
         from_override: NODE_CONFIG_KEYS.iter().any(|k| chosen_here(k)),
-        url_from_override: chosen_here("node_rpc_url"),
+        local_node,
     })
 }

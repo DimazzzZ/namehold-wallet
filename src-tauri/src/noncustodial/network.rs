@@ -6,7 +6,7 @@
 //!   - lib/hd/mnemonic.js        (standard BIP39 PBKDF2-HMAC-SHA512, 2048 iters)
 
 /// Handshake network selector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Network {
     #[default]
     Main,
@@ -131,6 +131,23 @@ impl Network {
         0x0488_b21e
     }
 
+    /// The name a person reads: as a wallet profile spells it (`mainnet`,
+    /// not hsd's `main`).
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Network::Main => "mainnet",
+            other => other.as_str(),
+        }
+    }
+
+    /// Every network, for code that acts on each network's node in turn.
+    pub const ALL: [Network; 4] = [
+        Network::Main,
+        Network::Testnet,
+        Network::Regtest,
+        Network::Simnet,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Network::Main => "main",
@@ -152,8 +169,8 @@ impl Network {
 }
 
 /// True when two network names refer to the same Handshake network, tolerating
-/// the `"main"` ↔ `"mainnet"` spelling difference between hsd
-/// (`getblockchaininfo.chain`) and the wallet profile schema.
+/// the `"main"` ↔ `"mainnet"` and `"test"` ↔ `"testnet"` spelling differences
+/// between hsd (`getblockchaininfo.chain`) and the wallet profile schema.
 ///
 /// Deliberately string-based rather than `Network::from_str_opt(a) ==
 /// Network::from_str_opt(b)`: two *different* unknown strings must not compare
@@ -162,6 +179,9 @@ pub fn network_name_matches(profile_network: &str, node_chain: &str) -> bool {
     fn canonical(s: &str) -> &str {
         match s {
             "mainnet" => "main",
+            // hsd's getblockchaininfo names testnet `test`
+            // (lib/node/rpc.js: `type !== 'testnet' ? type : 'test'`).
+            "test" => "testnet",
             other => other,
         }
     }

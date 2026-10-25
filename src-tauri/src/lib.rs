@@ -66,9 +66,15 @@ pub struct AppState {
     /// In-flight secure prompts, keyed by prompt id. Holds secret request
     /// material (e.g. a mnemonic to reveal) in memory only, until answered.
     pub secure_prompts: Mutex<HashMap<String, PendingPrompt>>,
-    /// Handle to the hsd node the app started this session, if any. Used to
-    /// report running state and to stop the node. Not persisted across restarts.
-    pub hsd_child: Mutex<Option<std::process::Child>>,
+    /// Handles to the hsd nodes the app started this session, one per network
+    /// (spec 2026-10-24 R3): nodes of different networks run side by side.
+    /// Used to report running state and to stop a node. A node left running
+    /// by an earlier session is known by its pid file instead (R6).
+    pub hsd_children: Mutex<HashMap<crate::noncustodial::network::Network, std::process::Child>>,
+    /// Networks whose `start_hsd` is under way: a second start of one of them
+    /// is refused at once, before it touches that network's log, data dir or
+    /// record (spec 2026-10-24 R3).
+    pub hsd_starting: Mutex<std::collections::HashSet<crate::noncustodial::network::Network>>,
     /// Whether the hsd RPC endpoint is currently reachable. Updated by the
     /// backend probe loop (every ~5s) and immediately after start/stop actions.
     /// Read by the tray to determine whether to show "Running" or "Stopped",
@@ -192,7 +198,8 @@ pub fn run() {
                 db: Mutex::new(conn),
                 signer: Mutex::new(None),
                 secure_prompts: Mutex::new(HashMap::new()),
-                hsd_child: Mutex::new(None),
+                hsd_children: Mutex::new(HashMap::new()),
+                hsd_starting: Mutex::new(std::collections::HashSet::new()),
                 node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
                 sync_status: Arc::new(AsyncMutex::new(SyncStatus::default())),
             });
@@ -251,16 +258,15 @@ pub fn run() {
                                         // Match tray snapshot: reachable RPC OR
                                         // a child we spawned counts as running.
                                         // Fixes the adopted-node case where hsd
-                                        // is up but hsd_child is None.
+                                        // is up but no child of ours runs.
                                         state
                                             .node_rpc_alive
                                             .load(std::sync::atomic::Ordering::Relaxed)
-                                            || state
-                                                .hsd_child
-                                                .lock()
-                                                .ok()
-                                                .map(|g| g.is_some())
-                                                .unwrap_or(false)
+                                            || crate::commands::active_profile::active_profile_network_opt(&state)
+                                                .is_some_and(|network| {
+                                                    crate::commands::local_node::own_node(&state, network)
+                                                        .is_some()
+                                                })
                                     };
                                     let result = if running {
                                         commands::node::stop_hsd(app.state::<AppState>())
@@ -425,7 +431,6 @@ pub fn run() {
                 }
             });
 
-            // Autostart hsd (default ON). Fires once at launch, before any
             // Update checker (I2): on start + every ~4 hours, check for a new
             // app version and fire an OS notification if one is found (gated by
             // `update_notify_enabled` setting). Deduped by comparing against
@@ -529,41 +534,35 @@ pub fn run() {
                 });
             }
 
-            // window trigger, so the node comes up without a "Node: Offline"
-            // flash while the frontend mounts. Fire-and-forget: any failure
-            // (misconfigured paths, version gate, spawn error) is logged and
-            // left for the user to resolve via Settings — it never blocks app
-            // startup. `start_hsd` is idempotent (it adopts an already-running
-            // node via RPC rather than spawning a duplicate), so this is safe
-            // even when the user launched hsd manually beforehand.
+            // Local node per network (spec 2026-10-24 R4/R5): once a second,
+            // look at the active wallet; when it changed (the first look, at
+            // launch, counts), start its network's node if it is a local-node
+            // wallet whose network starts on its own. Another network's node
+            // keeps running. Acting on a change only means a node the user
+            // stopped stays stopped. Fire-and-forget: a failed start (paths,
+            // version gate, spawn error) is logged and left for Settings, and
+            // `start_hsd` adopts a node that already answers instead of
+            // spawning a duplicate.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let state = handle.state::<AppState>();
-                let enabled = {
-                    match state.db.lock() {
-                        Ok(db) => match crate::db::queries::get_settings(&db) {
-                            // Missing key → default ON, matching DEFAULT_SETTINGS.
-                            Ok(settings) => {
-                                settings.get("autostart_hsd").map(String::as_str) != Some("false")
+                let mut last = None;
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+                loop {
+                    interval.tick().await;
+                    let start = {
+                        let state = handle.state::<AppState>();
+                        let Ok(db) = state.db.lock() else { continue };
+                        commands::node::autostart_on_profile_change(&db, &mut last)
+                    };
+                    if let Some(network) = start {
+                        let handle = handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let state = handle.state::<AppState>();
+                            if let Err(e) = commands::node::autostart_network_node(state, network).await {
+                                eprintln!("hsd autostart skipped: {e}");
                             }
-                            Err(e) => {
-                                eprintln!(
-                                    "autostart: could not read settings ({e}); defaulting ON"
-                                );
-                                true
-                            }
-                        },
-                        Err(e) => {
-                            eprintln!("autostart: settings DB lock poisoned ({e}); skipping");
-                            return;
-                        }
+                        });
                     }
-                };
-                if !enabled {
-                    return;
-                }
-                if let Err(e) = commands::node::start_hsd(state).await {
-                    eprintln!("hsd autostart skipped: {e}");
                 }
             });
 
@@ -786,8 +785,8 @@ pub fn run() {
 
                     // If background sync is enabled, SKIP killing hsd — the daemon
                     // needs it alive to continue syncing after the app closes. The
-                    // hsd process becomes orphaned but alive; next app launch adopts
-                    // it via RPC probe (see start_hsd's existing adoption path).
+                    // hsd process becomes orphaned but alive; its pid file tells
+                    // the next launch it is the app's own (spec 2026-10-24 R6).
                     let background_sync_on = state
                         .db
                         .lock()
@@ -802,31 +801,15 @@ pub fn run() {
                         })
                         .unwrap_or(false);
 
-                    let child = match state.hsd_child.lock() {
-                        Ok(mut guard) => guard.take(),
-                        Err(poisoned) => poisoned.into_inner().take(),
-                    };
-                    if let Some(mut child) = child {
-                        if background_sync_on {
-                            // Detach: drop the handle without killing. The child
-                            // process continues running as an orphan.
-                            eprintln!(
-                            "hsd shutdown: background sync enabled — leaving hsd alive for daemon"
+                    // Every own node of every network, by one rule (spec
+                    // 2026-10-24 R9): left for the daemon, or stopped, earlier
+                    // sessions' included. Outside nodes are never touched.
+                    if background_sync_on {
+                        eprintln!(
+                            "hsd shutdown: background sync enabled — leaving own nodes alive for daemon"
                         );
-                            drop(child);
-                        } else {
-                            // Best-effort: never let a stuck hsd block the app from
-                            // closing. `kill()` + `wait()` on an already-exited child
-                            // are harmless no-ops (kill fails silently, wait returns
-                            // immediately), so this is safe to run unconditionally.
-                            if let Err(e) = child.kill() {
-                                eprintln!("hsd shutdown: kill failed (may already be dead): {e}");
-                            }
-                            if let Err(e) = child.wait() {
-                                eprintln!("hsd shutdown: wait failed: {e}");
-                            }
-                        }
                     }
+                    commands::node::release_own_nodes_on_quit(&state, background_sync_on);
                 }
                 _ => {}
             }

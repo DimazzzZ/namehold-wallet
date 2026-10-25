@@ -44,6 +44,7 @@ mod learnhns_tests;
 mod ledger_hid_transport_tests;
 mod ledger_plan_guard_tests;
 mod live_node_it;
+mod local_node_tests;
 mod migration_tests;
 pub(crate) mod mock_node_rpc;
 mod name_capabilities_tests;

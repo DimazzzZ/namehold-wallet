@@ -142,7 +142,8 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsd_children: std::sync::Mutex::new(std::collections::HashMap::new()),
+            hsd_starting: std::sync::Mutex::new(std::collections::HashSet::new()),
             node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
@@ -2150,6 +2151,51 @@ async fn spv_mode_blocks_writes_with_clear_reason() {
     assert!(
         reason.to_lowercase().contains("spv"),
         "reason should mention SPV; got: {reason}"
+    );
+}
+
+/// Spec 2026-10-24 R10: SPV is the network's mode. Regtest's node in SPV
+/// leaves a mainnet wallet free to send; mainnet's own SPV mode blocks it
+/// even while the app-wide mode says full.
+#[tokio::test]
+async fn only_the_wallets_own_networks_spv_mode_blocks_writes() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(bi_full(100, 100, 0.9999))
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000); // a mainnet profile
+    db::queries::set_setting(&conn, "node_mode", "full").unwrap();
+    db::queries::set_setting(&conn, "node_mode.regtest", "spv").unwrap();
+    let app = app_with(conn);
+    unlock(&app, PROFILE);
+    let cap = get_write_capability(app.state()).await.expect("cap");
+    assert!(
+        !cap.reason
+            .clone()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("spv"),
+        "regtest's mode is not mainnet's: {:?}",
+        cap.reason
+    );
+
+    {
+        let state = app.state::<crate::AppState>();
+        let db = state.db.lock().unwrap();
+        db::queries::set_setting(&db, "node_mode.main", "spv").unwrap();
+    }
+    let cap = get_write_capability(app.state()).await.expect("cap");
+    assert!(!cap.can_write, "mainnet's SPV mode must block writes");
+    assert!(
+        cap.reason
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("spv"),
+        "reason should mention SPV"
     );
 }
 

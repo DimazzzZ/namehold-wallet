@@ -492,10 +492,22 @@ pub async fn run_sync_steps(
     let lock = status.lock().await.lock_lost.clone();
     let lost = |next: &str| stop_for_lost_lock(&lock, profile_id, next);
     // Determine node mode from settings.
+    // The mode is the synced profile's network's (spec 2026-10-24 R10).
     let node_mode = open_conn(db_path)
         .ok()
-        .and_then(|c| queries::get_settings(&c).ok())
-        .map(|s| crate::noncustodial::rpc::resolve_node_mode(&s))
+        .and_then(|c| {
+            let settings = queries::get_settings(&c).ok()?;
+            // A profile that cannot be read leaves the network unknown, and
+            // the app-wide mode applies: the same answer as before modes
+            // became per network, for a routing decision the run re-checks.
+            let network = queries::get_wallet_profile(&c, profile_id)
+                .ok()
+                .flatten()
+                .and_then(|p| crate::noncustodial::network::Network::from_str_opt(&p.network));
+            Some(crate::noncustodial::rpc::resolve_node_mode_for(
+                &settings, network,
+            ))
+        })
         .unwrap_or(crate::noncustodial::rpc::NodeMode::Full);
 
     // Step 1: Node sync (best-effort).

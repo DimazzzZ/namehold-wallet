@@ -42,7 +42,10 @@ pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -
             Ok(s) => s,
             Err(_) => return false,
         };
-        let mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
+        let mode = crate::noncustodial::rpc::resolve_node_mode_for(
+            &settings,
+            crate::commands::active_profile::active_profile_network_opt_from_conn(&db),
+        );
         // Resolve the active profile's network so we can reject a node on a
         // different chain (e.g. regtest node vs mainnet wallet).
         // A DB failure here degrades to "no network to compare" — the read

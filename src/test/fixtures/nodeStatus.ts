@@ -13,6 +13,8 @@ export function makeNodeStatus(over: Partial<NodeStatus> = {}): NodeStatus {
     data_dir: "/Volumes/WD/hsd-data",
     network: "main",
     process_alive: false,
+    ownership: "none",
+    starting: false,
     connected: false,
     height: null,
     verification_progress: null,

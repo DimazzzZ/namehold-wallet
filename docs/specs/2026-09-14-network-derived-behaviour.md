@@ -131,13 +131,8 @@ that will not help would be a lie. Pinned by the three `shortfall_message_*` tes
 ### Connection defaults
 
 **N11 — The local node's RPC port follows the profile's network.**
-`Network::default_rpc_port` carries hsd's per-network `rpcPort` (12037 / 13037 /
-14037 / 15037). `start_hsd` launches hsd with the profile's network flag, so hsd
-listens on that port; before spawning it now realigns a stale `node_rpc_url` via
-`noncustodial/rpc.rs::realign_loopback_rpc_url`. Settings' URL placeholder uses
-the TS mirror `defaultNodeRpcUrl`. Pinned by
-`test_default_rpc_port_all_variants`, `realign_rewrites_a_stale_default_for_the_target_network`
-and `realign_leaves_deliberate_urls_untouched`.
+*Amended by [2026-10-24 Local node per network](./2026-10-24-local-node-per-network.md) R1–R2.*
+`Network::default_rpc_port` carries hsd's per-network `rpcPort` (12037 / 13037 / 14037 / 15037). `start_hsd` launches hsd with the profile's network flag, so hsd listens on that port. A `local_node` profile without a URL of its own reaches that port whenever the global `node_rpc_url` is only a default (empty, or a loopback URL on some network's default port, `noncustodial/rpc.rs::is_default_loopback_rpc_url`); a global URL that is not a default is kept. Nothing rewrites `node_rpc_url` any more. Settings' URL placeholder uses the TS mirror `defaultNodeRpcUrl`. Pinned by `test_default_rpc_port_all_variants`, `node_config_tests::a_local_node_profile_reaches_its_networks_port_over_a_default_global_url` and `node_lifecycle_tests::starting_a_node_leaves_the_global_url_as_it_was`.
 
 The rewrite is deliberately narrow: it fires only when the stored URL is both
 loopback **and** on a recognised default port for a *different* network, which

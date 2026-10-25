@@ -39,6 +39,7 @@
 use crate::commands::daemon_ctl::{BACKGROUND_SYNC_DEFAULT, SETTING_BACKGROUND_SYNC};
 use crate::db;
 use crate::error::AppError;
+use crate::noncustodial::network::Network;
 use crate::AppState;
 use std::sync::atomic::AtomicBool;
 use tauri::image::Image;
@@ -144,6 +145,11 @@ struct TraySnapshot {
     node_running: bool,
     node_synced: bool,
     bg_sync_on: bool,
+    /// The active wallet's network, whose node the item acts on (spec
+    /// 2026-10-24 R8). `None` with no active wallet.
+    network: Option<Network>,
+    /// The running node answers but Namehold did not start it (R7).
+    outside: bool,
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -151,18 +157,15 @@ fn snapshot(app: &AppHandle) -> TraySnapshot {
     let state = app.state::<AppState>();
 
     // Node running: the backend probe loop updates `node_rpc_alive` every ~5s
-    // (and start/stop actions flip it immediately). We OR it with the child
-    // handle so a freshly-spawned node shows "Running" even before the first
-    // probe tick fires.
+    // (and start/stop actions flip it immediately). We OR it with the active
+    // network's own node so a freshly-spawned one shows "Running" even before
+    // the first probe tick fires.
     let node_running = state
         .node_rpc_alive
         .load(std::sync::atomic::Ordering::Relaxed)
-        || state
-            .hsd_child
-            .lock()
-            .ok()
-            .map(|g| g.is_some())
-            .unwrap_or(false);
+        || crate::commands::active_profile::active_profile_network_opt(&state).is_some_and(
+            |network| crate::commands::local_node::own_node(&state, network).is_some(),
+        );
 
     // "Syncing" state proxy: whether a wallet full-sync run is active. This is
     // the cheapest in-process signal (no RPC round-trip on every 5s tick).
@@ -189,11 +192,41 @@ fn snapshot(app: &AppHandle) -> TraySnapshot {
         })
         .unwrap_or(BACKGROUND_SYNC_DEFAULT == "1");
 
+    let network = crate::commands::active_profile::active_profile_network_opt(&state);
+    let own = network.is_some_and(|n| crate::commands::local_node::own_node(&state, n).is_some());
+
     TraySnapshot {
         node_running,
         node_synced,
         bg_sync_on,
+        network,
+        outside: node_running && !own,
     }
+}
+
+/// The node status line, the node item's text, and whether the item can be
+/// clicked. The item acts on the active wallet's network and names it (spec
+/// 2026-10-24 R8); a node Namehold did not start cannot be stopped, so its
+/// item is disabled and says why (R7).
+fn node_menu_texts(snap: &TraySnapshot) -> (String, String, bool) {
+    let status = match (snap.node_running, snap.node_synced) {
+        (false, _) => "Node: Stopped",
+        (true, false) => "Node: Syncing…",
+        (true, true) => "Node: Running",
+    };
+    if snap.outside {
+        return (
+            status.to_string(),
+            crate::commands::local_node::OUTSIDE_NODE_NOT_STOPPED.to_string(),
+            false,
+        );
+    }
+    let verb = if snap.node_running { "Stop" } else { "Start" };
+    let toggle = match snap.network {
+        Some(n) => format!("{verb} {} node", n.display_name()),
+        None => format!("{verb} Node"),
+    };
+    (status.to_string(), toggle, true)
 }
 
 fn icon_kind(snap: &TraySnapshot) -> TrayIconKind {
@@ -233,16 +266,12 @@ pub fn refresh_tray(app: &AppHandle) {
     let snap = snapshot(app);
     let kind = icon_kind(&snap);
 
-    let (status_text, toggle_text, toggle_enabled) = match (snap.node_running, snap.node_synced) {
-        (false, _) => ("Node: Stopped", "Start Node", true),
-        (true, false) => ("Node: Syncing…", "Stop Node", true),
-        (true, true) => ("Node: Running", "Stop Node", true),
-    };
+    let (status_text, toggle_text, toggle_enabled) = node_menu_texts(&snap);
 
-    if let Err(e) = tray_state.status.set_text(status_text) {
+    if let Err(e) = tray_state.status.set_text(&status_text) {
         eprintln!("tray: set status text failed: {e}");
     }
-    if let Err(e) = tray_state.toggle.set_text(toggle_text) {
+    if let Err(e) = tray_state.toggle.set_text(&toggle_text) {
         eprintln!("tray: set toggle text failed: {e}");
     }
     if let Err(e) = tray_state.toggle.set_enabled(toggle_enabled) {
@@ -330,7 +359,8 @@ mod tests {
                 db: std::sync::Mutex::new(conn),
                 signer: std::sync::Mutex::new(None),
                 secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-                hsd_child: std::sync::Mutex::new(None),
+                hsd_children: std::sync::Mutex::new(std::collections::HashMap::new()),
+                hsd_starting: std::sync::Mutex::new(std::collections::HashSet::new()),
                 node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
                 sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                     crate::commands::sync::SyncStatus::default(),
@@ -436,6 +466,62 @@ mod tests {
         );
     }
 
+    // --- node_menu_texts (spec 2026-10-24 R7, R8) ----------------------------
+
+    fn snap(running: bool, synced: bool, network: Option<Network>, outside: bool) -> TraySnapshot {
+        TraySnapshot {
+            node_running: running,
+            node_synced: synced,
+            bg_sync_on: true,
+            network,
+            outside,
+        }
+    }
+
+    /// The node item names the active wallet's network, the only node it
+    /// acts on.
+    #[test]
+    fn the_node_item_names_the_active_network() {
+        assert_eq!(
+            node_menu_texts(&snap(false, false, Some(Network::Main), false)),
+            (
+                "Node: Stopped".to_string(),
+                "Start mainnet node".to_string(),
+                true
+            )
+        );
+        assert_eq!(
+            node_menu_texts(&snap(true, false, Some(Network::Regtest), false)),
+            (
+                "Node: Syncing…".to_string(),
+                "Stop regtest node".to_string(),
+                true
+            )
+        );
+        assert_eq!(
+            node_menu_texts(&snap(true, true, Some(Network::Testnet), false)),
+            (
+                "Node: Running".to_string(),
+                "Stop testnet node".to_string(),
+                true
+            )
+        );
+        assert_eq!(
+            node_menu_texts(&snap(false, false, None, false)).1,
+            "Start Node",
+            "no wallet, no network to name"
+        );
+    }
+
+    /// A node Namehold did not start is never stopped: its item is disabled
+    /// and says why.
+    #[test]
+    fn an_outside_node_item_is_disabled_with_the_reason() {
+        let (_, text, enabled) = node_menu_texts(&snap(true, true, Some(Network::Main), true));
+        assert_eq!(text, crate::commands::local_node::OUTSIDE_NODE_NOT_STOPPED);
+        assert!(!enabled);
+    }
+
     // --- icon_kind (pure function) -------------------------------------------
 
     #[test]
@@ -444,6 +530,8 @@ mod tests {
             node_running: false,
             node_synced: true,
             bg_sync_on: true,
+            network: None,
+            outside: false,
         };
         assert!(matches!(icon_kind(&snap), TrayIconKind::Stopped));
     }
@@ -454,6 +542,8 @@ mod tests {
             node_running: true,
             node_synced: false,
             bg_sync_on: true,
+            network: None,
+            outside: false,
         };
         assert!(matches!(icon_kind(&snap), TrayIconKind::Syncing));
     }
@@ -464,6 +554,8 @@ mod tests {
             node_running: true,
             node_synced: true,
             bg_sync_on: true,
+            network: None,
+            outside: false,
         };
         assert!(matches!(icon_kind(&snap), TrayIconKind::Normal));
     }

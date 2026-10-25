@@ -10,13 +10,32 @@ use crate::commands::node::node_status;
 use crate::db;
 use crate::AppState;
 
+/// The app under test, with hsd data under a temporary prefix of this
+/// process unless the test set its own: no test here may read, stop or
+/// change a node of the developer's real `~/.hsd`. The one test of the
+/// `$HOME/.hsd` fallback uses [`app_with_real_home`].
 fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> {
+    if !db::queries::get_settings(&conn)
+        .unwrap()
+        .contains_key("hsd_prefix")
+    {
+        let prefix = std::env::temp_dir().join(format!("namehold_status_{}", std::process::id()));
+        std::fs::create_dir_all(&prefix).unwrap();
+        db::queries::set_setting(&conn, "hsd_prefix", prefix.to_str().unwrap()).unwrap();
+    }
+    app_with_real_home(conn)
+}
+
+/// [`app_with`] without the temporary prefix: hsd data resolves to
+/// `$HOME/.hsd` when the test sets no `hsd_prefix`.
+fn app_with_real_home(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> {
     mock_builder()
         .manage(AppState {
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsd_children: std::sync::Mutex::new(std::collections::HashMap::new()),
+            hsd_starting: std::sync::Mutex::new(std::collections::HashSet::new()),
             node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
@@ -50,7 +69,8 @@ async fn node_status_reports_disconnected_when_no_node() {
     // Shape the UI relies on is present.
     assert!(v["binary"].is_string());
     assert!(v["data_dir"].is_string());
-    assert!(v["network"].is_string());
+    // No wallet in this DB: no network to name (spec 2026-10-24 R8).
+    assert!(v["network"].is_null());
     // Sync-progress fields are always present (null when not connected).
     assert!(v.get("verification_progress").is_some());
     assert_eq!(v["verification_progress"], serde_json::Value::Null);
@@ -321,6 +341,7 @@ use crate::commands::node::start_hsd;
 
 #[cfg(unix)]
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn start_hsd_refuses_hsd_below_minimum_version() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -376,7 +397,12 @@ async fn start_hsd_refuses_hsd_below_minimum_version() {
     );
 
     // The gate must trip before `cmd.spawn()` — no child left behind.
-    assert!(app.state::<AppState>().hsd_child.lock().unwrap().is_none());
+    assert!(app
+        .state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -401,12 +427,12 @@ fn chain_paths_are_network_scoped() {
 // ---------------------------------------------------------------------------
 // node_rpc_alive: the tray reads this flag to decide "Running" vs "Stopped".
 // It must reflect the REAL RPC connection — not whether we spawned a child —
-// so an ADOPTED node (RPC up, hsd_child None) still shows as running. This is
+// so an ADOPTED node (RPC up, no child) still shows as running. This is
 // the exact bug where the tray showed "Start Node" for a node that was up.
 // ---------------------------------------------------------------------------
 
 /// Adopted node: RPC answers `getblockchaininfo` but we never spawned a child
-/// (`hsd_child` is None). After a probe, `node_rpc_alive` must be true — this
+/// (no child in `hsd_children`). After a probe, `node_rpc_alive` must be true — this
 /// is what makes the tray show "Running"/"Stop Node" for an adopted node.
 #[tokio::test]
 async fn node_rpc_alive_true_for_adopted_node() {
@@ -430,9 +456,9 @@ async fn node_rpc_alive_true_for_adopted_node() {
     let state = app.state::<AppState>();
 
     // Precondition: no child handle — this simulates the adoption path where
-    // start_hsd found a running node and returned without setting hsd_child.
+    // start_hsd found a running node and returned without storing a child.
     assert!(
-        state.hsd_child.lock().unwrap().is_none(),
+        state.hsd_children.lock().unwrap().is_empty(),
         "adopted node must have no child handle"
     );
 
@@ -1023,12 +1049,38 @@ async fn probe_and_update_clears_flag_when_unreachable() {
 
 use crate::commands::node::stop_hsd;
 
-/// stop_hsd with no reachable node still succeeds (best-effort RPC stop),
-/// flips node_rpc_alive → false, and records an audit log row.
-#[tokio::test]
-async fn stop_hsd_soft_succeeds_when_no_node_reachable() {
+/// A regtest wallet, so stop_hsd has a network to act on, with its hsd data
+/// under a temporary prefix of this process: a test must never read, stop or
+/// change a node of the developer's real `~/.hsd`. Tests using it carry
+/// `#[serial(hsd_home)]`, the key of every test that resolves hsd data dirs.
+fn conn_with_active_regtest(node_url: &str) -> rusqlite::Connection {
     let conn = blank_conn();
-    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    let prefix =
+        std::env::temp_dir().join(format!("namehold_status_regtest_{}", std::process::id()));
+    std::fs::create_dir_all(prefix.join("regtest")).unwrap();
+    db::queries::set_setting(&conn, "hsd_prefix", prefix.to_str().unwrap()).unwrap();
+    db::queries::insert_wallet_profile(
+        &conn,
+        "p1",
+        "P",
+        "watch_only_xpub",
+        "regtest",
+        "xpub",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "p1").unwrap();
+    crate::tests::command_helpers::set_profile_override(&conn, "p1", "node_rpc_url", node_url);
+    conn
+}
+
+/// stop_hsd with no node of the network reachable still succeeds, flips
+/// node_rpc_alive → false, and records an audit log row.
+#[tokio::test]
+#[serial_test::serial(hsd_home)]
+async fn stop_hsd_soft_succeeds_when_no_node_reachable() {
+    let conn = conn_with_active_regtest("http://127.0.0.1:1");
     let app = app_with(conn);
     let state = app.state::<AppState>();
     // Pretend it was alive; stop_hsd must flip it false regardless of RPC outcome.
@@ -1059,34 +1111,39 @@ async fn stop_hsd_soft_succeeds_when_no_node_reachable() {
     assert_eq!(count, 1, "one stop_hsd audit row per stop");
 }
 
-/// stop_hsd against a live (mocked) RPC — the stop RPC is invoked; the flag
-/// still ends up false; the audit row is written. Best-effort semantics:
-/// success/failure of the RPC call is opaque to the caller.
+/// Spec 2026-10-24 R7: a node that answers on the network's URL but that
+/// Namehold did not start (no child of this session, no pid file) is never
+/// stopped: Stop refuses with the reason and sends the node no `stop`.
 #[tokio::test]
-async fn stop_hsd_calls_rpc_stop_and_clears_flag() {
+#[serial_test::serial(hsd_home)]
+async fn stopping_an_outside_node_sends_nothing() {
     let mut server = mockito::Server::new_async().await;
-    // The node accepts the RPC stop call.
-    let _m = server
+    let _info = server
         .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("stop".into()))
-        .with_body(r#"{"result":"Stopping","error":null,"id":1}"#)
-        .expect_at_least(1)
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"regtest","blocks":5,"headers":5,"verificationprogress":1.0},"error":null,"id":1}"#)
         .create_async()
         .await;
+    let stop = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex(r#""method":"stop""#.into()))
+        .expect(0)
+        .create_async()
+        .await;
+    let app = app_with(conn_with_active_regtest(&server.url()));
 
-    let conn = blank_conn();
-    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
-    let app = app_with(conn);
-    let state = app.state::<AppState>();
-    state
-        .node_rpc_alive
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let err = stop_hsd(app.state())
+        .await
+        .expect_err("an outside node is not stopped");
 
-    stop_hsd(app.state()).await.expect("stop_hsd ok");
-
-    assert!(!state
-        .node_rpc_alive
-        .load(std::sync::atomic::Ordering::Relaxed));
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Invalid input: {}",
+            crate::commands::local_node::OUTSIDE_NODE_NOT_STOPPED
+        )
+    );
+    stop.assert_async().await;
 }
 
 // ===========================================================================
@@ -1096,6 +1153,7 @@ async fn stop_hsd_calls_rpc_stop_and_clears_flag() {
 // ===========================================================================
 
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn start_hsd_adopts_already_running_node() {
     let mut server = mockito::Server::new_async().await;
     let _m = server
@@ -1132,7 +1190,7 @@ async fn start_hsd_adopts_already_running_node() {
     assert_eq!(v["connected"], serde_json::json!(true));
     assert_eq!(v["height"], serde_json::json!(777));
     // No child was spawned — the adoption path returns immediately.
-    assert!(state.hsd_child.lock().unwrap().is_none());
+    assert!(state.hsd_children.lock().unwrap().is_empty());
     // The alive flag was set as a side-effect.
     assert!(state
         .node_rpc_alive
@@ -1144,6 +1202,7 @@ async fn start_hsd_adopts_already_running_node() {
 /// mainnet node answering on the same port. Regression cover for the bug where
 /// a mainnet chain ended up driving a regtest wallet.
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn start_hsd_refuses_to_adopt_node_on_wrong_chain() {
     let mut server = mockito::Server::new_async().await;
     let _m = server
@@ -1183,7 +1242,7 @@ async fn start_hsd_refuses_to_adopt_node_on_wrong_chain() {
         "expected mismatch error, got: {msg}"
     );
     // No child spawned, and we did not mark the (wrong) node alive.
-    assert!(state.hsd_child.lock().unwrap().is_none());
+    assert!(state.hsd_children.lock().unwrap().is_empty());
     assert!(!state
         .node_rpc_alive
         .load(std::sync::atomic::Ordering::Relaxed));
@@ -1196,6 +1255,7 @@ async fn start_hsd_refuses_to_adopt_node_on_wrong_chain() {
 // ===========================================================================
 
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn node_status_reflects_seeded_profile_network_regtest() {
     let conn = blank_conn();
     db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
@@ -1221,6 +1281,7 @@ async fn node_status_reflects_seeded_profile_network_regtest() {
 }
 
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn node_status_reflects_seeded_profile_network_testnet() {
     let conn = blank_conn();
     db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
@@ -1253,7 +1314,8 @@ async fn node_status_data_dir_defaults_to_home_dot_hsd_when_prefix_unset() {
     let conn = blank_conn();
     db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
     // Do NOT set hsd_prefix — resolve_data_dir must fall back to $HOME/.hsd.
-    let app = app_with(conn);
+    // (No active wallet: no network, so no node of it is read.)
+    let app = app_with_real_home(conn);
     let v = node_status(app.state()).await.expect("node_status ok");
     let data_dir = v["data_dir"].as_str().unwrap();
     // HOME is always set in the test env; the fallback path should end in ".hsd".
@@ -1279,18 +1341,18 @@ async fn node_status_data_dir_respects_hsd_prefix_setting() {
 // ===========================================================================
 
 #[tokio::test]
-async fn node_status_falls_back_to_mainnet_for_missing_profile_row() {
+async fn node_status_names_no_network_for_a_missing_profile_row() {
     let conn = blank_conn();
     db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
     // Set active profile to a non-existent ID — triggers Ok(None) from
-    // get_wallet_profile, exercising the `_ => Network::Main` arm.
+    // get_wallet_profile: no wallet, so no network to name.
     db::queries::set_setting(&conn, "active_wallet_profile_id", "ghost_id").unwrap();
     let app = app_with(conn);
     let v = node_status(app.state()).await.expect("node_status ok");
     assert_eq!(
         v["network"],
-        serde_json::json!("main"),
-        "missing profile should default to mainnet"
+        serde_json::Value::Null,
+        "a missing profile names no network (spec 2026-10-24 R8)"
     );
 }
 
@@ -1415,9 +1477,9 @@ async fn probe_and_update_uses_global_when_no_active_profile() {
 }
 
 // --- Network isolation: scoped data dir + idempotent, non-destructive migration.
+use crate::commands::local_node::network_scoped_data_dir;
 use crate::commands::node::{
-    dir_has_chain_root, migrate_network_prefix, network_scoped_data_dir, plan_network_migration,
-    PrefixMigration,
+    dir_has_chain_root, migrate_network_prefix, plan_network_migration, PrefixMigration,
 };
 
 #[tokio::test]
@@ -1791,4 +1853,176 @@ async fn probe_of_a_database_that_cannot_be_opened_is_not_ready() {
         None
     );
     assert!(!node_ready_from_profile(path, "W1", Some("mainnet")).await);
+}
+
+// --- Spec 2026-10-24 R7/R11: whose node answers, and whether it is starting ---
+
+fn regtest_info_mock_body() -> &'static str {
+    r#"{"result":{"chain":"regtest","blocks":5,"headers":5,"verificationprogress":1.0},"error":null,"id":1}"#
+}
+
+/// An own process that has not answered yet is starting; one that answers is
+/// own and not starting.
+#[tokio::test]
+#[serial_test::serial(hsd_home)]
+async fn an_own_node_not_answering_yet_is_starting() {
+    let app = app_with(conn_with_active_regtest("http://127.0.0.1:1"));
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    app.state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .insert(crate::noncustodial::network::Network::Regtest, child);
+
+    let v = node_status(app.state()).await.unwrap();
+    assert_eq!(v["ownership"], "own");
+    assert_eq!(v["starting"], true);
+
+    let mut child = app
+        .state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .remove(&crate::noncustodial::network::Network::Regtest)
+        .unwrap();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A node that answers but that Namehold did not start is outside; nothing
+/// answering and nothing of ours is none.
+#[tokio::test]
+#[serial_test::serial(hsd_home)]
+async fn a_node_that_answers_but_is_not_ours_is_outside() {
+    let mut server = mockito::Server::new_async().await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(regtest_info_mock_body())
+        .create_async()
+        .await;
+    let app = app_with(conn_with_active_regtest(&server.url()));
+    let v = node_status(app.state()).await.unwrap();
+    assert_eq!(v["ownership"], "outside");
+    assert_eq!(v["starting"], false);
+
+    let app = app_with(conn_with_active_regtest("http://127.0.0.1:1"));
+    let v = node_status(app.state()).await.unwrap();
+    assert_eq!(v["ownership"], "none");
+    assert_eq!(v["starting"], false);
+}
+
+/// Spec 2026-10-24 R7: a re-sync moves a node's chain aside, so it is refused
+/// for a node Namehold did not start, before any file is touched.
+#[tokio::test]
+#[serial_test::serial(hsd_home)]
+async fn resync_refuses_an_outside_node_and_moves_nothing() {
+    let mut server = mockito::Server::new_async().await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(regtest_info_mock_body())
+        .create_async()
+        .await;
+    let conn = conn_with_active_regtest(&server.url());
+    let prefix = db::queries::get_settings(&conn).unwrap()["hsd_prefix"].clone();
+    let chain = std::path::Path::new(&prefix).join("regtest").join("chain");
+    std::fs::create_dir_all(&chain).unwrap();
+    let app = app_with(conn);
+
+    let err = crate::commands::node::resync_hsd_chain(app.state())
+        .await
+        .expect_err("an outside node's chain is not moved");
+
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Invalid input: {}",
+            crate::commands::local_node::OUTSIDE_NODE_NOT_STOPPED
+        )
+    );
+    assert!(chain.exists(), "the chain stays where it was");
+}
+
+/// An own node that answers is own and not starting: the answer, not the
+/// process, ends "starting" (R11), and an answering node of ours is never
+/// taken for an outside one (R7), which would disable its Stop.
+#[tokio::test]
+#[serial_test::serial(hsd_home)]
+async fn an_own_node_that_answers_is_own_and_not_starting() {
+    let mut server = mockito::Server::new_async().await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(regtest_info_mock_body())
+        .create_async()
+        .await;
+    let app = app_with(conn_with_active_regtest(&server.url()));
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    app.state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .insert(crate::noncustodial::network::Network::Regtest, child);
+
+    let v = node_status(app.state()).await.unwrap();
+
+    assert_eq!(v["ownership"], "own");
+    assert_eq!(v["starting"], false);
+    assert_eq!(v["connected"], true);
+    let mut child = app
+        .state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .remove(&crate::noncustodial::network::Network::Regtest)
+        .unwrap();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A child of this session that has exited is no own node (R6), so a
+/// re-sync with an outside node answering is refused like any outside node,
+/// not treated as "our node, now stopped".
+#[tokio::test]
+#[serial_test::serial(hsd_home)]
+async fn resync_refuses_an_outside_node_when_our_child_has_exited() {
+    let mut server = mockito::Server::new_async().await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(regtest_info_mock_body())
+        .create_async()
+        .await;
+    let conn = conn_with_active_regtest(&server.url());
+    let prefix = db::queries::get_settings(&conn).unwrap()["hsd_prefix"].clone();
+    let chain = std::path::Path::new(&prefix).join("regtest").join("chain");
+    std::fs::create_dir_all(&chain).unwrap();
+    let app = app_with(conn);
+    let mut dead = std::process::Command::new("true").spawn().unwrap();
+    let _ = dead.wait();
+    app.state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .insert(crate::noncustodial::network::Network::Regtest, dead);
+
+    let err = crate::commands::node::resync_hsd_chain(app.state())
+        .await
+        .expect_err("the answering node is not ours");
+
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Invalid input: {}",
+            crate::commands::local_node::OUTSIDE_NODE_NOT_STOPPED
+        )
+    );
+    assert!(chain.exists(), "the chain stays where it was");
 }

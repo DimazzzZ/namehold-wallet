@@ -8,9 +8,14 @@ export interface NodeStatus {
   binary_found: boolean;
   version: string | null;
   data_dir: string;
-  network: string;
+  /** The active wallet's network as hsd names it (`main`, `testnet`, …); `null` with no active wallet. */
+  network: string | null;
   /** The child process we spawned is still alive (not proof the RPC is up). */
   process_alive: boolean;
+  /** Whose node this is (spec 2026-10-24 R7): `own` (started by Namehold, this session or an earlier one), `outside` (answers, but Namehold did not start it, so Stop is disabled), `none`. */
+  ownership: "own" | "outside" | "none";
+  /** An own node whose RPC has not answered yet (R11). */
+  starting: boolean;
   /** The node's RPC actually answered — the truthful "node is up" signal. */
   connected: boolean;
   /** Chain height from the RPC probe, when connected. */

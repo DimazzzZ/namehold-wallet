@@ -15,6 +15,8 @@ export function routeSettingsCommand(cmd: string): Promise<unknown> {
         data_dir: null,
         network: "main",
         process_alive: false,
+        ownership: "none",
+        starting: false,
         connected: false,
         height: null,
         verification_progress: null,

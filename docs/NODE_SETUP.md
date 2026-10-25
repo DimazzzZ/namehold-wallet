@@ -28,16 +28,8 @@ hsd --index-address --index-tx --api-key=<your-key>
   enable … indexing"). If your existing chain was synced without these indexes, it
   must be re-synced with them — the app detects this and offers a one-click re-sync
   (it moves the old `blocks/`, `chain/`, `tree/` aside and re-syncs).
-- **Autostart is on by default.** The app starts hsd for you on launch (toggleable
-  under Settings → Connections → "Autostart HSD when the app launches"). If hsd is
-  already running when the app starts, it adopts the existing node via RPC instead
-  of spawning a new one.
-- **Background sync:** When "Sync in background" is enabled in Settings → Connections
-  (default ON), hsd stays running after the app closes.
-  A background daemon (`namehold-syncd`) wakes every 60 seconds to sync wallet
-  data from hsd into the local database. The next app launch adopts the running
-  hsd. To stop hsd, disable "Sync in background" or manually click **Stop hsd**
-  in Settings → Connections.
+- **Autostart is on by default, per network.** When a wallet that uses a local node becomes active (at launch, or when you switch to it), the app starts that network's hsd for you. Turn it off for the active wallet's network under Settings → Connections → "Start the mainnet node automatically" (each network keeps its own setting; a network you never set follows the app-wide one). If a node already answers on that network's port on the right chain, the app uses it instead of spawning a new one. A node you stopped stays stopped until the active wallet changes.
+- **Background sync:** When "Sync in background" is enabled in Settings → Connections (default ON), every node the app started stays running after the app closes, one per network. A background daemon (`namehold-syncd`) wakes every 60 seconds to sync wallet data from those nodes into the local database; it never starts or stops a node itself. On macOS and Linux the next app launch recognises those nodes as its own from `namehold-hsd.pid` in each network's data directory (the pid and the process start time); on Windows it does not, so a node left running is used but not stopped by the app after a restart. With "Sync in background" off, closing the app stops every node it started, including, on macOS and Linux, ones left from an earlier session. To stop a network's node by hand, switch to one of its wallets and click **Stop mainnet node** (or the network you are on) in Settings → Connections or in the status bar.
 - Then in the app: **Settings → Node RPC** → URL `http://127.0.0.1:12037`, API key
   `<your-key>`; click **Sync** to pull your UTXOs; **Send** is now enabled.
 
@@ -170,6 +162,14 @@ The node's chain data is per-network and lives under `~/.hsd` (or a custom
 - Only mainnet has a built-in public explorer (`e.hnsfans.com`); testnet, regtest
   and simnet have no explorer fallback.
 
+### One node per network
+
+Wallets on different networks do not share a node. Each network gets its own hsd, on its own ports and in its own data directory (the table above), and they run side by side: switching from a regtest wallet to a mainnet wallet starts the mainnet node and leaves the regtest node running, so switching back is instant.
+
+- **Which URL a local-node wallet uses.** A wallet whose chain source is a local node, with no node URL of its own, reaches its network's default port (mainnet 12037, testnet 13037, regtest 14037) whenever the app-wide node URL is only a default: empty, or a loopback URL on some network's default port. An app-wide URL you set by hand (another machine on your network, a custom port) is used as is, for every local-node wallet. A per-wallet node URL always wins. Nothing rewrites the app-wide URL when a node starts.
+- **Nodes you run yourself.** A node that answers on the network's port on the right chain but that Namehold did not start is used, never stopped: its Stop button is disabled with "This node was not started by Namehold, so Namehold does not stop it.", and quitting leaves it alone.
+- **Full or SPV is per network.** The Chain source selector sets it for the active wallet's network; your other networks keep theirs.
+
 ## SPV mode (lightweight alternative)
 
 For users who don't need to send transactions or want faster initial setup:
@@ -180,9 +180,7 @@ For users who don't need to send transactions or want faster initial setup:
   explorer.
 - **Explorer failover** — set a fallback URL in Settings for when the primary
   explorer is unreachable.
-- **To enable:** Settings → Connections → Chain source → select "Local node (SPV)"
-  → Save. There is no separate "Node mode" dropdown; the one selector sets both
-  the source and, for a local node, whether it runs full or SPV.
+- **To enable:** Settings → Connections → Chain source → select "Local node (SPV)" → Save. There is no separate "Node mode" dropdown; the one selector sets both the source and, for a local node, whether the active wallet's network's node runs full or SPV. Each network keeps its own choice.
 - **Status indicator:** StatusStrip shows "Explorer (SPV)" when SPV mode is active.
 
 SPV mode is ideal for:

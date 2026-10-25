@@ -209,3 +209,50 @@ fn shakedex_jobs_send_only_behind_may_broadcast() {
         "the child's resend is called once, after the gate"
     );
 }
+
+/// Spec 2026-10-24 R12: the background daemon never starts or stops hsd.
+/// Starting and stopping local nodes belongs to the app (`commands::node`);
+/// the daemon only reads the nodes that run.
+#[test]
+fn the_daemon_never_starts_or_stops_hsd() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Every Rust file of the daemon module, at any depth, and its binary.
+    let mut files = vec![root.join("src/bin/namehold-syncd.rs")];
+    let mut dirs = vec![root.join("src/daemon")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
+    assert!(
+        files.len() > 2,
+        "the scan found the daemon's sources: {files:?}"
+    );
+    for path in files {
+        let src = std::fs::read_to_string(&path).unwrap();
+        // The whole category, not a list of today's entry points: the node
+        // commands and the local-node helpers (start, stop, re-sync, quit,
+        // autostart, own-node records), the process handles, the binary
+        // finder, and any signal or spawn.
+        for forbidden in [
+            "commands::node::",
+            "local_node",
+            "hsd_children",
+            "hsd_starting",
+            "find_hsd_binary",
+            "libc::kill",
+            "Command::new",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{} names {forbidden}",
+                path.display()
+            );
+        }
+    }
+}

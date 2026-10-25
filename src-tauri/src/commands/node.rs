@@ -8,6 +8,9 @@
 //! starts" and "the node the app talks to" are the same node.
 
 use crate::commands::active_profile::{active_profile_network, active_profile_network_opt};
+use crate::commands::local_node::{
+    resolve_configured_base, resolve_data_dir_for_network, OUTSIDE_NODE_NOT_STOPPED,
+};
 use crate::db;
 use crate::error::AppError;
 use crate::noncustodial::network::Network;
@@ -157,56 +160,18 @@ fn resolve_data_dir(state: &AppState) -> Result<String, AppError> {
     resolve_data_dir_for_network(state, network)
 }
 
-/// Network-scoped data dir. hsd isolates non-mainnet chains *inside* a single
-/// prefix (`<prefix>/regtest`, `<prefix>/testnet`), while mainnet writes
-/// `blocks/chain/tree` at the prefix root — so one shared prefix lets a mainnet
-/// chain at the root sit beside a regtest subdir, the exact overlap that let a
-/// mainnet chain end up driving a regtest wallet.
-///
-/// The fix gives each network its own data-dir *root*: mainnet keeps the base
-/// unchanged (so existing mainnet data is never moved), and every other network
-/// gets `<base>/<network>`. That is the directory the log, RPC, and migration
-/// treat as the chain root. Note this is the *data dir*, not the hsd
-/// `--prefix`: `start_hsd` passes hsd the un-scoped base as `--prefix` and lets
-/// `--network` create exactly this `<base>/<network>` subdir — so hsd's chain
-/// root coincides with this data dir instead of nesting a second time.
-fn resolve_data_dir_for_network(state: &AppState, network: Network) -> Result<String, AppError> {
-    let base = resolve_configured_base(state)?;
-    Ok(network_scoped_data_dir(&base, network))
-}
-
-/// Pure path rule: mainnet → `base` unchanged; any other network → its own
-/// top-level root `base/<network>`. Kept pure (no IO, no state) so the layout
-/// is unit-testable without a filesystem.
-pub(crate) fn network_scoped_data_dir(base: &str, network: Network) -> String {
-    match network {
-        Network::Main => base.to_string(),
-        other => std::path::Path::new(base)
-            .join(other.as_str())
-            .to_string_lossy()
-            .into_owned(),
-    }
-}
-
-/// Whether the hsd we started this session is still alive. Reaps a child that has
-/// exited (clearing the handle) so the status reflects reality.
+/// Whether the hsd we started this session for `network` is still alive. Reaps
+/// a child that has exited (clearing its handle) so the status reflects
+/// reality.
 // The `Some(child)` arm calls child.try_wait() on a real OS process handle,
 // reachable only after start_hsd has spawned a child. Exercised by the
 // fake-hsd integration tests in tests/node_lifecycle_tests.rs.
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn is_running(state: &AppState) -> Result<bool, AppError> {
-    let mut guard = state
-        .hsd_child
-        .lock()
-        .map_err(|e| AppError::Lock(e.to_string()))?;
-    let running = match guard.as_mut() {
-        Some(child) => matches!(child.try_wait(), Ok(None)),
-        None => false,
-    };
-    if !running {
-        *guard = None;
-    }
-    Ok(running)
+fn is_running(state: &AppState, network: Network) -> Result<bool, AppError> {
+    Ok(matches!(
+        crate::commands::local_node::own_node(state, network),
+        Some(crate::commands::local_node::OwnNode::Child)
+    ))
 }
 
 /// A successful node RPC probe: the node answered `getblockchaininfo`.
@@ -264,6 +229,19 @@ async fn probe_node(state: &AppState) -> Option<NodeProbe> {
             Err(_) => return None,
         }
     };
+    probe_with(&client).await
+}
+
+/// [`probe_node`] for one wallet profile's node, whichever wallet is active.
+async fn probe_profile_node(state: &AppState, profile_id: &str) -> Option<NodeProbe> {
+    let client = {
+        let db = state.db.lock().ok()?;
+        NodeRpcClient::for_profile(&db, profile_id).ok()?
+    };
+    probe_with(&client).await
+}
+
+async fn probe_with(client: &NodeRpcClient) -> Option<NodeProbe> {
     client
         .get_blockchain_info()
         .await
@@ -283,8 +261,25 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     let binary = find_hsd_binary(configured_hsd_path(&state).as_deref());
     let version = get_hsd_version(&binary);
     let data_dir = resolve_data_dir(&state)?;
-    let process_alive = is_running(&state)?;
+    let process_alive = match active_profile_network_opt(&state) {
+        Some(network) => is_running(&state, network)?,
+        None => false,
+    };
     let probe = probe_node(&state).await;
+    // Whose node this is (spec 2026-10-24 R7, R11): this session's child, or
+    // the node an earlier session left (its pid file), is own; a node that
+    // answers otherwise is outside, and Stop never touches it.
+    let own = match active_profile_network_opt(&state) {
+        Some(network) => crate::commands::local_node::own_node(&state, network).is_some(),
+        None => false,
+    };
+    let ownership = if own {
+        "own"
+    } else if probe.is_some() {
+        "outside"
+    } else {
+        "none"
+    };
     // Keep the shared liveness flag in sync — the tray reads this to decide
     // whether to show "Running" or "Stopped" without doing its own RPC probe.
     state
@@ -294,7 +289,8 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     let node_mode = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&db)?;
-        crate::noncustodial::rpc::resolve_node_mode(&settings)
+        let network = crate::commands::active_profile::active_profile_network_opt_from_conn(&db);
+        crate::noncustodial::rpc::resolve_node_mode_for(&settings, network)
     };
     // When the RPC isn't answering, surface WHY the last start failed (the hsd log
     // persists past `start_hsd`'s short watch window), so a failed start never
@@ -347,8 +343,11 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         "binary_found": version.is_some(),
         "version": version,
         "data_dir": data_dir,
-        "network": active_profile_network(&state).as_str(),
+        // No active wallet, no network: the UI then names none (R8).
+        "network": active_profile_network_opt(&state).map(Network::as_str),
         "process_alive": process_alive,
+        "ownership": ownership,
+        "starting": own && probe.is_none(),
         "connected": probe.is_some(),
         "height": probe.as_ref().map(|p| p.height),
         "verification_progress": probe.as_ref().and_then(|p| p.verification_progress),
@@ -452,9 +451,6 @@ pub(crate) fn node_start_error(data_dir: &str) -> Option<(String, bool)> {
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    if is_running(&state)? {
-        return Err(AppError::Other("hsd is already running.".to_string()));
-    }
     // Refuse rather than default. Spawning hsd is the one place where guessing
     // mainnet is an action with consequences: it starts a full mainnet chain
     // sync into a data dir the user prepared for another network, and the
@@ -470,6 +466,46 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
                 .to_string(),
         )
     })?;
+    // One start of a network at a time (spec 2026-10-24 R3): a second one is
+    // refused here, before it resets this network's log, migrates its data
+    // dir or writes its record. Released however this function returns.
+    struct Reservation<'a>(&'a AppState, Network);
+    impl Drop for Reservation<'_> {
+        fn drop(&mut self) {
+            match self.0.hsd_starting.lock() {
+                Ok(mut g) => g.remove(&self.1),
+                Err(poisoned) => poisoned.into_inner().remove(&self.1),
+            };
+        }
+    }
+    if !state
+        .hsd_starting
+        .lock()
+        .map_err(|e| AppError::Lock(e.to_string()))?
+        .insert(network)
+    {
+        return Err(AppError::Other(format!(
+            "The {} node is already starting.",
+            network.display_name()
+        )));
+    }
+    let _reservation = Reservation(&state, network);
+    // One own node per network: only this network's own node already
+    // running stops a start; another network's does not. That includes one
+    // an earlier session left (R6) that is still loading and silent: a
+    // second hsd over its data dir would take its record.
+    if crate::commands::local_node::own_node(&state, network).is_some() {
+        return Err(AppError::Other(format!(
+            "The {} node is already running.",
+            network.display_name()
+        )));
+    }
+    // The wallet this start is for, read once: a switch while hsd comes up
+    // must not make the start probe, or key, another wallet's node.
+    let profile_id = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::get_active_profile_id(&db)?
+    };
 
     // A node may already be running (e.g. one started in a previous app session,
     // or the user's own). If its RPC already answers AND it is on the right
@@ -477,14 +513,14 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // would only collide on the data-dir lock. A chain mismatch is refused
     // rather than silently adopted: a wallet talking to the wrong chain would
     // treat unrelated coins as its own.
-    if let Some(probe) = probe_node(&state).await {
+    if let Some(probe) = probe_profile_node(&state, &profile_id).await {
         guard_probe_network(network, probe.chain.as_deref())?;
         state
             .node_rpc_alive
             .store(true, std::sync::atomic::Ordering::Relaxed);
         return Ok(serde_json::json!({
             "connected": true,
-            "process_alive": is_running(&state)?,
+            "process_alive": is_running(&state, network)?,
             "height": probe.height,
             "network": network.as_str(),
             "chain": probe.chain,
@@ -507,37 +543,17 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // active profile (per-profile override -> global -> hsd.conf) so the node
     // we start and the node we talk to agree. Reading global settings here
     // handed a profile with its own key a node started with somebody else's.
-    // `node_mode` stays global: it is not part of the ADR-001 tuple.
-    //
-    // The same resolution decides whether realign may touch the URL, so both
-    // are taken under one lock.
+    // The mode is the started network's own (spec 2026-10-24 R10).
     let (api_key, node_mode) = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let profile_id = db::queries::get_active_profile_id(&db)?;
         let effective =
             crate::noncustodial::node_config::effective_node_config_for_profile(&db, &profile_id)?;
         let settings = db::queries::get_settings(&db)?;
-        let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
+        let node_mode = crate::noncustodial::rpc::resolve_node_mode_for(&settings, Some(network));
 
-        // hsd will listen on this network's RPC port, but a globally seeded
-        // `node_rpc_url` keeps whatever it was given — the mainnet 12037. Left
-        // alone, the wallet starts a regtest node and then talks to a port
-        // nothing is listening on. Realign a stale loopback default now; a
-        // custom port or a remote host is left as the user set it (see
-        // `realign_loopback_rpc_url`).
-        //
-        // ADR-001 (Interaction with N11): a profile that supplies its own URL
-        // has made an explicit choice, and rewriting it — even a "stale
-        // default" — is the silent abandonment ADR-002 refuses. Realign
-        // therefore applies only to a URL that came from the global fallback,
-        // and it writes back to the global setting it came from.
-        if !effective.url_from_override {
-            if let Some(fixed) =
-                crate::noncustodial::rpc::realign_loopback_rpc_url(&effective.node_rpc_url, network)
-            {
-                db::queries::set_setting(&db, "node_rpc_url", &fixed)?;
-            }
-        }
+        // No URL is written here: a local-node profile reaches its own
+        // network's port at resolution (spec 2026-10-24 R1), and the global
+        // URL is every other profile's too (R2).
         (effective.node_rpc_api_key, node_mode)
     };
 
@@ -625,13 +641,37 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     let child = cmd
         .spawn()
         .map_err(|e| AppError::Other(format!("failed to start hsd ({binary}): {e}")))?;
-
+    let child_pid = child.id();
     {
-        let mut guard = state
-            .hsd_child
+        let mut children = state
+            .hsd_children
             .lock()
             .map_err(|e| AppError::Lock(e.to_string()))?;
-        *guard = Some(child);
+        // Two starts of one network can race between the check above and
+        // here (the version probe and the spawn take time). The first child
+        // to land keeps the network; the second is stopped, never dropped
+        // alive with nobody holding it.
+        if let Some(existing) = children.get_mut(&network) {
+            if matches!(existing.try_wait(), Ok(None)) {
+                drop(children);
+                let mut child = child;
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError::Other(format!(
+                    "The {} node is already running.",
+                    network.display_name()
+                )));
+            }
+        }
+        children.insert(network, child);
+    }
+    // Record the child as this network's own node, so a later session still
+    // knows it started it (spec 2026-10-24 R6). Best-effort: without the
+    // record the node only counts as outside later, which stops nothing.
+    if let Err(e) =
+        crate::commands::local_node::write_pid_file(std::path::Path::new(&data_dir), child_pid)
+    {
+        eprintln!("start_hsd: could not record the node's pid: {e}");
     }
     {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -647,17 +687,17 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     for _ in 0..30 {
         // Did the child die during startup?
         {
-            let mut guard = state
-                .hsd_child
+            let mut children = state
+                .hsd_children
                 .lock()
                 .map_err(|e| AppError::Lock(e.to_string()))?;
-            let exited = match guard.as_mut() {
+            let exited = match children.get_mut(&network) {
                 Some(child) => matches!(child.try_wait(), Ok(Some(_))),
                 None => true,
             };
             if exited {
-                *guard = None;
-                drop(guard);
+                children.remove(&network);
+                drop(children);
                 let tail = read_log_tail(&log_path);
                 // A data-dir lock means another hsd already owns this directory.
                 if tail.contains("LOCK") || tail.contains("Resource temporarily unavailable") {
@@ -670,7 +710,7 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
                 return Err(AppError::Other(format!("hsd exited on startup.{tail}")));
             }
         }
-        if let Some(probe) = probe_node(&state).await {
+        if let Some(probe) = probe_profile_node(&state, &profile_id).await {
             // The node we spawned answered — confirm it came up on the network we
             // asked for before reporting success. A mismatch here means the data
             // dir already held a foreign chain (e.g. a mainnet chain synced into a
@@ -724,39 +764,19 @@ pub(crate) fn read_log_tail(path: &std::path::Path) -> String {
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
-    let child = {
-        let mut guard = state
-            .hsd_child
-            .lock()
-            .map_err(|e| AppError::Lock(e.to_string()))?;
-        guard.take()
+    // The active wallet's network's own node, and only that (spec 2026-10-24
+    // R7, R8). With no active profile there is no network and nothing to stop.
+    let Some(network) = active_profile_network_opt(&state) else {
+        return Ok(());
     };
-    if let Some(mut child) = child {
-        let _ = child.kill();
-        let _ = child.wait();
+    // This session's child, or the node an earlier session left (R6).
+    if crate::commands::local_node::stop_own_node(&state, network)
+        == crate::commands::local_node::Stopped::NoOwnNode
+        && probe_node(&state).await.is_some()
+    {
+        // A node answers, but Namehold did not start it: never stopped.
+        return Err(AppError::InvalidInput(OUTSIDE_NODE_NOT_STOPPED.to_string()));
     }
-
-    // Snapshot settings (no lock held across the await), then ask any node still
-    // answering to stop. Best-effort: if nothing's reachable, that's fine.
-    // Per-profile node override routing (ADR-001): stop the node the active
-    // profile is actually pointed at (per-profile override -> global settings
-    // -> built-in default). With no active profile there is no override to
-    // honour; a profile whose own config will not resolve is returned as the
-    // configuration error it is, because "stop the node" aimed at the wrong
-    // endpoint can stop somebody else's.
-    let client = {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        match db::queries::get_active_profile_id(&db)? {
-            // No active profile — the id is stored as an empty string, not an
-            // error — so there is nothing that could override.
-            id if id.is_empty() => {
-                let settings = db::queries::get_settings(&db)?;
-                NodeRpcClient::from_settings(&settings)
-            }
-            profile_id => NodeRpcClient::for_profile(&db, &profile_id)?,
-        }
-    };
-    let _ = client.stop().await;
     // Mark the node as offline. The backend probe loop will confirm in ~5s,
     // but we set it immediately so the tray + UI flip right away.
     state
@@ -766,9 +786,87 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db.execute(
         "INSERT INTO audit_log (action, detail) VALUES ('stop_hsd', ?1)",
-        ["{}"],
+        [serde_json::json!({ "network": network.as_str() }).to_string()],
     )?;
     Ok(())
+}
+
+/// The network whose local node activating `profile_id` starts (spec
+/// 2026-10-24 R4): the profile's own network, when its chain source is a
+/// local node and that network starts its node on its own. A remote node or
+/// an explorer starts nothing.
+pub(crate) fn node_to_start_on_activation(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Option<Network>, AppError> {
+    let cfg =
+        crate::noncustodial::node_config::effective_node_config_for_profile(conn, profile_id)?;
+    let network = db::queries::get_wallet_profile(conn, profile_id)?
+        .and_then(|p| Network::from_str_opt(&p.network));
+    let settings = db::queries::get_settings(conn)?;
+    Ok(network
+        .filter(|n| cfg.local_node && crate::noncustodial::rpc::autostart_hsd_for(&settings, *n)))
+}
+
+/// One look at the active wallet for the autostart loop (spec 2026-10-24 R4):
+/// when it differs from `last` (the first look, at app start, always does),
+/// the network whose node to start, per [`node_to_start_on_activation`].
+/// Acts on a change only, so a node the user stopped is not started again,
+/// and starting it never stops another network's node (R5). A profile that
+/// cannot be read starts nothing and is looked at again on the next change.
+pub(crate) fn autostart_on_profile_change(
+    conn: &rusqlite::Connection,
+    last: &mut Option<String>,
+) -> Option<Network> {
+    // An unreadable active profile is no change to act on: the next look,
+    // a second later, reads it again.
+    let active = db::queries::get_active_profile_id(conn).ok()?;
+    if last.as_deref() == Some(active.as_str()) {
+        return None;
+    }
+    *last = Some(active.clone());
+    if active.is_empty() {
+        return None;
+    }
+    // Best-effort: this decides a background start, and a profile that does
+    // not resolve has its own error on the screens that read it.
+    node_to_start_on_activation(conn, &active).ok().flatten()
+}
+
+/// The background start the autostart loop asked for `network` (spec
+/// 2026-10-24 R4). `start_hsd` starts the active wallet's network, so when the
+/// wallet moved to another network before this ran, the start is dropped
+/// (`Ok(None)`): the loop's next look handles the new wallet, and a network
+/// whose autostart is off is never started on another network's behalf.
+pub(crate) async fn autostart_network_node(
+    state: State<'_, AppState>,
+    network: Network,
+) -> Result<Option<serde_json::Value>, AppError> {
+    if active_profile_network_opt(&state) != Some(network) {
+        return Ok(None);
+    }
+    start_hsd(state).await.map(Some)
+}
+
+/// What quit does with the app's own nodes (spec 2026-10-24 R9), by one rule
+/// for every network. With background sync on, every own node is left
+/// running for the daemon, which syncs every profile, and keeps its pid file
+/// so the next session still knows it (R6). With it off, every own node is
+/// stopped: this session's children, and the nodes earlier sessions left,
+/// found by their pid files. A node Namehold did not start is never touched
+/// (R7). Best-effort: quitting is never blocked by a node.
+pub(crate) fn release_own_nodes_on_quit(state: &AppState, background_sync_on: bool) {
+    if background_sync_on {
+        // Dropping a handle leaves the process running.
+        match state.hsd_children.lock() {
+            Ok(mut guard) => guard.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+        return;
+    }
+    for network in Network::ALL {
+        crate::commands::local_node::stop_own_node(state, network);
+    }
 }
 
 /// The on-disk chain artifacts to move aside for a re-sync, by network. Mainnet
@@ -900,25 +998,6 @@ pub(crate) fn migrate_network_prefix(
     }
 }
 
-/// The configured, un-scoped base prefix (`hsd_prefix` setting, else `~/.hsd`).
-/// Split out from [`resolve_data_dir_for_network`] so the migration can reason
-/// about the base independent of the network scoping.
-fn resolve_configured_base(state: &AppState) -> Result<String, AppError> {
-    let configured = {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::get_settings(&db)?
-            .get("hsd_prefix")
-            .cloned()
-            .unwrap_or_default()
-    };
-    let configured = configured.trim();
-    if !configured.is_empty() {
-        return Ok(configured.to_string());
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    Ok(format!("{home}/.hsd"))
-}
-
 /// Verify that a probed node's reported chain matches the active profile's
 /// network. Returns `Ok(())` when they agree or when the node did not report
 /// its chain (older hsd builds); returns a mismatch error otherwise.
@@ -962,23 +1041,13 @@ pub(crate) fn guard_probe_network(
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    // 1. Stop any node we manage so the chain files aren't locked.
-    {
-        let mut guard = state
-            .hsd_child
-            .lock()
-            .map_err(|e| AppError::Lock(e.to_string()))?;
-        if let Some(mut child) = guard.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-
     // Resolved once and refused when unknown. This command moves chain data
     // out of the way, so a guess of mainnet would back up — and then re-sync
     // over — a directory belonging to a network the user is not on. Reading the
     // network and the data dir separately also let the two disagree, with the
-    // backup aimed at whichever answer came first.
+    // backup aimed at whichever answer came first; the stop below acts on the
+    // same network, so a wallet switch meanwhile cannot move another
+    // network's chain from under its running node.
     let network =
         crate::commands::active_profile::active_profile_network_opt(&state).ok_or_else(|| {
             AppError::InvalidInput(
@@ -988,6 +1057,29 @@ pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::
             )
         })?;
     let data_dir = resolve_data_dir_for_network(&state, network)?;
+
+    // 1. Only an own node's chain is moved aside (spec 2026-10-24 R7): stop
+    // it first, this session's child or one an earlier session left, and
+    // wait until it is gone; a node Namehold did not start is refused before
+    // any file is touched.
+    use crate::commands::local_node::{stop_own_node, until_no_own_node, Stopped};
+    match stop_own_node(&state, network) {
+        Stopped::NoOwnNode => {
+            if probe_node(&state).await.is_some() {
+                return Err(AppError::InvalidInput(OUTSIDE_NODE_NOT_STOPPED.to_string()));
+            }
+        }
+        Stopped::Child => {}
+        Stopped::Signalled => {
+            if !until_no_own_node(&state, network).await {
+                return Err(AppError::Other(format!(
+                    "The {} node is still shutting down; its chain is left in place. Try the \
+                     re-sync again in a moment.",
+                    network.display_name()
+                )));
+            }
+        }
+    }
 
     // 2. Move existing chain artifacts into a timestamped backup dir.
     let ts = std::time::SystemTime::now()

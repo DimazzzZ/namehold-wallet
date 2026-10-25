@@ -303,6 +303,17 @@ fn network_name_matches_canonicalizes_mainnet_both_sides() {
     assert!(!network_name_matches("", "main"));
 }
 
+/// hsd's `getblockchaininfo` names testnet `test` (`lib/node/rpc.js:607-609`,
+/// `chain: this.network.type !== 'testnet' ? this.network.type : 'test'`),
+/// so a testnet node matches a testnet profile, and only that.
+#[test]
+fn a_testnet_node_reports_chain_test() {
+    assert!(network_name_matches("testnet", "test"));
+    assert!(network_name_matches("test", "testnet"));
+    assert!(!network_name_matches("regtest", "test"));
+    assert!(!network_name_matches("mainnet", "test"));
+}
+
 #[test]
 fn network_name_matches_same_network() {
     assert!(network_name_matches("main", "main"));

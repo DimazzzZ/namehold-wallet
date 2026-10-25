@@ -584,7 +584,7 @@ All node settings live under **Settings → Connections**.
 | **Explorer fallback URL** | (empty) | When the primary explorer is unreachable, automatically tries this URL. Leave empty to disable failover. |
 | **Node data directory (`hsd --prefix`)** | (system default) | Use **Browse…** to pick. Local hsd only. |
 | **hsd binary path** | (auto) | Only needed if hsd isn't on PATH. Local hsd only. |
-| **Autostart HSD when the app launches** | **on** | Toggle off to keep hsd manual. Local hsd only. |
+| **Start the mainnet node automatically** (names the active wallet's network) | **on** | Starts that network's hsd when one of its wallets becomes active, and at launch. Each network has its own setting; toggle off to keep that network's hsd manual. Local hsd only. |
 | **Sync in background** | **on** | When enabled, a background daemon syncs your wallet every 60 seconds, even when the app is closed. Local full node only. |
 
 ### Background sync
@@ -638,9 +638,8 @@ Below the settings, the **NodeControl** panel shows a live status dot
 (Connected · Starting · Stopped · Syncing %), the read source (**Local** or
 **Explorer**), the data directory and hsd version. Buttons:
 
-- **Start hsd** — spawns hsd with the required flags (`--index-address
-  --index-tx`). If hsd is already running, it adopts it via RPC.
-- **Stop hsd** — stops the node.
+- **Start mainnet node** (named for the active wallet's network) — spawns that network's hsd with the required flags (`--index-address --index-tx`). If a node already answers on that network's port, it uses it instead. Another network's node keeps running: each network has its own.
+- **Stop mainnet node** — stops the active wallet's network's node, if Namehold started it. A node you started yourself is never stopped by Namehold; the button is disabled and says so.
 - **Re-sync node data** — appears only when the app detects an
   **index mismatch** (hsd's existing chain was synced without `--index-address`).
   hsd cannot add indexes retroactively, so this moves the old `blocks/`,
@@ -662,10 +661,7 @@ dot is Connected). Restart the app — it respawns the daemon on startup when
 "Sync in background" is ON. The daemon writes its process ID to
 `~/.namehold/syncd.pid` while alive.
 
-**hsd is still running after I closed the app.** This is expected when "Sync in
-background" is enabled — the daemon keeps hsd alive so it can sync in the
-background. To stop hsd, either disable "Sync in background" (hsd is then stopped
-on the next app close) or click **Stop hsd** in Settings → Connections.
+**hsd is still running after I closed the app.** This is expected when "Sync in background" is enabled: every node Namehold started (one per network) stays alive so the daemon can sync in the background, and on macOS and Linux the next launch still knows they are Namehold's (on Windows it does not, and such a node is then used but not stopped by Namehold). To stop them, either disable "Sync in background" (they are then stopped on the next app close, on macOS and Linux including ones left from an earlier session) or switch to a wallet of that network and click **Stop mainnet node** (or the network you are on) in Settings → Connections.
 
 **I want to stop background sync.** Uncheck **Settings → Connections → "Sync in
 background"**. The daemon exits immediately, and hsd is stopped the next time you

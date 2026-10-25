@@ -20,8 +20,15 @@ _Avoid_: Server, RPC endpoint (those are implementation details)
 Where the wallet reads chain state and broadcasts: `local_node`, `remote_node`, or `explorer`. Only `local_node` can be paired with a node mode (full or SPV).
 _Avoid_: Connection mode (that's frontend terminology)
 
-**Node mode** (`node_mode` setting):
-For a `local_node` chain source, whether it runs as a full node (`full`) or SPV node (`spv`). Meaningless for remote or explorer sources.
+**Node mode** (`node_mode.<network>` setting):
+For a `local_node` chain source, whether the network's local node runs as a full node (`full`) or SPV node (`spv`). A setting of the network, not of the app or the profile (a network with no `node_mode.<network>` of its own follows the app-wide `node_mode`): every wallet of a network shares its one local node ([ADR-0005](./docs/adr/0005-one-local-hsd-per-network.md)). Meaningless for remote or explorer sources.
+
+**Local node of a network**:
+The one hsd that serves a network's `local_node` wallets, at `127.0.0.1:<the network's RPC port>`, chain in the network's data directory. Nodes of different networks run side by side; switching wallets stops none of them.
+_Avoid_: The node (when more than one network is in play)
+
+**Own node** / **Outside node**:
+An own node is a local node the app started: a child of this session, or the process its pid file names when that process has the start time the file recorded. An outside node answers on the network's port on the right chain but was not started by the app (the user's hsd, a test run's). The app uses both and stops only own nodes.
 _Avoid_: Sync mode
 
 **Node configuration**:
@@ -42,7 +49,7 @@ The node's reported chain (from `getblockchaininfo`) does not match the profile'
 _Avoid_: Chain mismatch (same thing, but "network" is the profile's term)
 
 **Effective node config**:
-The resolved node configuration for a profile after applying the resolution order, evaluated independently per key: per-profile override (if set and non-empty) → global settings (if set) → built-in default. The result is one `(node_rpc_url, node_rpc_api_key, chain_source)` tuple, plus whether the profile's own override supplied it — which is what keeps the loopback-port realign off a URL the user chose. A profile that does not resolve is an error, never a fallback to global.
+The resolved node configuration for a profile after applying the resolution order, evaluated independently per key: per-profile override (if set and non-empty) → global settings (if set) → built-in default. The result is one `(node_rpc_url, node_rpc_api_key, chain_source)` tuple, plus whether the profile's own override supplied any of it. A `local_node` profile with no URL of its own, over a global URL that is only a default (empty, or a loopback URL on a network's default port), takes its own network's port; a global URL that is not a default is kept. A profile that does not resolve is an error, never a fallback to global.
 _Avoid_: Resolved config (same meaning, but "effective" emphasizes the resolution order)
 
 ### Name sales (Shakedex)
