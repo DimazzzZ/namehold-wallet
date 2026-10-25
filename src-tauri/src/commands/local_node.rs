@@ -158,6 +158,8 @@ pub(crate) fn resolve_configured_base(state: &AppState) -> Result<String, AppErr
 
 /// The pid of `network`'s own node an earlier session left, if any (R6).
 pub(crate) fn own_node_pid_of(state: &AppState, network: Network) -> Option<u32> {
+    // A data dir that cannot be resolved (the settings cannot be read) holds
+    // no record we could read: no own node is known there.
     let data_dir = resolve_data_dir_for_network(state, network).ok()?;
     own_node_pid(std::path::Path::new(&data_dir))
 }
@@ -165,3 +167,60 @@ pub(crate) fn own_node_pid_of(state: &AppState, network: Network) -> Option<u32>
 /// Why Stop refuses a node it did not start (spec 2026-10-24 R7).
 pub(crate) const OUTSIDE_NODE_NOT_STOPPED: &str =
     "This node was not started by Namehold, so Namehold does not stop it.";
+
+/// Which own node a network has (spec 2026-10-24 R6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OwnNode {
+    /// A live child of this session.
+    Child,
+    /// A node an earlier session started and left, named by its pid file.
+    Left(u32),
+}
+
+/// The one rule for "`network`'s own node", read by start, status, the tray,
+/// stop and quit alike: a live child of this session (a child that has
+/// exited is reaped and does not count), else the node a pid file names.
+pub(crate) fn own_node(state: &AppState, network: Network) -> Option<OwnNode> {
+    {
+        let mut children = match state.hsd_children.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(child) = children.get_mut(&network) {
+            if matches!(child.try_wait(), Ok(None)) {
+                return Some(OwnNode::Child);
+            }
+            children.remove(&network);
+        }
+    }
+    own_node_pid_of(state, network).map(OwnNode::Left)
+}
+
+/// Stop `network`'s own node, whichever it is, and forget its record: kill
+/// this session's child, or SIGTERM the node an earlier session left.
+/// `false` when the network has no own node; a node Namehold did not start
+/// is never touched (R7).
+pub(crate) fn stop_own_node(state: &AppState, network: Network) -> bool {
+    let child = match state.hsd_children.lock() {
+        Ok(mut g) => g.remove(&network),
+        Err(poisoned) => poisoned.into_inner().remove(&network),
+    };
+    // Best-effort: with no data dir to resolve there is no record to read or
+    // remove, and a child of this session is still stopped.
+    let data_dir = resolve_data_dir_for_network(state, network).ok();
+    let data_dir = data_dir.as_deref().map(std::path::Path::new);
+    let stopped = if let Some(mut child) = child {
+        let _ = child.kill();
+        let _ = child.wait();
+        true
+    } else if let Some(pid) = data_dir.and_then(own_node_pid) {
+        terminate(pid);
+        true
+    } else {
+        false
+    };
+    if let Some(dir) = data_dir {
+        remove_pid_file(dir);
+    }
+    stopped
+}

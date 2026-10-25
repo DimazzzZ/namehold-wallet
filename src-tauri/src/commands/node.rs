@@ -168,17 +168,10 @@ fn resolve_data_dir(state: &AppState) -> Result<String, AppError> {
 // fake-hsd integration tests in tests/node_lifecycle_tests.rs.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn is_running(state: &AppState, network: Network) -> Result<bool, AppError> {
-    let mut children = state
-        .hsd_children
-        .lock()
-        .map_err(|e| AppError::Lock(e.to_string()))?;
-    let running = children
-        .get_mut(&network)
-        .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
-    if !running {
-        children.remove(&network);
-    }
-    Ok(running)
+    Ok(matches!(
+        crate::commands::local_node::own_node(state, network),
+        Some(crate::commands::local_node::OwnNode::Child)
+    ))
 }
 
 /// A successful node RPC probe: the node answered `getblockchaininfo`.
@@ -263,8 +256,10 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     // Whose node this is (spec 2026-10-24 R7, R11): this session's child, or
     // the node an earlier session left (its pid file), is own; a node that
     // answers otherwise is outside, and Stop never touches it.
-    let own = process_alive
-        || crate::commands::local_node::own_node_pid(std::path::Path::new(&data_dir)).is_some();
+    let own = match active_profile_network_opt(&state) {
+        Some(network) => crate::commands::local_node::own_node(&state, network).is_some(),
+        None => false,
+    };
     let ownership = if own {
         "own"
     } else if probe.is_some() {
@@ -458,8 +453,10 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         )
     })?;
     // One own node per network (spec 2026-10-24 R3): only this network's own
-    // node already running stops a start; another network's does not.
-    if is_running(&state, network)? {
+    // node already running stops a start; another network's does not. That
+    // includes one an earlier session left (R6) that is still loading and
+    // silent: a second hsd over its data dir would take its record.
+    if crate::commands::local_node::own_node(&state, network).is_some() {
         return Err(AppError::Other(format!(
             "The {} node is already running.",
             network.as_str()
@@ -601,21 +598,37 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     let child = cmd
         .spawn()
         .map_err(|e| AppError::Other(format!("failed to start hsd ({binary}): {e}")))?;
-    // Record the child as this network's own node, so a later session still
-    // knows it started it (spec 2026-10-24 R6). Best-effort: without the
-    // record the node only counts as outside later, which stops nothing.
-    if let Err(e) =
-        crate::commands::local_node::write_pid_file(std::path::Path::new(&data_dir), child.id())
-    {
-        eprintln!("start_hsd: could not record the node's pid: {e}");
-    }
-
+    let child_pid = child.id();
     {
         let mut children = state
             .hsd_children
             .lock()
             .map_err(|e| AppError::Lock(e.to_string()))?;
+        // Two starts of one network can race between the check above and
+        // here (the version probe and the spawn take time). The first child
+        // to land keeps the network; the second is stopped, never dropped
+        // alive with nobody holding it.
+        if let Some(existing) = children.get_mut(&network) {
+            if matches!(existing.try_wait(), Ok(None)) {
+                drop(children);
+                let mut child = child;
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError::Other(format!(
+                    "The {} node is already running.",
+                    network.as_str()
+                )));
+            }
+        }
         children.insert(network, child);
+    }
+    // Record the child as this network's own node, so a later session still
+    // knows it started it (spec 2026-10-24 R6). Best-effort: without the
+    // record the node only counts as outside later, which stops nothing.
+    if let Err(e) =
+        crate::commands::local_node::write_pid_file(std::path::Path::new(&data_dir), child_pid)
+    {
+        eprintln!("start_hsd: could not record the node's pid: {e}");
     }
     {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -713,24 +726,10 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
     let Some(network) = active_profile_network_opt(&state) else {
         return Ok(());
     };
-    let data_dir = resolve_data_dir_for_network(&state, network)?;
-    let data_dir = std::path::Path::new(&data_dir);
-    let child = {
-        let mut children = state
-            .hsd_children
-            .lock()
-            .map_err(|e| AppError::Lock(e.to_string()))?;
-        children.remove(&network)
-    };
-    if let Some(mut child) = child {
-        let _ = child.kill();
-        let _ = child.wait();
-        crate::commands::local_node::remove_pid_file(data_dir);
-    } else if let Some(pid) = crate::commands::local_node::own_node_pid(data_dir) {
-        // Started by an earlier session and left for the daemon (R6).
-        crate::commands::local_node::terminate(pid);
-        crate::commands::local_node::remove_pid_file(data_dir);
-    } else if probe_node(&state).await.is_some() {
+    // This session's child, or the node an earlier session left (R6).
+    if !crate::commands::local_node::stop_own_node(&state, network)
+        && probe_node(&state).await.is_some()
+    {
         // A node answers, but Namehold did not start it: never stopped.
         return Err(AppError::InvalidInput(OUTSIDE_NODE_NOT_STOPPED.to_string()));
     }
@@ -796,33 +795,16 @@ pub(crate) fn autostart_on_profile_change(
 /// found by their pid files. A node Namehold did not start is never touched
 /// (R7). Best-effort: quitting is never blocked by a node.
 pub(crate) fn release_own_nodes_on_quit(state: &AppState, background_sync_on: bool) {
-    let children: Vec<std::process::Child> = match state.hsd_children.lock() {
-        Ok(mut guard) => guard.drain().map(|(_, c)| c).collect(),
-        Err(poisoned) => poisoned.into_inner().drain().map(|(_, c)| c).collect(),
-    };
     if background_sync_on {
         // Dropping a handle leaves the process running.
-        drop(children);
+        match state.hsd_children.lock() {
+            Ok(mut guard) => guard.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
         return;
     }
-    for mut child in children {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    for network in [
-        Network::Main,
-        Network::Testnet,
-        Network::Regtest,
-        Network::Simnet,
-    ] {
-        let Ok(data_dir) = resolve_data_dir_for_network(state, network) else {
-            continue;
-        };
-        let data_dir = std::path::Path::new(&data_dir);
-        if let Some(pid) = crate::commands::local_node::own_node_pid(data_dir) {
-            crate::commands::local_node::terminate(pid);
-        }
-        crate::commands::local_node::remove_pid_file(data_dir);
+    for network in Network::ALL {
+        crate::commands::local_node::stop_own_node(state, network);
     }
 }
 

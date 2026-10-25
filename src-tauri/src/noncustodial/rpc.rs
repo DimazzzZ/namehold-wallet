@@ -151,14 +151,7 @@ pub fn is_default_loopback_rpc_url(url: &str) -> bool {
         return false;
     };
     matches!(host, "127.0.0.1" | "localhost" | "[::1]")
-        && [
-            Network::Main,
-            Network::Testnet,
-            Network::Regtest,
-            Network::Simnet,
-        ]
-        .iter()
-        .any(|n| n.default_rpc_port() == port)
+        && Network::ALL.iter().any(|n| n.default_rpc_port() == port)
 }
 
 /// Resolve node_mode from settings map.

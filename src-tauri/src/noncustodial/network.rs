@@ -140,6 +140,14 @@ impl Network {
         }
     }
 
+    /// Every network, for code that acts on each network's node in turn.
+    pub const ALL: [Network; 4] = [
+        Network::Main,
+        Network::Testnet,
+        Network::Regtest,
+        Network::Simnet,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Network::Main => "main",

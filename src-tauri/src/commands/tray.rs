@@ -158,19 +158,13 @@ fn snapshot(app: &AppHandle) -> TraySnapshot {
 
     // Node running: the backend probe loop updates `node_rpc_alive` every ~5s
     // (and start/stop actions flip it immediately). We OR it with the active
-    // network's child handle so a freshly-spawned node shows "Running" even
-    // before the first probe tick fires.
+    // network's own node so a freshly-spawned one shows "Running" even before
+    // the first probe tick fires.
     let node_running = state
         .node_rpc_alive
         .load(std::sync::atomic::Ordering::Relaxed)
         || crate::commands::active_profile::active_profile_network_opt(&state).is_some_and(
-            |network| {
-                state
-                    .hsd_children
-                    .lock()
-                    .ok()
-                    .is_some_and(|g| g.contains_key(&network))
-            },
+            |network| crate::commands::local_node::own_node(&state, network).is_some(),
         );
 
     // "Syncing" state proxy: whether a wallet full-sync run is active. This is
@@ -199,14 +193,7 @@ fn snapshot(app: &AppHandle) -> TraySnapshot {
         .unwrap_or(BACKGROUND_SYNC_DEFAULT == "1");
 
     let network = crate::commands::active_profile::active_profile_network_opt(&state);
-    let own = network.is_some_and(|n| {
-        state
-            .hsd_children
-            .lock()
-            .ok()
-            .is_some_and(|g| g.contains_key(&n))
-            || crate::commands::local_node::own_node_pid_of(&state, n).is_some()
-    });
+    let own = network.is_some_and(|n| crate::commands::local_node::own_node(&state, n).is_some());
 
     TraySnapshot {
         node_running,

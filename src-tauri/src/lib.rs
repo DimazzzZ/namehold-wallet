@@ -259,11 +259,8 @@ pub fn run() {
                                             .load(std::sync::atomic::Ordering::Relaxed)
                                             || crate::commands::active_profile::active_profile_network_opt(&state)
                                                 .is_some_and(|network| {
-                                                    state
-                                                        .hsd_children
-                                                        .lock()
-                                                        .ok()
-                                                        .is_some_and(|g| g.contains_key(&network))
+                                                    crate::commands::local_node::own_node(&state, network)
+                                                        .is_some()
                                                 })
                                     };
                                     let result = if running {

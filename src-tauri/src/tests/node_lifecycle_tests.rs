@@ -1013,3 +1013,76 @@ async fn quit_without_background_sync_stops_every_own_node() {
     );
     assert_eq!(pid_files(&h), [false, false, false], "records removed");
 }
+
+// ===========================================================================
+// Review of the local-node-per-network branch: one rule for "the network's
+// own node", used by start, status, the tray, stop and quit.
+// ===========================================================================
+
+/// An own node an earlier session left, still loading (alive, RPC silent):
+/// a start must not spawn a second hsd over its data directory, nor take its
+/// record, or the real node would read as outside and never be stopped.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn a_start_leaves_an_earlier_sessions_own_node_that_is_still_loading() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let conn = conn_for(&h, NO_RPC);
+    add_profile_on(&conn, "p-regtest", "regtest", NO_RPC);
+    let regtest_dir = h.data_dir().join("regtest");
+    std::fs::create_dir_all(&regtest_dir).unwrap();
+    let mut orphan = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    crate::commands::local_node::write_pid_file(&regtest_dir, orphan.id()).unwrap();
+    let app = app_with(conn);
+    activate(&app, "p-regtest");
+
+    let err = start_hsd(app.state())
+        .await
+        .expect_err("its own node already runs");
+
+    assert_eq!(err.to_string(), "The regtest node is already running.");
+    assert!(
+        app.state::<AppState>()
+            .hsd_children
+            .lock()
+            .unwrap()
+            .is_empty(),
+        "nothing spawned"
+    );
+    assert_eq!(
+        crate::commands::local_node::own_node_pid(&regtest_dir),
+        Some(orphan.id()),
+        "its record is kept"
+    );
+    let _ = orphan.kill();
+    let _ = orphan.wait();
+}
+
+/// A child of this session that has exited is no own node of its network.
+#[test]
+fn an_exited_child_is_no_own_node() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let conn = conn_for(&h, NO_RPC);
+    let app = app_with(conn);
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let _ = child.wait();
+    app.state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .insert(Network::Main, child);
+
+    assert!(
+        crate::commands::local_node::own_node(&app.state::<AppState>(), Network::Main).is_none()
+    );
+    assert!(
+        app.state::<AppState>()
+            .hsd_children
+            .lock()
+            .unwrap()
+            .is_empty(),
+        "reaped"
+    );
+}
