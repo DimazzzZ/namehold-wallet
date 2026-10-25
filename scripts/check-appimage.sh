@@ -11,8 +11,9 @@
 #    extraction of the image, as a user who runs the AppImage gets it (it
 #    loops, so `timeout` ending it, exit 124, is a pass; 126/127 is "cannot
 #    execute").
-# 3. The app itself starts as another user under a virtual display and is
-#    still running after 20 s.
+# 3. The app itself starts as another user under a virtual display, after
+#    the first user left /tmp/tray-icon behind, and is still running after
+#    20 s.
 #
 # Needs sudo (to add the user), xvfb-run and timeout. Exits non-zero, with the
 # reason, on the first failure; prints what it checked on success.
@@ -61,6 +62,12 @@ case "$rc" in
     exit 1
     ;;
 esac
+
+# The first user to run the app on a machine leaves /tmp/tray-icon (the tray
+# icon's file, when a session has no $XDG_RUNTIME_DIR); the app must still
+# start for the next user, as sudo gives it no runtime dir either.
+mkdir -p /tmp/tray-icon
+ls -ld /tmp/tray-icon
 
 set +e
 as_user timeout 20 xvfb-run -a "$work/app.AppImage" --appimage-extract-and-run >"$work/app.log" 2>&1
