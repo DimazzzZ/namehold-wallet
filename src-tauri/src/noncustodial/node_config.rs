@@ -96,19 +96,22 @@ pub fn effective_node_config_for_profile(
         merged.get("chain_source").map(String::as_str),
         Some("remote_node" | "explorer")
     );
+    // `None` is an unknown network (a spelling the parser does not know):
+    // with no network to name a port, the URL falls back to the merged one.
     let profile_network = crate::db::queries::get_wallet_profile(conn, profile_id)?
         .and_then(|p| crate::noncustodial::network::Network::from_str_opt(&p.network));
-    let global_url = merged
+    // The merged URL: the profile's own when it set one, else the app-wide.
+    let url_setting = merged
         .get("node_rpc_url")
         .map(|u| u.trim())
         .filter(|u| !u.is_empty());
     let url_is_a_default =
-        global_url.is_none_or(crate::noncustodial::rpc::is_default_loopback_rpc_url);
+        url_setting.is_none_or(crate::noncustodial::rpc::is_default_loopback_rpc_url);
     let node_rpc_url = match profile_network {
         Some(network) if local_node && !chosen_here("node_rpc_url") && url_is_a_default => {
             network.default_rpc_url()
         }
-        _ => global_url
+        _ => url_setting
             .map(str::to_string)
             .unwrap_or_else(default_node_rpc_url),
     };

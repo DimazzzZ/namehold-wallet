@@ -497,6 +497,9 @@ pub async fn run_sync_steps(
         .ok()
         .and_then(|c| {
             let settings = queries::get_settings(&c).ok()?;
+            // A profile that cannot be read leaves the network unknown, and
+            // the app-wide mode applies: the same answer as before modes
+            // became per network, for a routing decision the run re-checks.
             let network = queries::get_wallet_profile(&c, profile_id)
                 .ok()
                 .flatten()

@@ -775,6 +775,8 @@ pub(crate) fn autostart_on_profile_change(
     conn: &rusqlite::Connection,
     last: &mut Option<String>,
 ) -> Option<Network> {
+    // An unreadable active profile is no change to act on: the next look,
+    // a second later, reads it again.
     let active = db::queries::get_active_profile_id(conn).ok()?;
     if last.as_deref() == Some(active.as_str()) {
         return None;

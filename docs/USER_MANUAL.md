@@ -661,7 +661,7 @@ dot is Connected). Restart the app — it respawns the daemon on startup when
 "Sync in background" is ON. The daemon writes its process ID to
 `~/.namehold/syncd.pid` while alive.
 
-**hsd is still running after I closed the app.** This is expected when "Sync in background" is enabled: every node Namehold started (one per network) stays alive so the daemon can sync in the background, and the next launch still knows they are Namehold's. To stop them, either disable "Sync in background" (they are then stopped on the next app close, including ones left from an earlier session) or switch to a wallet of that network and click **Stop mainnet node** (or the network you are on) in Settings → Connections.
+**hsd is still running after I closed the app.** This is expected when "Sync in background" is enabled: every node Namehold started (one per network) stays alive so the daemon can sync in the background, and on macOS and Linux the next launch still knows they are Namehold's (on Windows it does not, and such a node is then used but not stopped by Namehold). To stop them, either disable "Sync in background" (they are then stopped on the next app close, on macOS and Linux including ones left from an earlier session) or switch to a wallet of that network and click **Stop mainnet node** (or the network you are on) in Settings → Connections.
 
 **I want to stop background sync.** Uncheck **Settings → Connections → "Sync in
 background"**. The daemon exits immediately, and hsd is stopped the next time you
