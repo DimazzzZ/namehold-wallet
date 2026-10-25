@@ -1086,3 +1086,29 @@ fn an_exited_child_is_no_own_node() {
         "reaped"
     );
 }
+
+/// The autostart loop names a network and starts it in the background; if the
+/// active wallet moved to another network meanwhile, that start is dropped
+/// (the next look handles the new wallet), so a network whose autostart is
+/// off is never started on another network's behalf.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn an_autostart_for_a_network_the_wallet_left_starts_nothing() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let conn = conn_for(&h, NO_RPC);
+    add_profile_on(&conn, "p-testnet", "testnet", NO_RPC);
+    let app = app_with(conn);
+    activate(&app, "p-testnet");
+
+    let out = crate::commands::node::autostart_network_node(app.state(), Network::Regtest)
+        .await
+        .expect("a skipped start is no error");
+
+    assert!(out.is_none(), "skipped");
+    assert!(app
+        .state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .is_empty());
+}

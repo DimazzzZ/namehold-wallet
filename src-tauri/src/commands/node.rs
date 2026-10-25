@@ -787,6 +787,21 @@ pub(crate) fn autostart_on_profile_change(
     node_to_start_on_activation(conn, &active).ok().flatten()
 }
 
+/// The background start the autostart loop asked for `network` (spec
+/// 2026-10-24 R4). `start_hsd` starts the active wallet's network, so when the
+/// wallet moved to another network before this ran, the start is dropped
+/// (`Ok(None)`): the loop's next look handles the new wallet, and a network
+/// whose autostart is off is never started on another network's behalf.
+pub(crate) async fn autostart_network_node(
+    state: State<'_, AppState>,
+    network: Network,
+) -> Result<Option<serde_json::Value>, AppError> {
+    if active_profile_network_opt(&state) != Some(network) {
+        return Ok(None);
+    }
+    start_hsd(state).await.map(Some)
+}
+
 /// What quit does with the app's own nodes (spec 2026-10-24 R9), by one rule
 /// for every network. With background sync on, every own node is left
 /// running for the daemon, which syncs every profile, and keeps its pid file

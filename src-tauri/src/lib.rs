@@ -549,10 +549,11 @@ pub fn run() {
                         let Ok(db) = state.db.lock() else { continue };
                         commands::node::autostart_on_profile_change(&db, &mut last)
                     };
-                    if start.is_some() {
+                    if let Some(network) = start {
                         let handle = handle.clone();
                         tauri::async_runtime::spawn(async move {
-                            if let Err(e) = commands::node::start_hsd(handle.state::<AppState>()).await {
+                            let state = handle.state::<AppState>();
+                            if let Err(e) = commands::node::autostart_network_node(state, network).await {
                                 eprintln!("hsd autostart skipped: {e}");
                             }
                         });
