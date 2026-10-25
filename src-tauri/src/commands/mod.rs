@@ -12,7 +12,7 @@ pub mod debug_notify;
 pub mod dev_updates;
 pub mod draft_ctx;
 pub mod history;
-pub mod hsd_pid;
+pub mod local_node;
 pub mod namebase;
 pub mod namebase_history;
 pub mod names;

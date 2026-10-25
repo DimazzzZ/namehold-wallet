@@ -225,7 +225,7 @@ fn the_daemon_never_starts_or_stops_hsd() {
         for forbidden in [
             "start_hsd",
             "stop_hsd",
-            "hsd_pid::terminate",
+            "local_node::terminate",
             "find_hsd_binary",
             "hsd_children",
         ] {

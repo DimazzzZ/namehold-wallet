@@ -721,7 +721,7 @@ async fn a_spawned_node_is_recorded_as_own_until_it_is_stopped() {
         .map(|c| c.id());
     assert!(child_pid.is_some());
     assert_eq!(
-        crate::commands::hsd_pid::own_node_pid(h.data_dir()),
+        crate::commands::local_node::own_node_pid(h.data_dir()),
         child_pid,
         "the child is the network's own node"
     );
@@ -729,7 +729,7 @@ async fn a_spawned_node_is_recorded_as_own_until_it_is_stopped() {
     stop_hsd(app.state()).await.expect("stop ok");
     assert!(!h
         .data_dir()
-        .join(crate::commands::hsd_pid::PID_FILE)
+        .join(crate::commands::local_node::PID_FILE)
         .exists());
 }
 
@@ -833,7 +833,7 @@ async fn stop_ends_an_own_node_left_by_an_earlier_session() {
         .arg("60")
         .spawn()
         .unwrap();
-    crate::commands::hsd_pid::write_pid_file(&regtest_dir, orphan.id()).unwrap();
+    crate::commands::local_node::write_pid_file(&regtest_dir, orphan.id()).unwrap();
     let app = app_with(conn);
     activate(&app, "p-regtest");
 
@@ -845,7 +845,7 @@ async fn stop_ends_an_own_node_left_by_an_earlier_session() {
         "the orphan was terminated, not left to finish"
     );
     assert!(!regtest_dir
-        .join(crate::commands::hsd_pid::PID_FILE)
+        .join(crate::commands::local_node::PID_FILE)
         .exists());
 }
 
@@ -930,7 +930,7 @@ async fn app_with_three_own_nodes(
         .arg("60")
         .spawn()
         .unwrap();
-    crate::commands::hsd_pid::write_pid_file(h.data_dir(), orphan.id()).unwrap();
+    crate::commands::local_node::write_pid_file(h.data_dir(), orphan.id()).unwrap();
     let app = app_with(conn);
     activate(&app, "p-regtest");
     start_hsd(app.state()).await.expect("regtest starts");
@@ -940,7 +940,7 @@ async fn app_with_three_own_nodes(
 }
 
 fn pid_files(h: &Harness) -> [bool; 3] {
-    let f = crate::commands::hsd_pid::PID_FILE;
+    let f = crate::commands::local_node::PID_FILE;
     [
         h.data_dir().join(f).exists(),
         h.data_dir().join("regtest").join(f).exists(),
@@ -974,7 +974,7 @@ async fn quit_with_background_sync_leaves_every_own_node() {
     );
     for pid in &pids {
         assert!(
-            crate::commands::hsd_pid::process_start_time(*pid).is_some(),
+            crate::commands::local_node::process_start_time(*pid).is_some(),
             "{pid} left running"
         );
     }

@@ -131,6 +131,15 @@ impl Network {
         0x0488_b21e
     }
 
+    /// The name a person reads: as a wallet profile spells it (`mainnet`,
+    /// not hsd's `main`).
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Network::Main => "mainnet",
+            other => other.as_str(),
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Network::Main => "main",

@@ -8,6 +8,9 @@
 //! starts" and "the node the app talks to" are the same node.
 
 use crate::commands::active_profile::{active_profile_network, active_profile_network_opt};
+use crate::commands::local_node::{
+    resolve_configured_base, resolve_data_dir_for_network, OUTSIDE_NODE_NOT_STOPPED,
+};
 use crate::db;
 use crate::error::AppError;
 use crate::noncustodial::network::Network;
@@ -157,37 +160,6 @@ fn resolve_data_dir(state: &AppState) -> Result<String, AppError> {
     resolve_data_dir_for_network(state, network)
 }
 
-/// Network-scoped data dir. hsd isolates non-mainnet chains *inside* a single
-/// prefix (`<prefix>/regtest`, `<prefix>/testnet`), while mainnet writes
-/// `blocks/chain/tree` at the prefix root — so one shared prefix lets a mainnet
-/// chain at the root sit beside a regtest subdir, the exact overlap that let a
-/// mainnet chain end up driving a regtest wallet.
-///
-/// The fix gives each network its own data-dir *root*: mainnet keeps the base
-/// unchanged (so existing mainnet data is never moved), and every other network
-/// gets `<base>/<network>`. That is the directory the log, RPC, and migration
-/// treat as the chain root. Note this is the *data dir*, not the hsd
-/// `--prefix`: `start_hsd` passes hsd the un-scoped base as `--prefix` and lets
-/// `--network` create exactly this `<base>/<network>` subdir — so hsd's chain
-/// root coincides with this data dir instead of nesting a second time.
-fn resolve_data_dir_for_network(state: &AppState, network: Network) -> Result<String, AppError> {
-    let base = resolve_configured_base(state)?;
-    Ok(network_scoped_data_dir(&base, network))
-}
-
-/// Pure path rule: mainnet → `base` unchanged; any other network → its own
-/// top-level root `base/<network>`. Kept pure (no IO, no state) so the layout
-/// is unit-testable without a filesystem.
-pub(crate) fn network_scoped_data_dir(base: &str, network: Network) -> String {
-    match network {
-        Network::Main => base.to_string(),
-        other => std::path::Path::new(base)
-            .join(other.as_str())
-            .to_string_lossy()
-            .into_owned(),
-    }
-}
-
 /// Whether the hsd we started this session for `network` is still alive. Reaps
 /// a child that has exited (clearing its handle) so the status reflects
 /// reality.
@@ -288,6 +260,18 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         None => false,
     };
     let probe = probe_node(&state).await;
+    // Whose node this is (spec 2026-10-24 R7, R11): this session's child, or
+    // the node an earlier session left (its pid file), is own; a node that
+    // answers otherwise is outside, and Stop never touches it.
+    let own = process_alive
+        || crate::commands::local_node::own_node_pid(std::path::Path::new(&data_dir)).is_some();
+    let ownership = if own {
+        "own"
+    } else if probe.is_some() {
+        "outside"
+    } else {
+        "none"
+    };
     // Keep the shared liveness flag in sync — the tray reads this to decide
     // whether to show "Running" or "Stopped" without doing its own RPC probe.
     state
@@ -353,6 +337,8 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         "data_dir": data_dir,
         "network": active_profile_network(&state).as_str(),
         "process_alive": process_alive,
+        "ownership": ownership,
+        "starting": own && probe.is_none(),
         "connected": probe.is_some(),
         "height": probe.as_ref().map(|p| p.height),
         "verification_progress": probe.as_ref().and_then(|p| p.verification_progress),
@@ -619,7 +605,7 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // knows it started it (spec 2026-10-24 R6). Best-effort: without the
     // record the node only counts as outside later, which stops nothing.
     if let Err(e) =
-        crate::commands::hsd_pid::write_pid_file(std::path::Path::new(&data_dir), child.id())
+        crate::commands::local_node::write_pid_file(std::path::Path::new(&data_dir), child.id())
     {
         eprintln!("start_hsd: could not record the node's pid: {e}");
     }
@@ -739,11 +725,11 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
     if let Some(mut child) = child {
         let _ = child.kill();
         let _ = child.wait();
-        crate::commands::hsd_pid::remove_pid_file(data_dir);
-    } else if let Some(pid) = crate::commands::hsd_pid::own_node_pid(data_dir) {
+        crate::commands::local_node::remove_pid_file(data_dir);
+    } else if let Some(pid) = crate::commands::local_node::own_node_pid(data_dir) {
         // Started by an earlier session and left for the daemon (R6).
-        crate::commands::hsd_pid::terminate(pid);
-        crate::commands::hsd_pid::remove_pid_file(data_dir);
+        crate::commands::local_node::terminate(pid);
+        crate::commands::local_node::remove_pid_file(data_dir);
     } else if probe_node(&state).await.is_some() {
         // A node answers, but Namehold did not start it: never stopped.
         return Err(AppError::InvalidInput(OUTSIDE_NODE_NOT_STOPPED.to_string()));
@@ -833,16 +819,12 @@ pub(crate) fn release_own_nodes_on_quit(state: &AppState, background_sync_on: bo
             continue;
         };
         let data_dir = std::path::Path::new(&data_dir);
-        if let Some(pid) = crate::commands::hsd_pid::own_node_pid(data_dir) {
-            crate::commands::hsd_pid::terminate(pid);
+        if let Some(pid) = crate::commands::local_node::own_node_pid(data_dir) {
+            crate::commands::local_node::terminate(pid);
         }
-        crate::commands::hsd_pid::remove_pid_file(data_dir);
+        crate::commands::local_node::remove_pid_file(data_dir);
     }
 }
-
-/// Why Stop refuses a node it did not start (spec 2026-10-24 R7).
-pub(crate) const OUTSIDE_NODE_NOT_STOPPED: &str =
-    "This node was not started by Namehold, so Namehold does not stop it.";
 
 /// The on-disk chain artifacts to move aside for a re-sync, by network. Mainnet
 /// stores them at the prefix root; other networks under a per-network subdir.
@@ -971,25 +953,6 @@ pub(crate) fn migrate_network_prefix(
             Ok(())
         }
     }
-}
-
-/// The configured, un-scoped base prefix (`hsd_prefix` setting, else `~/.hsd`).
-/// Split out from [`resolve_data_dir_for_network`] so the migration can reason
-/// about the base independent of the network scoping.
-fn resolve_configured_base(state: &AppState) -> Result<String, AppError> {
-    let configured = {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::get_settings(&db)?
-            .get("hsd_prefix")
-            .cloned()
-            .unwrap_or_default()
-    };
-    let configured = configured.trim();
-    if !configured.is_empty() {
-        return Ok(configured.to_string());
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    Ok(format!("{home}/.hsd"))
 }
 
 /// Verify that a probed node's reported chain matches the active profile's

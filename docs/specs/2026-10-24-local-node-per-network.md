@@ -47,13 +47,13 @@ Every requirement names the code that will enforce it and the test that will pin
 ### 3.3 Own and outside nodes
 
 **R6 — An own node is recognised across sessions by its pid and start time.** hsd overwrites its own command line (`process.title = 'hsd'`), so a process's arguments cannot tell the app's hsd from another. At spawn the app writes `<data_dir>/namehold-hsd.pid` with the child's pid and its process start time as the OS reports it, and removes the file when it stops that node. A node is own when it is this session's child, or when the pid file names a live process whose start time is the recorded one: a reused pid belongs to a process that started at another time. A pid file naming a dead process, another start time, or that cannot be read is stale: it is ignored and removed. The start time is read with `proc_pidinfo(PROC_PIDTBSDINFO)` on macOS and field 22 of `/proc/<pid>/stat` on Linux; elsewhere it is not read, nothing is recorded, and an orphan counts as outside (§5).
-*Enforced:* `commands/hsd_pid.rs::{process_start_time, write_pid_file, own_node_pid, remove_pid_file}`, called from `commands/node.rs::{start_hsd, stop_hsd}`.
-*Pinned:* `hsd_pid_tests::{a_live_process_has_one_start_time, an_exited_process_has_no_start_time, a_pid_file_of_a_live_process_names_it, a_stale_pid_file_is_ignored_and_removed, no_pid_file_names_nothing}`, `node_lifecycle_tests::a_spawned_node_is_recorded_as_own_until_it_is_stopped`.
+*Enforced:* `commands/local_node.rs::{process_start_time, write_pid_file, own_node_pid, remove_pid_file}`, called from `commands/node.rs::{start_hsd, stop_hsd}`.
+*Pinned:* `local_node_tests::{a_live_process_has_one_start_time, an_exited_process_has_no_start_time, a_pid_file_of_a_live_process_names_it, a_stale_pid_file_is_ignored_and_removed, no_pid_file_names_nothing}`, `node_lifecycle_tests::a_spawned_node_is_recorded_as_own_until_it_is_stopped`.
 
 **R7 — An outside node is never stopped.** Stop, the tray and quit act only on own nodes. `stop_hsd` stops this session's child of the active network, or the own node its pid file names (SIGTERM, R6); a node that answers but is neither is refused with "This node was not started by Namehold, so Namehold does not stop it." and sent no RPC `stop` (before, `stop_hsd` sent one to whatever answered on the profile's URL). Until step 7 disables the button, Settings and the status strip show that refusal as an error toast; afterwards the Stop button is disabled with the same sentence and the tray item reads the same.
-*Enforced:* `commands/node.rs::{stop_hsd, OUTSIDE_NODE_NOT_STOPPED}`, `commands/hsd_pid.rs::terminate`.
-*Pinned:* `node_status_tests::stopping_an_outside_node_sends_nothing` (mockito `.expect(0)` on the `stop` call), `node_lifecycle_tests::stop_ends_an_own_node_left_by_an_earlier_session`.
-*To enforce (step 7):* the disabled Stop button and tray item, in `src/components/Settings.tsx` and the tray menu in `lib.rs`. *To pin:* `settings-network-nodes.test.tsx`.
+*Enforced:* `commands/node.rs::stop_hsd`, `commands/local_node.rs::{terminate, OUTSIDE_NODE_NOT_STOPPED}`, `commands/tray.rs::node_menu_texts` (the tray item is disabled with the sentence).
+*Pinned:* `node_status_tests::{stopping_an_outside_node_sends_nothing, a_node_that_answers_but_is_not_ours_is_outside}` (mockito `.expect(0)` on the `stop` call), `node_lifecycle_tests::stop_ends_an_own_node_left_by_an_earlier_session`, `tray::tests::an_outside_node_item_is_disabled_with_the_reason`.
+*To enforce (step 7):* the disabled Stop button in `src/components/Settings.tsx` and the status strip. *To pin:* `settings-network-nodes.test.tsx`.
 
 ### 3.4 Controls
 
@@ -78,7 +78,7 @@ Every requirement names the code that will enforce it and the test that will pin
 
 **R12 — The daemon never starts or stops hsd.** `namehold-syncd` reads the nodes that run; a profile whose node does not answer is skipped until the next cycle, as before. SECURITY.md's statement of what the daemon does stays true.
 *Enforced:* the daemon module names no node start or stop.
-*Pinned:* `shakedex_layering_tests::the_daemon_never_starts_or_stops_hsd` (a source check over every Rust file of the daemon module for `start_hsd`, `stop_hsd`, `hsd_pid::terminate`, `find_hsd_binary`, `hsd_children`).
+*Pinned:* `shakedex_layering_tests::the_daemon_never_starts_or_stops_hsd` (a source check over every Rust file of the daemon module for `start_hsd`, `stop_hsd`, `local_node::terminate`, `find_hsd_binary`, `hsd_children`).
 
 ## 4. Explicitly not enforced
 

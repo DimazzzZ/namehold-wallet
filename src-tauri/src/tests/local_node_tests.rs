@@ -1,7 +1,7 @@
-//! Tests for `commands::hsd_pid`: recognising the app's own hsd across
+//! Tests for `commands::local_node`: recognising the app's own hsd across
 //! sessions by its pid and process start time (spec 2026-10-24 R6).
 
-use crate::commands::hsd_pid::{own_node_pid, process_start_time, write_pid_file, PID_FILE};
+use crate::commands::local_node::{own_node_pid, process_start_time, write_pid_file, PID_FILE};
 
 /// The start time is read from the OS and does not change while the process
 /// lives, so a second read of the same process gives the same value.

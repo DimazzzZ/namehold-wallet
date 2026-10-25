@@ -1110,7 +1110,7 @@ async fn stopping_an_outside_node_sends_nothing() {
         err.to_string(),
         format!(
             "Invalid input: {}",
-            crate::commands::node::OUTSIDE_NODE_NOT_STOPPED
+            crate::commands::local_node::OUTSIDE_NODE_NOT_STOPPED
         )
     );
     stop.assert_async().await;
@@ -1442,9 +1442,9 @@ async fn probe_and_update_uses_global_when_no_active_profile() {
 }
 
 // --- Network isolation: scoped data dir + idempotent, non-destructive migration.
+use crate::commands::local_node::network_scoped_data_dir;
 use crate::commands::node::{
-    dir_has_chain_root, migrate_network_prefix, network_scoped_data_dir, plan_network_migration,
-    PrefixMigration,
+    dir_has_chain_root, migrate_network_prefix, plan_network_migration, PrefixMigration,
 };
 
 #[tokio::test]
@@ -1818,4 +1818,62 @@ async fn probe_of_a_database_that_cannot_be_opened_is_not_ready() {
         None
     );
     assert!(!node_ready_from_profile(path, "W1", Some("mainnet")).await);
+}
+
+// --- Spec 2026-10-24 R7/R11: whose node answers, and whether it is starting ---
+
+fn regtest_info_mock_body() -> &'static str {
+    r#"{"result":{"chain":"regtest","blocks":5,"headers":5,"verificationprogress":1.0},"error":null,"id":1}"#
+}
+
+/// An own process that has not answered yet is starting; one that answers is
+/// own and not starting.
+#[tokio::test]
+async fn an_own_node_not_answering_yet_is_starting() {
+    let app = app_with(conn_with_active_regtest("http://127.0.0.1:1"));
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    app.state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .insert(crate::noncustodial::network::Network::Regtest, child);
+
+    let v = node_status(app.state()).await.unwrap();
+    assert_eq!(v["ownership"], "own");
+    assert_eq!(v["starting"], true);
+
+    let mut child = app
+        .state::<AppState>()
+        .hsd_children
+        .lock()
+        .unwrap()
+        .remove(&crate::noncustodial::network::Network::Regtest)
+        .unwrap();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A node that answers but that Namehold did not start is outside; nothing
+/// answering and nothing of ours is none.
+#[tokio::test]
+async fn a_node_that_answers_but_is_not_ours_is_outside() {
+    let mut server = mockito::Server::new_async().await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(regtest_info_mock_body())
+        .create_async()
+        .await;
+    let app = app_with(conn_with_active_regtest(&server.url()));
+    let v = node_status(app.state()).await.unwrap();
+    assert_eq!(v["ownership"], "outside");
+    assert_eq!(v["starting"], false);
+
+    let app = app_with(conn_with_active_regtest("http://127.0.0.1:1"));
+    let v = node_status(app.state()).await.unwrap();
+    assert_eq!(v["ownership"], "none");
+    assert_eq!(v["starting"], false);
 }

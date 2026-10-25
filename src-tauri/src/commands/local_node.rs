@@ -1,4 +1,5 @@
-//! Which local hsd is the app's own (spec 2026-10-24 R6).
+//! The app's local hsd nodes, one per network (spec 2026-10-24): where each
+//! network's chain lives, and which running node is the app's own (R6, R7).
 //!
 //! A node the app started in an earlier session and left running for the
 //! background daemon is no longer a child of this session, and hsd overwrites
@@ -7,6 +8,11 @@
 //! `<data_dir>/namehold-hsd.pid` when it spawns it; a live process with that
 //! pid and that start time is the same process, since a reused pid starts at
 //! another time.
+
+use crate::db;
+use crate::error::AppError;
+use crate::noncustodial::network::Network;
+use crate::AppState;
 
 /// The OS's start time of process `pid`, as an opaque value that stays the
 /// same for the process's whole life. `None` when there is no such process,
@@ -98,3 +104,66 @@ pub(crate) fn terminate(pid: u32) {
 /// pid to stop.
 #[cfg(not(unix))]
 pub(crate) fn terminate(_pid: u32) {}
+
+/// Network-scoped data dir. hsd isolates non-mainnet chains *inside* a single
+/// prefix (`<prefix>/regtest`, `<prefix>/testnet`), while mainnet writes
+/// `blocks/chain/tree` at the prefix root — so one shared prefix lets a mainnet
+/// chain at the root sit beside a regtest subdir, the exact overlap that let a
+/// mainnet chain end up driving a regtest wallet.
+///
+/// The fix gives each network its own data-dir *root*: mainnet keeps the base
+/// unchanged (so existing mainnet data is never moved), and every other network
+/// gets `<base>/<network>`. That is the directory the log, RPC, and migration
+/// treat as the chain root. Note this is the *data dir*, not the hsd
+/// `--prefix`: `start_hsd` passes hsd the un-scoped base as `--prefix` and lets
+/// `--network` create exactly this `<base>/<network>` subdir — so hsd's chain
+/// root coincides with this data dir instead of nesting a second time.
+pub(crate) fn resolve_data_dir_for_network(
+    state: &AppState,
+    network: Network,
+) -> Result<String, AppError> {
+    let base = resolve_configured_base(state)?;
+    Ok(network_scoped_data_dir(&base, network))
+}
+
+/// Pure path rule: mainnet → `base` unchanged; any other network → its own
+/// top-level root `base/<network>`. Kept pure (no IO, no state) so the layout
+/// is unit-testable without a filesystem.
+pub(crate) fn network_scoped_data_dir(base: &str, network: Network) -> String {
+    match network {
+        Network::Main => base.to_string(),
+        other => std::path::Path::new(base)
+            .join(other.as_str())
+            .to_string_lossy()
+            .into_owned(),
+    }
+}
+
+/// The configured, un-scoped base prefix (`hsd_prefix` setting, else `~/.hsd`).
+/// Split out from [`resolve_data_dir_for_network`] so the migration can reason
+/// about the base independent of the network scoping.
+pub(crate) fn resolve_configured_base(state: &AppState) -> Result<String, AppError> {
+    let configured = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::get_settings(&db)?
+            .get("hsd_prefix")
+            .cloned()
+            .unwrap_or_default()
+    };
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        return Ok(configured.to_string());
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    Ok(format!("{home}/.hsd"))
+}
+
+/// The pid of `network`'s own node an earlier session left, if any (R6).
+pub(crate) fn own_node_pid_of(state: &AppState, network: Network) -> Option<u32> {
+    let data_dir = resolve_data_dir_for_network(state, network).ok()?;
+    own_node_pid(std::path::Path::new(&data_dir))
+}
+
+/// Why Stop refuses a node it did not start (spec 2026-10-24 R7).
+pub(crate) const OUTSIDE_NODE_NOT_STOPPED: &str =
+    "This node was not started by Namehold, so Namehold does not stop it.";
