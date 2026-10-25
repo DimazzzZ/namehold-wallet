@@ -215,6 +215,15 @@ pub(crate) fn stop_own_node(state: &AppState, network: Network) -> bool {
         true
     } else if let Some(pid) = data_dir.and_then(own_node_pid) {
         terminate(pid);
+        // SIGTERM returns at once; hsd closes its chain before it exits.
+        // Wait for that (up to 10 s), so a caller that goes on to move the
+        // chain aside (re-sync) never moves it from under a live node.
+        for _ in 0..100 {
+            if process_start_time(pid).is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         true
     } else {
         false

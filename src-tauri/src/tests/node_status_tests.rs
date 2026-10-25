@@ -1888,3 +1888,35 @@ async fn a_node_that_answers_but_is_not_ours_is_outside() {
     assert_eq!(v["ownership"], "none");
     assert_eq!(v["starting"], false);
 }
+
+/// Spec 2026-10-24 R7: a re-sync moves a node's chain aside, so it is refused
+/// for a node Namehold did not start, before any file is touched.
+#[tokio::test]
+#[serial_test::serial(hsd_home)]
+async fn resync_refuses_an_outside_node_and_moves_nothing() {
+    let mut server = mockito::Server::new_async().await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(regtest_info_mock_body())
+        .create_async()
+        .await;
+    let conn = conn_with_active_regtest(&server.url());
+    let prefix = db::queries::get_settings(&conn).unwrap()["hsd_prefix"].clone();
+    let chain = std::path::Path::new(&prefix).join("regtest").join("chain");
+    std::fs::create_dir_all(&chain).unwrap();
+    let app = app_with(conn);
+
+    let err = crate::commands::node::resync_hsd_chain(app.state())
+        .await
+        .expect_err("an outside node's chain is not moved");
+
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Invalid input: {}",
+            crate::commands::local_node::OUTSIDE_NODE_NOT_STOPPED
+        )
+    );
+    assert!(chain.exists(), "the chain stays where it was");
+}

@@ -996,15 +996,14 @@ pub(crate) fn guard_probe_network(
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     // 1. Stop any node we manage so the chain files aren't locked.
+    // Only an own node's chain is moved aside (spec 2026-10-24 R7): stop it
+    // first, this session's child or one an earlier session left; a node
+    // Namehold did not start is refused before any file is touched.
     if let Some(network) = active_profile_network_opt(&state) {
-        let child = state
-            .hsd_children
-            .lock()
-            .map_err(|e| AppError::Lock(e.to_string()))?
-            .remove(&network);
-        if let Some(mut child) = child {
-            let _ = child.kill();
-            let _ = child.wait();
+        if !crate::commands::local_node::stop_own_node(&state, network)
+            && probe_node(&state).await.is_some()
+        {
+            return Err(AppError::InvalidInput(OUTSIDE_NODE_NOT_STOPPED.to_string()));
         }
     }
 

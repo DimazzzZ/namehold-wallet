@@ -193,12 +193,20 @@ const NO_RPC: &str = "http://127.0.0.1:1";
 ///
 /// Returns the guards (kept alive for the test's duration) and the URL.
 async fn spawn_then_up_server(height: i64) -> (mockito::ServerGuard, mockito::Mock, mockito::Mock) {
+    spawn_then_up_server_after(1, height).await
+}
+
+/// As [`spawn_then_up_server`], with `fails` failed probes before it answers.
+async fn spawn_then_up_server_after(
+    fails: usize,
+    height: i64,
+) -> (mockito::ServerGuard, mockito::Mock, mockito::Mock) {
     let mut server = mockito::Server::new_async().await;
     let fail_once = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
         .with_status(503)
-        .expect(1)
+        .expect(fails)
         .create_async()
         .await;
     let then_up = server
@@ -539,7 +547,10 @@ async fn stop_hsd_kills_spawned_child_and_clears_handle() {
 #[tokio::test]
 #[serial(hsd_home)]
 async fn resync_hsd_chain_backs_up_chain_data_and_respawns() {
-    let (server, _fail, _up) = spawn_then_up_server(1).await;
+    // No node runs before the re-sync: the first two probes (re-sync's
+    // outside-node check, then start_hsd's adoption probe) find none, and
+    // the respawned node answers after.
+    let (server, _fail, _up) = spawn_then_up_server_after(2, 1).await;
     let h = Harness::new(FakeMode::StayAlive, "8.5.0");
     // Mainnet layout: blocks/, chain/, tree/ directly under the prefix — the
     // harness seeds a mainnet profile, and mainnet is the one network whose
