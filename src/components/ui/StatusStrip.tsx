@@ -9,6 +9,7 @@ import { Popover, PopoverItem } from "./Popover";
 import { useUiStore } from "../../stores/ui";
 import { mapError } from "../../lib/errors";
 import { Tooltip } from "./Tooltip";
+import { networkDisplayName, OUTSIDE_NODE_NOT_STOPPED } from "../../lib/nodeNetwork";
 
 const TONE_DOT: Record<StatusTone, string> = {
   default: "bg-gray-400",
@@ -45,7 +46,11 @@ export function StatusStrip({ className }: { className?: string }) {
   const resyncHsd = useResyncHsd();
 
   const nodeConnected = node?.connected ?? false;
-  const nodeStarting = node?.process_alive ?? false;
+  // Spec 2026-10-24: the controls act on the active wallet's network's node
+  // and name it (R8); a node Namehold did not start is never stopped (R7).
+  const nodeStarting = node?.starting ?? node?.process_alive ?? false;
+  const nodeNetwork = networkDisplayName(node?.network ?? "main");
+  const nodeOutside = node?.ownership === "outside";
   const nodeBusy = startHsd.isPending || stopHsd.isPending || resyncHsd.isPending;
 
   const runNodeAction = async (
@@ -91,7 +96,11 @@ export function StatusStrip({ className }: { className?: string }) {
       result.push({
         key: "node",
         label: "Node",
-        value: nodeConnected ? "Connected" : nodeStarting ? "Starting…" : "Offline",
+        value: nodeConnected
+          ? "Connected"
+          : nodeStarting
+            ? `Starting ${nodeNetwork} node…`
+            : "Offline",
         tone: nodeConnected ? "success" : nodeStarting ? "warning" : "default",
         detail: nodeConnected ? `block ${node?.height ?? "?"}` : "Open menu to start a node",
       });
@@ -126,7 +135,7 @@ export function StatusStrip({ className }: { className?: string }) {
     }
 
     return result;
-  }, [profile, signer, writeCap, node, nodeConnected, nodeStarting]);
+  }, [profile, signer, writeCap, node, nodeConnected, nodeStarting, nodeNetwork]);
 
   const pillInner = (item: ShellStatusItem) => (
     <>
@@ -171,7 +180,7 @@ export function StatusStrip({ className }: { className?: string }) {
                         void runNodeAction(() => startHsd.mutateAsync(), "Starting node…", close)
                       }
                     >
-                      Start node
+                      Start {nodeNetwork} node
                     </PopoverItem>
                   )}
                   {nodeStarting && !nodeConnected && (
@@ -187,15 +196,17 @@ export function StatusStrip({ className }: { className?: string }) {
                   )}
                   {nodeConnected && (
                     <>
-                      <PopoverItem
-                        data-testid="status-strip-node-stop"
-                        disabled={nodeBusy}
-                        onClick={() =>
-                          void runNodeAction(() => stopHsd.mutateAsync(), "Stopping node…", close)
-                        }
-                      >
-                        Stop node
-                      </PopoverItem>
+                      <Tooltip content={nodeOutside ? OUTSIDE_NODE_NOT_STOPPED : null}>
+                        <PopoverItem
+                          data-testid="status-strip-node-stop"
+                          disabled={nodeBusy || nodeOutside}
+                          onClick={() =>
+                            void runNodeAction(() => stopHsd.mutateAsync(), "Stopping node…", close)
+                          }
+                        >
+                          Stop {nodeNetwork} node
+                        </PopoverItem>
+                      </Tooltip>
                       <PopoverItem
                         data-testid="status-strip-node-resync"
                         disabled={nodeBusy}

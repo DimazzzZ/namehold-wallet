@@ -1462,6 +1462,8 @@ const handlers: Record<string, Handler> = {
     data_dir: "",
     network: "mainnet",
     process_alive: false,
+    ownership: "own",
+    starting: false,
     // Report as connected+synced so `useNodeLive()` returns true and the new
     // capabilities/positions polling actually fires under the mock.
     connected: true,

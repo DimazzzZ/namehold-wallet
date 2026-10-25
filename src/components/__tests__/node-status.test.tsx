@@ -36,6 +36,8 @@ const profile = {
 type NodeOver = Partial<{
   binary_found: boolean;
   process_alive: boolean;
+  ownership: "own" | "outside" | "none";
+  starting: boolean;
   connected: boolean;
   height: number | null;
   verification_progress: number | null;
@@ -54,10 +56,13 @@ function nodeStatus(over: NodeOver = {}) {
     data_dir: "/Volumes/WD/hsd-data",
     network: "main",
     process_alive: false,
+    ownership: "none" as "own" | "outside" | "none",
+    starting: false,
     connected: false,
     height: null,
     verification_progress: null,
     headers: null,
+    node_mode: "full" as const,
     // The backend's own `chain_synced` verdict. The rule itself is tested in
     // Rust (`chain_synced`); these tests pin what the UI renders when handed
     // each answer, so each case states the verdict it is exercising rather
@@ -117,7 +122,7 @@ describe("Node status (truthful, RPC-based)", () => {
 
     expect(await screen.findByText(/Connected.*block 218456/i)).toBeInTheDocument();
     // When connected, the control offers Stop (not a Start that could lie green).
-    expect(await screen.findByRole("button", { name: /Stop hsd/i })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Stop mainnet node/i })).toBeInTheDocument();
   });
 
   it("Settings shows the sync progress while behind the chain tip (blocks < headers)", async () => {
@@ -247,25 +252,25 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(await screen.findByTestId("node-sync-progress")).toHaveTextContent(/40%/);
   });
 
-  it("Start hsd is enabled when the binary is found and nothing is running", async () => {
+  it("Start is enabled when the binary is found and nothing is running", async () => {
     invokeMock.mockImplementation(route(nodeStatus({ binary_found: true })));
     render(<Settings />, { wrapper: wrapper() });
-    const btn = await screen.findByRole("button", { name: /Start hsd/i });
+    const btn = await screen.findByRole("button", { name: /Start mainnet node/i });
     await waitFor(() => expect(btn).toBeEnabled());
   });
 
-  it("Start hsd is enabled when the binary isn't auto-found but an hsd path is set", async () => {
+  it("Start is enabled when the binary isn't auto-found but an hsd path is set", async () => {
     loadSettings({ hsd_path: "/Users/me/.nvm/versions/node/v20/bin/hsd" });
     invokeMock.mockImplementation(route(nodeStatus({ binary_found: false })));
     render(<Settings />, { wrapper: wrapper() });
-    const btn = await screen.findByRole("button", { name: /Start hsd/i });
+    const btn = await screen.findByRole("button", { name: /Start mainnet node/i });
     await waitFor(() => expect(btn).toBeEnabled());
   });
 
-  it("Start hsd is disabled when no binary is found and no path is set", async () => {
+  it("Start is disabled when no binary is found and no path is set", async () => {
     invokeMock.mockImplementation(route(nodeStatus({ binary_found: false })));
     render(<Settings />, { wrapper: wrapper() });
-    expect(await screen.findByRole("button", { name: /Start hsd/i })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: /Start mainnet node/i })).toBeDisabled();
   });
 
   it("surfaces the hsd start error (not a silent Starting…) when the RPC is down", async () => {
@@ -318,22 +323,28 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(screen.queryByRole("button", { name: /Manage wallets/i })).toBeNull();
   });
 
-  it("offers Stop hsd for a connected node even if the app didn't spawn it", async () => {
-    // External/adopted node: connected via RPC but no child handle (process_alive
-    // false). The app must still let the user stop it.
+  it("does not stop a connected node Namehold did not start (spec 2026-10-24 R7)", async () => {
+    // External node: connected via RPC, but neither a child of ours nor an
+    // earlier session's own node, so the backend reports it outside.
     invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: false, height: 500 })),
+      route(
+        nodeStatus({ connected: true, process_alive: false, ownership: "outside", height: 500 }),
+      ),
     );
     render(<Settings />, { wrapper: wrapper() });
-    expect(await screen.findByRole("button", { name: /Stop hsd/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Start hsd/i })).toBeNull();
+    expect(await screen.findByRole("button", { name: /Stop mainnet node/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Start mainnet node/i })).toBeNull();
   });
 
   it("Settings shows Starting… when the process is alive but RPC isn't up yet", async () => {
-    invokeMock.mockImplementation(route(nodeStatus({ connected: false, process_alive: true })));
+    invokeMock.mockImplementation(
+      route(
+        nodeStatus({ connected: false, process_alive: true, ownership: "own", starting: true }),
+      ),
+    );
     render(<Settings />, { wrapper: wrapper() });
 
-    expect(await screen.findByText(/Starting…/i)).toBeInTheDocument();
+    expect(await screen.findByText("Starting mainnet node…")).toBeInTheDocument();
   });
 
   it("Settings shows Stopped when nothing is running", async () => {
@@ -341,7 +352,7 @@ describe("Node status (truthful, RPC-based)", () => {
     render(<Settings />, { wrapper: wrapper() });
 
     expect(await screen.findByText(/^Stopped$/i)).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: /Start hsd/i })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Start mainnet node/i })).toBeInTheDocument();
   });
 
   it("StatusStrip says Node: Connected when the RPC answers", async () => {
@@ -560,6 +571,32 @@ describe("StatusStrip Node pill menu", () => {
     await waitFor(() => {
       expect(invokeMock.mock.calls.map((c) => c[0])).toContain("start_hsd");
     });
+  });
+
+  it("says when the active network's node is starting (spec 2026-10-24 R11)", async () => {
+    invokeMock.mockImplementation(
+      route(nodeStatus({ process_alive: true, ownership: "own", starting: true })),
+    );
+    render(<StatusStrip />, { wrapper: wrapper() });
+    expect(await screen.findByText("Starting mainnet node…")).toBeInTheDocument();
+  });
+
+  it("names the active network on Start (spec 2026-10-24 R8)", async () => {
+    invokeMock.mockImplementation(route(nodeStatus()));
+    render(<StatusStrip />, { wrapper: wrapper() });
+    fireEvent.click(await screen.findByTestId("status-strip-node"));
+    expect(await screen.findByTestId("status-strip-node-start")).toHaveTextContent(
+      "Start mainnet node",
+    );
+  });
+
+  it("disables Stop for a node Namehold did not start (spec 2026-10-24 R7)", async () => {
+    invokeMock.mockImplementation(
+      route(nodeStatus({ connected: true, ownership: "outside", height: 100 })),
+    );
+    render(<StatusStrip />, { wrapper: wrapper() });
+    fireEvent.click(await screen.findByTestId("status-strip-node"));
+    expect(await screen.findByTestId("status-strip-node-stop")).toBeDisabled();
   });
 
   it("always shows Open Settings as a secondary action", async () => {

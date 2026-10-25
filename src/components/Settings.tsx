@@ -23,6 +23,12 @@ import {
 } from "../lib/connectionMode";
 import { boolToSetting, hasStoredSecret, settingToBool } from "../lib/settingsBool";
 import { useUiStore } from "../stores/ui";
+import { Tooltip } from "./ui/Tooltip";
+import {
+  networkDisplayName,
+  networkNodeSettingKey,
+  OUTSIDE_NODE_NOT_STOPPED,
+} from "../lib/nodeNetwork";
 import { UpdatesSettings } from "./UpdatesSettings";
 import { useAppUpdate } from "../hooks/useAppUpdate";
 import { MIN_FEE_RATE_DOOS_PER_KVB, parseDoosPerKvb } from "../lib/feeRate";
@@ -78,6 +84,16 @@ export function Settings() {
   const chainSource = (form.chain_source ?? "local_node") as ChainSource;
   const nodeMode = (form.node_mode ?? "full") as NodeMode;
 
+  // Full or SPV and autostart are the active wallet's network's (spec
+  // 2026-10-24 R10): the form shows that network's keys, falling back to the
+  // app-wide ones, and Save writes them back to the network's keys.
+  const profileNetwork = profile?.network ?? null;
+  const ofNetwork = (base: "node_mode" | "autostart_hsd"): string | undefined => {
+    const all = (settings ?? {}) as unknown as Record<string, string | undefined>;
+    return (
+      (profileNetwork ? all[networkNodeSettingKey(base, profileNetwork)] : undefined) ?? all[base]
+    );
+  };
   useEffect(() => {
     if (settings) {
       setForm({
@@ -85,9 +101,9 @@ export function Settings() {
         node_rpc_api_key: settings.node_rpc_api_key,
         hsd_prefix: settings.hsd_prefix,
         hsd_path: settings.hsd_path,
-        autostart_hsd: settings.autostart_hsd,
+        autostart_hsd: ofNetwork("autostart_hsd") ?? settings.autostart_hsd,
         background_sync_enabled: settings.background_sync_enabled,
-        node_mode: settings.node_mode,
+        node_mode: (ofNetwork("node_mode") ?? settings.node_mode) as NodeMode,
         explorer_api_url: settings.explorer_api_url,
         explorer_fallback_url: settings.explorer_fallback_url,
         chain_source: settings.chain_source,
@@ -109,6 +125,21 @@ export function Settings() {
       });
     }
   }, [settings]);
+  // The wallet's network can arrive after the settings: then only the two
+  // network fields follow it, so nothing the user already edited is reset.
+  useEffect(() => {
+    if (settings && profileNetwork) {
+      setForm((f) => {
+        const next = { ...f };
+        for (const base of ["node_mode", "autostart_hsd"] as const) {
+          const value = ofNetwork(base);
+          if (value !== undefined) next[base] = value;
+        }
+        return next;
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileNetwork]);
 
   // On mount, check the OS autostart state and reconcile with our DB.
   // If they differ, the OS state is authoritative (the user may have toggled
@@ -228,6 +259,14 @@ export function Settings() {
     // is stored. Saving that empty value would clobber the stored secret.
     // Skip the field on save when it's still empty AND the backend reported a
     // stored value via the `__has_<key>` marker.
+    if (profileNetwork) {
+      for (const base of ["node_mode", "autostart_hsd"] as const) {
+        if (normalized[base] !== undefined) {
+          normalized[networkNodeSettingKey(base, profileNetwork)] = normalized[base];
+          delete normalized[base];
+        }
+      }
+    }
     const hasStoredApiKey = hasStoredSecret(settings, "node_rpc_api_key");
     if (hasStoredApiKey && (normalized.node_rpc_api_key ?? "") === "") {
       delete normalized.node_rpc_api_key;
@@ -397,11 +436,14 @@ export function Settings() {
               onChange={(e) => updateField("autostart_hsd", boolToSetting(e.target.checked))}
               data-testid="autostart-hsd-checkbox"
             />
-            Autostart HSD when the app launches
+            {profileNetwork
+              ? `Start the ${networkDisplayName(profileNetwork)} node automatically`
+              : "Autostart HSD when the app launches"}
           </label>
           <div className="text-xs text-gray-500">
-            Starts hsd against your data dir on launch. If a node is already running, Namehold
-            adopts it instead of starting a duplicate. Change takes effect on the next launch.
+            Starts this network's hsd when one of its wallets becomes active, and at launch. Each
+            network has its own node and its own setting. If a node is already running, Namehold
+            adopts it instead of starting a duplicate.
           </div>
 
           <label className="flex items-center gap-2 text-sm pt-2">
@@ -927,6 +969,8 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
 
   const connected = status?.connected ?? false;
   const processAlive = status?.process_alive ?? false;
+  const network = networkDisplayName(status?.network ?? "main");
+  const outside = status?.ownership === "outside";
   const height = status?.height ?? null;
   const headers = status?.headers ?? null;
   const progress = status?.verification_progress ?? null;
@@ -946,8 +990,8 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
     ? synced
       ? `Connected · block ${status?.height ?? "?"}${processAlive ? "" : " (external node)"}`
       : `Syncing · ${pct}%`
-    : processAlive
-      ? "Starting…"
+    : (status?.starting ?? processAlive)
+      ? `Starting ${network} node…`
       : "Stopped";
 
   const onStart = async () => {
@@ -996,16 +1040,24 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
           <span className="font-medium">{label}</span>
         </div>
         {processAlive || connected ? (
-          <Button size="sm" variant="secondary" onClick={onStop} disabled={stop.isPending}>
-            {stop.isPending ? "Stopping…" : "Stop hsd"}
-          </Button>
+          <Tooltip content={outside ? OUTSIDE_NODE_NOT_STOPPED : null}>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={onStop}
+              disabled={stop.isPending || outside}
+              data-testid="node-stop-button"
+            >
+              {stop.isPending ? "Stopping…" : `Stop ${network} node`}
+            </Button>
+          </Tooltip>
         ) : (
           <Button
             size="sm"
             onClick={onStart}
             disabled={start.isPending || connected || (!status?.binary_found && !hsdPathConfigured)}
           >
-            {start.isPending ? "Starting…" : "Start hsd"}
+            {start.isPending ? "Starting…" : `Start ${network} node`}
           </Button>
         )}
       </div>
