@@ -233,7 +233,7 @@ hsd --index-address --index-tx --api-key=<your-key>
 - `--index-address` is **required** (the wallet finds your coins by address);
   `--index-tx` backs transaction history + confirmation tracking.
 - The app can manage hsd for you — set the **data directory** and (if needed) the
-  **hsd binary path** in **Settings → Connections**, then click **Start hsd**.
+  **hsd binary path** in **Settings → Connections**, then click **Start mainnet node** (it names the active wallet's network).
 - **hsd can't add an index to an already-synced chain.** If your existing chain
   was synced without these indexes, the app detects it and offers a **one-click
   re-sync** (it moves the old chain to a backup and re-syncs with the right indexes).

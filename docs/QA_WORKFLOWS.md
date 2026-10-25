@@ -140,7 +140,7 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] Explorer URL field editable and saveable
 - [ ] Node RPC URL field editable and saveable
 - [ ] Node data directory field + Browse button (Tauri only)
-- [ ] Start/Stop hsd buttons reflect node state
+- [ ] Start/Stop buttons name the active wallet's network and reflect its node's state; Stop is disabled for a node Namehold did not start
 - [ ] Sync progress bar shows during sync, 100% when synced
 - [ ] Read source label: "Explorer" when node not synced, "Local" when synced
 - [ ] Last error shown when node start fails

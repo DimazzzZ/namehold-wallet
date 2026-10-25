@@ -1,6 +1,6 @@
 # Local node per network
 
-**Status:** accepted (2026-10-24), not implemented. Decided in [ADR-0005](../adr/0005-one-local-hsd-per-network.md). Amends [ADR-001](../adr/0001-per-profile-node-configuration.md) (Interaction with N11) and N11 of [2026-09-14 Network-derived behaviour](./2026-09-14-network-derived-behaviour.md). Builds on [2026-09-15 Per-profile node banner & preflight](./2026-09-15-per-profile-node-banner-and-preflight.md) for what the banner says.
+**Status:** implemented (2026-10-25). Decided in [ADR-0005](../adr/0005-one-local-hsd-per-network.md). Amends [ADR-001](../adr/0001-per-profile-node-configuration.md) (Interaction with N11) and N11 of [2026-09-14 Network-derived behaviour](./2026-09-14-network-derived-behaviour.md). Builds on [2026-09-15 Per-profile node banner & preflight](./2026-09-15-per-profile-node-banner-and-preflight.md) for what the banner says.
 
 ## 1. Summary
 
@@ -17,7 +17,7 @@ hsd facts here are pinned to hsd 8.0.0; paths are relative to its `lib/`.
 
 ## 3. Requirements
 
-Every requirement names the code that will enforce it and the test that will pin it. The names are planned; `scripts/check-spec-refs.sh` is run on this spec once it is implemented, and a renamed test changes its line here in the same PR.
+Every requirement names the code that will enforce it and the test that will pin it. `scripts/check-spec-refs.sh docs/specs/2026-10-24-local-node-per-network.md 1 12` checks every name, and a renamed test changes its line here in the same PR.
 
 ### 3.1 Which node a wallet reaches
 
@@ -33,8 +33,7 @@ Every requirement names the code that will enforce it and the test that will pin
 
 **R3 — Nodes of different networks run side by side.** The app keeps one own-node handle per network (`AppState`), and starting a network's node never stops another network's. hsd gives every network distinct RPC, p2p, brontide, wallet and DNS ports (`protocol/networks.js`: p2p 12038 / 13038 / 14038 / 15038, ns 5349 / 15349 / 25349 / 35349, rs 5350 / 15350 / 25350 / 35350), and each network has its own data directory, so two networks never share a port or a chain lock.
 *Enforced:* `commands/node.rs::{start_hsd, stop_hsd, is_running}` over `AppState::hsd_children`; the tray snapshot and toggle (`commands/tray.rs`, `lib.rs`) read the active network's child, and quit drains every child.
-*Pinned:* `node_lifecycle_tests::{two_networks_run_side_by_side, a_second_start_of_the_same_network_is_refused}`.
-*To pin (step 8):* `live_node_it::live_regtest_and_testnet_nodes_run_side_by_side` (profiles are stored only for mainnet, testnet and regtest, so the pair is regtest and testnet).
+*Pinned:* `node_lifecycle_tests::{two_networks_run_side_by_side, a_second_start_of_the_same_network_is_refused}`, and against real hsd `live_node_it::live_regtest_and_testnet_nodes_run_side_by_side` (run with `HNS_IT_SPAWN_HSD=1`; profiles are stored only for mainnet, testnet and regtest, so the pair is regtest and testnet). That test also checks R6 on a real hsd, whose command line `process.title` overwrites, and it found that hsd names testnet `test` in `getblockchaininfo`, which `network_name_matches` now accepts.
 
 **R4 — A network's node starts when one of its wallets becomes active.** Once a second the app looks at the active wallet; when it changed since the last look (the first look, at app start, counts as a change), and the wallet's `chain_source` is `local_node` and its network starts on its own (`autostart_hsd_for`), the app starts that network's node in the background with `start_hsd`. This catches every activation path (switching, creating, importing, Ledger) without the activation commands calling into `commands::node`. The activation never waits for the node, and the status strip shows it starting (R11). `start_hsd` adopts an outside node that answers on the right chain and refuses one on another chain, as before (`guard_probe_network`), and refuses only when this network's own node already runs (R3). A `remote_node` or `explorer` wallet starts nothing; before, the launch-time autostart started hsd for those too. The loop acts on a change only, so a node the user stopped is not started again until the active wallet changes: it is not a supervisor (§4).
 *Enforced:* `commands/node.rs::{autostart_on_profile_change, node_to_start_on_activation}`, the autostart loop in `lib.rs` (which replaced the one-shot autostart at launch), `noncustodial/node_config.rs` (`EffectiveNodeConfig::local_node`).
@@ -109,7 +108,7 @@ Each step is one PR-sized change with its tests, and leaves the app working on i
 | 5 | Start on wallet activation and at app start; switching stops nothing | R4, R5 | Done |
 | 6 | Quit by one rule for every own node; source check that the daemon names no hsd spawn | R9, R12 | Done |
 | 7 | UI: per-network node settings in Settings, Start/Stop and tray labels naming the network, "Starting…" in the status strip and Settings | R8, R10 (UI), R11 | Done |
-| 8 | Live regtest + testnet side-by-side test, `docs/NODE_SETUP.md`, CHANGELOG | R3 (live), docs | Not started |
+| 8 | Live regtest + testnet side-by-side test, `docs/NODE_SETUP.md`, `docs/USER_MANUAL.md`, README, CHANGELOG | R3 (live), docs | Done |
 
 ## 7. Pointers
 
