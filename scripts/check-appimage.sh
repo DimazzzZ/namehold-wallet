@@ -7,8 +7,10 @@
 # 1. File modes: every file its owner can execute is executable by everyone,
 #    and everything in usr/bin is executable (the 0.6.0 image shipped a 0644
 #    daemon and a 0770 launcher).
-# 2. The daemon `namehold-syncd` runs as another user (it loops, so `timeout`
-#    ending it, exit 124, is a pass; 126/127 is "cannot execute").
+# 2. The daemon `namehold-syncd` runs as another user, from that user's own
+#    extraction of the image, as a user who runs the AppImage gets it (it
+#    loops, so `timeout` ending it, exit 124, is a pass; 126/127 is "cannot
+#    execute").
 # 3. The app itself starts as another user under a virtual display and is
 #    still running after 20 s.
 #
@@ -35,12 +37,20 @@ fi
 [ -x "$root/usr/bin/namehold-syncd" ] || { echo "::error::no executable usr/bin/namehold-syncd in the AppImage"; exit 1; }
 echo "file modes OK ($(find "$root" -type f | wc -l) files)"
 
+# For the record: the directory modes on the way to the daemon. They do not
+# matter to a user, who extracts or mounts the image as themselves.
+stat -c '%A %n' "$root" "$root/usr" "$root/usr/bin" "$root/usr/bin/namehold-syncd"
+
 user=nhappimagecheck
 id "$user" >/dev/null 2>&1 || sudo useradd --create-home "$user"
 as_user() { sudo -u "$user" -H env HOME="/home/$user" "$@"; }
+own="/home/$user/extract"
+as_user rm -rf "$own"
+as_user mkdir -p "$own"
+as_user sh -c "cd '$own' && '$work/app.AppImage' --appimage-extract >/dev/null"
 
 set +e
-as_user timeout 10 "$root/usr/bin/namehold-syncd" >"$work/daemon.log" 2>&1
+as_user timeout 10 "$own/squashfs-root/usr/bin/namehold-syncd" >"$work/daemon.log" 2>&1
 rc=$?
 set -e
 case "$rc" in
