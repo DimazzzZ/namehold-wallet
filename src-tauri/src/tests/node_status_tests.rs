@@ -1028,9 +1028,16 @@ async fn probe_and_update_clears_flag_when_unreachable() {
 
 use crate::commands::node::stop_hsd;
 
-/// A regtest wallet, so stop_hsd has a network to act on.
+/// A regtest wallet, so stop_hsd has a network to act on, with its hsd data
+/// under a temporary prefix of this process: a test must never read, stop or
+/// change a node of the developer's real `~/.hsd`. Tests using it carry
+/// `#[serial(hsd_home)]`, the key of every test that resolves hsd data dirs.
 fn conn_with_active_regtest(node_url: &str) -> rusqlite::Connection {
     let conn = blank_conn();
+    let prefix =
+        std::env::temp_dir().join(format!("namehold_status_regtest_{}", std::process::id()));
+    std::fs::create_dir_all(prefix.join("regtest")).unwrap();
+    db::queries::set_setting(&conn, "hsd_prefix", prefix.to_str().unwrap()).unwrap();
     db::queries::insert_wallet_profile(
         &conn,
         "p1",
@@ -1050,6 +1057,7 @@ fn conn_with_active_regtest(node_url: &str) -> rusqlite::Connection {
 /// stop_hsd with no node of the network reachable still succeeds, flips
 /// node_rpc_alive → false, and records an audit log row.
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn stop_hsd_soft_succeeds_when_no_node_reachable() {
     let conn = conn_with_active_regtest("http://127.0.0.1:1");
     let app = app_with(conn);
@@ -1086,6 +1094,7 @@ async fn stop_hsd_soft_succeeds_when_no_node_reachable() {
 /// Namehold did not start (no child of this session, no pid file) is never
 /// stopped: Stop refuses with the reason and sends the node no `stop`.
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn stopping_an_outside_node_sends_nothing() {
     let mut server = mockito::Server::new_async().await;
     let _info = server
@@ -1829,6 +1838,7 @@ fn regtest_info_mock_body() -> &'static str {
 /// An own process that has not answered yet is starting; one that answers is
 /// own and not starting.
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn an_own_node_not_answering_yet_is_starting() {
     let app = app_with(conn_with_active_regtest("http://127.0.0.1:1"));
     let child = std::process::Command::new("sleep")
@@ -1859,6 +1869,7 @@ async fn an_own_node_not_answering_yet_is_starting() {
 /// A node that answers but that Namehold did not start is outside; nothing
 /// answering and nothing of ours is none.
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn a_node_that_answers_but_is_not_ours_is_outside() {
     let mut server = mockito::Server::new_async().await;
     let _info = server

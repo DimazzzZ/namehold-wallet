@@ -44,10 +44,11 @@ fn a_pid_file_of_a_live_process_names_it() {
 
 /// A pid file whose start time is not the live process's (the pid was reused
 /// by another process), whose process is gone, or that cannot be read names
-/// nothing, and is removed so the next check does not read it again.
+/// nothing. Reading it leaves it in place: a status read never changes a data
+/// directory.
 #[cfg(unix)]
 #[test]
-fn a_stale_pid_file_is_ignored_and_removed() {
+fn a_stale_pid_file_names_nothing_and_is_left_alone() {
     let me = std::process::id();
     let mut child = std::process::Command::new("true").spawn().unwrap();
     let dead = child.id();
@@ -60,7 +61,7 @@ fn a_stale_pid_file_is_ignored_and_removed() {
         let dir = data_dir(tag);
         std::fs::write(dir.join(PID_FILE), text).unwrap();
         assert_eq!(own_node_pid(&dir), None, "{tag}");
-        assert!(!dir.join(PID_FILE).exists(), "{tag}: removed");
+        assert!(dir.join(PID_FILE).exists(), "{tag}: a read leaves it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -71,10 +71,11 @@ pub(crate) fn remove_pid_file(data_dir: &std::path::Path) {
 /// The pid of the app's own node of `data_dir`, when its pid file names a
 /// live process with the recorded start time. A file that names a process
 /// that is gone, a reused pid (another start time) or that cannot be read is
-/// stale: it is removed and names nothing.
+/// stale and names nothing. Reading never touches the file: a status read
+/// must not change a data directory, so a stale record is replaced by the
+/// next start and removed by the next stop or quit of that network's node.
 pub(crate) fn own_node_pid(data_dir: &std::path::Path) -> Option<u32> {
-    let path = data_dir.join(PID_FILE);
-    let text = std::fs::read_to_string(&path).ok()?;
+    let text = std::fs::read_to_string(data_dir.join(PID_FILE)).ok()?;
     let mut fields = text.split_whitespace();
     let record = (|| {
         let pid: u32 = fields.next()?.parse().ok()?;
@@ -83,10 +84,7 @@ pub(crate) fn own_node_pid(data_dir: &std::path::Path) -> Option<u32> {
     })();
     match record {
         Some((pid, start)) if process_start_time(pid) == Some(start) => Some(pid),
-        _ => {
-            let _ = std::fs::remove_file(&path);
-            None
-        }
+        _ => None,
     }
 }
 
