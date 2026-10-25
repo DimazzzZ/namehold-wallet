@@ -34,6 +34,7 @@ const profile = {
 };
 
 type NodeOver = Partial<{
+  network: string | null;
   binary_found: boolean;
   process_alive: boolean;
   ownership: "own" | "outside" | "none";
@@ -54,7 +55,7 @@ function nodeStatus(over: NodeOver = {}) {
     binary_found: true,
     version: "hsd 8.0.0",
     data_dir: "/Volumes/WD/hsd-data",
-    network: "main",
+    network: "main" as string | null,
     process_alive: false,
     ownership: "none" as "own" | "outside" | "none",
     starting: false,
@@ -347,6 +348,16 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(await screen.findByText("Starting mainnet node…")).toBeInTheDocument();
   });
 
+  it("offers Stop for an own node an earlier session left that is not answering yet", async () => {
+    invokeMock.mockImplementation(
+      route(
+        nodeStatus({ process_alive: false, connected: false, ownership: "own", starting: true }),
+      ),
+    );
+    render(<Settings />, { wrapper: wrapper() });
+    expect(await screen.findByRole("button", { name: /Stop mainnet node/i })).toBeEnabled();
+  });
+
   it("Settings shows Stopped when nothing is running", async () => {
     invokeMock.mockImplementation(route(nodeStatus()));
     render(<Settings />, { wrapper: wrapper() });
@@ -588,6 +599,22 @@ describe("StatusStrip Node pill menu", () => {
     expect(await screen.findByTestId("status-strip-node-start")).toHaveTextContent(
       "Start mainnet node",
     );
+  });
+
+  it("names no network when no wallet is active (spec 2026-10-24 R8)", async () => {
+    invokeMock.mockImplementation(route(nodeStatus({ network: null })));
+    render(<StatusStrip />, { wrapper: wrapper() });
+    fireEvent.click(await screen.findByTestId("status-strip-node"));
+    expect(await screen.findByTestId("status-strip-node-start")).toHaveTextContent(/^Start node$/);
+  });
+
+  it("disables Re-sync for a node Namehold did not start (spec 2026-10-24 R7)", async () => {
+    invokeMock.mockImplementation(
+      route(nodeStatus({ connected: true, ownership: "outside", height: 100 })),
+    );
+    render(<StatusStrip />, { wrapper: wrapper() });
+    fireEvent.click(await screen.findByTestId("status-strip-node"));
+    expect(await screen.findByTestId("status-strip-node-resync")).toBeDisabled();
   });
 
   it("disables Stop for a node Namehold did not start (spec 2026-10-24 R7)", async () => {

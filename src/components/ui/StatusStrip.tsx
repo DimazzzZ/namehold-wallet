@@ -9,7 +9,7 @@ import { Popover, PopoverItem } from "./Popover";
 import { useUiStore } from "../../stores/ui";
 import { mapError } from "../../lib/errors";
 import { Tooltip } from "./Tooltip";
-import { networkDisplayName, OUTSIDE_NODE_NOT_STOPPED } from "../../lib/nodeNetwork";
+import { nodeActionLabel, OUTSIDE_NODE_NOT_STOPPED } from "../../lib/nodeNetwork";
 
 const TONE_DOT: Record<StatusTone, string> = {
   default: "bg-gray-400",
@@ -49,7 +49,7 @@ export function StatusStrip({ className }: { className?: string }) {
   // Spec 2026-10-24: the controls act on the active wallet's network's node
   // and name it (R8); a node Namehold did not start is never stopped (R7).
   const nodeStarting = node?.starting ?? node?.process_alive ?? false;
-  const nodeNetwork = networkDisplayName(node?.network ?? "main");
+  const nodeNetwork = node?.network ?? null;
   const nodeOutside = node?.ownership === "outside";
   const nodeBusy = startHsd.isPending || stopHsd.isPending || resyncHsd.isPending;
 
@@ -99,7 +99,7 @@ export function StatusStrip({ className }: { className?: string }) {
         value: nodeConnected
           ? "Connected"
           : nodeStarting
-            ? `Starting ${nodeNetwork} node…`
+            ? nodeActionLabel("Starting", nodeNetwork)
             : "Offline",
         tone: nodeConnected ? "success" : nodeStarting ? "warning" : "default",
         detail: nodeConnected ? `block ${node?.height ?? "?"}` : "Open menu to start a node",
@@ -180,7 +180,7 @@ export function StatusStrip({ className }: { className?: string }) {
                         void runNodeAction(() => startHsd.mutateAsync(), "Starting node…", close)
                       }
                     >
-                      Start {nodeNetwork} node
+                      {nodeActionLabel("Start", nodeNetwork)}
                     </PopoverItem>
                   )}
                   {nodeStarting && !nodeConnected && (
@@ -204,12 +204,12 @@ export function StatusStrip({ className }: { className?: string }) {
                             void runNodeAction(() => stopHsd.mutateAsync(), "Stopping node…", close)
                           }
                         >
-                          Stop {nodeNetwork} node
+                          {nodeActionLabel("Stop", nodeNetwork)}
                         </PopoverItem>
                       </Tooltip>
                       <PopoverItem
                         data-testid="status-strip-node-resync"
-                        disabled={nodeBusy}
+                        disabled={nodeBusy || nodeOutside}
                         onClick={() =>
                           void runNodeAction(
                             () => resyncHsd.mutateAsync(),

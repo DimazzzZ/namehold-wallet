@@ -27,6 +27,7 @@ import { Tooltip } from "./ui/Tooltip";
 import {
   networkDisplayName,
   networkNodeSettingKey,
+  nodeActionLabel,
   OUTSIDE_NODE_NOT_STOPPED,
 } from "../lib/nodeNetwork";
 import { UpdatesSettings } from "./UpdatesSettings";
@@ -969,8 +970,9 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
 
   const connected = status?.connected ?? false;
   const processAlive = status?.process_alive ?? false;
-  const network = networkDisplayName(status?.network ?? "main");
+  const network = status?.network ?? null;
   const outside = status?.ownership === "outside";
+  const own = status?.ownership === "own";
   const height = status?.height ?? null;
   const headers = status?.headers ?? null;
   const progress = status?.verification_progress ?? null;
@@ -991,7 +993,7 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
       ? `Connected · block ${status?.height ?? "?"}${processAlive ? "" : " (external node)"}`
       : `Syncing · ${pct}%`
     : (status?.starting ?? processAlive)
-      ? `Starting ${network} node…`
+      ? nodeActionLabel("Starting", network)
       : "Stopped";
 
   const onStart = async () => {
@@ -1039,7 +1041,7 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
           <span className={`inline-block w-2 h-2 rounded-full ${dotClass}`} />
           <span className="font-medium">{label}</span>
         </div>
-        {processAlive || connected ? (
+        {processAlive || connected || own ? (
           <Tooltip content={outside ? OUTSIDE_NODE_NOT_STOPPED : null}>
             <Button
               size="sm"
@@ -1048,7 +1050,7 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
               disabled={stop.isPending || outside}
               data-testid="node-stop-button"
             >
-              {stop.isPending ? "Stopping…" : `Stop ${network} node`}
+              {stop.isPending ? "Stopping…" : nodeActionLabel("Stop", network)}
             </Button>
           </Tooltip>
         ) : (
@@ -1057,7 +1059,7 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
             onClick={onStart}
             disabled={start.isPending || connected || (!status?.binary_found && !hsdPathConfigured)}
           >
-            {start.isPending ? "Starting…" : `Start ${network} node`}
+            {start.isPending ? "Starting…" : nodeActionLabel("Start", network)}
           </Button>
         )}
       </div>
@@ -1098,7 +1100,8 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
         <div>
           {status?.binary_found ? (
             <>
-              hsd {status.version} · {status.network}
+              hsd {status.version}
+              {status.network ? ` · ${networkDisplayName(status.network)}` : ""}
             </>
           ) : (
             <span className="text-red-600">

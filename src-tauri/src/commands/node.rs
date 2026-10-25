@@ -330,7 +330,8 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         "binary_found": version.is_some(),
         "version": version,
         "data_dir": data_dir,
-        "network": active_profile_network(&state).as_str(),
+        // No active wallet, no network: the UI then names none (R8).
+        "network": active_profile_network_opt(&state).map(Network::as_str),
         "process_alive": process_alive,
         "ownership": ownership,
         "starting": own && probe.is_none(),

@@ -50,7 +50,8 @@ async fn node_status_reports_disconnected_when_no_node() {
     // Shape the UI relies on is present.
     assert!(v["binary"].is_string());
     assert!(v["data_dir"].is_string());
-    assert!(v["network"].is_string());
+    // No wallet in this DB: no network to name (spec 2026-10-24 R8).
+    assert!(v["network"].is_null());
     // Sync-progress fields are always present (null when not connected).
     assert!(v.get("verification_progress").is_some());
     assert_eq!(v["verification_progress"], serde_json::Value::Null);
@@ -1315,18 +1316,18 @@ async fn node_status_data_dir_respects_hsd_prefix_setting() {
 // ===========================================================================
 
 #[tokio::test]
-async fn node_status_falls_back_to_mainnet_for_missing_profile_row() {
+async fn node_status_names_no_network_for_a_missing_profile_row() {
     let conn = blank_conn();
     db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
     // Set active profile to a non-existent ID — triggers Ok(None) from
-    // get_wallet_profile, exercising the `_ => Network::Main` arm.
+    // get_wallet_profile: no wallet, so no network to name.
     db::queries::set_setting(&conn, "active_wallet_profile_id", "ghost_id").unwrap();
     let app = app_with(conn);
     let v = node_status(app.state()).await.expect("node_status ok");
     assert_eq!(
         v["network"],
-        serde_json::json!("main"),
-        "missing profile should default to mainnet"
+        serde_json::Value::Null,
+        "a missing profile names no network (spec 2026-10-24 R8)"
     );
 }
 

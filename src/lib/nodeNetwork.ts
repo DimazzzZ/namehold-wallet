@@ -12,6 +12,18 @@ export function networkDisplayName(network: string): string {
 }
 
 /**
+ * A node control's text for the active wallet's network (R8): "Start mainnet
+ * node", or "Start node" with no active wallet, whose network is `null`.
+ */
+export function nodeActionLabel(
+  verb: "Start" | "Stop" | "Starting",
+  network: string | null,
+): string {
+  const node = network ? `${networkDisplayName(network)} node` : "node";
+  return verb === "Starting" ? `Starting ${node}…` : `${verb} ${node}`;
+}
+
+/**
  * The settings key of a per-network node setting (R10): `node_mode.main` for
  * a mainnet wallet, spelled as the backend's `Network::as_str` spells it.
  */
