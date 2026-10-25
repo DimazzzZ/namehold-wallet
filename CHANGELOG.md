@@ -2,6 +2,7 @@
 
 ## Releases
 
+- [0.6.1](#061---2026-10-25)
 - [0.6.0](#060---2026-10-23)
 - [0.5.0](#050---2026-08-20)
 - [0.4.1](#041---2026-08-11)
@@ -13,21 +14,33 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-25
+
+> **Highlights:** wallets on different networks each get their own node, started when you switch to them; the Linux AppImage runs background sync and starts for every user of the machine; and fixes to Speed up in Activity, finalize reminders and testnet nodes.
+
 ### Added
 - **A node per network, started for the wallet you switch to.** Wallets on different networks no longer share one hsd: switching to a mainnet wallet starts the mainnet node (when it uses a local node and its network starts on its own) and leaves your regtest node running, so switching back is instant. Full or SPV and "Start the node automatically" are now chosen per network, shown for the active wallet's network in Settings; networks you never set keep your current choice. Start and Stop, in Settings, the status bar and the menu-bar icon, name the network they act on, and the status shows "Starting mainnet node…" while it comes up. A node you run yourself is used but never stopped by Namehold, and its Stop is disabled with the reason. With background sync on, quitting leaves every node Namehold started running for the daemon; with it off, quitting stops them all, on macOS and Linux including one left from an earlier session (on Windows a node left running is not recognised after a restart, so it is used but not stopped).
 
 ### Fixed
-- **Linux AppImage: background sync runs, and the app starts for any user.** The 0.6.0 AppImage shipped the background sync daemon (`namehold-syncd`) without its executable bit, so background sync and the finalize reminders with the app closed could not run from it, and its launcher could be started only by the user who mounted the image, so it failed under firejail and in the AppImage catalog's test ("AppRun.wrapped: Permission denied"). Both files are now executable by everyone, and the release build checks every AppImage for this before it is published. The `.deb`, `.rpm`, macOS and Windows builds were not affected.
-- **A Speed up stays a Speed up in Activity once the node reports it.** The child transaction of a Speed up read "Send" as soon as its row came from the node (sent or confirmed), and showed a disabled Speed up button of its own. It now reads Speed up, linked to the transaction it speeds up, with no button. Purchases sped up showed the same.
-- **A "Ready to finalize" reminder comes once, not again after a restart.** A purchase, listing or cancel whose lockup a sync briefly saw as still running (as can happen while the app syncs on launch) lost its "already reminded" mark, and the next check sent the same reminder a second time. The mark now stays until the FINALIZE is sent; a FINALIZE that fails or is dropped still reminds again, and a listing still reminds once a day. The background daemon also writes a log at `~/.namehold/syncd.log` (each sync, each reminder sent, a listing going back to Locking, errors), kept under 2 MB.
-- **A name the node describes in a shape the app cannot read is no longer shown as available.** When the node answered for a name with on-chain state the app could not parse, the name page treated it as never opened and offered to open an auction. The app now asks the explorer instead, as it does when the node cannot answer.
-- **My listings says "Sold at a price set on another device" for a listing sold from another device before this one listed it.** A listing that another device with your recovery phrase finalized and sold, while this device still had it waiting for the lock, carried no price here, and the line was left out. It now shows whenever the wallet's coin in the sale names none of this device's prices, including when this device has none.
+
+**Linux**
+- **AppImage: background sync runs, and the app starts for any user.** The 0.6.0 AppImage shipped the background sync daemon (`namehold-syncd`) without its executable bit, so background sync and the finalize reminders with the app closed could not run from it, and its launcher could be started only by the user who mounted the image, so it failed under firejail and in the AppImage catalog's test ("AppRun.wrapped: Permission denied"). Both files are now executable by everyone. Every build of the AppImage, on each change to its packaging and before each release, is now checked by starting its daemon and the app as another user. The `.deb`, `.rpm`, macOS and Windows builds were not affected.
+- **The app starts for a second user of the same machine.** The tray icon's file went to the shared `/tmp/tray-icon` when a session has no `XDG_RUNTIME_DIR`, which the first user to run Namehold created, so for anyone else the app stopped at start with "tray icon error: Permission denied". Each user's icon now goes to their own cache directory.
+
+**Nodes**
 - **Switching between wallets of different networks no longer sends one to the other's node.** A wallet using a local node, with no node address of its own, now always reaches its own network's node (mainnet 12037, regtest 14037, testnet 13037, simnet 15037) instead of the address the node started last left in Settings, and starting a node no longer rewrites that address. A node address you set by hand, such as another machine on your network or a custom port, is kept as before.
 - **A local testnet node is no longer refused as being on the wrong network.** hsd names testnet `test` in its chain info, and Namehold only knew the spelling `testnet`, so starting or adopting a testnet node failed with "node network mismatch: active profile is testnet, but the node on this port reports chain test".
-- **Linux: the app starts for a second user of the same machine.** The tray icon's file went to the shared `/tmp/tray-icon` when a session has no `XDG_RUNTIME_DIR`, which the first user to run Namehold created, so for anyone else the app stopped at start with "tray icon error: Permission denied". Each user's icon now goes to their own cache directory.
+- **A name the node describes in a shape the app cannot read is no longer shown as available.** When the node answered for a name with on-chain state the app could not parse, the name page treated it as never opened and offered to open an auction. The app now asks the explorer instead, as it does when the node cannot answer.
+
+**Activity, reminders and listings**
+- **A Speed up stays a Speed up in Activity once the node reports it.** The child transaction of a Speed up read "Send" as soon as its row came from the node (sent or confirmed), and showed a disabled Speed up button of its own. It now reads Speed up, linked to the transaction it speeds up, with no button. Purchases sped up showed the same.
+- **A "Ready to finalize" reminder comes once, not again after a restart.** A purchase, listing or cancel whose lockup a sync briefly saw as still running (as can happen while the app syncs on launch) lost its "already reminded" mark, and the next check sent the same reminder a second time. The mark now stays until the FINALIZE is sent; a FINALIZE that fails or is dropped still reminds again, and a listing still reminds once a day. The background daemon also writes a log at `~/.namehold/syncd.log` (each sync, each reminder sent, a listing going back to Locking, errors), kept under 2 MB.
+- **My listings says "Sold at a price set on another device" for a listing sold from another device before this one listed it.** A listing that another device with your recovery phrase finalized and sold, while this device still had it waiting for the lock, carried no price here, and the line was left out. It now shows whenever the wallet's coin in the sale names none of this device's prices, including when this device has none.
 
 ### CI / tooling
 - Take `zod` `4.6.7` to clear GHSA-mrhx-c7xc-m3w5 (memory exhaustion validating a large array), which failed the `pnpm audit --prod` gate; no 3.x release is patched. The app parses nothing with zod at run time (its schemas give types and tests only), and the schemas needed no change.
+- The Linux AppImage is built and checked on every pull request that touches its packaging or the daemon (`appimage.yml`, `scripts/check-appimage.sh`): file modes, the daemon run as another user, and the app started as another user under a virtual display. The release build runs the same check before a release is published.
+- A coverage pass over the Rust crate (lines 97.1% → 98.4%), with tests that keep off the developer's real keychain and `~/.hsd`, and a live test that runs a real regtest and testnet hsd side by side (`HNS_IT_SPAWN_HSD=1`, run locally like the rest of the live suite).
 
 ## [0.6.0] - 2026-10-23
 
