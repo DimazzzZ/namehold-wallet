@@ -234,6 +234,20 @@ pub fn run() {
                     // is a no-op. State is conveyed via glyph variants
                     // (filled / outline / badge) rather than color.
                     .icon_as_template(true)
+                    // Linux writes the icon to a file. Without
+                    // $XDG_RUNTIME_DIR, tray-icon uses the shared
+                    // /tmp/tray-icon, which the first user to run the app
+                    // creates; for any other user setup then failed with
+                    // "tray icon error: Permission denied" and the app did
+                    // not start. A directory of this user's own avoids it;
+                    // the temp dir is only the fallback of a home-less
+                    // session. Ignored on other platforms.
+                    .temp_dir_path(
+                        app.path()
+                            .app_cache_dir()
+                            .unwrap_or_else(|_| std::env::temp_dir())
+                            .join("tray-icon"),
+                    )
                     .menu(&menu)
                     // Show the menu on BOTH left and right click. This
                     // matches every other macOS menu-bar app (Slack, Docker,
