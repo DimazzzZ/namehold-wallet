@@ -55,7 +55,7 @@ export default function MarketPage() {
   const tab: MarketTab = params.get("tab") === "mine" ? "mine" : "browse";
   const [importOpen, setImportOpen] = useState(false);
   return (
-    <div className="mx-auto max-w-[1180px]">
+    <div>
       <PageHeader
         title="Market"
         subtitle="Names their owners are selling through Shakedex. Your node checks every listing before you can buy."
