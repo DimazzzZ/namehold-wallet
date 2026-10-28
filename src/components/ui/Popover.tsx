@@ -9,6 +9,14 @@ interface PopoverProps {
   className?: string;
   /** Extra classes for the floating panel. */
   panelClassName?: string;
+  /** Controlled mode: the caller owns the open state. Uncontrolled by default. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** Which edge of the trigger the panel lines up with. */
+  align?: "left" | "right";
+  role?: "menu" | "dialog";
+  "aria-label"?: string;
+  "data-testid"?: string;
 }
 
 /**
@@ -19,30 +27,53 @@ interface PopoverProps {
  *
  * Close-on-outside-click mirrors `Dialog`'s dismiss intent but uses a ref +
  * document listener instead of a full-screen backdrop, so the rest of the UI
- * stays interactive while the menu is open.
+ * stays interactive while the menu is open. Escape is caught in the capture
+ * phase and stopped, so a dialog underneath or the cheatsheet doesn't close
+ * with it (the CommandPalette pattern).
  */
-export function Popover({ trigger, children, className, panelClassName }: PopoverProps) {
-  const [open, setOpen] = useState(false);
+export function Popover({
+  trigger,
+  children,
+  className,
+  panelClassName,
+  open: openProp,
+  onOpenChange,
+  align = "left",
+  role = "menu",
+  ...rest
+}: PopoverProps) {
+  const [openState, setOpenState] = useState(false);
+  const controlled = openProp !== undefined;
+  const open = controlled ? openProp : openState;
+  const setOpen = (v: boolean) => {
+    if (!controlled) setOpenState(v);
+    onOpenChange?.(v);
+  };
   const rootRef = useRef<HTMLDivElement>(null);
+  // The listeners below must see the latest setter without re-subscribing.
+  const setOpenRef = useRef(setOpen);
+  setOpenRef.current = setOpen;
 
   const close = () => setOpen(false);
-  const toggle = () => setOpen((v) => !v);
+  const toggle = () => setOpen(!open);
 
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
+        setOpenRef.current(false);
       }
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setOpenRef.current(false);
     };
     document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
     return () => {
       document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keydown", onKeyDown, true);
     };
   }, [open]);
 
@@ -51,9 +82,12 @@ export function Popover({ trigger, children, className, panelClassName }: Popove
       {trigger({ open, toggle })}
       {open && (
         <div
-          role="menu"
+          role={role}
+          aria-label={rest["aria-label"]}
+          data-testid={rest["data-testid"]}
           className={cn(
-            "absolute left-0 top-full z-50 mt-1 min-w-40 rounded-md border border-gray-200 bg-white py-1 shadow-lg",
+            "absolute top-full z-50 mt-1 min-w-40 rounded-md border border-gray-200 bg-white py-1 shadow-lg",
+            align === "right" ? "right-0 left-auto" : "left-0",
             panelClassName,
           )}
         >

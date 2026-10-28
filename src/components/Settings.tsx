@@ -29,6 +29,7 @@ import {
   networkNodeSettingKey,
   nodeActionLabel,
   OUTSIDE_NODE_NOT_STOPPED,
+  confirmResync,
 } from "../lib/nodeNetwork";
 import { UpdatesSettings } from "./UpdatesSettings";
 import { useAppUpdate } from "../hooks/useAppUpdate";
@@ -1017,15 +1018,7 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
     }
   };
   const onResync = async () => {
-    if (
-      !window.confirm(
-        "Re-sync node data?\n\nYour current chain will be moved to a timestamped " +
-          "backup folder in the data directory, and hsd will re-sync from scratch " +
-          "with the indexes the wallet needs. This can take a while. Your wallet " +
-          "keys are NOT affected.",
-      )
-    )
-      return;
+    if (!confirmResync()) return;
     try {
       await resync.mutateAsync();
       showToast("Re-syncing: old chain backed up; hsd is downloading again.", "info");

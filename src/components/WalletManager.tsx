@@ -11,6 +11,12 @@ import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
 import { AddWalletForm } from "./AddWalletForm";
 import { mapError } from "../lib/errors";
+import { walletKindLabel } from "../lib/walletKind";
+import { writeText } from "../lib/clipboard";
+import { Copy, Plus } from "lucide-react";
+import { Icon } from "./ui/Icon";
+import { NetworkBadge } from "./ui/NetworkBadge";
+import { Tooltip } from "./ui/Tooltip";
 
 /**
  * Manage all wallet profiles: switch the active one, reveal a recovery phrase
@@ -88,10 +94,32 @@ export function WalletManager({
                     {p.active && <Badge variant="success">Active</Badge>}
                   </div>
                   <div className="flex items-center gap-1.5 mt-0.5">
-                    <Badge>{p.network}</Badge>
+                    <NetworkBadge network={p.network} />
                     <Badge variant={p.watchOnly ? "warning" : "default"}>
-                      {p.kind === "ledger_hardware" ? "Ledger" : p.watchOnly ? "Watch-only" : "Hot"}
+                      {walletKindLabel(p)}
                     </Badge>
+                  </div>
+                  <div className="mt-1 flex items-center gap-1 text-[11px] text-gray-500">
+                    ID
+                    <Tooltip content={p.id}>
+                      <span className="font-mono" data-testid="wallet-id">
+                        {p.id.slice(0, 8)}…
+                      </span>
+                    </Tooltip>
+                    <Tooltip content="Copy wallet id">
+                      <button
+                        type="button"
+                        aria-label="Copy wallet id"
+                        className="p-0.5 rounded hover:bg-gray-100 hover:text-gray-700"
+                        onClick={async () => {
+                          await writeText(p.id);
+                          showToast("Wallet id copied", "success");
+                        }}
+                        data-testid="copy-wallet-id"
+                      >
+                        <Icon icon={Copy} size={12} />
+                      </button>
+                    </Tooltip>
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
@@ -144,8 +172,12 @@ export function WalletManager({
           </div>
         ) : (
           <div className="border-t border-gray-100 pt-3">
-            <Button variant="primary" onClick={() => setShowAdd(true)}>
-              + Add wallet
+            <Button
+              variant="primary"
+              className="inline-flex items-center gap-1.5"
+              onClick={() => setShowAdd(true)}
+            >
+              <Icon icon={Plus} size={14} /> Add wallet
             </Button>
           </div>
         )}

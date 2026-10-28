@@ -182,7 +182,7 @@ describe("WalletView — auction UX", () => {
       }),
     );
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
 
     // The Recent activity card shows each row's status badge.
     const card = await screen.findByTestId("recent-activity");
@@ -264,7 +264,7 @@ describe("WalletView — auction UX", () => {
   it("shows the Locked in Auctions balance only when a lockup exists", async () => {
     invokeMock.mockImplementation(routeWallet({ lockupDoos: 2_000_000 }));
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
 
     const card = await screen.findByTestId("balance-locked-auctions");
     expect(card).toHaveTextContent("Locked in auctions 2");
@@ -273,7 +273,7 @@ describe("WalletView — auction UX", () => {
   it("hides the Locked in Auctions card when there is no lockup", async () => {
     invokeMock.mockImplementation(routeWallet({ lockupDoos: 0 }));
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     expect(screen.queryByTestId("balance-locked-auctions")).toBeNull();
   });
 
@@ -304,7 +304,7 @@ describe("WalletView — auction UX", () => {
       }),
     );
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
 
     const alert = await screen.findByTestId("needs-you-row");
     expect(alert).toHaveTextContent(/Reveal your bid/i);
@@ -332,7 +332,7 @@ describe("WalletView — auction UX", () => {
       }),
     );
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     expect(screen.queryByTestId("needs-you-row")).toBeNull();
   });
 
@@ -356,7 +356,7 @@ describe("WalletView — auction UX", () => {
       }),
     );
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     expect(screen.queryByTestId("needs-you-row")).toBeNull();
   });
 
@@ -372,7 +372,7 @@ describe("WalletView — auction UX", () => {
       })(cmd, args);
     });
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
 
     const notice = await screen.findByTestId("urgent-tasks-degraded");
     expect(notice).toHaveTextContent(/Couldn't verify urgent auction tasks/i);
@@ -389,7 +389,7 @@ describe("WalletView — auction UX", () => {
       }),
     );
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     // Give the (successful) capabilities query a tick to settle.
     await waitFor(() =>
       expect(invokeMock.mock.calls.some((c) => c[0] === "get_names_action_capabilities")).toBe(
@@ -416,7 +416,7 @@ describe("WalletView — auction UX", () => {
       }),
     );
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     const alert = await screen.findByTestId("needs-you-row");
     expect(alert).toHaveTextContent(/You lost/i);
     expect(alert).toHaveTextContent(".lostbid");

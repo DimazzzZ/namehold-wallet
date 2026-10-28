@@ -19,6 +19,15 @@ interface UiState {
   // Workspace tab state
   activeMigrationTab: MigrationSectionKey;
   setActiveMigrationTab: (tab: MigrationSectionKey) => void;
+  // Shell v2: one Wallets dialog for the whole app, and the two shell
+  // popovers (opening one closes the other).
+  walletsDialog: null | "list" | "add";
+  openWallets: (mode: "list" | "add") => void;
+  closeWallets: () => void;
+  walletMenuOpen: boolean;
+  setWalletMenuOpen: (open: boolean) => void;
+  readinessOpen: boolean;
+  setReadinessOpen: (open: boolean) => void;
   // Toast queue
   toastQueue: ToastEntry[];
   dismissToast: (id: string) => void;
@@ -54,6 +63,16 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   activeMigrationTab: "namebase",
   setActiveMigrationTab: (tab) => set({ activeMigrationTab: tab }),
+
+  walletsDialog: null,
+  openWallets: (mode) => set({ walletsDialog: mode, walletMenuOpen: false, readinessOpen: false }),
+  closeWallets: () => set({ walletsDialog: null }),
+  walletMenuOpen: false,
+  setWalletMenuOpen: (open) =>
+    set(open ? { walletMenuOpen: true, readinessOpen: false } : { walletMenuOpen: false }),
+  readinessOpen: false,
+  setReadinessOpen: (open) =>
+    set(open ? { readinessOpen: true, walletMenuOpen: false } : { readinessOpen: false }),
 
   toastQueue: [],
   dismissToast: (id) =>

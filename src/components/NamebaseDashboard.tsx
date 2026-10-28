@@ -1,3 +1,5 @@
+import { TriangleAlert } from "lucide-react";
+import { Icon } from "./ui/Icon";
 import { useState, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
@@ -592,9 +594,12 @@ export function NamebaseDashboard() {
             Transfer <strong>{formatCount(selectedDomains.size)}</strong> domains from Namebase to
             an HNS address.
           </p>
-          <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
-            ⚠️ Beta — transfers are irreversible. Move <strong>one</strong> domain first and confirm
-            it arrives before transferring the rest.
+          <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 flex gap-1.5">
+            <Icon icon={TriangleAlert} size={14} className="text-amber-700 mt-px" />
+            <span>
+              Beta — transfers are irreversible. Move <strong>one</strong> domain first and confirm
+              it arrives before transferring the rest.
+            </span>
           </div>
           <div>
             <Input

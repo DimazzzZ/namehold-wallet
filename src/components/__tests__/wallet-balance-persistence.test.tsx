@@ -20,6 +20,22 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 }));
 
 import { WalletView } from "../WalletView";
+import { WalletSwitcher } from "../shell/WalletSwitcher";
+
+/** Wallets are switched from the shell's switcher (shell-v2). */
+function WithSwitcher() {
+  return (
+    <>
+      <WalletSwitcher />
+      <WalletView />
+    </>
+  );
+}
+
+function switchTo(label: string) {
+  fireEvent.click(screen.getByTestId("wallet-switcher"));
+  fireEvent.click(screen.getByRole("menuitem", { name: new RegExp(label) }));
+}
 
 const mkProfile = (id: string, label: string, active: boolean) => ({
   id,
@@ -123,14 +139,14 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
   it("shows each wallet's own spendable balance, with no cross-wallet bleed on switch", async () => {
     const { impl } = makeBackend({ A: 100 * HNS, B: 200 * HNS });
     invokeMock.mockImplementation(impl);
-    render(<WalletView />, { wrapper: wrapper().Wrapper });
+    render(<WithSwitcher />, { wrapper: wrapper().Wrapper });
 
     // Wallet A's own balance.
     await waitFor(() => expect(screen.getByTestId("balance-spendable")).toHaveTextContent(/^100$/));
     expect(screen.getByTestId("balance-spendable")).not.toHaveTextContent(/^200$/);
 
     // Switch to Wallet B → shows B's balance, not A's.
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "B" } });
+    switchTo("Wallet B");
     await waitFor(() => expect(screen.getByTestId("balance-spendable")).toHaveTextContent(/^200$/));
     expect(screen.getByTestId("balance-spendable")).not.toHaveTextContent(/^100$/);
 
@@ -148,7 +164,7 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
     const backend = makeBackend({ A: 100 * HNS, B: 200 * HNS });
     invokeMock.mockImplementation(backend.impl);
     const { Wrapper, qc } = wrapper();
-    render(<WalletView />, { wrapper: Wrapper });
+    render(<WithSwitcher />, { wrapper: Wrapper });
 
     await waitFor(() => expect(screen.getByTestId("balance-spendable")).toHaveTextContent(/^100$/));
     const callsForA = () =>
@@ -188,7 +204,7 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
           ? Promise.resolve({ connected: true, read_source: "local" })
           : backend.impl(cmd, args);
       invokeMock.mockImplementation(liveImpl);
-      render(<WalletView />, { wrapper: wrapper().Wrapper });
+      render(<WithSwitcher />, { wrapper: wrapper().Wrapper });
 
       const callsForA = () =>
         invokeMock.mock.calls.filter(
@@ -266,7 +282,7 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
           return Promise.resolve(null);
       }
     });
-    render(<WalletView />, { wrapper: wrapper().Wrapper });
+    render(<WithSwitcher />, { wrapper: wrapper().Wrapper });
 
     // Confirmed is shown in the Spendable tooltip.
     const confirmedShows = async (v: string) => {
@@ -277,11 +293,11 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
       fireEvent.blur(screen.getByText("Spendable"));
     };
     await confirmedShows("11.000000"); // A's confirmed
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "B" } });
+    switchTo("Wallet B");
     await confirmedShows("22.000000"); // B's confirmed
 
     // Switch back to A → A's value again (the old bug left B's value stuck).
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "A" } });
+    switchTo("Wallet A");
     await confirmedShows("11.000000");
 
     // Every read_balance call pinned an explicit walletProfileId (the fix).

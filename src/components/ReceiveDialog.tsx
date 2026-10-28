@@ -7,7 +7,9 @@ import { mapError } from "../lib/errors";
 import { truncateMiddle } from "../lib/utils";
 import { useUiStore } from "../stores/ui";
 import { ReceiveAddressList } from "./ReceiveAddressList";
-import { Badge } from "./ui/Badge";
+import { NetworkBadge } from "./ui/NetworkBadge";
+import { Icon } from "./ui/Icon";
+import { ArrowUpRight, Plus } from "lucide-react";
 import { Button } from "./ui/Button";
 import { CopyField } from "./ui/CopyField";
 import { Dialog } from "./ui/Dialog";
@@ -56,7 +58,7 @@ export function ReceiveDialog({ open, onClose, profile }: ReceiveDialogProps) {
                 label={
                   <span className="flex flex-wrap items-center gap-2 text-xs">
                     <span>Your address</span>
-                    <Badge variant={mainnet ? "info" : "warning"}>{profile.network}</Badge>
+                    <NetworkBadge network={profile.network} />
                     {!mainnet && (
                       <span className="text-amber-600">
                         — {profile.network} addresses differ from mainnet
@@ -76,8 +78,9 @@ export function ReceiveDialog({ open, onClose, profile }: ReceiveDialogProps) {
                         variant="ghost"
                         onClick={() => openExternal(explorerAddressUrl(address))}
                         data-testid="receive-address-explorer-link"
+                        className="inline-flex items-center gap-1"
                       >
-                        Explorer
+                        <Icon icon={ArrowUpRight} size={13} /> Explorer
                       </Button>
                     )}
                     <Button
@@ -86,7 +89,9 @@ export function ReceiveDialog({ open, onClose, profile }: ReceiveDialogProps) {
                       onClick={() => void handleNewAddress()}
                       disabled={revealNext.isPending}
                       data-testid="receive-new-address"
+                      className="inline-flex items-center gap-1"
                     >
+                      <Icon icon={Plus} size={13} />
                       {revealNext.isPending ? "Generating…" : "New address"}
                     </Button>
                   </>

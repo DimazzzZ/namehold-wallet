@@ -11,6 +11,8 @@ vi.mock("../../queries/wallet", () => ({
   useActiveProfile: vi.fn(),
   useSignerSession: vi.fn(),
   useUnlockSigner: vi.fn(),
+  // useSignerToggle (UnlockButton's unlock) also builds a lock it never uses here.
+  useLockSigner: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
 // Mock the UI store

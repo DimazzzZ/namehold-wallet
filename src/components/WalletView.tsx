@@ -1,17 +1,16 @@
+import { QrCode, RefreshCw, Send, TriangleAlert } from "lucide-react";
+import { Icon } from "./ui/Icon";
 import { isSignerUnlockedFor } from "../lib/signer";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  useWalletProfiles,
   useActiveProfile,
   useSignerSession,
   useWriteCapability,
   useWalletBalances,
   useTxDrafts,
   useUnlockSigner,
-  useLockSigner,
-  useSetActiveProfile,
   useBuildSendDraft,
   useSignTxDraft,
   useBroadcastTxDraft,
@@ -38,7 +37,7 @@ import { displayName } from "../lib/idn";
 import { NameActionsModal } from "./NameActionsModal";
 import { BlockInfoModal } from "./BlockInfoModal";
 import { RecentActivityCard } from "./activity/RecentActivityCard";
-import { WalletManager } from "./WalletManager";
+import { useSignerToggle } from "../hooks/useSignerToggle";
 import { NeedsYouCard } from "./NeedsYouCard";
 import { ReceiveDialog } from "./ReceiveDialog";
 import { AddWalletForm } from "./AddWalletForm";
@@ -51,17 +50,13 @@ import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
 import { Dialog } from "./ui/Dialog";
 import { PageHeader } from "./ui/PageHeader";
-import { Disclosure } from "./ui/Disclosure";
 import {
   formatHns,
   formatHnsShort,
   hnsToDollarydoos,
   dollarydoosToHns,
-  formatDate,
-  latestTimestamp,
   isLikelyHnsAddress,
   hnsAddressPrefix,
-  truncateMiddle,
 } from "../lib/utils";
 import { mapError } from "../lib/errors";
 import { explorerCoversNetwork } from "../lib/openExternal";
@@ -82,7 +77,6 @@ export function WalletView() {
   const qc = useQueryClient();
   const showToast = useUiStore((s) => s.showToast);
 
-  const { data: profiles = [] } = useWalletProfiles();
   const { data: profile } = useActiveProfile();
   const { data: signer } = useSignerSession();
   const { data: writeCap } = useWriteCapability();
@@ -129,8 +123,7 @@ export function WalletView() {
   const manualSync = useSyncTriggerStore((s) => s.manualSync);
   const setManualSync = useSyncTriggerStore((s) => s.setManualSync);
   const unlock = useUnlockSigner();
-  const lock = useLockSigner();
-  const setActive = useSetActiveProfile();
+  const signerToggle = useSignerToggle();
   const buildDraft = useBuildSendDraft();
   const signDraft = useSignTxDraft();
   const broadcast = useBroadcastTxDraft();
@@ -170,8 +163,6 @@ export function WalletView() {
   } | null>(null);
   // Wallets manager modal (add / switch / delete). `addMode` opens it straight
   // to the add-wallet form.
-  const [walletManagerOpen, setWalletManagerOpen] = useState(false);
-  const [walletManagerAddMode, setWalletManagerAddMode] = useState(false);
 
   // Ledger wallets don't use the local signer session — the device signs on
   // demand. Treat them as "unlocked" so the send/action flow doesn't try to
@@ -246,8 +237,8 @@ export function WalletView() {
         handleSync();
         break;
       case "wallet:toggleLock":
-        if (unlocked) handleLock();
-        else handleUnlock();
+        // The shell's lock does the same; a Ledger or watch-only wallet has none.
+        if (signerToggle.canLock) void signerToggle.toggle();
         break;
       case "wallet:openReceive":
         setReceiveOpen(true);
@@ -493,25 +484,6 @@ export function WalletView() {
     setManageName(name);
   };
 
-  const handleUnlock = async () => {
-    if (!profile) return;
-    try {
-      await unlock.mutateAsync(profile.id);
-      showToast("Wallet unlocked", "success");
-    } catch (e) {
-      showToast(mapError(e), "error");
-    }
-  };
-
-  const handleLock = async () => {
-    try {
-      await lock.mutateAsync();
-      showToast("Wallet locked", "info");
-    } catch (e) {
-      showToast(mapError(e), "error");
-    }
-  };
-
   const handleBuildDraft = async (opts?: { max?: boolean }) => {
     const max = opts?.max ?? false;
     if (!sendAddress.trim()) {
@@ -604,17 +576,11 @@ export function WalletView() {
         title="Wallet"
         subtitle="Non-custodial. Keys are held locally and never leave this device."
         badges={
-          <>
-            <Badge variant="info">{profile.label}</Badge>
-            <Badge>{profile.network}</Badge>
-            {isWatchOnly ? (
+          isWatchOnly ? (
+            <Tooltip content="This wallet tracks an account xpub. It can receive and show balances, but it can't sign or spend.">
               <Badge variant="warning">Watch-only</Badge>
-            ) : unlocked ? (
-              <Badge variant="success">Unlocked</Badge>
-            ) : (
-              <Badge variant="warning">Locked</Badge>
-            )}
-          </>
+            </Tooltip>
+          ) : undefined
         }
         actions={
           syncStatus.data?.running
@@ -638,6 +604,7 @@ export function WalletView() {
             : [
                 {
                   label: "Sync",
+                  icon: RefreshCw,
                   onClick: handleSync,
                 },
               ]
@@ -686,94 +653,6 @@ export function WalletView() {
           </div>
         </div>
       )}
-
-      {/* Account bar — profile switch/add/manage + the lock action, condensed
-          into one row. Connectivity/signer STATUS lives in the global
-          StatusStrip; here we keep only the Lock/Unlock action plus a compact
-          "Signer locked/unlocked" label and the passphrase helper hint. */}
-      <div className="flex flex-wrap items-center gap-2 text-sm bg-white border border-gray-200 rounded-lg px-3 py-2">
-        <span className="text-gray-500">Active wallet:</span>
-        {profiles.length > 1 ? (
-          <select
-            className="border border-gray-300 rounded px-2 py-1"
-            value={profile.id}
-            onChange={(e) => setActive.mutate(e.target.value)}
-          >
-            {profiles.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label} ({p.network})
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span className="font-medium">
-            {profile.label} ({profile.network})
-          </span>
-        )}
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={() => {
-            setWalletManagerAddMode(true);
-            setWalletManagerOpen(true);
-          }}
-        >
-          + Add wallet
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => {
-            setWalletManagerAddMode(false);
-            setWalletManagerOpen(true);
-          }}
-        >
-          Manage wallets
-        </Button>
-        {!isWatchOnly && (
-          <div className="ml-auto flex items-center gap-2">
-            <Tooltip
-              content={
-                unlocked
-                  ? "Your keys are in memory. They lock automatically after the session timeout."
-                  : undefined
-              }
-            >
-              <span className="text-xs text-gray-500">
-                Signer {unlocked ? "unlocked" : "locked"}
-                {!unlocked && (
-                  <span className="hidden sm:inline">
-                    {" — "}
-                    {profile.hasPassphrase
-                      ? "Unlock with your passphrase (in a secure window)"
-                      : "no passphrase — just click Unlock"}
-                  </span>
-                )}
-              </span>
-            </Tooltip>
-            {unlocked ? (
-              <Button size="sm" variant="secondary" onClick={handleLock}>
-                Lock
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                variant="primary"
-                onClick={handleUnlock}
-                disabled={unlock.isPending}
-              >
-                {unlock.isPending ? "Unlocking…" : "Unlock"}
-              </Button>
-            )}
-          </div>
-        )}
-      </div>
-
-      <WalletManager
-        open={walletManagerOpen}
-        startInAddMode={walletManagerAddMode}
-        onClose={() => setWalletManagerOpen(false)}
-      />
 
       {/* Balance first: Spendable is the hero (what coin selection can
           actually use after a node sync), the rest is one muted line, and the
@@ -853,10 +732,11 @@ export function WalletView() {
         </div>
         {nodeCoinsReason && (
           <div
-            className="mt-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
+            className="mt-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 flex gap-1.5"
             data-testid="balance-node-not-authoritative"
           >
-            Your node can't report this wallet's coins: {nodeCoinsReason}
+            <Icon icon={TriangleAlert} size={14} className="mt-px" />
+            <span>Your node can't report this wallet's coins: {nodeCoinsReason}</span>
           </div>
         )}
         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -867,8 +747,9 @@ export function WalletView() {
                 onClick={() => setSendOpen(true)}
                 disabled={!canWrite || spendable === 0}
                 data-testid="wallet-send"
+                className="inline-flex items-center gap-1.5"
               >
-                Send
+                <Icon icon={Send} size={14} /> Send
               </Button>
             </Tooltip>
           )}
@@ -876,8 +757,9 @@ export function WalletView() {
             variant="secondary"
             onClick={() => setReceiveOpen(true)}
             data-testid="receive-open"
+            className="inline-flex items-center gap-1.5"
           >
-            Receive
+            <Icon icon={QrCode} size={14} /> Receive
           </Button>
           {!canWrite && !isWatchOnly && (
             <>
@@ -1318,17 +1200,6 @@ export function WalletView() {
 
       <RecentActivityCard onNameClick={setManageName} />
 
-      {/* Diagnostics — collapsed by default; debug-only info that shouldn't
-          compete for attention on the main screen. */}
-      <Disclosure summary="Details">
-        <div className="text-xs text-gray-400">
-          Profile: {profile.id.slice(0, 8)}… | Last synced height: {profile.lastSyncedHeight ?? "—"}{" "}
-          | Last successful sync:{" "}
-          {formatDate(latestTimestamp(profile.lastSyncedAt, profile.lastExplorerSyncAt))} | xpub:{" "}
-          {truncateMiddle(profile.accountXpub)}
-        </div>
-      </Disclosure>
-
       {batchModal && (
         <BatchConfirmModal
           open={batchModal.open}
@@ -1460,9 +1331,12 @@ export function WalletView() {
                 </div>
               </div>
             </div>
-            <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
-              ⚠️ Beta — send a small test amount first and confirm it arrives before sending larger
-              amounts.
+            <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 flex gap-1.5">
+              <Icon icon={TriangleAlert} size={14} className="mt-px" />
+              <span>
+                Beta — send a small test amount first and confirm it arrives before sending larger
+                amounts.
+              </span>
             </div>
             {sendError && (
               <div

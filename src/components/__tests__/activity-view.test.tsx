@@ -143,7 +143,7 @@ describe("ActivityView", () => {
     await waitFor(() =>
       expect(screen.getAllByText("Lock for sale").some((el) => el.tagName === "SPAN")).toBe(true),
     );
-    expect(screen.getByText(/⤷\s*0\.5/)).toBeInTheDocument();
+    expect(screen.getByTestId("activity-locked-value")).toHaveTextContent("0.5");
   });
 
   it("renders classified rows with action badges", async () => {

@@ -1,3 +1,5 @@
+import { Check, TriangleAlert } from "lucide-react";
+import { Icon } from "./ui/Icon";
 import { displayName } from "../lib/idn";
 import type { NeedsYouItem } from "../lib/needsYou";
 import { TONE_DOT } from "./market/marketText";
@@ -47,9 +49,10 @@ export function NeedsYouCard({
       </div>
       {isDegraded && (
         <div
-          className="bg-amber-50 border-b border-amber-200 text-xs text-amber-800 px-4 py-2"
+          className="bg-amber-50 border-b border-amber-200 text-xs text-amber-800 px-4 py-2 flex items-center gap-1.5"
           data-testid="urgent-tasks-degraded"
         >
+          <Icon icon={TriangleAlert} size={14} />
           Couldn't verify urgent auction tasks — data may be stale.
         </div>
       )}
@@ -123,7 +126,11 @@ export function NeedsYouCard({
       ) : isLoading ? (
         <div className="px-4 py-3 text-sm text-gray-500">Checking your names…</div>
       ) : isDegraded ? null : (
-        <div className="px-4 py-3 text-sm text-gray-500" data-testid="needs-you-empty">
+        <div
+          className="px-4 py-3 text-sm text-gray-500 flex items-center gap-1.5"
+          data-testid="needs-you-empty"
+        >
+          <Icon icon={Check} size={14} />
           Nothing needs you right now.
         </div>
       )}

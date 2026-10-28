@@ -11,8 +11,7 @@ export type HotkeyCategory = "nav" | "modal" | "action" | "palette" | "list";
  * Which route(s) a binding is active on. "*" means global (fires everywhere).
  * Route strings must match the `to` values in PRIMARY_ROUTES.
  */
-export type RouteScope =
-  "/" | "/activity" | "/auctions" | "/watchlist" | "/market" | "/migration" | "/settings" | "*";
+export type RouteScope = "/" | "/names" | "/market" | "/activity" | "/settings" | "*";
 
 export interface HotkeyBinding {
   keys: string; // react-hotkeys-hook format, e.g. "1", "shift+?"
@@ -34,12 +33,10 @@ export interface HotkeyBinding {
 export const HOTKEY_BINDINGS: HotkeyBinding[] = [
   // --- Navigation (global) ---
   { keys: "1", label: "1", description: "Go to Wallet", category: "nav", scope: "*" },
-  { keys: "2", label: "2", description: "Go to Activity", category: "nav", scope: "*" },
-  { keys: "3", label: "3", description: "Go to Auctions", category: "nav", scope: "*" },
-  { keys: "4", label: "4", description: "Go to Market", category: "nav", scope: "*" },
-  { keys: "5", label: "5", description: "Go to Watchlist", category: "nav", scope: "*" },
-  { keys: "6", label: "6", description: "Go to Move from Namebase", category: "nav", scope: "*" },
-  { keys: "7", label: "7", description: "Go to Settings", category: "nav", scope: "*" },
+  { keys: "2", label: "2", description: "Go to Names", category: "nav", scope: "*" },
+  { keys: "3", label: "3", description: "Go to Market", category: "nav", scope: "*" },
+  { keys: "4", label: "4", description: "Go to Activity", category: "nav", scope: "*" },
+  { keys: "5", label: "5", description: "Go to Settings", category: "nav", scope: "*" },
 
   // --- Dialogs (global) ---
   {
@@ -112,9 +109,9 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
   {
     keys: "/",
     label: "/",
-    description: "Focus name lookup",
+    description: "Find a name",
     category: "action",
-    scope: "/auctions",
+    scope: "/names",
     actionId: "auctions:focusLookup",
   },
   {
@@ -122,7 +119,7 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
     label: "B",
     description: "Open batch bid",
     category: "action",
-    scope: "/auctions",
+    scope: "/names",
     actionId: "auctions:batchBid",
     requiresWrite: true,
   },
@@ -132,7 +129,7 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
     label: "A",
     description: "Focus add name",
     category: "action",
-    scope: "/watchlist",
+    scope: "/names",
     actionId: "watchlist:focusAdd",
   },
   {
@@ -140,7 +137,7 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
     label: "E",
     description: "Export CSV",
     category: "action",
-    scope: "/watchlist",
+    scope: "/names",
     actionId: "watchlist:exportCsv",
   },
 

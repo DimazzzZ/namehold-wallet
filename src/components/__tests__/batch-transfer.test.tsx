@@ -210,7 +210,7 @@ describe("WalletView — batch transfer", () => {
   it("Transfer Selected is disabled when the recipient input is empty", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     await selectBothNames();
 
     const btn = screen.getByTestId("batch-transfer-btn");
@@ -227,7 +227,7 @@ describe("WalletView — batch transfer", () => {
       routeInvoke({ caps: [cap("alpha", true), cap("bravo", false, "already mid-transfer")] }),
     );
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     await selectBothNames();
 
     fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
@@ -239,7 +239,7 @@ describe("WalletView — batch transfer", () => {
   it("clicking Transfer invokes build_batch_transfer_draft with { names, recipient, feeRate: undefined }", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     await selectBothNames();
 
     fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
@@ -261,7 +261,7 @@ describe("WalletView — batch transfer", () => {
   it("after build, confirming the modal signs then broadcasts and shows the recipient", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     await selectBothNames();
 
     fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
@@ -291,7 +291,7 @@ describe("WalletView — batch transfer", () => {
     uiStore.useUiStore.getState().clearToast();
 
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     await selectBothNames();
 
     fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {

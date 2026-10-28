@@ -23,6 +23,29 @@ vi.mock("../../lib/clipboard", () => ({
 }));
 
 import { WalletView } from "../WalletView";
+import { WalletSwitcher } from "../shell/WalletSwitcher";
+import { ReadinessPill } from "../shell/ReadinessPill";
+import { WalletManager } from "../WalletManager";
+import { useUiStore } from "../../stores/ui";
+
+/**
+ * The Wallet page with the shell parts that took over its wallet controls
+ * (shell-v2): the switcher + lock, the readiness popover, the one Wallets dialog.
+ */
+function WithShell() {
+  const dialog = useUiStore((s) => s.walletsDialog);
+  const close = useUiStore((s) => s.closeWallets);
+  return (
+    <>
+      <WalletSwitcher />
+      <ReadinessPill />
+      <WalletView />
+      <WalletManager open={dialog !== null} startInAddMode={dialog === "add"} onClose={close} />
+    </>
+  );
+}
+
+const openReadiness = async () => fireEvent.click(await screen.findByTestId("readiness-pill"));
 import type { SyncStatus } from "../../queries/sync";
 import { useSyncTriggerStore } from "../../stores/syncTrigger";
 
@@ -171,6 +194,7 @@ function wrapper() {
 }
 
 beforeEach(() => {
+  useUiStore.setState({ walletsDialog: null, walletMenuOpen: false, readinessOpen: false });
   invokeMock.mockReset();
   clipboardWriteMock.mockClear();
   // Reset the sync trigger store to default state before each test.
@@ -184,18 +208,20 @@ describe("WalletView (non-custodial)", () => {
     invokeMock.mockImplementation(
       routeInvoke({ unlocked: true, signerProfileId: "other", canWrite: true }),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WithShell />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
+    await openReadiness();
     expect(screen.getByText(/Signer locked/i)).toBeInTheDocument();
     expect(screen.queryByText(/Signer unlocked/i)).not.toBeInTheDocument();
   });
 
   it("shows a locked signer and an Unlock control, with NO secret inputs in the DOM", async () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: false, canWrite: false }));
-    const { container } = render(<WalletView />, { wrapper: wrapper() });
+    const { container } = render(<WithShell />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
+    await openReadiness();
     expect(screen.getByText(/Signer locked/i)).toBeInTheDocument();
     // Multiple Unlock buttons may render (account-bar + inline notices);
     // any of them is sufficient to satisfy "an Unlock control exists".
@@ -211,7 +237,7 @@ describe("WalletView (non-custodial)", () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     // Click the first Unlock button (the account-bar one); the inline notice
     // Unlock buttons delegate to the same command.
     fireEvent.click(screen.getAllByRole("button", { name: /Unlock/i })[0]!);
@@ -228,11 +254,12 @@ describe("WalletView (non-custodial)", () => {
     invokeMock.mockImplementation(
       routeInvoke({ profile: { hasPassphrase: false }, unlocked: false }),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WithShell />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
+    await openReadiness();
     expect(screen.getByText(/Signer locked/i)).toBeInTheDocument();
-    expect(screen.getByText(/no passphrase.*click Unlock/i)).toBeInTheDocument();
+    expect(screen.getByText("No passphrase set — just click Unlock")).toBeInTheDocument();
     expect(screen.queryByText(/Unlock with your passphrase/i)).toBeNull();
     expect(screen.getAllByRole("button", { name: /Unlock/i }).length).toBeGreaterThan(0);
   });
@@ -241,19 +268,18 @@ describe("WalletView (non-custodial)", () => {
     invokeMock.mockImplementation(
       routeInvoke({ profile: { hasPassphrase: true }, unlocked: false }),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WithShell />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
-    expect(
-      screen.getByText(/Unlock with your passphrase \(in a secure window\)/i),
-    ).toBeInTheDocument();
+    await screen.findByTestId("receive-open");
+    await openReadiness();
+    expect(screen.getByText("Unlock with your passphrase, in a secure window")).toBeInTheDocument();
   });
 
   it("send dialog collects only address + amount (no passphrase field)", async () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true }));
     const { container } = render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     fireEvent.click(screen.getByTestId("wallet-send"));
 
     expect(screen.getByText(/Destination Address/i)).toBeInTheDocument();
@@ -266,7 +292,7 @@ describe("WalletView (non-custodial)", () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true }));
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     fireEvent.click(screen.getByTestId("wallet-send"));
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), {
       target: { value: "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2" },
@@ -285,7 +311,7 @@ describe("WalletView (non-custodial)", () => {
     );
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     expect(await screen.findByTestId("needs-node-sync")).toBeInTheDocument();
     // Can't send with nothing synced, even though the signer/node are ready.
     expect(screen.getByTestId("wallet-send")).toBeDisabled();
@@ -307,7 +333,7 @@ describe("WalletView (non-custodial)", () => {
     );
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     const cell = await screen.findByTestId("balance-immature");
     expect(cell).toHaveTextContent(/Immature/i);
     expect(cell).toHaveTextContent(/40 blocks/i);
@@ -322,7 +348,7 @@ describe("WalletView (non-custodial)", () => {
     );
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     expect(screen.queryByTestId("balance-immature")).toBeNull();
     expect(screen.getByTestId("wallet-send")).not.toBeDisabled();
   });
@@ -366,7 +392,7 @@ describe("WalletView (non-custodial)", () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     expect(await screen.findByText(/Owned Names/i)).toBeInTheDocument();
     expect(await screen.findByText(/\.example/)).toBeInTheDocument();
   });
@@ -460,7 +486,7 @@ describe("WalletView (non-custodial)", () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: false, drafts }));
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     // The UPDATE row must NOT present the 222 HNS name value as a cost...
     // With the unified table design, the action ("Update" badge) and the name
     // (.ecology, in its own Name column) live in separate <td>s. Find the row
@@ -471,7 +497,7 @@ describe("WalletView (non-custodial)", () => {
     // ...instead, the Amount cell surfaces the carried name value as an
     // informational "⤷ 222.000000" (net flow is still 0 — not shown as a cost),
     // in the neutral gray tone with a dotted-underline tooltip trigger.
-    const carried = within(updateRow).getByText(/⤷\s*222$/);
+    const carried = within(updateRow).getByTestId("activity-locked-value");
     expect(carried).toBeInTheDocument();
     expect(carried.className).toContain("text-gray-500");
     // A real send still shows its outgoing amount (short, with U+2212).
@@ -510,7 +536,7 @@ describe("WalletView (non-custodial)", () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: false, names: multiNames }));
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     // All three rows present up front, including the decoded unicode name.
     expect(await screen.findByText(/\.example/)).toBeInTheDocument();
     expect(screen.getByText(/\.another/)).toBeInTheDocument();
@@ -553,7 +579,7 @@ describe("WalletView (non-custodial)", () => {
     );
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     expect(screen.getAllByText(/Watch-only/i).length).toBeGreaterThan(0);
     expect(screen.queryByTestId("wallet-send")).toBeNull();
     expect(screen.queryByRole("button", { name: /Unlock/i })).toBeNull();
@@ -568,28 +594,30 @@ const secondProfile = {
   active: false,
 };
 
-describe("WalletView — last successful sync timestamp (Task 11 / S1)", () => {
-  it("shows a dash when the profile has never synced", async () => {
+describe("Last successful sync, in the readiness popover (Task 11 / S1)", () => {
+  it("says Not synced yet when the profile has never synced", async () => {
     invokeMock.mockImplementation(
       routeInvoke({ profile: { lastSyncedAt: null, lastExplorerSyncAt: null } }),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WithShell />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
-    expect(screen.getByText(/Last successful sync:\s*—/)).toBeInTheDocument();
+    await screen.findByTestId("receive-open");
+    await openReadiness();
+    expect(screen.getByText("Not synced yet")).toBeInTheDocument();
   });
 
   it("shows a formatted timestamp once the profile has synced", async () => {
     invokeMock.mockImplementation(
       routeInvoke({ profile: { lastSyncedAt: "2026-07-10 12:00:00" } }),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WithShell />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
+    await openReadiness();
     // formatDate() renders the naive-UTC sqlite timestamp in the user's
     // locale — just prove it's no longer the "never synced" dash.
-    expect(screen.queryByText(/Last successful sync:\s*—/)).toBeNull();
-    expect(screen.getByText(/Last successful sync:/)).toBeInTheDocument();
+    expect(screen.queryByText("Not synced yet")).toBeNull();
+    expect(screen.getByText(/^Last synced /)).toBeInTheDocument();
   });
 
   // Finding 2 (review fix): explorer-only mode never advances `lastSyncedAt`
@@ -602,11 +630,12 @@ describe("WalletView — last successful sync timestamp (Task 11 / S1)", () => {
         profile: { lastSyncedAt: null, lastExplorerSyncAt: "2026-07-14 09:00:00" },
       }),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WithShell />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
-    expect(screen.queryByText(/Last successful sync:\s*—/)).toBeNull();
-    expect(screen.getByText(/Last successful sync:/)).toBeInTheDocument();
+    await screen.findByTestId("receive-open");
+    await openReadiness();
+    expect(screen.queryByText("Not synced yet")).toBeNull();
+    expect(screen.getByText(/^Last synced /)).toBeInTheDocument();
   });
 
   // The line shows ONE timestamp — whichever sync path most recently
@@ -621,38 +650,39 @@ describe("WalletView — last successful sync timestamp (Task 11 / S1)", () => {
     invokeMock.mockImplementation(
       routeInvoke({ profile: { lastSyncedAt: newer, lastExplorerSyncAt: older } }),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WithShell />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
+    await openReadiness();
     // `formatDate` renders in the deterministic long form
     // ("Month DD, YYYY - HH:MM:SS", UTC-normalized) — pin down the newer
     // timestamp against that exact output.
-    expect(
-      screen.getByText(/Last successful sync:\s*July 14, 2026 - 09:00:00/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/^Last synced July 14, 2026 - 09:00:00/)).toBeInTheDocument();
     // The older timestamp must NOT appear.
     expect(screen.queryByText(/January 1, 2026/)).toBeNull();
   });
 });
 
 describe("WalletView multi-wallet management", () => {
-  it("shows Add wallet + Manage entry points with an active profile", async () => {
+  it("the wallet menu offers Add wallet + Manage wallets", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WithShell />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
-    expect(screen.getByRole("button", { name: /\+ Add wallet/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Manage wallets/i })).toBeInTheDocument();
+    await screen.findByTestId("receive-open");
+    fireEvent.click(screen.getByTestId("wallet-switcher"));
+    expect(screen.getByRole("menuitem", { name: /Add wallet/i })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Manage wallets/i })).toBeInTheDocument();
   });
 
   it("Manage opens a modal listing all wallets; Switch activates a non-active one", async () => {
     invokeMock.mockImplementation(
       routeInvoke({ profiles: [{ ...baseProfile, active: true }, secondProfile] }),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WithShell />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
-    fireEvent.click(screen.getByRole("button", { name: /Manage wallets/i }));
+    await screen.findByTestId("receive-open");
+    fireEvent.click(screen.getByTestId("wallet-switcher"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Manage wallets/i }));
 
     // Both wallets listed in the dialog.
     expect(await screen.findByText("Trading")).toBeInTheDocument();
@@ -669,10 +699,11 @@ describe("WalletView multi-wallet management", () => {
     invokeMock.mockImplementation(
       routeInvoke({ profiles: [{ ...baseProfile, active: true }, secondProfile] }),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WithShell />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
-    fireEvent.click(screen.getByRole("button", { name: /Manage wallets/i }));
+    await screen.findByTestId("receive-open");
+    fireEvent.click(screen.getByTestId("wallet-switcher"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Manage wallets/i }));
     await screen.findByText("Trading");
 
     // Delete the active wallet (the first Delete button = Primary's row).
@@ -692,10 +723,11 @@ describe("WalletView multi-wallet management", () => {
 
   it("Add wallet → Create uses the entered label (not a hardcoded one)", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WithShell />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
-    fireEvent.click(screen.getByRole("button", { name: /\+ Add wallet/i }));
+    await screen.findByTestId("receive-open");
+    fireEvent.click(screen.getByTestId("wallet-switcher"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Add wallet/i }));
 
     // The add form opens on the chooser; pick "Create a new wallet".
     fireEvent.click(await screen.findByText(/Create a new wallet/i));
@@ -769,7 +801,7 @@ describe("WalletView — sync Stop button + honest progress", () => {
 
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     const stopBtn = await screen.findByRole("button", { name: /^Stop$/i });
     expect(screen.queryByRole("button", { name: /^Sync$/i })).toBeNull();
 
@@ -783,7 +815,7 @@ describe("WalletView — sync Stop button + honest progress", () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true }));
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     expect(await screen.findByRole("button", { name: /^Sync$/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Stop$/i })).toBeNull();
   });
@@ -808,7 +840,7 @@ describe("WalletView — sync Stop button + honest progress", () => {
 
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     // Auto-sync: button shows "Syncing…" (disabled, with spinner), NOT "Stop".
     const syncingBtn = await screen.findByRole("button", { name: /Syncing…/i });
     expect(syncingBtn).toBeDisabled();
@@ -840,7 +872,7 @@ describe("WalletView — sync Stop button + honest progress", () => {
 
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     const panel = await screen.findByTestId("sync-status");
     // 540 total - 535 remaining = 5 checked so far.
     expect(panel.textContent).toMatch(/Checked: 5/);
@@ -872,7 +904,7 @@ describe("WalletView — punycode display (Task 4)", () => {
     });
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
 
     // The table renders the decoded Unicode label ("козел" is the Cyrillic
     // decoding of xn--e1adigm), not the raw ACE form.
@@ -942,14 +974,14 @@ describe("WalletView — expiring-soon renewal in Needs you (Task 3 / C3)", () =
       routeInvoke({ unlocked: true, canWrite: true, renewals: expiringRenewals("csv-import") }),
     );
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     expect(screen.queryByTestId("needs-you-row")).toBeNull();
   });
 
   it("lists nothing when nothing is expiring", async () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true }));
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     expect(screen.queryByTestId("needs-you-row")).toBeNull();
   });
 });
@@ -989,7 +1021,7 @@ describe("WalletView — Recent transactions shows the name (Task 2)", () => {
     );
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     // Action and Name are now separate columns. The "Open" badge is in the
     // Action cell; the name ".example" is in the Name cell. Verify both exist
     // in the same row.
@@ -1037,7 +1069,7 @@ describe("WalletView — Recent transactions shows the name (Task 2)", () => {
     );
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     // With the unified design, `send_hns` (not in ACTION_META) falls back to
     // the "Other" badge. Find the row by its unique txid fragment. The Name
     // cell should be an em-dash (—) since summary.name is absent — the row
@@ -1053,7 +1085,7 @@ describe("WalletView — Receive dialog (address, QR, xpub)", () => {
     "xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz";
 
   const openReceive = async () => {
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     fireEvent.click(screen.getByTestId("receive-open"));
     return screen.getByTestId("receive-dialog");
   };
@@ -1132,19 +1164,6 @@ describe("WalletView — Receive dialog (address, QR, xpub)", () => {
 });
 
 describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () => {
-  it("the Details footer disclosure is collapsed by default and hides the profile diagnostic", async () => {
-    invokeMock.mockImplementation(routeInvoke());
-    render(<WalletView />, { wrapper: wrapper() });
-
-    await screen.findByText("Primary");
-    const details = screen.getByRole("button", { name: /^\s*›?\s*Details\s*$/ });
-    expect(details).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(details);
-    expect(details).toHaveAttribute("aria-expanded", "true");
-    // Details body still surfaces the "Last successful sync:" label.
-    expect(screen.getByText(/Last successful sync:/)).toBeInTheDocument();
-  });
-
   it("Recent activity card renders classified rows from read_action_history and links to /activity", async () => {
     // Unix seconds for 2026-07-24 12:00:00 UTC — locks the long-date
     // assertion to a known "July 24, 2026 - 12:00:00" output regardless of
@@ -1253,7 +1272,7 @@ describe("WalletView — canonical table design", () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true, drafts, history }));
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     // Wait for all three tables to be populated. `.example` = Owned Names
     // (from routeInvoke's default `read_names`), the draft txid slice =
     // Recent transactions, "Receive" badge (SPAN, not filter option) =
@@ -1321,12 +1340,12 @@ describe("WalletView — Recent transactions amount tone", () => {
     ];
     invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true, drafts }));
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
 
     // Self-homed UPDATE: amount cell shows the carried name value as
     // "⤷ 222.000000" in neutral gray — not a red spend.
     const updateRow = (await screen.findByText(".ecology")).closest("tr")!;
-    const carriedCell = within(updateRow).getByText(/⤷\s*222$/);
+    const carriedCell = within(updateRow).getByTestId("activity-locked-value");
     expect(carriedCell.className).toContain("text-gray-500");
     expect(carriedCell.className).not.toContain("text-red-600");
 
@@ -1405,7 +1424,7 @@ describe("WalletView — Recent transactions Badge labels", () => {
     ];
     invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true, drafts }));
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
 
     // Known action badges: "Open" and "Bid" (title-cased).
     const openBadge = await screen.findByText("Open");
@@ -1427,7 +1446,7 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
 
     invokeMock.mockImplementation(routeInvoke({ unlocked: false, canWrite: false }));
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
 
     // Clear any pre-existing toasts.
     useUiStore.getState().clearToast();
@@ -1453,7 +1472,7 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
 
     invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true }));
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
 
     useUiStore.getState().clearToast();
     act(() => {
@@ -1475,7 +1494,7 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       invokeMock.mockImplementation(routeInvoke({ unlocked: true }));
       render(<WalletView />, { wrapper: wrapper() });
 
-      await screen.findByText("Primary");
+      await screen.findByTestId("receive-open");
       expect(screen.queryByTestId("receive-dialog")).toBeNull();
       act(() => {
         dispatchAction("wallet:openReceive");
@@ -1652,11 +1671,12 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
     it("wallet:toggleLock when unlocked calls handleLock", async () => {
       const { dispatchAction } = await import("../../lib/actionBus");
       invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true }));
-      render(<WalletView />, { wrapper: wrapper() });
+      render(<WithShell />, { wrapper: wrapper() });
 
-      // Unlock button should be visible initially (signer is unlocked)
-      const lockBtn = await screen.findByRole("button", { name: /Lock|Unlock/i });
-      expect(lockBtn.textContent).toMatch(/Lock/i);
+      // The sidebar lock offers Lock while the signer is unlocked.
+      await waitFor(() =>
+        expect(screen.getByTestId("sidebar-lock")).toHaveAccessibleName("Lock the signer"),
+      );
 
       // Dispatch toggleLock
       act(() => {
@@ -1673,9 +1693,7 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       const { dispatchAction } = await import("../../lib/actionBus");
       invokeMock.mockImplementation(routeInvoke({ unlocked: false, canWrite: false }));
       render(<WalletView />, { wrapper: wrapper() });
-
-      // Wait for the signer status to render
-      await screen.findByText(/Signer locked/);
+      await screen.findByTestId("receive-open");
 
       // Dispatch toggleLock
       act(() => {
@@ -1896,11 +1914,11 @@ describe("WalletView — balance card names a node that can't report the wallet'
     render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={["/wallet"]}>
-          <WalletView />
+          <WithShell />
         </MemoryRouter>
       </QueryClientProvider>,
     );
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     await waitFor(() =>
       expect(invokeMock.mock.calls.some((c) => c[0] === "get_sync_status")).toBe(true),
     );
@@ -1946,11 +1964,11 @@ describe("WalletView — balance card names a node that can't report the wallet'
     render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={["/wallet"]}>
-          <WalletView />
+          <WithShell />
         </MemoryRouter>
       </QueryClientProvider>,
     );
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     await waitFor(() =>
       expect(queryClient.getQueryData<SyncStatus>(["sync", "status"])?.running).toBe(true),
     );
@@ -2015,7 +2033,7 @@ describe("WalletView — balance card names a node that can't report the wallet'
     render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={["/wallet"]}>
-          <WalletView />
+          <WithShell />
         </MemoryRouter>
       </QueryClientProvider>,
     );
@@ -2026,7 +2044,7 @@ describe("WalletView — balance card names a node that can't report the wallet'
     await act(async () => {
       releaseProfiles();
     });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
 
     state.activeId = "p2";
     await act(async () => {
@@ -2048,7 +2066,7 @@ describe("WalletView — balance card names a node that can't report the wallet'
     invokeMock.mockImplementation(withSyncErrors(["explorer: status 403"]));
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     await waitFor(() =>
       expect(invokeMock.mock.calls.some((c) => c[0] === "get_sync_status")).toBe(true),
     );
@@ -2060,7 +2078,7 @@ describe("WalletView — one capability fetch", () => {
   it("Needs you and the Owned Names table share one get_names_action_capabilities call", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     await waitFor(() =>
       expect(
         invokeMock.mock.calls.filter((c) => c[0] === "get_names_action_capabilities"),

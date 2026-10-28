@@ -1,3 +1,5 @@
+import { ArrowUpRight } from "lucide-react";
+import { Icon } from "./ui/Icon";
 import { useReadBlockInfo } from "../queries/read";
 import { useNodeLive } from "../queries/node";
 import { Dialog } from "./ui/Dialog";
@@ -43,7 +45,7 @@ export function BlockInfoModal({ height, open, onClose, isMainnet }: BlockInfoMo
             onClick={() => openExternal(explorerBlockUrl(height))}
             data-testid="block-explorer-link"
           >
-            View on explorer ↗
+            View on explorer <Icon icon={ArrowUpRight} size={14} />
           </button>
         )}
 

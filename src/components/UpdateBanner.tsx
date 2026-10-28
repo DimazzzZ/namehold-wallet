@@ -1,3 +1,5 @@
+import { CircleArrowUp } from "lucide-react";
+import { Icon } from "./ui/Icon";
 import { useEffect, useState } from "react";
 import { useAppUpdate, relaunchApp } from "../hooks/useAppUpdate";
 import { useUiStore } from "../stores/ui";
@@ -67,8 +69,11 @@ export function UpdateBanner() {
         className="px-6 py-1.5 text-xs text-blue-900 bg-blue-100 border-b border-blue-200 flex items-center gap-3"
         data-testid="update-banner"
       >
-        <span>
-          🎉 <strong>Namehold v{available!.version}</strong> is available.
+        <span className="inline-flex items-center gap-1.5">
+          <Icon icon={CircleArrowUp} size={14} />
+          <span>
+            <strong>Namehold v{available!.version}</strong> is available.
+          </span>
         </span>
 
         {phase === "available" && (

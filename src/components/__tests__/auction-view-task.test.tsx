@@ -499,7 +499,7 @@ describe("AuctionsView — batch-bid button", () => {
     await screen.findByText("Batch Bid");
 
     // Find and click the close button (× in the dialog header)
-    const closeButtons = screen.getAllByRole("button", { name: "×" });
+    const closeButtons = screen.getAllByRole("button", { name: "Close" });
     const closeBtn = closeButtons[closeButtons.length - 1]!; // last one is the modal close
     fireEvent.click(closeBtn);
 

@@ -1,3 +1,5 @@
+import { ArrowUpRight } from "lucide-react";
+import { Icon } from "./Icon";
 import { useState } from "react";
 import { writeText } from "../../lib/clipboard";
 import { openExternal } from "../../lib/openExternal";
@@ -101,7 +103,7 @@ export function CopyField({
               data-testid={externalTestId}
               className="shrink-0"
             >
-              ↗
+              <Icon icon={ArrowUpRight} size={14} />
             </Button>
           </Tooltip>
         )}

@@ -101,7 +101,7 @@ describe("UpdateBanner — 'What's new?' button", () => {
     fireEvent.click(screen.getByTestId("update-banner-whats-new"));
     expect(screen.getByTestId("whats-new-modal")).toBeInTheDocument();
     // Dialog's close button is the × symbol
-    const closeBtn = screen.getByRole("button", { name: "×" });
+    const closeBtn = screen.getByRole("button", { name: "Close" });
     fireEvent.click(closeBtn);
     expect(screen.queryByTestId("whats-new-modal")).not.toBeInTheDocument();
   });

@@ -1,15 +1,14 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { ROUTE_ALIASES } from "./lib/navigation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Layout } from "./components/Layout";
 import { AboutPage } from "./components/AboutPage";
-import { MigrationWorkspace } from "./components/MigrationWorkspace";
 import { WalletView } from "./components/WalletView";
-import { AuctionsView } from "./components/AuctionsView";
 import { ActivityView } from "./components/ActivityView";
-import { Watchlist } from "./components/Watchlist";
 import MarketPage from "./components/market/MarketPage";
-import { Settings } from "./components/Settings";
+import { NamesInterim } from "./components/interim/NamesInterim";
+import { SettingsInterim } from "./components/interim/SettingsInterim";
 import { Onboarding } from "./components/Onboarding";
 import { useSettingsStore } from "./stores/settings";
 import { useWalletProfiles, useDraftConfirmationWatcher } from "./queries/wallet";
@@ -54,13 +53,14 @@ function AppRoutes() {
       <Route element={<Layout />}>
         {/* Wallet-first: the wallet is the default landing screen. */}
         <Route path="/" element={<WalletView />} />
-        <Route path="/activity" element={<ActivityView />} />
-        <Route path="/auctions" element={<AuctionsView />} />
-        <Route path="/watchlist" element={<Watchlist />} />
+        <Route path="/names" element={<NamesInterim />} />
         <Route path="/market" element={<MarketPage />} />
-        <Route path="/migration" element={<MigrationWorkspace />} />
-        <Route path="/settings" element={<Settings />} />
+        <Route path="/activity" element={<ActivityView />} />
+        <Route path="/settings" element={<SettingsInterim />} />
         <Route path="/about" element={<AboutPage />} />
+        {ROUTE_ALIASES.map((a) => (
+          <Route key={a.from} path={a.from} element={<Navigate to={a.to} replace />} />
+        ))}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

@@ -166,7 +166,7 @@ describe("Settings — Updates card", () => {
     expect(screen.getByText(/What's new in v0\.5\.0/)).toBeInTheDocument();
 
     // Close the modal.
-    fireEvent.click(screen.getByRole("button", { name: "×" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByTestId("whats-new-modal")).not.toBeInTheDocument();
   });
 
