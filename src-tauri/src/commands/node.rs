@@ -631,6 +631,12 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // Capture hsd's output to a log file so a failed start has a visible reason
     // (port busy, bad data dir, network mismatch) instead of vanishing into null.
     let log_path = std::path::Path::new(&data_dir).join("namehold-hsd.log");
+    // Move the last log aside rather than truncate it: an hsd an earlier
+    // session left may still write into it (it was that node's stdout), and
+    // its lines would bury this child's own reason for exiting — a data-dir
+    // LOCK error then read as a bare "exited on startup" under the old node's
+    // sync lines. The old node keeps writing into the moved file.
+    let _ = std::fs::rename(&log_path, log_path.with_extension("log.1"));
     let log = std::fs::File::create(&log_path)
         .map_err(|e| AppError::Other(format!("cannot open hsd log {}: {e}", log_path.display())))?;
     let log_err = log
