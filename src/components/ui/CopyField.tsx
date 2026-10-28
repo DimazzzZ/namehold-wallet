@@ -29,6 +29,10 @@ interface CopyFieldProps {
   /** Accessible label for the external-link button. Defaults to "View on explorer". */
   externalLabel?: string;
   externalTestId?: string;
+  /** "stacked": the value on its own line, the buttons under it. */
+  layout?: "inline" | "stacked";
+  /** Extra buttons rendered after Copy. */
+  extraActions?: React.ReactNode;
 }
 
 /**
@@ -48,6 +52,8 @@ export function CopyField({
   externalUrl,
   externalLabel = "View on explorer",
   externalTestId,
+  layout = "inline",
+  extraActions,
 }: CopyFieldProps) {
   const [copied, setCopied] = useState(false);
   const showToast = useUiStore((s) => s.showToast);
@@ -60,16 +66,31 @@ export function CopyField({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const valueCode = (
+    <code
+      data-testid={valueTestId}
+      className={
+        layout === "stacked"
+          ? "block font-mono text-[13px] break-all bg-gray-50 p-2 rounded-md"
+          : "font-mono text-sm break-all flex-1 bg-gray-50 p-2 rounded"
+      }
+    >
+      {display ?? value}
+    </code>
+  );
+
   return (
     <div data-testid={testId}>
       {label && <div className="text-sm text-gray-500 mb-1">{label}</div>}
-      <div className="flex items-center gap-2">
-        <code
-          data-testid={valueTestId}
-          className="font-mono text-sm break-all flex-1 bg-gray-50 p-2 rounded"
-        >
-          {display ?? value}
-        </code>
+      {layout === "stacked" && valueCode}
+      <div
+        className={
+          layout === "stacked"
+            ? "mt-2 flex flex-wrap items-center gap-2"
+            : "flex items-center gap-2"
+        }
+      >
+        {layout === "inline" && valueCode}
         {externalUrl && (
           <Tooltip content={externalLabel} className="inline-flex shrink-0">
             <Button
@@ -94,6 +115,7 @@ export function CopyField({
         >
           {copied ? "Copied!" : copyLabel}
         </Button>
+        {extraActions}
       </div>
     </div>
   );

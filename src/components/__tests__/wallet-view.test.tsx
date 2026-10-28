@@ -254,7 +254,7 @@ describe("WalletView (non-custodial)", () => {
     const { container } = render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByText("Primary");
-    fireEvent.click(screen.getByRole("button", { name: /Send HNS/i }));
+    fireEvent.click(screen.getByTestId("wallet-send"));
 
     expect(screen.getByText(/Destination Address/i)).toBeInTheDocument();
     expect(screen.getByText(/Amount \(HNS\)/i)).toBeInTheDocument();
@@ -267,7 +267,7 @@ describe("WalletView (non-custodial)", () => {
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByText("Primary");
-    fireEvent.click(screen.getByRole("button", { name: /Send HNS/i }));
+    fireEvent.click(screen.getByTestId("wallet-send"));
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), {
       target: { value: "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2" },
     });
@@ -288,7 +288,7 @@ describe("WalletView (non-custodial)", () => {
     await screen.findByText("Primary");
     expect(await screen.findByTestId("needs-node-sync")).toBeInTheDocument();
     // Can't send with nothing synced, even though the signer/node are ready.
-    expect(screen.getByRole("button", { name: /Send HNS/i })).toBeDisabled();
+    expect(screen.getByTestId("wallet-send")).toBeDisabled();
   });
 
   it("shows freshly mined coins as Immature and refuses to spend them", async () => {
@@ -313,7 +313,7 @@ describe("WalletView (non-custodial)", () => {
     expect(cell).toHaveTextContent(/40 blocks/i);
     // Nothing spendable, so the send flow stays shut even though the signer is
     // unlocked and the node can write.
-    expect(screen.getByRole("button", { name: /Send HNS/i })).toBeDisabled();
+    expect(screen.getByTestId("wallet-send")).toBeDisabled();
   });
 
   it("hides the Immature cell when every coin has matured", async () => {
@@ -324,7 +324,7 @@ describe("WalletView (non-custodial)", () => {
 
     await screen.findByText("Primary");
     expect(screen.queryByTestId("balance-immature")).toBeNull();
-    expect(screen.getByRole("button", { name: /Send HNS/i })).not.toBeDisabled();
+    expect(screen.getByTestId("wallet-send")).not.toBeDisabled();
   });
 
   it("needs-node-sync callout has a Start node button that calls start_hsd", async () => {
@@ -557,8 +557,8 @@ describe("WalletView (non-custodial)", () => {
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByText("Primary");
-    expect(screen.getByText(/Watch-only/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Send HNS/i })).toBeNull();
+    expect(screen.getAllByText(/Watch-only/i).length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("wallet-send")).toBeNull();
     expect(screen.queryByRole("button", { name: /Unlock/i })).toBeNull();
   });
 });
@@ -718,7 +718,7 @@ describe("WalletView multi-wallet management", () => {
 
     expect(await screen.findByText(/Import your wallet/i)).toBeInTheDocument();
     expect(screen.getByText(/Create a new wallet/i)).toBeInTheDocument();
-    expect(screen.getByText(/Watch-only/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Watch-only/i).length).toBeGreaterThan(0);
   });
 });
 
@@ -903,7 +903,7 @@ describe("WalletView — punycode display (Task 4)", () => {
   });
 });
 
-describe("WalletView — expiring-soon renewal banner (Task 3 / C3)", () => {
+describe("WalletView — expiring-soon renewal in Needs you (Task 3 / C3)", () => {
   const expiringRenewals = (source: string) => ({
     walletProfileId: "p1",
     currentHeight: 260000,
@@ -923,37 +923,37 @@ describe("WalletView — expiring-soon renewal banner (Task 3 / C3)", () => {
     ],
   });
 
-  it("shows the banner for a chain-sourced expiring name and Renew opens the modal with the raw name", async () => {
+  it("lists a chain-sourced expiring name and Renew opens the modal with the raw name", async () => {
     invokeMock.mockImplementation(
       routeInvoke({ unlocked: true, canWrite: true, renewals: expiringRenewals("chain") }),
     );
     render(<WalletView />, { wrapper: wrapper() });
 
-    const alert = await screen.findByTestId("expiring-alert");
+    const alert = await screen.findByTestId("needs-you-row");
     expect(alert.textContent).toMatch(/renew/i);
     expect(alert.textContent).toContain(".urgentname");
 
-    fireEvent.click(screen.getByRole("button", { name: /^Renew$/i }));
+    fireEvent.click(within(alert).getByRole("button", { name: /^Renew$/i }));
     await waitFor(() => {
       const call = invokeMock.mock.calls.find((c) => c[0] === "get_name_action_capabilities");
       expect(call?.[1]).toMatchObject({ name: "urgentname" });
     });
   });
 
-  it("does NOT fire the banner from stale csv-import data", async () => {
+  it("does NOT list stale csv-import data", async () => {
     invokeMock.mockImplementation(
       routeInvoke({ unlocked: true, canWrite: true, renewals: expiringRenewals("csv-import") }),
     );
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
-    expect(screen.queryByTestId("expiring-alert")).toBeNull();
+    expect(screen.queryByTestId("needs-you-row")).toBeNull();
   });
 
-  it("shows no banner when nothing is expiring", async () => {
+  it("lists nothing when nothing is expiring", async () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true }));
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
-    expect(screen.queryByTestId("expiring-alert")).toBeNull();
+    expect(screen.queryByTestId("needs-you-row")).toBeNull();
   });
 });
 
@@ -1054,27 +1054,31 @@ describe("WalletView — Recent transactions shows the name (Task 2)", () => {
   });
 });
 
-describe("WalletView — Account public key (xpub) card for Namebase", () => {
+describe("WalletView — Receive dialog (address, QR, xpub)", () => {
   const REAL_XPUB =
     "xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz";
 
-  it("renders the card showing the FULL account xpub (not truncated)", async () => {
+  const openReceive = async () => {
+    await screen.findByText("Primary");
+    fireEvent.click(screen.getByTestId("receive-open"));
+    return screen.getByTestId("receive-dialog");
+  };
+
+  it("shows the FULL account xpub (not truncated) under Advanced", async () => {
     invokeMock.mockImplementation(routeInvoke({ profile: { accountXpub: REAL_XPUB } }));
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
-    const card = await screen.findByTestId("account-xpub-card");
-    // Header label (multiple matches exist because the Alert body also
-    // mentions "account public key (xpub)" — pick the header specifically).
-    expect(within(card).getAllByText(/Account public key \(xpub\)/i).length).toBeGreaterThan(0);
+    const dialog = await openReceive();
+    expect(within(dialog).getByText(/Advanced: account public key \(xpub\)/i)).toBeInTheDocument();
     expect(screen.getByTestId("account-xpub-value")).toHaveTextContent(REAL_XPUB);
+    expect(within(dialog).getByText(/single-signature wallet/i)).toBeInTheDocument();
   });
 
   it("Copy writes the exact xpub to the clipboard and flips the label to 'Copied!'", async () => {
     invokeMock.mockImplementation(routeInvoke({ profile: { accountXpub: REAL_XPUB } }));
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await openReceive();
     const copyBtn = screen.getByTestId("copy-xpub");
     expect(copyBtn).toHaveTextContent(/Copy public key/i);
 
@@ -1088,17 +1092,7 @@ describe("WalletView — Account public key (xpub) card for Namebase", () => {
     });
   });
 
-  it("shows the Namebase / single-signature info Alert", async () => {
-    invokeMock.mockImplementation(routeInvoke({ profile: { accountXpub: REAL_XPUB } }));
-    render(<WalletView />, { wrapper: wrapper() });
-
-    await screen.findByText("Primary");
-    const card = await screen.findByTestId("account-xpub-card");
-    expect(within(card).getByText(/For Namebase \/ xpub-import payees only/i)).toBeInTheDocument();
-    expect(within(card).getByText(/single-signature wallet/i)).toBeInTheDocument();
-  });
-
-  it("renders for watch-only profiles too (they also carry an accountXpub)", async () => {
+  it("works for watch-only profiles too (they also carry an accountXpub)", async () => {
     invokeMock.mockImplementation(
       routeInvoke({
         profile: { accountXpub: REAL_XPUB, watchOnly: true, kind: "watch_only_xpub" },
@@ -1106,43 +1100,44 @@ describe("WalletView — Account public key (xpub) card for Namebase", () => {
     );
     render(<WalletView />, { wrapper: wrapper() });
 
-    await screen.findByText("Primary");
+    await openReceive();
     expect(screen.getByTestId("account-xpub-value")).toHaveTextContent(REAL_XPUB);
+  });
+
+  it("the xpub disclosure is closed by default and opens on click", async () => {
+    invokeMock.mockImplementation(routeInvoke({ profile: { accountXpub: REAL_XPUB } }));
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await openReceive();
+    const toggle = screen.getByRole("button", { name: /Advanced: account public key/i });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByTestId("account-xpub-value")).toHaveTextContent(REAL_XPUB);
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("Copy address writes the receive address to the clipboard", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await openReceive();
+    fireEvent.click(screen.getByRole("button", { name: /Copy address/i }));
+    await waitFor(() => {
+      expect(clipboardWriteMock).toHaveBeenCalledWith("rs1qexamplereceiveaddr");
+    });
+  });
+
+  it("the QR shows at once, with no toggle", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    render(<WalletView />, { wrapper: wrapper() });
+
+    const dialog = await openReceive();
+    expect(dialog.querySelector("svg")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: /Show QR/i })).toBeNull();
   });
 });
 
 describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () => {
-  const REAL_XPUB =
-    "xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz";
-
-  it("xpub disclosure is closed by default but the full xpub stays in the DOM", async () => {
-    invokeMock.mockImplementation(routeInvoke({ profile: { accountXpub: REAL_XPUB } }));
-    render(<WalletView />, { wrapper: wrapper() });
-
-    await screen.findByText("Primary");
-    const toggle = screen.getByRole("button", {
-      name: /Show account public key \(xpub\) for Namebase/i,
-    });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    // Full value is still in the DOM (mounted-but-hidden), so tests can assert
-    // the exact xpub string without opening the disclosure first.
-    expect(screen.getByTestId("account-xpub-value")).toHaveTextContent(REAL_XPUB);
-  });
-
-  it("clicking the disclosure toggle opens it (aria-expanded flips)", async () => {
-    invokeMock.mockImplementation(routeInvoke({ profile: { accountXpub: REAL_XPUB } }));
-    render(<WalletView />, { wrapper: wrapper() });
-
-    await screen.findByText("Primary");
-    const toggle = screen.getByRole("button", {
-      name: /Show account public key \(xpub\) for Namebase/i,
-    });
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    // Copy button is reachable once open.
-    expect(screen.getByTestId("copy-xpub")).toBeInTheDocument();
-  });
-
   it("the Details footer disclosure is collapsed by default and hides the profile diagnostic", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
@@ -1154,31 +1149,6 @@ describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () =
     expect(details).toHaveAttribute("aria-expanded", "true");
     // Details body still surfaces the "Last successful sync:" label.
     expect(screen.getByText(/Last successful sync:/)).toBeInTheDocument();
-  });
-
-  it("Copy Address writes the receive address to the clipboard", async () => {
-    invokeMock.mockImplementation(routeInvoke());
-    render(<WalletView />, { wrapper: wrapper() });
-
-    await screen.findByText("Primary");
-    fireEvent.click(screen.getByRole("button", { name: /Copy Address/i }));
-    await waitFor(() => {
-      expect(clipboardWriteMock).toHaveBeenCalledWith("rs1qexamplereceiveaddr");
-    });
-  });
-
-  it("the QR is hidden by default and toggled by the 'Show QR' button", async () => {
-    invokeMock.mockImplementation(routeInvoke());
-    const { container } = render(<WalletView />, { wrapper: wrapper() });
-
-    await screen.findByText("Primary");
-    // No SVG QR mounted initially.
-    expect(container.querySelector("svg[role='img']")?.getAttribute("aria-label")).not.toBe(
-      "rs1qexamplereceiveaddr",
-    );
-    fireEvent.click(screen.getByRole("button", { name: /Show QR/i }));
-    // After clicking, the toggle label flips and an SVG is now rendered inside the receive card.
-    expect(screen.getByRole("button", { name: /Hide QR/i })).toBeInTheDocument();
   });
 
   it("Recent activity card renders classified rows from read_action_history and links to /activity", async () => {
@@ -1517,31 +1487,17 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
   });
 
   describe("action-bus handlers", () => {
-    it("wallet:toggleQr shows and hides the QR code", async () => {
+    it("wallet:openReceive opens the Receive dialog", async () => {
       const { dispatchAction } = await import("../../lib/actionBus");
       invokeMock.mockImplementation(routeInvoke({ unlocked: true }));
       render(<WalletView />, { wrapper: wrapper() });
 
-      // Initially no QR visible
-      expect(screen.queryByRole("img", { hidden: true })).not.toBeInTheDocument();
-      const showQrBtn = await screen.findByRole("button", { name: "Show QR" });
-      expect(showQrBtn).toBeInTheDocument();
-
-      // Dispatch toggleQr action
+      await screen.findByText("Primary");
+      expect(screen.queryByTestId("receive-dialog")).toBeNull();
       act(() => {
-        dispatchAction("wallet:toggleQr");
+        dispatchAction("wallet:openReceive");
       });
-      await waitFor(() => {
-        expect(screen.getByRole("button", { name: "Hide QR" })).toBeInTheDocument();
-      });
-
-      // Dispatch again to hide
-      act(() => {
-        dispatchAction("wallet:toggleQr");
-      });
-      await waitFor(() => {
-        expect(screen.getByRole("button", { name: "Show QR" })).toBeInTheDocument();
-      });
+      await waitFor(() => expect(screen.getByTestId("receive-dialog")).toBeInTheDocument());
     });
 
     it("wallet:focusFilter focuses the filter input", async () => {
@@ -2114,5 +2070,18 @@ describe("WalletView — balance card names a node that can't report the wallet'
       expect(invokeMock.mock.calls.some((c) => c[0] === "get_sync_status")).toBe(true),
     );
     expect(screen.queryByTestId("balance-node-not-authoritative")).toBeNull();
+  });
+});
+
+describe("WalletView — one capability fetch", () => {
+  it("Needs you and the Owned Names table share one get_names_action_capabilities call", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText("Primary");
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.filter((c) => c[0] === "get_names_action_capabilities"),
+      ).toHaveLength(1),
+    );
   });
 });

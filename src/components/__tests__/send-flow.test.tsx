@@ -136,7 +136,7 @@ function wrapper() {
 
 async function openReview() {
   await screen.findByText("Primary");
-  fireEvent.click(screen.getByRole("button", { name: /Send HNS/i }));
+  fireEvent.click(screen.getByTestId("wallet-send"));
   fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
   fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "1" } });
   fireEvent.click(screen.getByRole("button", { name: /Review/i }));
@@ -217,7 +217,7 @@ describe("WalletView send flow (asset safety)", () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
-    fireEvent.click(screen.getByRole("button", { name: /Send HNS/i }));
+    fireEvent.click(screen.getByTestId("wallet-send"));
     // Leave address empty, set an amount.
     fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: /Review/i }));
@@ -232,7 +232,7 @@ describe("WalletView send flow (asset safety)", () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
-    fireEvent.click(screen.getByRole("button", { name: /Send HNS/i }));
+    fireEvent.click(screen.getByTestId("wallet-send"));
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
     fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "0" } });
     fireEvent.click(screen.getByRole("button", { name: /Review/i }));
@@ -246,7 +246,7 @@ describe("WalletView send flow (asset safety)", () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
-    fireEvent.click(screen.getByRole("button", { name: /Send HNS/i }));
+    fireEvent.click(screen.getByTestId("wallet-send"));
     // A mainnet hs1… address on a regtest wallet.
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), {
       target: { value: "hs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2" },
@@ -263,7 +263,7 @@ describe("WalletView send flow (asset safety)", () => {
     invokeMock.mockImplementation(routeInvoke()); // spendable = 5,000,000 doos (5 HNS)
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
-    fireEvent.click(screen.getByRole("button", { name: /Send HNS/i }));
+    fireEvent.click(screen.getByTestId("wallet-send"));
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
     fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "10" } }); // > 5 HNS
 
@@ -277,7 +277,7 @@ describe("WalletView send flow (asset safety)", () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
-    fireEvent.click(screen.getByRole("button", { name: /Send HNS/i }));
+    fireEvent.click(screen.getByTestId("wallet-send"));
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
     fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
 

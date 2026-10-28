@@ -19,7 +19,7 @@ export type ActionId =
   | "wallet:send"
   | "wallet:sync"
   | "wallet:toggleLock"
-  | "wallet:toggleQr"
+  | "wallet:openReceive"
   | "wallet:focusFilter"
   | "wallet:list:next"
   | "wallet:list:prev"

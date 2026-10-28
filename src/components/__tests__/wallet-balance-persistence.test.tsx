@@ -126,13 +126,13 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
     render(<WalletView />, { wrapper: wrapper().Wrapper });
 
     // Wallet A's own balance.
-    expect(await screen.findByText("100.000000")).toBeInTheDocument();
-    expect(screen.queryByText("200.000000")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("balance-spendable")).toHaveTextContent(/^100$/));
+    expect(screen.getByTestId("balance-spendable")).not.toHaveTextContent(/^200$/);
 
     // Switch to Wallet B → shows B's balance, not A's.
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "B" } });
-    expect(await screen.findByText("200.000000")).toBeInTheDocument();
-    expect(screen.queryByText("100.000000")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("balance-spendable")).toHaveTextContent(/^200$/));
+    expect(screen.getByTestId("balance-spendable")).not.toHaveTextContent(/^100$/);
 
     // get_wallet_balances was queried per-profile (A then B).
     const balCalls = invokeMock.mock.calls.filter((c) => c[0] === "get_wallet_balances");
@@ -150,7 +150,7 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
     const { Wrapper, qc } = wrapper();
     render(<WalletView />, { wrapper: Wrapper });
 
-    expect(await screen.findByText("100.000000")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("balance-spendable")).toHaveTextContent(/^100$/));
     const callsForA = () =>
       invokeMock.mock.calls.filter(
         (c) =>
@@ -163,7 +163,7 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
     // staleTime window nothing schedules a refetch on its own — no interval
     // fires. The displayed value stays put until an explicit invalidation.
     backend.state.liquid.A = 150 * HNS;
-    expect(screen.getByText("100.000000")).toBeInTheDocument();
+    expect(screen.getByTestId("balance-spendable")).toHaveTextContent(/^100$/);
     expect(callsForA()).toBe(initialCalls); // no auto-refetch while idle+offline
 
     // An explicit cache invalidation — what every real wallet mutation and a
@@ -173,7 +173,7 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
     await act(async () => {
       await qc.invalidateQueries({ queryKey: ["wallet"] });
     });
-    expect(await screen.findByText("150.000000")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("balance-spendable")).toHaveTextContent(/^150$/));
     await waitFor(() => expect(callsForA()).toBeGreaterThan(initialCalls));
   });
 
@@ -268,14 +268,21 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
     });
     render(<WalletView />, { wrapper: wrapper().Wrapper });
 
-    expect(await screen.findByText("11.000000")).toBeInTheDocument(); // A's confirmed
+    // Confirmed is shown in the Spendable tooltip.
+    const confirmedShows = async (v: string) => {
+      fireEvent.focus(await screen.findByText("Spendable"));
+      await waitFor(() =>
+        expect(screen.getByRole("tooltip")).toHaveTextContent(`confirmed ${v} HNS`),
+      );
+      fireEvent.blur(screen.getByText("Spendable"));
+    };
+    await confirmedShows("11.000000"); // A's confirmed
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "B" } });
-    expect(await screen.findByText("22.000000")).toBeInTheDocument(); // B's confirmed
-    expect(screen.queryByText("11.000000")).toBeNull();
+    await confirmedShows("22.000000"); // B's confirmed
 
     // Switch back to A → A's value again (the old bug left B's value stuck).
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "A" } });
-    expect(await screen.findByText("11.000000")).toBeInTheDocument();
+    await confirmedShows("11.000000");
 
     // Every read_balance call pinned an explicit walletProfileId (the fix).
     const rbCalls = invokeMock.mock.calls.filter((c) => c[0] === "read_balance");

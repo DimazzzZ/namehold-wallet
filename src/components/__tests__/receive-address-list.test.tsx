@@ -100,7 +100,7 @@ describe("ReceiveAddressList", () => {
     // formatDate() produces "January 1, 2026 - 10:00:00" for this ISO input.
     const firstSeen0 = screen.getByTestId("first-seen-0");
     expect(firstSeen0).toBeInTheDocument();
-    expect(firstSeen0.textContent).toMatch(/2026/);
+    expect(firstSeen0.textContent).toBe("Jan 1");
   });
 
   it("toggles QR display on QR button click", () => {

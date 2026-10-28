@@ -6,7 +6,6 @@ import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 
 // Tests for the simplified name-acquisition flow:
-//   * WalletView shows an "Auctions" link in the sidebar
 //   * AuctionsView renders input and opens the modal
 //   * NameActionsModal shows guided phase-based UI for AVAILABLE names
 //   * NameActionsModal shows guided UI for BIDDING/REVEAL/CLOSED names
@@ -22,7 +21,6 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   readText: vi.fn().mockResolvedValue(""),
 }));
 
-import { WalletView } from "../WalletView";
 import { AuctionsView } from "../AuctionsView";
 import { NameActionsModal } from "../NameActionsModal";
 import { makeCapabilities, refused } from "../../test/fixtures/capabilities";
@@ -58,60 +56,6 @@ function wrapper(initialEntries = ["/wallet"]) {
 }
 
 beforeEach(() => invokeMock.mockReset());
-
-describe("WalletView — Auctions link", () => {
-  function routeWallet() {
-    return (cmd: string) => {
-      switch (cmd) {
-        case "list_wallet_profiles":
-          return Promise.resolve([profile]);
-        case "get_signer_session":
-          return Promise.resolve({
-            walletProfileId: profile.id,
-            unlocked: true,
-            unlockedUntilEpochMs: Date.now() + 60000,
-          });
-        case "get_write_capability":
-          return Promise.resolve({
-            signerUnlocked: true,
-            broadcasterAvailable: true,
-            canWrite: true,
-            reason: null,
-          });
-        case "get_wallet_balances":
-          return Promise.resolve({
-            liquidDoos: 5_000_000,
-            nameControlDoos: 0,
-            nameLockupDoos: 0,
-            immatureDoos: 0,
-            immatureInBlocks: null,
-            totalDoos: 5_000_000,
-          });
-        case "read_balance":
-          return Promise.resolve({
-            confirmed: 0,
-            unconfirmed: 0,
-            locked_confirmed: 0,
-            locked_unconfirmed: 0,
-          });
-        case "list_tx_drafts":
-          return Promise.resolve([]);
-        case "read_names":
-          return Promise.resolve([]);
-        default:
-          return Promise.resolve(null);
-      }
-    };
-  }
-
-  it("renders the Auctions link in the sidebar", async () => {
-    invokeMock.mockImplementation(routeWallet());
-    render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
-
-    expect(screen.getByText("Auctions")).toBeInTheDocument();
-  });
-});
 
 describe("AuctionsView — name lookup and modal", () => {
   function routeAuctions() {
