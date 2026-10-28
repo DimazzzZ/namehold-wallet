@@ -43,6 +43,9 @@ enum FakeMode {
     DieLock,
     /// Print a generic error line and exit non-zero.
     DieError,
+    /// Print hsd's real data-dir lock error, then exit non-zero a moment
+    /// later, so another writer of the log has time to append behind it.
+    DieLockSlowly,
 }
 
 /// A tempdir that cleans itself up on drop. Holds the fake binary + data dir.
@@ -81,6 +84,10 @@ impl Harness {
                 "echo 'Error: could not obtain lock: Resource temporarily unavailable (LOCK)'\nexit 1\n"
             }
             FakeMode::DieError => "echo 'Error: something went wrong during startup'\nexit 1\n",
+            FakeMode::DieLockSlowly => {
+                "echo 'Error: IO error: lock blocks/index/LOCK: Resource temporarily unavailable'\n\
+                 sleep 0.4\nexit 1\n"
+            }
         };
 
         let script = format!(
@@ -447,8 +454,49 @@ async fn start_hsd_surfaces_data_dir_lock_when_child_dies_with_lock() {
         msg.contains("LOCK"),
         "expected log tail with LOCK, got: {msg}"
     );
+    // The error names the URL this wallet reaches the node at (the global
+    // one here, a custom port): the user sees which port the app is on.
+    assert!(
+        msg.contains("reach its RPC at http://127.0.0.1:1 "),
+        "expected the probed URL in the error, got: {msg}"
+    );
     // The dead child was reaped from the handle.
     assert!(state.hsd_children.lock().unwrap().is_empty());
+}
+
+// ===========================================================================
+// start_hsd: an hsd an earlier session left still holds the data dir and
+// still writes into `namehold-hsd.log` (its stdout from that spawn). The new
+// child dies on the data-dir lock; the error must say so, not show the old
+// node's sync lines as the reason.
+// ===========================================================================
+#[tokio::test]
+#[serial(hsd_home)]
+async fn start_hsd_surfaces_data_dir_lock_while_an_old_node_writes_the_log() {
+    let h = Harness::new(FakeMode::DieLockSlowly, "8.5.0");
+    let log = h.data_dir().join("namehold-hsd.log");
+    // The old node: stdout opened without append, like `start_hsd` opens it.
+    let mut old_node = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg("while :; do echo '[debug] (wallet) Adding block: 352850.'; sleep 0.02; done")
+        .stdout(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let app = app_with(conn_for(&h, NO_RPC));
+
+    let result = start_hsd(app.state()).await;
+    let _ = old_node.kill();
+    let _ = old_node.wait();
+
+    let msg = result.expect_err("should fail on LOCK").to_string();
+    assert!(
+        msg.contains("already running on this data directory"),
+        "expected data-dir-lock message, got: {msg}"
+    );
+    assert!(
+        msg.contains("Resource temporarily unavailable"),
+        "expected the lock error in the log tail, got: {msg}"
+    );
 }
 
 // ===========================================================================

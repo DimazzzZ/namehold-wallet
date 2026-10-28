@@ -8,17 +8,18 @@
 //! default, evaluated independently per key.
 //!
 //! A per-profile override is an explicit user choice: when present it is used
-//! verbatim and never rewritten. A `local_node` profile without one reaches
-//! its own network's port over a default global URL (spec 2026-10-24 R1).
+//! verbatim and never rewritten. A profile without one reaches its own
+//! network's port over a default global URL, whatever its chain source (spec
+//! 2026-10-24 R1).
 
 use crate::error::AppError;
 use crate::noncustodial::rpc::{resolve_node_api_key, ChainSource};
 
 /// The built-in default node RPC URL when neither an override nor a global
 /// setting supplies one: mainnet's default hsd port, from
-/// [`Network::default_rpc_url`] rather than spelled out again here. Only a
-/// remote-node profile with no URL anywhere ends up here: a local-node profile
-/// takes its own network's port instead.
+/// [`Network::default_rpc_url`] rather than spelled out again here. In the
+/// resolver only a profile whose network it cannot name ends up here: every
+/// other profile takes its own network's port instead.
 pub fn default_node_rpc_url() -> String {
     crate::noncustodial::network::Network::Main.default_rpc_url()
 }
@@ -86,12 +87,8 @@ pub fn effective_node_config_for_profile(
         merged.insert(k.clone(), v.clone());
     }
 
-    // A local node without a URL of the profile's own, over a global URL that
-    // is only a default, is the local node of the profile's network
-    // (ADR-0005): that default belongs to whichever network was started last,
-    // and following it sent a mainnet wallet to a regtest node. A global URL
-    // that is not a default (another host, a custom port) is the user's choice
-    // and is kept.
+    // Whether the profile reads from its network's local node: the node a
+    // wallet's activation starts (spec 2026-10-24 R4) is these wallets' alone.
     let local_node = !matches!(
         merged.get("chain_source").map(String::as_str),
         Some("remote_node" | "explorer")
@@ -107,8 +104,17 @@ pub fn effective_node_config_for_profile(
         .filter(|u| !u.is_empty());
     let url_is_a_default =
         url_setting.is_none_or(crate::noncustodial::rpc::is_default_loopback_rpc_url);
+    // A profile without a URL of its own, over a global URL that is only a
+    // default, reaches its own network's port (ADR-0005, spec R1): that
+    // default belongs to whichever network was started last, and following it
+    // sent a mainnet wallet to a regtest node. This holds for every chain
+    // source: the realign of 0.6.0 wrote that URL at every start whatever the
+    // chain source was, so a remote-node wallet over such a leftover was sent
+    // to another network's port too, and could not reach the node the
+    // previous build had started for it (2026-10-28). A global URL that is not
+    // a default (another host, a custom port) is the user's choice and is kept.
     let node_rpc_url = match profile_network {
-        Some(network) if local_node && !chosen_here("node_rpc_url") && url_is_a_default => {
+        Some(network) if !chosen_here("node_rpc_url") && url_is_a_default => {
             network.default_rpc_url()
         }
         _ => url_setting

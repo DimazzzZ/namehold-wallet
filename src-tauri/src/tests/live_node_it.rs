@@ -4145,10 +4145,18 @@ async fn live_broadcast_guard_rejects_cross_network() {
         return;
     };
     let conn = seeded_conn_regtest(&url, &key);
-    // Override the profile network to mainnet (while keeping regtest node URL).
+    // Override the profile network to mainnet, and pin the regtest node's URL
+    // as the profile's own: over a default global URL a mainnet wallet reaches
+    // mainnet's port (spec 2026-10-24 R1), so pointing it at the regtest node
+    // takes the explicit choice a user would make, a per-profile URL.
     conn.execute(
         "UPDATE wallet_profiles SET network = 'mainnet' WHERE id = ?1",
         params![PROFILE],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, 'node_rpc_url', ?2)",
+        params![PROFILE, url],
     )
     .unwrap();
     let app = app_with(conn);

@@ -341,15 +341,52 @@ fn a_local_node_profile_keeps_a_global_url_that_is_not_a_default() {
     }
 }
 
-/// A remote node is not the profile's network's local node: it keeps the
-/// global URL even when that URL looks like a loopback default.
+/// Spec 2026-10-24 R1 holds for every chain source: a loopback URL on
+/// another network's default port is what the realign of older builds left
+/// there, whatever the chain source was, so a remote-node or explorer
+/// profile without its own URL reaches its own network's port over it too.
+/// Before 2026-10-28 this held for local-node profiles only, and a mainnet
+/// wallet over `remote_node` and a leftover `127.0.0.1:14037` could not reach
+/// the mainnet node the previous build had started: `start_hsd` spawned a
+/// second hsd over its data directory instead.
 #[test]
-fn a_remote_node_profile_keeps_the_global_url() {
+fn a_remote_node_or_explorer_profile_over_another_networks_default_reaches_its_own_port() {
+    let conn = db_with_profile(); // p1 is regtest
+    for source in ["remote_node", "explorer"] {
+        set_global(&conn, "chain_source", source);
+        for global in [
+            "",
+            "http://127.0.0.1:12037",
+            "http://localhost:13037/",
+            "http://[::1]:15037",
+        ] {
+            set_global(&conn, "node_rpc_url", global);
+            let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+            assert_eq!(
+                cfg.node_rpc_url, "http://127.0.0.1:14037",
+                "{source} over {global:?}"
+            );
+        }
+    }
+}
+
+/// A remote-node profile's global URL that is not a default is its choice of
+/// node and is kept as it is: another host, a custom port, or its own
+/// network's default port.
+#[test]
+fn a_remote_node_profile_keeps_a_global_url_that_is_not_a_default() {
     let conn = db_with_profile();
     set_global(&conn, "chain_source", "remote_node");
-    set_global(&conn, "node_rpc_url", "http://127.0.0.1:12037");
-    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
-    assert_eq!(cfg.node_rpc_url, "http://127.0.0.1:12037");
+    for global in [
+        "http://127.0.0.1:9999",
+        "http://10.0.0.5:12037",
+        "http://node.lan:12037",
+        "http://127.0.0.1:14037",
+    ] {
+        set_global(&conn, "node_rpc_url", global);
+        let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+        assert_eq!(cfg.node_rpc_url, global, "{global}");
+    }
 }
 
 /// The profile's own URL wins over the network's port, as ADR-001 says.

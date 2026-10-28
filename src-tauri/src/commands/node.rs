@@ -631,6 +631,12 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // Capture hsd's output to a log file so a failed start has a visible reason
     // (port busy, bad data dir, network mismatch) instead of vanishing into null.
     let log_path = std::path::Path::new(&data_dir).join("namehold-hsd.log");
+    // Move the last log aside rather than truncate it: an hsd an earlier
+    // session left may still write into it (it was that node's stdout), and
+    // its lines would bury this child's own reason for exiting — a data-dir
+    // LOCK error then read as a bare "exited on startup" under the old node's
+    // sync lines. The old node keeps writing into the moved file.
+    let _ = std::fs::rename(&log_path, log_path.with_extension("log.1"));
     let log = std::fs::File::create(&log_path)
         .map_err(|e| AppError::Other(format!("cannot open hsd log {}: {e}", log_path.display())))?;
     let log_err = log
@@ -701,10 +707,19 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
                 let tail = read_log_tail(&log_path);
                 // A data-dir lock means another hsd already owns this directory.
                 if tail.contains("LOCK") || tail.contains("Resource temporarily unavailable") {
+                    // Name the URL this wallet reaches the node at: a wallet
+                    // its settings send to another port never reaches it, and
+                    // the key is not what is wrong then.
+                    let node_url = {
+                        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+                        NodeRpcClient::for_profile(&db, &profile_id)
+                            .map(|c| c.node_url().to_string())
+                            .unwrap_or_default()
+                    };
                     return Err(AppError::Other(format!(
                         "A node is already running on this data directory ({data_dir}). \
-                         The app will use it once it can reach its RPC — set the Node RPC \
-                         API key in Settings (or it's read from hsd.conf).{tail}"
+                         The app will use it once it can reach its RPC at {node_url} — set \
+                         the Node RPC API key in Settings (or it's read from hsd.conf).{tail}"
                     )));
                 }
                 return Err(AppError::Other(format!("hsd exited on startup.{tail}")));
