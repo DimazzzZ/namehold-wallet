@@ -1,4 +1,4 @@
-import { TriangleAlert } from "lucide-react";
+import { ExternalLink, TriangleAlert } from "lucide-react";
 import { Icon } from "./ui/Icon";
 import { useState, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -36,9 +36,12 @@ function NamebaseShutDownNotice() {
   return (
     <div
       data-testid="namebase-shut-down"
-      className="bg-amber-50 rounded p-6 border border-amber-200 max-w-xl space-y-2"
+      className="bg-amber-50 rounded-lg p-4 border border-amber-200 space-y-2"
     >
-      <h3 className="text-sm font-semibold">Legacy Namebase has shut down</h3>
+      <h3 className="text-sm font-semibold flex items-center gap-2">
+        <Icon icon={TriangleAlert} size={15} />
+        Legacy Namebase has shut down
+      </h3>
       <p className="text-sm text-gray-700">
         The custodial Namebase platform (sunset.namebase.io) closed on 1 October 2026, so the wallet
         can no longer connect to it, list your domains there, or transfer and withdraw on your
@@ -56,8 +59,9 @@ function NamebaseShutDownNotice() {
         size="sm"
         variant="ghost"
         onClick={() => void openExternal(NAMEBASE_SUNSET_GUIDE_URL)}
+        className="inline-flex items-center gap-1.5"
       >
-        Read Namebase&apos;s sunset guide
+        Read Namebase&apos;s sunset guide <Icon icon={ExternalLink} size={13} />
       </Button>
     </div>
   );
@@ -231,9 +235,8 @@ export function NamebaseDashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold">Namebase</h2>
-        {isConnected && (
+      {isConnected && (
+        <div className="flex justify-end">
           <div className="flex gap-2">
             <Button size="sm" onClick={handleImport} disabled={importing}>
               {importing ? "Importing..." : "Import All TLDs"}
@@ -242,8 +245,8 @@ export function NamebaseDashboard() {
               Logout
             </Button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {!isConnected ? (
         <NamebaseShutDownNotice />

@@ -236,11 +236,11 @@ const HIDDEN_ORDER: ShakedexHidden["kind"][] = [
   "unverified",
 ];
 
-/** The footer toggle: "▸ 5 unavailable listings hidden: 3 sold, …", or how to hide them. */
+/** The footer toggle: "5 unavailable listings hidden: 3 sold, …", or how to hide them. */
 export function hiddenToggleText(hidden: HiddenEntry[], open: boolean): string | null {
   if (hidden.length === 0) return null;
   const what = `${hidden.length} unavailable ${hidden.length === 1 ? "listing" : "listings"}`;
-  if (open) return `▾ Hide ${what}`;
+  if (open) return `Hide ${what}`;
   // Two kinds read "couldn't be checked": counted under one label.
   const counts = new Map<(n: number) => string, number>();
   for (const kind of HIDDEN_ORDER) {
@@ -249,7 +249,7 @@ export function hiddenToggleText(hidden: HiddenEntry[], open: boolean): string |
     if (n > 0) counts.set(label, (counts.get(label) ?? 0) + n);
   }
   const parts = [...counts].map(([label, n]) => label(n));
-  return `▸ ${what} hidden: ${parts.join(", ")}`;
+  return `${what} hidden: ${parts.join(", ")}`;
 }
 
 export interface RowTag {

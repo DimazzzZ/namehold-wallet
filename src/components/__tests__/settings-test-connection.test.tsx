@@ -97,8 +97,12 @@ describe("Settings — Test connection", () => {
     renderSettings();
     fireEvent.click(await screen.findByTestId("test-connection-button"));
     await screen.findByTestId("connection-network-mismatch");
-    fireEvent.change(screen.getByTestId("settings-fee-rate"), { target: { value: "2000" } });
+    fireEvent.click(screen.getByTestId("settings-section-advanced"));
+    fireEvent.change(await screen.findByTestId("settings-fee-rate"), { target: { value: "2000" } });
     expect(await screen.findByTestId("settings-save")).toBeDisabled();
     expect(screen.getByTestId("settings-save-blocked")).toHaveTextContent(/testnet/);
+    // The block is in Connections: Show goes back there.
+    fireEvent.click(screen.getByTestId("settings-save-blocked-show"));
+    expect(await screen.findByTestId("connection-network-mismatch")).toBeInTheDocument();
   });
 });

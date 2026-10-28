@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 import { Settings } from "../../components/Settings";
+import { settingsPath, type SettingsSection } from "../../lib/settingsSections";
 
 /**
  * The provider shell every Settings test needs: a fresh QueryClient with
@@ -16,18 +17,18 @@ import { Settings } from "../../components/Settings";
  * per file and a factory living in an imported module would not be
  * initialised in time.
  */
-export function settingsWrapper() {
+export function settingsWrapper(section?: SettingsSection) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={[settingsPath(section)]}>{children}</MemoryRouter>
       </QueryClientProvider>
     );
   };
 }
 
-/** Render `<Settings />` inside {@link settingsWrapper}. */
-export function renderSettings() {
-  return render(<Settings />, { wrapper: settingsWrapper() });
+/** Render `<Settings />` inside {@link settingsWrapper}, opened at `section`. */
+export function renderSettings(section?: SettingsSection) {
+  return render(<Settings />, { wrapper: settingsWrapper(section) });
 }

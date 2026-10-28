@@ -1,3 +1,10 @@
+import { useSearchParams } from "react-router-dom";
+import { Download, FolderOpen, TriangleAlert } from "lucide-react";
+import { Icon } from "./ui/Icon";
+import { PageHeader } from "./ui/PageHeader";
+import { SettingsSectionNav } from "./settings/SettingsSectionNav";
+import { NamebaseDashboard } from "./NamebaseDashboard";
+import { parseSettingsSection, type SettingsSection } from "../lib/settingsSections";
 import { useState, useEffect } from "react";
 import { useSettingsStore } from "../stores/settings";
 import { useNodeStatus, useStartHsd, useStopHsd, useResyncHsd } from "../queries/node";
@@ -58,12 +65,13 @@ export function validateExplorerUrl(raw: string): string | null {
 }
 
 /**
- * One coherent settings model for the non-custodial wallet:
- *   - Wallet: the active profile (managed on the Wallet page).
+ * One coherent settings model for the non-custodial wallet, in six sections
+ * (`?section=`, lib/settingsSections.ts) over one form and one save bar:
  *   - Connections: the explorer URL (node-free reads) and the hsd node RPC
  *     (needed only to send).
- *   - Advanced (collapsed): address gap limit, signer session timeout, and the
- *     advanced-navigation toggle.
+ *   - Node & tray, Notifications, Backup & import (incl. the Namebase
+ *     history import), Updates.
+ *   - Advanced: address gap limit, signer session timeout, fee rate, Shakedex.
  * No legacy hsd-wallet / connection-mode / write-mode config.
  */
 export function Settings() {
@@ -75,9 +83,11 @@ export function Settings() {
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-  // Advanced is collapsed by default; the user's own toggle is kept here and
-  // an error inside it forces it open (see `advancedHasError`).
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // The open section lives in the URL; every section renders inside this one
+  // mounted form, so unsaved edits and the node probe survive switching.
+  const [params, setParams] = useSearchParams();
+  const section = parseSettingsSection(params.get("section"));
+  const goSection = (key: SettingsSection) => setParams({ section: key }, { replace: true });
   const nodeProbe = useNodeConnectionCheck();
 
   // The persisted pair the Chain source selector reads and writes, resolved
@@ -201,9 +211,9 @@ export function Settings() {
       ? `Address gap limit must be a whole number from 1 to ${MAX_ADDRESS_GAP_LIMIT}`
       : null;
 
-  // A stored value outside its range lands here as an error in a collapsed
-  // section while Save stays disabled; open the section and say why next to
-  // Save, so the block is never silent.
+  // A stored value outside its range lands here as an error while Save stays
+  // disabled; the Advanced nav item gets a red dot and the save bar says why
+  // (with Show from another section), so the block is never silent.
   const advancedHasError = !!feeRateError || !!gapLimitError;
 
   // Pick the hsd data directory with the native folder browser (Finder).
@@ -229,13 +239,23 @@ export function Settings() {
   // was never tested, or one that didn't report its chain, saves as before.
   const nodeNetworkMismatch = nodeProbe.result?.networkMatches === false;
 
-  const saveBlockReason =
-    explorerUrlError ||
-    feeRateError ||
-    gapLimitError ||
-    (nodeNetworkMismatch
-      ? `the node is on ${nodeProbe.result?.network ?? "another network"}, not this wallet's network`
-      : null);
+  // What blocks Save, and the section that holds it (same order as before).
+  const saveBlock: { reason: string; section: SettingsSection } | null = explorerUrlError
+    ? { reason: explorerUrlError, section: "connections" }
+    : feeRateError
+      ? { reason: feeRateError, section: "advanced" }
+      : gapLimitError
+        ? { reason: gapLimitError, section: "advanced" }
+        : nodeNetworkMismatch
+          ? {
+              reason: `the node is on ${nodeProbe.result?.network ?? "another network"}, not this wallet's network`,
+              section: "connections",
+            }
+          : null;
+  const sectionErrors: Partial<Record<SettingsSection, boolean>> = {
+    connections: !!explorerUrlError || nodeNetworkMismatch,
+    advanced: advancedHasError,
+  };
 
   const handleSave = async () => {
     if (explorerUrlError) {
@@ -309,360 +329,391 @@ export function Settings() {
   };
 
   return (
-    <div className="space-y-6 max-w-xl pb-16">
-      <h2 className="text-xl font-bold">Settings</h2>
-
-      {/* Connections: reads (explorer) + sending (node) in one place. */}
-      <div className="bg-white rounded p-4 border border-gray-200 space-y-4">
-        <h3 className="text-sm font-semibold text-gray-700">Connections</h3>
-
-        <div className="space-y-2">
-          <Input
-            label="Explorer base URL (reads)"
-            value={form.explorer_api_url ?? ""}
-            onChange={(e) => updateField("explorer_api_url", e.target.value)}
-            placeholder="https://e.hnsfans.com"
-            data-testid="explorer-url-input"
-          />
-          {explorerUrlError ? (
-            <div className="text-xs text-red-600" data-testid="explorer-url-error">
-              {explorerUrlError}
-            </div>
-          ) : (
-            <div className="text-xs text-gray-500">
-              Balance and names are read from this explorer when the node is not synced. When the
-              node is connected and fully synced, reads come from the local node cache instead.
-              Takes effect on the next Sync/read.
-            </div>
-          )}
-          <Input
-            label="Explorer fallback URL (optional)"
-            value={form.explorer_fallback_url ?? ""}
-            onChange={(e) => updateField("explorer_fallback_url", e.target.value)}
-            placeholder="https://shakeshift.com"
-            data-testid="explorer-fallback-url-input"
-          />
-          <div className="text-xs text-gray-500">
-            Used when the primary explorer is unreachable. Leave empty to disable failover.
-          </div>
-        </div>
-
-        <div className="space-y-2 pt-2 border-t border-gray-100">
-          <label className="text-sm font-medium">Chain source</label>
-          <select
-            value={toConnectionMode(chainSource, nodeMode)}
-            onChange={(e) => {
-              const next = fromConnectionMode(e.target.value as ConnectionMode);
-              updateField("chain_source", next.chain_source);
-              updateField("node_mode", next.node_mode);
-            }}
-            className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
-            data-testid="chain-source-select"
-          >
-            {(Object.keys(CONNECTION_MODE_LABELS) as ConnectionMode[]).map((mode) => (
-              <option key={mode} value={mode}>
-                {CONNECTION_MODE_LABELS[mode]}
-              </option>
-            ))}
-          </select>
-          <div className="text-xs text-gray-500">
-            Where the wallet sends transactions. Reads come from your node when it is synced,
-            otherwise the explorer. Remote and SPV are a privacy/trust tradeoff, not custody — your
-            keys never leave this device. SPV downloads only block headers and reads balances/names
-            from the explorer; switching to or from SPV needs an hsd restart (use "Re-sync node
-            data" below if it misbehaves).
-          </div>
-          <RemoteNodeFields
-            url={form.node_rpc_url ?? ""}
-            apiKey={form.node_rpc_api_key ?? ""}
-            onUrlChange={(v) => updateField("node_rpc_url", v)}
-            onApiKeyChange={(v) => updateField("node_rpc_api_key", v)}
-            probe={nodeProbe}
-            urlLabel="Node RPC URL (sending)"
-            urlPlaceholder={defaultNodeRpcUrl(profile?.network ?? "mainnet")}
-            apiKeyLabel="Node RPC API key"
-            apiKeyPlaceholder={
-              hasStoredSecret(settings, "node_rpc_api_key")
-                ? "•••••• (stored — leave blank to keep)"
-                : "(optional)"
-            }
-          />
-          <div className="text-xs text-gray-500">
-            Needed only to send or do name actions. Run hsd with <code>--index-address</code>. See
-            NODE_SETUP.md. "Test connection" reuses your stored API key when the URL matches the
-            saved node.
-          </div>
-          {chainSource === "remote_node" && (
-            <AllowRemoteBroadcastToggle
-              checked={settingToBool(form.allow_remote_broadcast)}
-              onChange={(v) => updateField("allow_remote_broadcast", boolToSetting(v))}
-              showDescription
-            />
-          )}
-        </div>
-
-        <div className="space-y-2 pt-2 border-t border-gray-100">
-          <div className="flex items-end gap-2">
-            <div className="flex-1">
-              <Input
-                label="Node data directory (hsd --prefix)"
-                value={form.hsd_prefix ?? ""}
-                onChange={(e) => updateField("hsd_prefix", e.target.value)}
-                placeholder="(default: ~/.hsd)"
-              />
-            </div>
-            <Button size="sm" variant="secondary" onClick={pickDataDir}>
-              Browse…
-            </Button>
-          </div>
-          <div className="text-xs text-gray-500">
-            Where hsd stores the chain. Point this at e.g. <code>/Volumes/WD/hsd-data</code> to keep
-            the large chain off your home disk. Empty uses hsd's default (<code>~/.hsd</code>).
-          </div>
-
-          <Input
-            label="hsd binary path (optional)"
-            value={form.hsd_path ?? ""}
-            onChange={(e) => updateField("hsd_path", e.target.value)}
-            placeholder="(auto-detect: Homebrew / npm / nvm / PATH)"
-          />
-          <div className="text-xs text-gray-500">
-            Leave empty to auto-detect. Set this if the app can't find your hsd install (e.g.{" "}
-            <code>$(which hsd)</code>). Save settings to apply.
-          </div>
-
-          <label className="flex items-center gap-2 text-sm pt-2">
-            <input
-              type="checkbox"
-              checked={settingToBool(form.autostart_hsd)}
-              onChange={(e) => updateField("autostart_hsd", boolToSetting(e.target.checked))}
-              data-testid="autostart-hsd-checkbox"
-            />
-            {profileNetwork
-              ? `Start the ${networkDisplayName(profileNetwork)} node automatically`
-              : "Autostart HSD when the app launches"}
-          </label>
-          <div className="text-xs text-gray-500">
-            Starts this network's hsd when one of its wallets becomes active, and at launch. Each
-            network has its own node and its own setting. If a node is already running, Namehold
-            adopts it instead of starting a duplicate.
-          </div>
-
-          <label className="flex items-center gap-2 text-sm pt-2">
-            <input
-              type="checkbox"
-              checked={form.background_sync_enabled === "1"}
-              onChange={async (e) => {
-                const enabled = e.target.checked;
-                // Update local form state immediately for responsive UI.
-                updateField("background_sync_enabled", enabled ? "1" : "0");
-                try {
-                  // The specialized command also spawns/stops the daemon,
-                  // and persists the setting itself. Applied immediately (no
-                  // Save button) so users see the daemon start/stop right away.
-                  await invoke("set_background_sync_enabled", { enabled });
-                  showToast(
-                    enabled
-                      ? "Background sync enabled — daemon started"
-                      : "Background sync disabled — daemon stopped",
-                    "success",
-                  );
-                } catch (err) {
-                  // Revert form state if the command failed.
-                  updateField("background_sync_enabled", enabled ? "0" : "1");
-                  showToast(`Failed to toggle background sync: ${err}`, "error");
-                }
-              }}
-              data-testid="background-sync-checkbox"
-            />
-            Sync in background (keep wallet up to date when app is closed)
-          </label>
-          <div className="text-xs text-gray-500">
-            Runs a lightweight sync process every 60 seconds. When enabled, the local hsd node keeps
-            running after you close the app so the daemon can query it. The next app launch adopts
-            the running node — no duplicate is spawned.
-          </div>
-
-          <NodeControl dirty={dirty} hsdPathConfigured={!!settings.hsd_path?.trim()} />
-        </div>
-      </div>
-
-      {/* System tray: close-to-tray + launch-at-login. Both toggles apply
-          immediately (no Save button) because they have side effects the user
-          should see right away. */}
-      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
-        <h3 className="text-sm font-semibold text-gray-700">System Tray</h3>
-
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={form.close_to_tray === "1"}
-            onChange={async (e) => {
-              const enabled = e.target.checked;
-              updateField("close_to_tray", enabled ? "1" : "0");
-              try {
-                await invoke("set_close_to_tray_enabled", { enabled });
-              } catch (err) {
-                updateField("close_to_tray", enabled ? "0" : "1");
-                showToast(`Failed to toggle close-to-tray: ${err}`, "error");
-              }
-            }}
-            data-testid="close-to-tray-checkbox"
-          />
-          Close to tray (keep running in background)
-        </label>
-        <div className="text-xs text-gray-500">
-          When enabled, closing the window hides Namehold to the menu bar instead of quitting. The
-          node and background sync keep running. Click the tray icon to reopen, or use Quit from the
-          tray menu.
-        </div>
-
-        <label className="flex items-center gap-2 text-sm pt-2">
-          <input
-            type="checkbox"
-            checked={form.launch_at_login === "1"}
-            disabled={import.meta.env.DEV}
-            onChange={async (e) => {
-              const enabled = e.target.checked;
-              updateField("launch_at_login", enabled ? "1" : "0");
-              try {
-                if (enabled) {
-                  await enableAutostart();
-                } else {
-                  await disableAutostart();
-                }
-                // Persist in our settings DB so the checkbox reflects reality
-                // on next load (the OS mechanism is the source of truth for
-                // whether it actually launches, but we need a local record for
-                // the checkbox state).
-                await invoke("update_setting", {
-                  key: "launch_at_login",
-                  value: enabled ? "1" : "0",
-                });
-              } catch (err) {
-                updateField("launch_at_login", enabled ? "0" : "1");
-                showToast(`Failed to toggle launch at login: ${err}`, "error");
-              }
-            }}
-            data-testid="launch-at-login-checkbox"
-          />
-          Launch at login
-        </label>
-        <div className="text-xs text-gray-500">
-          {import.meta.env.DEV ? (
-            <span className="text-amber-600">
-              Unavailable in dev builds — autostart would register the debug binary path, breaking
-              login-launch for the installed app.
-            </span>
-          ) : (
+    <div className="flex flex-col gap-5 pb-16">
+      <PageHeader
+        title="Settings"
+        subtitle="How this device connects, runs its node, notifies you and keeps backups."
+      />
+      <div className="flex gap-6 items-start">
+        <SettingsSectionNav active={section} errors={sectionErrors} onSelect={goSection} />
+        <div className="flex-1 min-w-0 max-w-xl flex flex-col gap-5">
+          {section === "connections" && (
             <>
-              Start Namehold automatically when you log in. Pairs well with &quot;Close to
-              tray&quot; for an always-available menu-bar experience.
+              {/* Connections: reads (explorer) + sending (node) in one place. */}
+              <div className="bg-white rounded p-4 border border-gray-200 space-y-4">
+                <h3 className="text-sm font-semibold text-gray-700">Connections</h3>
+
+                <div className="space-y-2">
+                  <Input
+                    label="Explorer base URL (reads)"
+                    value={form.explorer_api_url ?? ""}
+                    onChange={(e) => updateField("explorer_api_url", e.target.value)}
+                    placeholder="https://e.hnsfans.com"
+                    data-testid="explorer-url-input"
+                  />
+                  {explorerUrlError ? (
+                    <div className="text-xs text-red-600" data-testid="explorer-url-error">
+                      {explorerUrlError}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-gray-500">
+                      Balance and names are read from this explorer when the node is not synced.
+                      When the node is connected and fully synced, reads come from the local node
+                      cache instead. Takes effect on the next Sync/read.
+                    </div>
+                  )}
+                  <Input
+                    label="Explorer fallback URL (optional)"
+                    value={form.explorer_fallback_url ?? ""}
+                    onChange={(e) => updateField("explorer_fallback_url", e.target.value)}
+                    placeholder="https://shakeshift.com"
+                    data-testid="explorer-fallback-url-input"
+                  />
+                  <div className="text-xs text-gray-500">
+                    Used when the primary explorer is unreachable. Leave empty to disable failover.
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-2 border-t border-gray-100">
+                  <label className="text-sm font-medium">Chain source</label>
+                  <select
+                    value={toConnectionMode(chainSource, nodeMode)}
+                    onChange={(e) => {
+                      const next = fromConnectionMode(e.target.value as ConnectionMode);
+                      updateField("chain_source", next.chain_source);
+                      updateField("node_mode", next.node_mode);
+                    }}
+                    className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+                    data-testid="chain-source-select"
+                  >
+                    {(Object.keys(CONNECTION_MODE_LABELS) as ConnectionMode[]).map((mode) => (
+                      <option key={mode} value={mode}>
+                        {CONNECTION_MODE_LABELS[mode]}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="text-xs text-gray-500">
+                    Where the wallet sends transactions. Reads come from your node when it is
+                    synced, otherwise the explorer. Remote and SPV are a privacy/trust tradeoff, not
+                    custody — your keys never leave this device. SPV downloads only block headers
+                    and reads balances/names from the explorer; switching to or from SPV needs an
+                    hsd restart (use "Re-sync node data" below if it misbehaves).
+                  </div>
+                  <RemoteNodeFields
+                    url={form.node_rpc_url ?? ""}
+                    apiKey={form.node_rpc_api_key ?? ""}
+                    onUrlChange={(v) => updateField("node_rpc_url", v)}
+                    onApiKeyChange={(v) => updateField("node_rpc_api_key", v)}
+                    probe={nodeProbe}
+                    urlLabel="Node RPC URL (sending)"
+                    urlPlaceholder={defaultNodeRpcUrl(profile?.network ?? "mainnet")}
+                    apiKeyLabel="Node RPC API key"
+                    apiKeyPlaceholder={
+                      hasStoredSecret(settings, "node_rpc_api_key")
+                        ? "•••••• (stored — leave blank to keep)"
+                        : "(optional)"
+                    }
+                  />
+                  <div className="text-xs text-gray-500">
+                    Needed only to send or do name actions. Run hsd with{" "}
+                    <code>--index-address</code>. See NODE_SETUP.md. "Test connection" reuses your
+                    stored API key when the URL matches the saved node.
+                  </div>
+                  {chainSource === "remote_node" && (
+                    <AllowRemoteBroadcastToggle
+                      checked={settingToBool(form.allow_remote_broadcast)}
+                      onChange={(v) => updateField("allow_remote_broadcast", boolToSetting(v))}
+                      showDescription
+                    />
+                  )}
+                </div>
+              </div>
             </>
           )}
-        </div>
-      </div>
+          {section === "node" && (
+            <>
+              {/* Node: where hsd lives, how it starts, and its live controls. */}
+              <div className="bg-white rounded p-4 border border-gray-200 space-y-4">
+                <h3 className="text-sm font-semibold text-gray-700">Node</h3>
+                <div className="space-y-2">
+                  <div className="flex items-end gap-2">
+                    <div className="flex-1">
+                      <Input
+                        label="Node data directory (hsd --prefix)"
+                        value={form.hsd_prefix ?? ""}
+                        onChange={(e) => updateField("hsd_prefix", e.target.value)}
+                        placeholder="(default: ~/.hsd)"
+                      />
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={pickDataDir}
+                      className="inline-flex items-center gap-1.5"
+                    >
+                      <Icon icon={FolderOpen} size={13} /> Browse…
+                    </Button>
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    Where hsd stores the chain. Point this at e.g. <code>/Volumes/WD/hsd-data</code>{" "}
+                    to keep the large chain off your home disk. Empty uses hsd's default (
+                    <code>~/.hsd</code>).
+                  </div>
 
-      {/* Backup: bid commitments (value/blind/nonce) are the only off-chain
-          copy — losing the DB row without a backup can make an in-flight
-          lockup unrecoverable. */}
-      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
-        <h3 className="text-sm font-semibold text-gray-700">Backup</h3>
-        <div className="text-xs text-gray-500">
-          Your bid commitments (amount, blind, nonce) for open auctions live only in this
-          wallet&apos;s local database — the blockchain only ever sees the blind. Export a backup
-          and store it alongside your seed phrase, in case this device is lost.
-        </div>
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={handleExportBidBackup}
-          disabled={saveBidBackup.isPending || !profile}
-          data-testid="export-bid-backup"
-        >
-          {saveBidBackup.isPending ? "Exporting…" : "Export bid backup"}
-        </Button>
-      </div>
+                  <Input
+                    label="hsd binary path (optional)"
+                    value={form.hsd_path ?? ""}
+                    onChange={(e) => updateField("hsd_path", e.target.value)}
+                    placeholder="(auto-detect: Homebrew / npm / nvm / PATH)"
+                  />
+                  <div className="text-xs text-gray-500">
+                    Leave empty to auto-detect. Set this if the app can't find your hsd install
+                    (e.g. <code>$(which hsd)</code>). Save settings to apply.
+                  </div>
 
-      {/* Deadline notifications (I1): opt-in OS alerts before a reveal
+                  <label className="flex items-center gap-2 text-sm pt-2">
+                    <input
+                      type="checkbox"
+                      checked={settingToBool(form.autostart_hsd)}
+                      onChange={(e) =>
+                        updateField("autostart_hsd", boolToSetting(e.target.checked))
+                      }
+                      data-testid="autostart-hsd-checkbox"
+                    />
+                    {profileNetwork
+                      ? `Start the ${networkDisplayName(profileNetwork)} node automatically`
+                      : "Autostart HSD when the app launches"}
+                  </label>
+                  <div className="text-xs text-gray-500">
+                    Starts this network's hsd when one of its wallets becomes active, and at launch.
+                    Each network has its own node and its own setting. If a node is already running,
+                    Namehold adopts it instead of starting a duplicate.
+                  </div>
+
+                  <label className="flex items-center gap-2 text-sm pt-2">
+                    <input
+                      type="checkbox"
+                      checked={form.background_sync_enabled === "1"}
+                      onChange={async (e) => {
+                        const enabled = e.target.checked;
+                        // Update local form state immediately for responsive UI.
+                        updateField("background_sync_enabled", enabled ? "1" : "0");
+                        try {
+                          // The specialized command also spawns/stops the daemon,
+                          // and persists the setting itself. Applied immediately (no
+                          // Save button) so users see the daemon start/stop right away.
+                          await invoke("set_background_sync_enabled", { enabled });
+                          showToast(
+                            enabled
+                              ? "Background sync enabled — daemon started"
+                              : "Background sync disabled — daemon stopped",
+                            "success",
+                          );
+                        } catch (err) {
+                          // Revert form state if the command failed.
+                          updateField("background_sync_enabled", enabled ? "0" : "1");
+                          showToast(`Failed to toggle background sync: ${err}`, "error");
+                        }
+                      }}
+                      data-testid="background-sync-checkbox"
+                    />
+                    Sync in background (keep wallet up to date when app is closed)
+                  </label>
+                  <div className="text-xs text-gray-500">
+                    Runs a lightweight sync process every 60 seconds. When enabled, the local hsd
+                    node keeps running after you close the app so the daemon can query it. The next
+                    app launch adopts the running node — no duplicate is spawned.
+                  </div>
+
+                  <NodeControl dirty={dirty} hsdPathConfigured={!!settings.hsd_path?.trim()} />
+                </div>
+              </div>
+              {/* System tray: close-to-tray + launch-at-login. Both toggles apply
+          immediately (no Save button) because they have side effects the user
+          should see right away. */}
+              <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+                <h3 className="text-sm font-semibold text-gray-700">System Tray</h3>
+
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={form.close_to_tray === "1"}
+                    onChange={async (e) => {
+                      const enabled = e.target.checked;
+                      updateField("close_to_tray", enabled ? "1" : "0");
+                      try {
+                        await invoke("set_close_to_tray_enabled", { enabled });
+                      } catch (err) {
+                        updateField("close_to_tray", enabled ? "0" : "1");
+                        showToast(`Failed to toggle close-to-tray: ${err}`, "error");
+                      }
+                    }}
+                    data-testid="close-to-tray-checkbox"
+                  />
+                  Close to tray (keep running in background)
+                </label>
+                <div className="text-xs text-gray-500">
+                  When enabled, closing the window hides Namehold to the menu bar instead of
+                  quitting. The node and background sync keep running. Click the tray icon to
+                  reopen, or use Quit from the tray menu.
+                </div>
+
+                <label className="flex items-center gap-2 text-sm pt-2">
+                  <input
+                    type="checkbox"
+                    checked={form.launch_at_login === "1"}
+                    disabled={import.meta.env.DEV}
+                    onChange={async (e) => {
+                      const enabled = e.target.checked;
+                      updateField("launch_at_login", enabled ? "1" : "0");
+                      try {
+                        if (enabled) {
+                          await enableAutostart();
+                        } else {
+                          await disableAutostart();
+                        }
+                        // Persist in our settings DB so the checkbox reflects reality
+                        // on next load (the OS mechanism is the source of truth for
+                        // whether it actually launches, but we need a local record for
+                        // the checkbox state).
+                        await invoke("update_setting", {
+                          key: "launch_at_login",
+                          value: enabled ? "1" : "0",
+                        });
+                      } catch (err) {
+                        updateField("launch_at_login", enabled ? "0" : "1");
+                        showToast(`Failed to toggle launch at login: ${err}`, "error");
+                      }
+                    }}
+                    data-testid="launch-at-login-checkbox"
+                  />
+                  Launch at login
+                </label>
+                <div className="text-xs text-gray-500">
+                  {import.meta.env.DEV ? (
+                    <span className="text-amber-600">
+                      Unavailable in dev builds — autostart would register the debug binary path,
+                      breaking login-launch for the installed app.
+                    </span>
+                  ) : (
+                    <>
+                      Start Namehold automatically when you log in. Pairs well with &quot;Close to
+                      tray&quot; for an always-available menu-bar experience.
+                    </>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+          {section === "notifications" && (
+            <>
+              {/* notifications */}
+              {/* Deadline notifications (I1): opt-in OS alerts before a reveal
           window or renewal deadline is missed. */}
-      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
-        <h3 className="text-sm font-semibold text-gray-700">Notifications</h3>
-        <div className="text-xs text-gray-500">
-          Get an OS notification before a bid&apos;s reveal window closes (miss it and the lockup is
-          forfeit) or a name&apos;s renewal is due. Checked on app start and every ~10 minutes.
-        </div>
-        <NotificationSettings form={form} updateField={updateField} />
-      </div>
+              <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+                <h3 className="text-sm font-semibold text-gray-700">Notifications</h3>
+                <div className="text-xs text-gray-500">
+                  Get an OS notification before a bid&apos;s reveal window closes (miss it and the
+                  lockup is forfeit) or a name&apos;s renewal is due. Checked on app start and every
+                  ~10 minutes.
+                </div>
+                <NotificationSettings form={form} updateField={updateField} />
+              </div>
 
-      {/* Watchlist notifications: opt-in OS alerts about WATCHED (non-owned)
+              {/* Watchlist notifications: opt-in OS alerts about WATCHED (non-owned)
           names. Emitted by the background daemon (namehold-syncd), so they
           fire even when the app is closed (requires background sync on). */}
-      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
-        <h3 className="text-sm font-semibold text-gray-700">Watchlist notifications</h3>
-        <div className="text-xs text-gray-500">
-          Get an OS notification when a name on your watchlist enters bidding, becomes available
-          again, is about to open for bidding, or when its highest bid crosses a threshold. Handled
-          by the background sync daemon, so alerts fire even when the app is closed.
-        </div>
-        <WatchlistNotificationSettings form={form} updateField={updateField} />
-      </div>
+              <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+                <h3 className="text-sm font-semibold text-gray-700">Watchlist notifications</h3>
+                <div className="text-xs text-gray-500">
+                  Get an OS notification when a name on your watchlist enters bidding, becomes
+                  available again, is about to open for bidding, or when its highest bid crosses a
+                  threshold. Handled by the background sync daemon, so alerts fire even when the app
+                  is closed.
+                </div>
+                <WatchlistNotificationSettings form={form} updateField={updateField} />
+              </div>
 
-      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
-        <h3 className="text-sm font-semibold text-gray-700">Update notifications</h3>
-        <div className="text-xs text-gray-500">
-          Get an OS notification when a new version of Namehold is available. Checked every ~4 hours
-          in the background, so you will be alerted even when the app is hidden in the system tray.
-        </div>
-        <UpdateNotificationSettings form={form} updateField={updateField} />
-      </div>
+              <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+                <h3 className="text-sm font-semibold text-gray-700">Update notifications</h3>
+                <div className="text-xs text-gray-500">
+                  Get an OS notification when a new version of Namehold is available. Checked every
+                  ~4 hours in the background, so you will be alerted even when the app is hidden in
+                  the system tray.
+                </div>
+                <UpdateNotificationSettings form={form} updateField={updateField} />
+              </div>
 
-      {/* Debug notifications: dev-only. Fires the app's real OS notifications
+              {/* Debug notifications: dev-only. Fires the app's real OS notifications
           on demand so both dispatch backends (Tauri plugin for deadlines,
           notify-rust for watchlist) can be verified visually. Compiled out
           of production bundles via `import.meta.env.DEV`; the underlying
           `simulate_notification` command is also debug-gated on the Rust
           side (`#[cfg(debug_assertions)]`). */}
-      {import.meta.env.DEV && isTauri() && (
-        <div
-          className="bg-white rounded p-4 border border-gray-200 space-y-3"
-          data-testid="debug-notifications-panel"
-        >
-          <h3 className="text-sm font-semibold text-gray-700">Debug notifications (dev only)</h3>
-          <div className="text-xs text-gray-500">
-            Fires each real OS notification with a sample payload. Uses the same code paths the
-            deadline scanner and watchlist daemon use, so what you see is what a real user would
-            see.
-          </div>
-          <DebugNotificationsPanel />
-        </div>
-      )}
+              {import.meta.env.DEV && isTauri() && (
+                <div
+                  className="bg-white rounded p-4 border border-gray-200 space-y-3"
+                  data-testid="debug-notifications-panel"
+                >
+                  <h3 className="text-sm font-semibold text-gray-700">
+                    Debug notifications (dev only)
+                  </h3>
+                  <div className="text-xs text-gray-500">
+                    Fires each real OS notification with a sample payload. Uses the same code paths
+                    the deadline scanner and watchlist daemon use, so what you see is what a real
+                    user would see.
+                  </div>
+                  <DebugNotificationsPanel />
+                </div>
+              )}
+            </>
+          )}
+          {section === "import" && (
+            <>
+              {/* Backup: bid commitments (value/blind/nonce) are the only off-chain
+          copy — losing the DB row without a backup can make an in-flight
+          lockup unrecoverable. */}
+              <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+                <h3 className="text-sm font-semibold text-gray-700">Backup</h3>
+                <div className="text-xs text-gray-500">
+                  Your bid commitments (amount, blind, nonce) for open auctions live only in this
+                  wallet&apos;s local database — the blockchain only ever sees the blind. Export a
+                  backup and store it alongside your seed phrase, in case this device is lost.
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={handleExportBidBackup}
+                  disabled={saveBidBackup.isPending || !profile}
+                  data-testid="export-bid-backup"
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <Icon icon={Download} size={13} />
+                    {saveBidBackup.isPending ? "Exporting…" : "Export bid backup"}
+                  </span>
+                </Button>
+              </div>
 
-      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
-        <h3 className="text-sm font-semibold text-gray-700">Shakedex</h3>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={settingToBool(form.shakedex_experimental)}
-            onChange={(e) => updateField("shakedex_experimental", boolToSetting(e.target.checked))}
-            data-testid="shakedex-experimental-checkbox"
-          />
-          Allow buying and selling names on mainnet through Shakedex (experimental)
-        </label>
-        <p className="text-xs text-gray-500">
-          Testnet and regtest are always allowed. Finalizing a purchase, and Finalize &amp; sign,
-          Cancel and Lower price on a listing you already have, work whatever this says.
-        </p>
-      </div>
-
-      {/* Updates: shows the running version and drives the check-for-updates
+              <div className="flex flex-col gap-1">
+                <h3 className="text-base font-semibold text-gray-900">Import from Namebase</h3>
+                <p className="text-[13px] text-gray-500">
+                  Was &ldquo;Move from Namebase&rdquo; in the sidebar. Namebase has shut down, so
+                  only importing an exported history is left.
+                </p>
+              </div>
+              <NamebaseDashboard />
+            </>
+          )}
+          {section === "updates" && (
+            <>
+              {/* Updates: shows the running version and drives the check-for-updates
           flow (shared state with the global update banner). */}
-      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
-        <h3 className="text-sm font-semibold text-gray-700">Updates</h3>
-        <UpdatesSettings />
-      </div>
+              <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+                <h3 className="text-sm font-semibold text-gray-700">Updates</h3>
+                <UpdatesSettings />
+              </div>
 
-      {/* Simulate updates: dev-only. Seeds the shared update store from the
+              {/* Simulate updates: dev-only. Seeds the shared update store from the
           last GitHub release (or a synthetic version when offline) so the
           banner + Updates card show the "available" notice — WITHOUT
           auto-installing. Clicking "Install now" then runs a fake download,
@@ -670,93 +721,130 @@ export function Settings() {
           release. Compiled out of production bundles via
           `import.meta.env.DEV`; the backing `fetch_latest_release_meta`
           command is also debug-gated on the Rust side. */}
-      {import.meta.env.DEV && isTauri() && (
-        <div
-          className="bg-white rounded p-4 border border-gray-200 space-y-3"
-          data-testid="debug-simulate-update-panel"
-        >
-          <h3 className="text-sm font-semibold text-gray-700">Simulate updates (dev only)</h3>
-          <div className="text-xs text-gray-500">
-            Shows the "update available" notice in the banner and Updates card using the last GitHub
-            release (or a synthetic version when offline). It does not install automatically — click
-            "Install now" to run a fake download. No real download happens.
-          </div>
-          <SimulateUpdatePanel />
-        </div>
-      )}
+              {import.meta.env.DEV && isTauri() && (
+                <div
+                  className="bg-white rounded p-4 border border-gray-200 space-y-3"
+                  data-testid="debug-simulate-update-panel"
+                >
+                  <h3 className="text-sm font-semibold text-gray-700">
+                    Simulate updates (dev only)
+                  </h3>
+                  <div className="text-xs text-gray-500">
+                    Shows the "update available" notice in the banner and Updates card using the
+                    last GitHub release (or a synthetic version when offline). It does not install
+                    automatically — click "Install now" to run a fake download. No real download
+                    happens.
+                  </div>
+                  <SimulateUpdatePanel />
+                </div>
+              )}
+            </>
+          )}
+          {section === "advanced" && (
+            <>
+              <div
+                className="bg-white rounded p-4 border border-gray-200 space-y-3"
+                data-testid="settings-advanced"
+              >
+                <h3 className="text-sm font-semibold text-gray-700">Advanced</h3>
+                <div className="space-y-3">
+                  <div>
+                    <Input
+                      label="Address gap limit"
+                      value={form.address_gap_limit ?? ""}
+                      onChange={(e) => updateField("address_gap_limit", e.target.value)}
+                      placeholder="20"
+                      inputMode="numeric"
+                      data-testid="settings-gap-limit"
+                    />
+                    {gapLimitError ? (
+                      <div className="text-xs text-red-600 mt-1">{gapLimitError}</div>
+                    ) : (
+                      <div className="text-xs text-gray-500 mt-1">
+                        Unused addresses each sync looks ahead for, per branch: 1 to{" "}
+                        {MAX_ADDRESS_GAP_LIMIT}.
+                      </div>
+                    )}
+                  </div>
+                  <Input
+                    label="Signer session timeout (seconds)"
+                    value={form.signer_session_timeout_seconds ?? ""}
+                    onChange={(e) => updateField("signer_session_timeout_seconds", e.target.value)}
+                    placeholder="900"
+                  />
+                  <div>
+                    <Input
+                      label="Fee rate (doos/kvB)"
+                      value={form.fee_rate_doos_per_kvb ?? ""}
+                      onChange={(e) => updateField("fee_rate_doos_per_kvb", e.target.value)}
+                      placeholder={`empty = default (${MIN_FEE_RATE_DOOS_PER_KVB.toLocaleString()} = 1 sat/byte)`}
+                      inputMode="numeric"
+                      data-testid="settings-fee-rate"
+                    />
+                    {feeRateError ? (
+                      <div
+                        className="text-xs text-red-600 mt-1"
+                        data-testid="settings-fee-rate-error"
+                      >
+                        {feeRateError}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-500 mt-1">
+                        Applied when a transaction is built without an explicit Advanced &gt; Fee
+                        rate override. hsd&rsquo;s <code>rate</code> convention: 1000 doos/kvB = 1
+                        sat/byte.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
 
-      {/* Advanced (collapsed by default — rarely changed). */}
-      <details
-        className="bg-white rounded border border-gray-200 group"
-        open={advancedOpen || advancedHasError}
-        onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}
-      >
-        <summary
-          className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-gray-700"
-          data-testid="settings-advanced"
-        >
-          Advanced
-        </summary>
-        <div className="px-4 pb-4 space-y-3">
-          <div>
-            <Input
-              label="Address gap limit"
-              value={form.address_gap_limit ?? ""}
-              onChange={(e) => updateField("address_gap_limit", e.target.value)}
-              placeholder="20"
-              inputMode="numeric"
-              data-testid="settings-gap-limit"
-            />
-            {gapLimitError ? (
-              <div className="text-xs text-red-600 mt-1">{gapLimitError}</div>
-            ) : (
-              <div className="text-xs text-gray-500 mt-1">
-                Unused addresses each sync looks ahead for, per branch: 1 to {MAX_ADDRESS_GAP_LIMIT}
-                .
+              <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+                <h3 className="text-sm font-semibold text-gray-700">Shakedex</h3>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={settingToBool(form.shakedex_experimental)}
+                    onChange={(e) =>
+                      updateField("shakedex_experimental", boolToSetting(e.target.checked))
+                    }
+                    data-testid="shakedex-experimental-checkbox"
+                  />
+                  Allow buying and selling names on mainnet through Shakedex (experimental)
+                </label>
+                <p className="text-xs text-gray-500">
+                  Testnet and regtest are always allowed. Finalizing a purchase, and Finalize &amp;
+                  sign, Cancel and Lower price on a listing you already have, work whatever this
+                  says.
+                </p>
               </div>
-            )}
-          </div>
-          <Input
-            label="Signer session timeout (seconds)"
-            value={form.signer_session_timeout_seconds ?? ""}
-            onChange={(e) => updateField("signer_session_timeout_seconds", e.target.value)}
-            placeholder="900"
-          />
-          <div>
-            <Input
-              label="Fee rate (doos/kvB)"
-              value={form.fee_rate_doos_per_kvb ?? ""}
-              onChange={(e) => updateField("fee_rate_doos_per_kvb", e.target.value)}
-              placeholder={`empty = default (${MIN_FEE_RATE_DOOS_PER_KVB.toLocaleString()} = 1 sat/byte)`}
-              inputMode="numeric"
-              data-testid="settings-fee-rate"
-            />
-            {feeRateError ? (
-              <div className="text-xs text-red-600 mt-1" data-testid="settings-fee-rate-error">
-                {feeRateError}
-              </div>
-            ) : (
-              <div className="text-xs text-gray-500 mt-1">
-                Applied when a transaction is built without an explicit Advanced &gt; Fee rate
-                override. hsd&rsquo;s <code>rate</code> convention: 1000 doos/kvB = 1 sat/byte.
-              </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
-      </details>
+      </div>
 
       {dirty && (
-        <StickyFooter>
-          {saveBlockReason ? (
-            <div className="text-xs text-red-600 mr-3" data-testid="settings-save-blocked">
-              Can&rsquo;t save: {saveBlockReason}
+        <StickyFooter className="-mx-6">
+          {saveBlock ? (
+            <div
+              className="flex items-center gap-2 text-xs text-red-600 mr-3"
+              data-testid="settings-save-blocked"
+            >
+              <Icon icon={TriangleAlert} size={14} />
+              <span>Can&rsquo;t save: {saveBlock.reason}</span>
+              {saveBlock.section !== section && (
+                <button
+                  type="button"
+                  className="text-blue-600 underline cursor-pointer"
+                  onClick={() => goSection(saveBlock.section)}
+                  data-testid="settings-save-blocked-show"
+                >
+                  Show
+                </button>
+              )}
             </div>
           ) : null}
-          <Button
-            onClick={handleSave}
-            disabled={saving || !!saveBlockReason}
-            data-testid="settings-save"
-          >
+          <Button onClick={handleSave} disabled={saving || !!saveBlock} data-testid="settings-save">
             {saving ? "Saving…" : "Save settings"}
           </Button>
         </StickyFooter>

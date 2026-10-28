@@ -51,7 +51,7 @@ describe("Settings — Address gap limit", () => {
     "refuses %s with the range and disables Save",
     async (value) => {
       loadSettings();
-      renderSettings();
+      renderSettings("advanced");
       fireEvent.change(gapInput(), { target: { value } });
       expect(await screen.findByText(RANGE_ERROR)).toBeInTheDocument();
       const save = await screen.findByTestId("settings-save");
@@ -61,7 +61,7 @@ describe("Settings — Address gap limit", () => {
 
   it.each(["1", "1000", "50"])("accepts %s and saves it", async (value) => {
     loadSettings();
-    renderSettings();
+    renderSettings("advanced");
     fireEvent.change(gapInput(), { target: { value } });
     expect(screen.queryByText(RANGE_ERROR)).not.toBeInTheDocument();
     const save = await screen.findByTestId("settings-save");
@@ -76,27 +76,31 @@ describe("Settings — Address gap limit", () => {
   });
 
   describe("a stored value outside the range", () => {
-    // Why: the field sits in the collapsed Advanced section; a stored 5000 made
-    // every Save disabled with the reason hidden.
-    function advanced(): HTMLDetailsElement {
-      return screen.getByTestId("settings-advanced").closest("details") as HTMLDetailsElement;
+    // Why: the field sits in the Advanced section; a stored 5000 made every
+    // Save disabled with the reason out of sight. The section's nav entry
+    // carries a red dot, and the save bar names the reason with a Show link.
+    function advancedDot(): HTMLElement | null {
+      return screen.queryByTestId("settings-section-error-advanced");
     }
 
-    it("opens Advanced, shows the reason and says why Save is disabled", async () => {
+    it("marks Advanced, shows the reason and says why Save is disabled", async () => {
       loadSettings({ address_gap_limit: "5000" });
-      renderSettings();
+      renderSettings("advanced");
       expect(await screen.findByText(RANGE_ERROR)).toBeVisible();
-      expect(advanced().open).toBe(true);
+      expect(screen.getByTestId("settings-advanced")).toBeVisible();
+      expect(advancedDot()).toBeInTheDocument();
       // Touch another field so the Save footer appears.
       fireEvent.change(screen.getByTestId("settings-fee-rate"), { target: { value: "2000" } });
       const save = await screen.findByTestId("settings-save");
       expect(save).toBeDisabled();
       expect(screen.getByTestId("settings-save-blocked")).toHaveTextContent(RANGE_ERROR);
+      // Already in the section that holds it: no Show link.
+      expect(screen.queryByTestId("settings-save-blocked-show")).not.toBeInTheDocument();
     });
 
     it("fixing the field enables Save and drops the reason", async () => {
       loadSettings({ address_gap_limit: "5000" });
-      renderSettings();
+      renderSettings("advanced");
       fireEvent.change(await screen.findByTestId("settings-gap-limit"), {
         target: { value: "1000" },
       });
@@ -104,29 +108,41 @@ describe("Settings — Address gap limit", () => {
       expect(screen.queryByTestId("settings-save-blocked")).not.toBeInTheDocument();
     });
 
-    it("keeps Advanced open after the field is fixed", async () => {
+    it("keeps Advanced shown and drops its red dot after the field is fixed", async () => {
       loadSettings({ address_gap_limit: "5000" });
-      renderSettings();
+      renderSettings("advanced");
       fireEvent.change(await screen.findByTestId("settings-gap-limit"), {
         target: { value: "1000" },
       });
       await screen.findByTestId("settings-save");
       expect(screen.queryByText(RANGE_ERROR)).not.toBeInTheDocument();
-      expect(advanced().open).toBe(true);
+      expect(screen.getByTestId("settings-advanced")).toBeVisible();
+      expect(advancedDot()).not.toBeInTheDocument();
     });
 
-    it("opens Advanced for an invalid stored fee rate too", async () => {
+    it("leads to Advanced from another section for an invalid stored fee rate too", async () => {
       loadSettings({ fee_rate_doos_per_kvb: "abc" });
-      renderSettings();
-      await waitFor(() => expect(advanced().open).toBe(true));
-      expect(screen.getByTestId("settings-fee-rate-error")).toBeVisible();
+      renderSettings("connections");
+      await waitFor(() => expect(advancedDot()).toBeInTheDocument());
+      // Touch a Connections field so the Save footer appears.
+      fireEvent.change(await screen.findByTestId("explorer-fallback-url-input"), {
+        target: { value: "https://fallback.example" },
+      });
+      expect(await screen.findByTestId("settings-save")).toBeDisabled();
+      fireEvent.click(screen.getByTestId("settings-save-blocked-show"));
+      expect(await screen.findByTestId("settings-fee-rate-error")).toBeVisible();
+      expect(screen.getByTestId("settings-section-advanced")).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+      expect(screen.queryByTestId("settings-save-blocked-show")).not.toBeInTheDocument();
     });
 
-    it("leaves Advanced collapsed when nothing in it is wrong", async () => {
+    it("leaves Advanced unmarked when nothing in it is wrong", async () => {
       loadSettings();
-      renderSettings();
+      renderSettings("advanced");
       await screen.findByTestId("settings-gap-limit");
-      expect(advanced().open).toBe(false);
+      expect(advancedDot()).not.toBeInTheDocument();
     });
   });
 });

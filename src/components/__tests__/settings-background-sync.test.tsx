@@ -76,7 +76,7 @@ beforeEach(() => {
 
 describe("Settings — Background sync checkbox", () => {
   it("renders the checkbox checked by default (DEFAULT_SETTINGS.background_sync_enabled = '1')", async () => {
-    renderSettings();
+    renderSettings("node");
     const box = await screen.findByTestId("background-sync-checkbox");
     expect(box).toBeChecked();
     expect(screen.getByText(/Sync in background/i)).toBeInTheDocument();
@@ -84,13 +84,13 @@ describe("Settings — Background sync checkbox", () => {
 
   it("renders unchecked when the setting is '0'", async () => {
     loadSettings({ background_sync_enabled: "0" });
-    renderSettings();
+    renderSettings("node");
     const box = await screen.findByTestId("background-sync-checkbox");
     expect(box).not.toBeChecked();
   });
 
   it("toggles OFF via set_background_sync_enabled immediately (no Save button needed)", async () => {
-    renderSettings();
+    renderSettings("node");
     const box = await screen.findByTestId("background-sync-checkbox");
     // Starts checked (default).
     expect(box).toBeChecked();
@@ -107,7 +107,7 @@ describe("Settings — Background sync checkbox", () => {
 
   it("toggles ON via set_background_sync_enabled immediately", async () => {
     loadSettings({ background_sync_enabled: "0" });
-    renderSettings();
+    renderSettings("node");
     const box = await screen.findByTestId("background-sync-checkbox");
     expect(box).not.toBeChecked();
 

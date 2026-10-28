@@ -1,8 +1,10 @@
+import { Check, TrendingDown } from "lucide-react";
+import { Icon } from "../ui/Icon";
 import { Badge } from "../ui/Badge";
 import { displayName } from "../../lib/idn";
 import { fromInteractiveChild } from "../../lib/rowClick";
 import { formatHnsShort } from "../../lib/utils";
-import { nextPriceText } from "./marketText";
+import { nextPriceDrops, nextPriceText } from "./marketText";
 import { rowTag, type Entry } from "./marketModel";
 
 /** The listings' columns: Name · Price now · Next price · Check, shared by the header, rows and skeleton. */
@@ -66,11 +68,18 @@ export function ListingRow({
       <div
         className={`text-xs tabular-nums ${listed?.kind === "reverseAuction" ? "text-gray-700" : "text-gray-400"}`}
       >
-        {listed ? nextPriceText(listed) : null}
+        {listed ? (
+          <span className="flex items-center gap-1">
+            {nextPriceDrops(listed) && <Icon icon={TrendingDown} size={13} />}
+            {nextPriceText(listed)}
+          </span>
+        ) : null}
       </div>
       <div className="text-xs" data-testid="market-row-check">
         {entry.kind === "listed" ? (
-          <span className="text-green-700">✓ Verified</span>
+          <span className="inline-flex items-center gap-1 text-green-700">
+            <Icon icon={Check} size={13} /> Verified
+          </span>
         ) : (
           <span className="flex items-center gap-1.5 text-amber-700">
             <span>Couldn't check</span>

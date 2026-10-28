@@ -117,7 +117,7 @@ export function listedUntilText(expiresAt: number): string | null {
 export function nodeReason(reason: string): string {
   const bare = reason.replace(/^Node RPC error:\s*/i, "").replace(/^HTTP error:\s*/i, "");
   if (/error sending request|connection refused|tcp connect|dns error/i.test(bare)) {
-    return "your node did not answer. Is it running? Check Settings → Connections.";
+    return "your node did not answer. Is it running? Check Settings › Connections.";
   }
   if (/timed out|timeout/i.test(bare)) {
     return "your node took too long to answer. Try again in a moment.";
@@ -165,7 +165,7 @@ export const BUYING_OFF_TEXT =
 export const BUYING_OFF_REASON =
   "Buying on mainnet is off, so this button turns it on first. Nothing is bought until you press Buy.";
 
-export const BUYING_ON_TOAST = "Mainnet buying turned on · also in Settings › Shakedex";
+export const BUYING_ON_TOAST = "Mainnet buying turned on · also in Settings › Advanced";
 
 /** The detail panel's text for a listing the node could not answer for. */
 export function uncheckedText(reason: string): string {
@@ -178,11 +178,15 @@ export const hns = (doos: number) => `${formatHnsShort(doos)} HNS`;
 /** "1,000.0042 HNS": every doo, trailing zeros trimmed, for what is paid or missing. */
 export const hnsExact = (doos: number) => `${formatHns(doos).replace(/\.?0+$/, "")} HNS`;
 
-/** The Next price column: "↓ 1,100 HNS in ~6 h", "Fixed price", or a reverse auction at its floor. */
+/** The Next price column: "1,100 HNS in ~6 h", "Fixed price", or a reverse auction at its floor. */
 export function nextPriceText(row: MarketRow): string {
-  if (row.kind !== "reverseAuction") return "Fixed price";
-  if (row.nextPrice == null || row.nextValidInSecs == null) return "At its floor";
-  return `↓ ${hns(row.nextPrice)} in ${approxWait(row.nextValidInSecs)}`;
+  if (!nextPriceDrops(row)) return row.kind !== "reverseAuction" ? "Fixed price" : "At its floor";
+  return `${hns(row.nextPrice!)} in ${approxWait(row.nextValidInSecs!)}`;
+}
+
+/** A reverse auction with a next, lower step: its Next price shows a down-trend icon. */
+export function nextPriceDrops(row: MarketRow): boolean {
+  return row.kind === "reverseAuction" && row.nextPrice != null && row.nextValidInSecs != null;
 }
 
 /**

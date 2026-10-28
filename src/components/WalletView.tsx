@@ -3,6 +3,7 @@ import { Icon } from "./ui/Icon";
 import { isSignerUnlockedFor } from "../lib/signer";
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import { settingsPath } from "../lib/settingsSections";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useActiveProfile,
@@ -549,7 +550,7 @@ export function WalletView() {
                 <button
                   type="button"
                   className="text-amber-900 underline hover:no-underline"
-                  onClick={() => navigate("/settings")}
+                  onClick={() => navigate(settingsPath("node"))}
                   data-testid="needs-node-sync-settings"
                 >
                   Open Settings

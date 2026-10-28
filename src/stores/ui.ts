@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import type { MigrationSectionKey } from "../types";
 
 export type ToastType = "info" | "error" | "success";
 
@@ -16,9 +15,6 @@ interface UiState {
   toggleAssetSelection: (id: number) => void;
   clearSelection: () => void;
   selectAll: (ids: number[]) => void;
-  // Workspace tab state
-  activeMigrationTab: MigrationSectionKey;
-  setActiveMigrationTab: (tab: MigrationSectionKey) => void;
   // Shell v2: one Wallets dialog for the whole app, and the two shell
   // popovers (opening one closes the other).
   walletsDialog: null | "list" | "add";
@@ -60,9 +56,6 @@ export const useUiStore = create<UiState>((set, get) => ({
     }),
   clearSelection: () => set({ selectedAssetIds: new Set() }),
   selectAll: (ids) => set({ selectedAssetIds: new Set(ids) }),
-
-  activeMigrationTab: "namebase",
-  setActiveMigrationTab: (tab) => set({ activeMigrationTab: tab }),
 
   walletsDialog: null,
   openWallets: (mode) => set({ walletsDialog: mode, walletMenuOpen: false, readinessOpen: false }),

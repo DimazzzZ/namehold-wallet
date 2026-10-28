@@ -39,7 +39,7 @@ beforeEach(() => {
 
 describe("Settings — Autostart HSD checkbox", () => {
   it("renders the checkbox checked by default (DEFAULT_SETTINGS.autostart_hsd = 'true')", async () => {
-    renderSettings();
+    renderSettings("node");
     const box = await screen.findByTestId("autostart-hsd-checkbox");
     expect(box).toBeChecked();
     // The label text is visible next to the checkbox.
@@ -48,13 +48,13 @@ describe("Settings — Autostart HSD checkbox", () => {
 
   it("renders unchecked when the setting is 'false'", async () => {
     loadSettings({ autostart_hsd: "false" });
-    renderSettings();
+    renderSettings("node");
     const box = await screen.findByTestId("autostart-hsd-checkbox");
     expect(box).not.toBeChecked();
   });
 
   it("persists a toggle to 'false' via update_setting when Save is clicked", async () => {
-    renderSettings();
+    renderSettings("node");
     const box = await screen.findByTestId("autostart-hsd-checkbox");
     fireEvent.click(box); // "true" -> "false"
     expect(box).not.toBeChecked();

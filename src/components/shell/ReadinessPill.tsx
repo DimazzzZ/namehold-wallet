@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { settingsPath } from "../../lib/settingsSections";
 import { useSignerToggle } from "../../hooks/useSignerToggle";
 import { mapError } from "../../lib/errors";
 import {
@@ -537,7 +538,7 @@ export function ReadinessPill() {
               className="inline-flex items-center gap-0.5 text-blue-600 hover:underline"
               onClick={() => {
                 close();
-                navigate("/settings?section=connections");
+                navigate(settingsPath("connections"));
               }}
             >
               Connections in Settings <Icon icon={ChevronRight} size={13} />

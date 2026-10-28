@@ -273,17 +273,17 @@ describe("hiddenToggleText", () => {
       { name: "e", reason: { kind: "notYetValid" as const, firstValidInSecs: 18_000 } },
     ];
     expect(hiddenToggleText(hidden, false)).toBe(
-      "▸ 5 unavailable listings hidden: 3 sold, 1 failed the check, 1 not valid yet",
+      "5 unavailable listings hidden: 3 sold, 1 failed the check, 1 not valid yet",
     );
-    expect(hiddenToggleText(hidden, true)).toBe("▾ Hide 5 unavailable listings");
+    expect(hiddenToggleText(hidden, true)).toBe("Hide 5 unavailable listings");
   });
 
   it("names a single listing in the singular, and the expiry reason too", () => {
     const hidden = [{ name: "a", reason: { kind: "expiresBeforeFinalize" as const } }];
     expect(hiddenToggleText(hidden, false)).toBe(
-      "▸ 1 unavailable listing hidden: 1 expires too soon to finalize",
+      "1 unavailable listing hidden: 1 expires too soon to finalize",
     );
-    expect(hiddenToggleText(hidden, true)).toBe("▾ Hide 1 unavailable listing");
+    expect(hiddenToggleText(hidden, true)).toBe("Hide 1 unavailable listing");
   });
 
   it("puts the expiry reason's verb in the plural for more than one", () => {
@@ -292,7 +292,7 @@ describe("hiddenToggleText", () => {
       reason: { kind: "expiresBeforeFinalize" as const },
     }));
     expect(hiddenToggleText(hidden, false)).toBe(
-      "▸ 3 unavailable listings hidden: 3 expire too soon to finalize",
+      "3 unavailable listings hidden: 3 expire too soon to finalize",
     );
   });
 

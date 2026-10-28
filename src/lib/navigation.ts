@@ -1,6 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { Globe, History, Settings, Store, Wallet } from "lucide-react";
-import type { MigrationSectionKey, NavKey, WorkspaceTab } from "../types";
+import type { NavKey } from "../types";
 
 export type { NavKey };
 
@@ -61,8 +61,4 @@ export const ROUTE_ALIASES: { from: string; to: string }[] = [
   { from: "/migration", to: "/settings?section=import" },
   // v1 StatusStrip pushed "/wallet", which only worked through the "*" fallback.
   { from: "/wallet", to: "/" },
-];
-
-export const MIGRATION_TABS: WorkspaceTab<MigrationSectionKey>[] = [
-  { key: "namebase", label: "Namebase", description: "Connect and transfer source" },
 ];
