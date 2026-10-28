@@ -380,6 +380,22 @@ fn test_write_capability_signer_counts_only_for_its_own_profile() {
     assert!(!crate::commands::tx::signer_unlocked_for(None, "a"));
 }
 
+/// A Ledger signs on the device, so it never needs a session: without this its
+/// write capability read "Unlock your wallet" forever and Send stayed disabled,
+/// while the backend refuses to unlock a Ledger at all.
+#[test]
+fn test_write_capability_ledger_is_ready_without_a_session() {
+    use crate::commands::tx::signer_ready_for;
+    assert!(signer_ready_for(None, "l", Some("ledger_hardware")));
+    assert!(!signer_ready_for(None, "h", Some("mnemonic_hot")));
+    assert!(!signer_ready_for(None, "h", None));
+    let state = create_full_test_state();
+    seed_unlocked_signer(&state, "h");
+    let slot = state.signer.lock().unwrap();
+    assert!(signer_ready_for(slot.as_ref(), "h", Some("mnemonic_hot")));
+    assert!(!signer_ready_for(slot.as_ref(), "other", Some("xpriv_hot")));
+}
+
 #[test]
 fn test_activate_profile_keeps_its_own_signer() {
     let state = create_full_test_state();
