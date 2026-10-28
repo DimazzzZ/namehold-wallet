@@ -86,7 +86,7 @@ describe("needsYouItems", () => {
     expect(items[0]!.text).toBe("Reveal your bid, or the 24 HNS lockup can't be reclaimed");
     expect(items[0]!.when).toBe("~50m · 5 blocks");
     expect(items[1]!.text).toBe("Renew before it expires — an expired name is lost for good");
-    expect(items[1]!.when).toBe("~10 days · 1450 blocks");
+    expect(items[1]!.when).toBe("~10 days · 1,450 blocks");
     expect(items[3]!.purchaseId).toBe("pur-1");
     expect(items[3]!.when).toBe("Ready now");
     expect(items[4]!.when).toBe("No rush");
@@ -184,7 +184,7 @@ describe("needsYouWhen", () => {
     expect(needsYouWhen(5, 0.83, "mainnet", NOW)).toBe("~50m · 5 blocks");
     expect(needsYouWhen(30, 5, "testnet", NOW)).toBe("~5h · 30 blocks");
     expect(needsYouWhen(432, 72, "mainnet", NOW)).toBe("~3 days · 432 blocks");
-    expect(needsYouWhen(20000, 24 * 140, "mainnet", NOW)).toBe("Mar 2027 · 20000 blocks");
+    expect(needsYouWhen(20000, 24 * 140, "mainnet", NOW)).toBe("Mar 2027 · 20,000 blocks");
   });
 
   it("shows blocks alone on regtest, or when the backend gave no hours", () => {

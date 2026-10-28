@@ -66,7 +66,10 @@ export function needsYouWhen(
   network: WalletNetwork | null,
   now: number = Date.now(),
 ): string {
-  const blockText = blocks == null ? null : `${blocks} ${blocks === 1 ? "block" : "blocks"}`;
+  const blockText =
+    blocks == null
+      ? null
+      : `${blocks.toLocaleString("en-US")} ${blocks === 1 ? "block" : "blocks"}`;
   const wallClock = network === "mainnet" || network === "testnet";
   if (wallClock && hours != null) {
     const human = humanHours(hours, now);
