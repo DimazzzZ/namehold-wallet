@@ -2451,6 +2451,17 @@ pub(crate) fn signer_unlocked_for(
     session.is_some_and(|s| s.is_unlocked() && s.wallet_profile_id() == active_id)
 }
 
+/// Whether the active profile can sign right now. A Ledger profile has no
+/// local signer session to unlock — the device signs each transaction on
+/// demand — so it is always ready; every other kind needs its session.
+pub(crate) fn signer_ready_for(
+    session: Option<&crate::noncustodial::session::SignerSession>,
+    active_id: &str,
+    profile_kind: Option<&str>,
+) -> bool {
+    profile_kind == Some("ledger_hardware") || signer_unlocked_for(session, active_id)
+}
+
 /// Report non-custodial write capability: writes require an unlocked signer AND
 /// a broadcaster-capable node source. The frontend gates spend actions on this.
 #[tauri::command]
@@ -2458,16 +2469,18 @@ pub(crate) fn signer_unlocked_for(
 pub async fn get_write_capability(
     state: State<'_, AppState>,
 ) -> Result<crate::providers::WriteCapability, AppError> {
-    let active_id = {
+    let (active_id, active_kind) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::get_active_profile_id(&conn)?
+        let id = db::queries::get_active_profile_id(&conn)?;
+        let kind = db::queries::get_wallet_profile(&conn, &id)?.map(|p| p.kind);
+        (id, kind)
     };
     let signer_unlocked = {
         let slot = state
             .signer
             .lock()
             .map_err(|e| AppError::Lock(e.to_string()))?;
-        signer_unlocked_for(slot.as_ref(), &active_id)
+        signer_ready_for(slot.as_ref(), &active_id, active_kind.as_deref())
     };
     let (source, allow_remote, settings, expected_network, effective_url, client_opt) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
