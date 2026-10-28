@@ -116,9 +116,7 @@ describe("needsYouItems", () => {
   it("words a reveal with no known lockup without a figure", () => {
     const [item] = needsYouItems(
       input({
-        caps: [
-          makeCapabilities({ name: "x", taskState: "readyToReveal", lockupValueDoos: null }),
-        ],
+        caps: [makeCapabilities({ name: "x", taskState: "readyToReveal", lockupValueDoos: null })],
       }),
     );
     expect(item!.text).toBe("Reveal your bid, or its lockup can't be reclaimed");
@@ -158,9 +156,9 @@ describe("needsYouItems", () => {
 
   it("leaves out a purchase that isn't ready, or whose finalize was already sent", () => {
     expect(needsYouItems(input({ names: [purchase({ blocksRemaining: 3 })] }))).toEqual([]);
-    expect(
-      needsYouItems(input({ names: [purchase()], finalizeSent: new Set(["pur-1"]) })),
-    ).toEqual([]);
+    expect(needsYouItems(input({ names: [purchase()], finalizeSent: new Set(["pur-1"]) }))).toEqual(
+      [],
+    );
   });
 
   it("sorts within a kind by fewer blocks first, unknown last", () => {
