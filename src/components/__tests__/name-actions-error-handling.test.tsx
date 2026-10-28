@@ -2,13 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 
 // Task 13 (F6 follow-up): the build → sign → broadcast pipeline run by
-// NameActionsModal must (a) attribute a failed mutation's error toast to the
+// the name page must (a) attribute a failed mutation's error toast to the
 // stage that threw ("Build failed: …" / "Sign failed: …" / "Broadcast
-// failed: …"), and (b) never close the modal on error — inputs must survive
+// failed: …"), and (b) never lose state on error — inputs must survive
 // so the user can retry instead of re-typing everything.
 
 const invokeMock = vi.fn();
@@ -20,7 +19,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   readText: vi.fn().mockResolvedValue(""),
 }));
 
-import { NameActionsModal } from "../NameActionsModal";
+import { NamePageAt } from "../../test/namePage";
 import { useUiStore } from "../../stores/ui";
 
 const profile = {
@@ -113,7 +112,7 @@ function wrapper() {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
+        <>{children}</>
       </QueryClientProvider>
     );
   };
@@ -124,8 +123,8 @@ beforeEach(() => {
   useUiStore.setState({ toastQueue: [], toastMessage: null });
 });
 
-async function placeBid(onClose: () => void) {
-  render(<NameActionsModal name="bidname" open onClose={onClose} />, { wrapper: wrapper() });
+async function placeBid() {
+  render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
   await screen.findByText("Place a Bid");
   fireEvent.change(screen.getByLabelText(/^Bid \(HNS\)/i), { target: { value: "10" } });
   fireEvent.change(screen.getByLabelText(/Lockup \(HNS\)/i), { target: { value: "12" } });
@@ -133,13 +132,12 @@ async function placeBid(onClose: () => void) {
   fireEvent.click(submitBtn);
 }
 
-describe("NameActionsModal — mutation error handling (Task 13)", () => {
+describe("Name page — mutation error handling (Task 13)", () => {
   it("attributes a build-stage failure as 'Build failed: …'", async () => {
-    const onClose = vi.fn();
     invokeMock.mockImplementation(
       route({ build_bid_draft: () => Promise.reject(new Error("insufficient funds")) }),
     );
-    await placeBid(onClose);
+    await placeBid();
 
     await waitFor(() => {
       const toast = ((q) => q[q.length - 1])(useUiStore.getState().toastQueue);
@@ -149,11 +147,10 @@ describe("NameActionsModal — mutation error handling (Task 13)", () => {
   });
 
   it("attributes a sign-stage failure as 'Sign failed: …'", async () => {
-    const onClose = vi.fn();
     invokeMock.mockImplementation(
       route({ sign_tx_draft: () => Promise.reject(new Error("wallet locked")) }),
     );
-    await placeBid(onClose);
+    await placeBid();
 
     await waitFor(() => {
       const toast = ((q) => q[q.length - 1])(useUiStore.getState().toastQueue);
@@ -163,11 +160,10 @@ describe("NameActionsModal — mutation error handling (Task 13)", () => {
   });
 
   it("attributes a broadcast-stage failure as 'Broadcast failed: …'", async () => {
-    const onClose = vi.fn();
     invokeMock.mockImplementation(
       route({ broadcast_tx_draft: () => Promise.reject(new Error("connection reset")) }),
     );
-    await placeBid(onClose);
+    await placeBid();
 
     await waitFor(() => {
       const toast = ((q) => q[q.length - 1])(useUiStore.getState().toastQueue);
@@ -176,32 +172,32 @@ describe("NameActionsModal — mutation error handling (Task 13)", () => {
     });
   });
 
-  it("does not close the modal and keeps typed inputs intact when a mutation fails", async () => {
-    const onClose = vi.fn();
+  it("keeps the page and typed inputs intact typed inputs intact when a mutation fails", async () => {
     invokeMock.mockImplementation(
       route({ broadcast_tx_draft: () => Promise.reject(new Error("connection reset")) }),
     );
-    await placeBid(onClose);
+    await placeBid();
 
     await waitFor(() => {
       const toast = ((q) => q[q.length - 1])(useUiStore.getState().toastQueue);
       expect(toast?.type).toBe("error");
     });
 
-    expect(onClose).not.toHaveBeenCalled();
-    // The modal is still on screen and the typed values weren't wiped.
+    // The page is still on screen and the typed values weren't wiped.
     expect(screen.getByTestId("name-phase")).toBeInTheDocument();
     expect(screen.getByLabelText(/^Bid \(HNS\)/i)).toHaveValue(10);
     expect(screen.getByLabelText(/Lockup \(HNS\)/i)).toHaveValue(12);
   });
 
-  it("closes the modal on success (unchanged behavior)", async () => {
-    const onClose = vi.fn();
+  it("stays on the page after a successful broadcast and toasts it", async () => {
     invokeMock.mockImplementation(route());
-    await placeBid(onClose);
+    await placeBid();
 
     await waitFor(() => {
-      expect(onClose).toHaveBeenCalledTimes(1);
+      const toast = ((q) => q[q.length - 1])(useUiStore.getState().toastQueue);
+      expect(toast?.type).toBe("success");
+      expect(toast?.message).toMatch(/^BID broadcast — /);
     });
+    expect(screen.getByTestId("name-phase")).toBeInTheDocument();
   });
 });

@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 
 const invokeMock = vi.fn();
@@ -14,7 +13,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   readText: vi.fn().mockResolvedValue(""),
 }));
 
-import { NameActionsModal } from "../NameActionsModal";
+import { NamePageAt } from "../../test/namePage";
 import { allowed, makeCapabilities, refused } from "../../test/fixtures/capabilities";
 import { makeProfile, makeSession } from "../../test/fixtures/wallet";
 import { loadSettings } from "../../test/fixtures/settings";
@@ -121,7 +120,7 @@ function wrapper() {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
+        <>{children}</>
       </QueryClientProvider>
     );
   };
@@ -129,7 +128,7 @@ function wrapper() {
 
 beforeEach(() => invokeMock.mockReset());
 
-describe("NameActionsModal — node-readiness gating", () => {
+describe("Name page — node-readiness gating", () => {
   it("states the reason once and offers no menu when the node can't write", async () => {
     invokeMock.mockImplementation(
       route(
@@ -137,33 +136,31 @@ describe("NameActionsModal — node-readiness gating", () => {
         "Your local node is still syncing (40%). On-chain sends and transfers need a fully-synced node.",
       ),
     );
-    render(<NameActionsModal name="examplename" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/examplename" />, { wrapper: wrapper() });
 
     // Wait for write-capability gating to settle, then assert on the banner itself.
     const blocked = await screen.findByTestId("name-actions-blocked");
     expect(blocked).toHaveTextContent(/name actions unavailable/i);
 
-    // The mocked name is CLOSED/owned, so the guided action is Register and it
-    // should be disabled.
+    // The mocked name is CLOSED/won, so Register is the header primary (and
+    // the guided panel's secondary); both are disabled.
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /^Register$/i })).toBeDisabled();
+      const registers = screen.getAllByRole("button", { name: /^Register$/i });
+      expect(registers).toHaveLength(2);
+      for (const b of registers) expect(b).toBeDisabled();
     });
+    expect(screen.getByTestId("name-primary")).toBeDisabled();
 
-    // A node that cannot write refuses every capability, so there is nothing
-    // behind the advanced toggle and no toggle to open. The reason is already
-    // stated twice — on the banner above and on the guided action — and a menu
-    // of six buttons all carrying that same reason is the wall of dead
-    // controls this modal no longer renders.
-    expect(screen.queryByTestId("all-actions-toggle")).not.toBeInTheDocument();
+    // A node that cannot write refuses every capability, so there is no
+    // manual-actions card of dead controls either.
+    expect(screen.queryByTestId("manual-auction-toggle")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Reveal$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Redeem$/i })).toBeNull();
     // No meaningful "Bid" action either, for a name whose auction is over.
     expect(screen.queryByRole("button", { name: /^Bid$/i })).toBeNull();
     expect(screen.queryByLabelText("Bid (HNS)")).not.toBeInTheDocument();
-    // Close stays available (the footer's and the dialog's own ×).
-    for (const close of screen.getAllByRole("button", { name: /^Close$/i })) {
-      expect(close).not.toBeDisabled();
-    }
+    // Leaving stays available: the breadcrumb back to Names.
+    expect(screen.getByRole("link", { name: "Names" })).toBeInTheDocument();
   });
 
   it("states the locked-wallet reason once, with an Unlock button", async () => {
@@ -172,7 +169,7 @@ describe("NameActionsModal — node-readiness gating", () => {
     // guided action panel. One notice, one button, and it must be actionable.
     const reason = "Unlock your wallet to sign transactions.";
     invokeMock.mockImplementation(route(false, "Needs a synced owner coin.", false, reason));
-    render(<NameActionsModal name="examplename" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/examplename" />, { wrapper: wrapper() });
 
     // Re-query on every tick: React swaps the banner's subtree once the
     // write-capability query resolves, so a node captured earlier goes stale.
@@ -190,15 +187,18 @@ describe("NameActionsModal — node-readiness gating", () => {
 
   it("enables actions once the node is write-capable", async () => {
     invokeMock.mockImplementation(route(true, null));
-    render(<NameActionsModal name="examplename" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/examplename" />, { wrapper: wrapper() });
 
     // No blocked banner.
     await waitForWritable();
     expect(screen.queryByTestId("name-actions-blocked")).toBeNull();
     // Register should be enabled since canWrite is true and canRegister is allowed.
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /^Register$/i })).not.toBeDisabled();
+      for (const b of screen.getAllByRole("button", { name: /^Register$/i })) {
+        expect(b).not.toBeDisabled();
+      }
     });
+    expect(screen.getByTestId("name-primary")).toHaveTextContent("Register");
   });
 });
 
@@ -209,7 +209,7 @@ async function waitForWritable() {
   await waitFor(() => expect(screen.queryByTestId("name-actions-blocked")).toBeNull());
 }
 
-describe("NameActionsModal — Sell", () => {
+describe("Name page — Sell", () => {
   /** A registered name of ours on a node that can write; Sell's gates vary. */
   function sellRoute(
     o: {
@@ -257,11 +257,10 @@ describe("NameActionsModal — Sell", () => {
     };
   }
 
-  async function openSell(onClose: () => void = () => {}) {
-    render(<NameActionsModal name="examplename" open onClose={onClose} />, {
+  async function openSell() {
+    render(<NamePageAt path="/names/examplename?tab=transfer" />, {
       wrapper: wrapper(),
     });
-    // A registered name of ours opens with its management section expanded.
     return screen.findByTestId("name-sell");
   }
 
@@ -329,11 +328,16 @@ describe("NameActionsModal — Sell", () => {
         : listed(cmd),
     );
     const sell = await openSell();
-    await screen.findByText(/You own this name/);
-    expect(screen.queryByText(/This name is already registered/)).toBeNull();
-    expect(screen.getByTestId("ownership-indicator")).toBeInTheDocument();
-    for (const label of [/^Transfer$/, /^Renew$/, /^Revoke$/]) {
-      const button = screen.getByRole("button", { name: label });
+    await waitFor(() => expect(screen.getByTestId("name-phase")).toHaveTextContent(/^Owned/));
+    expect(screen.getByTestId("transfer-right-now")).toHaveTextContent(
+      "The name is locked for sale on Shakedex",
+    );
+    const buttons = [/^Start transfer$/, /^Renew$/, /^Revoke…$/].flatMap((label) =>
+      screen.getAllByRole("button", { name: label }),
+    );
+    // Renew twice: the header primary and the Renew card.
+    expect(buttons).toHaveLength(4);
+    for (const button of buttons) {
       expect(button).toBeDisabled();
       expect(await hint(button)).toHaveTextContent(NAME_LOCKED_FOR_SALE);
       fireEvent.mouseLeave(button.parentElement!);
@@ -341,6 +345,12 @@ describe("NameActionsModal — Sell", () => {
     }
     expect(sell).toBeDisabled();
     expect(await hint(sell)).toHaveTextContent(NAME_LOCKED_FOR_SALE);
+    fireEvent.mouseLeave(sell.parentElement!);
+
+    // Overview: still ours, not a stranger's "already registered".
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    await screen.findByText(/Renew is the blue button/);
+    expect(screen.queryByText(/This name is already registered/)).toBeNull();
     // Its owner coin sits at the lock address by design: not a sync gap.
     expect(screen.queryByTestId("owner-coin-not-synced")).toBeNull();
     expect(screen.getByTestId("owner-coin-in-lock")).toHaveTextContent(
@@ -365,12 +375,11 @@ describe("NameActionsModal — Sell", () => {
     expect(await hint(sell)).toHaveTextContent(NEEDS_SENDING_NODE);
   });
 
-  it("Escape in the Lock dialog leaves the name's actions open, even while a lock is being built", async () => {
+  it("Escape in the Lock dialog leaves the page and the dialog alone while a lock is being built", async () => {
     // The build never answers: closing the parent now would unmount the
     // Lock dialog with its draft on the way and nothing left to delete it.
     invokeMock.mockImplementation(sellRoute({ build: () => new Promise(() => {}) }));
-    const onClose = vi.fn();
-    const sell = await openSell(onClose);
+    const sell = await openSell();
     await waitFor(() => expect(sell).toBeEnabled());
     fireEvent.click(sell);
     const lock = await screen.findByTestId("lock-build");
@@ -378,22 +387,19 @@ describe("NameActionsModal — Sell", () => {
     fireEvent.click(lock);
     await waitFor(() => expect(lock).toBeDisabled());
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByTestId("lock-build")).toBeInTheDocument();
+    expect(screen.getByTestId("location")).toHaveTextContent("/names/examplename?tab=transfer");
   });
 
-  it("Escape closes the Lock dialog alone; the next one closes the name's actions", async () => {
+  it("Escape closes the Lock dialog alone; the page stays", async () => {
     invokeMock.mockImplementation(sellRoute());
-    const onClose = vi.fn();
-    const sell = await openSell(onClose);
+    const sell = await openSell();
     await waitFor(() => expect(sell).toBeEnabled());
     fireEvent.click(sell);
     await screen.findByTestId("lock-build");
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(screen.queryByTestId("lock-build")).not.toBeInTheDocument());
-    expect(onClose).not.toHaveBeenCalled();
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("name-sell")).toBeInTheDocument();
   });
 
   it("Sell is disabled on mainnet until Settings allows selling (R29)", async () => {

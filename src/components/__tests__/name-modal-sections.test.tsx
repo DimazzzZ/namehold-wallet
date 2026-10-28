@@ -2,10 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 
-// The modal's advanced area is a map of the name's lifecycle, not a catalogue
+// The name page's tabs are a map of the name's lifecycle, not a catalogue
 // of the wallet's verbs: a section is live, still ahead (one muted line), or
 // not there at all. These drive it through the stages where the old flat
 // `ownsName` filter got it wrong.
@@ -20,7 +19,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   readText: vi.fn().mockResolvedValue(""),
 }));
 
-import { NameActionsModal } from "../NameActionsModal";
+import { NamePageAt } from "../../test/namePage";
 
 const profile = {
   id: "p1",
@@ -116,7 +115,7 @@ function wrapper() {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
+        <>{children}</>
       </QueryClientProvider>
     );
   };
@@ -124,7 +123,7 @@ function wrapper() {
 
 beforeEach(() => invokeMock.mockReset());
 
-describe("NameActionsModal — sections while the auction is still running", () => {
+describe("Name page — sections while the auction is still running", () => {
   const revealInfo = {
     name: "leadingname",
     state: "REVEAL",
@@ -151,16 +150,22 @@ describe("NameActionsModal — sections while the auction is still running", () 
 
   it("offers no records, ownership or signing on a name it has only bid on", async () => {
     invokeMock.mockImplementation(route(revealInfo, leaderCaps));
-    render(<NameActionsModal name="leadingname" open onClose={() => {}} />, {
+    render(<NamePageAt path="/names/leadingname?tab=dns" />, {
       wrapper: wrapper(),
     });
 
-    await screen.findByTestId("name-phase");
-    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
-
+    expect(await screen.findByTestId("upcoming-section-records")).toBeInTheDocument();
     expect(screen.queryByTestId("dns-advanced-toggle")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /^Transfer & sell/ }));
+    expect(await screen.findByText(/available after you register this name/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Cancel transfer" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Renew" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /^Sign message/ }));
+    expect(screen.getByTestId("sign-unavailable")).toHaveTextContent(
+      "Sign message — available after you register this name.",
+    );
     expect(screen.queryByText(/Sign message for/)).not.toBeInTheDocument();
   });
 
@@ -169,59 +174,49 @@ describe("NameActionsModal — sections while the auction is still running", () 
   // which is the common shape of this stage, not an edge case.
   it("names what records and ownership are waiting for, beside the live reveal", async () => {
     invokeMock.mockImplementation(route(revealInfo, { ...leaderCaps, canReveal: ok }));
-    render(<NameActionsModal name="leadingname" open onClose={() => {}} />, {
+    render(<NamePageAt path="/names/leadingname" />, {
       wrapper: wrapper(),
     });
 
-    fireEvent.click(await screen.findByTestId("all-actions-toggle"));
-    // Both records and ownership are waiting on the same thing, and both say so.
-    expect(screen.getAllByText(/after you register this name/)).toHaveLength(2);
-    expect(screen.getByText("DNS records")).toBeInTheDocument();
-    expect(screen.getByText("Ownership")).toBeInTheDocument();
-    expect(screen.getByText("Manual auction actions")).toBeInTheDocument();
+    // Records, ownership and signing all wait on the same thing: each tab
+    // carries the muted dot that says so.
+    expect(await screen.findByTestId("tab-hint-dns")).toHaveAccessibleName(
+      "Available after you register this name",
+    );
+    expect(screen.getByTestId("tab-hint-transfer")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-hint-sign")).toBeInTheDocument();
+    expect(screen.getByTestId("manual-auction-toggle")).toHaveTextContent("Manual auction actions");
   });
 
-  it("does not call the menu 'Manage actions' when there is nothing to manage", async () => {
-    invokeMock.mockImplementation(route(revealInfo, { ...leaderCaps, canReveal: ok }));
-    render(<NameActionsModal name="leadingname" open onClose={() => {}} />, {
-      wrapper: wrapper(),
-    });
-
-    const toggle = await screen.findByTestId("all-actions-toggle");
-    expect(toggle).toHaveTextContent("Show all actions");
-  });
-
-  // The green badge reads the same wrong flag the sections used to. Leading an
-  // auction is not holding the name, and saying so in the modal's most
-  // confident-looking element is the claim the user has least reason to doubt.
+  // The old green badge read the same wrong flag the sections used to. Leading
+  // an auction is not holding the name, and saying so in the page's status
+  // line is the claim the user has least reason to doubt.
   it("does not claim the wallet owns a name it is only leading", async () => {
     invokeMock.mockImplementation(route(revealInfo, leaderCaps));
-    render(<NameActionsModal name="leadingname" open onClose={() => {}} />, {
+    render(<NamePageAt path="/names/leadingname" />, {
       wrapper: wrapper(),
     });
-    await screen.findByTestId("name-phase");
-
-    expect(screen.queryByTestId("ownership-indicator")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("name-phase")).toHaveTextContent("Revealed"));
+    expect(screen.getByTestId("name-phase")).not.toHaveTextContent(/Owned|You won/);
   });
 
-  // The read-only DNS block in NameDetails is suppressed only when the
-  // editable section has taken the records over. Those two gates have to move
-  // together: point the read-only one at `ownsName` again and DNS vanishes
-  // from this stage entirely — hidden here, and not rendered there either.
+  // The DNS tab shows the read-only block whenever the editor is not live.
+  // Point that gate at `ownsName` and DNS vanishes from this stage entirely.
   it("still shows the read-only DNS block the editor is not taking over", async () => {
-    invokeMock.mockImplementation(route(revealInfo, leaderCaps));
-    render(<NameActionsModal name="leadingname" open onClose={() => {}} />, {
+    invokeMock.mockImplementation(
+      route(revealInfo, { ...leaderCaps, taskState: "unavailableOther", ownsName: false }),
+    );
+    render(<NamePageAt path="/names/leadingname?tab=dns" />, {
       wrapper: wrapper(),
     });
-    await screen.findByTestId("name-phase");
 
-    expect(await screen.findByText("DNS Records")).toBeInTheDocument();
+    expect(await screen.findByTestId("name-info-dns-no-node")).toBeInTheDocument();
     expect(screen.queryByTestId("dns-advanced-toggle")).not.toBeInTheDocument();
   });
 });
 
-describe("NameActionsModal — sections while a broadcast waits for a block", () => {
-  it("closes the advanced menu entirely", async () => {
+describe("Name page — sections while a broadcast waits for a block", () => {
+  it("hides the header primary and every owner action", async () => {
     invokeMock.mockImplementation(
       route(
         {
@@ -250,21 +245,27 @@ describe("NameActionsModal — sections while a broadcast waits for a block", ()
         }),
       ),
     );
-    render(<NameActionsModal name="pendingname" open onClose={() => {}} />, {
+    render(<NamePageAt path="/names/pendingname?tab=transfer" />, {
       wrapper: wrapper(),
     });
-    await screen.findByTestId("name-phase");
-    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
-
-    expect(screen.queryByTestId("all-actions-toggle")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId("name-phase")).toHaveTextContent(
+        "Update sent · waiting for a block",
+      ),
+    );
+    expect(screen.queryByTestId("name-primary")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Renew" })).not.toBeInTheDocument();
-    // Auto-expand still fires for a registered name, so without its own guard
-    // the container renders as an empty bordered box holding nothing.
-    expect(screen.queryByTestId("advanced-actions")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Actions come back once the sent transaction is mined."),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: /^Sign message/ }));
+    expect(screen.getByTestId("sign-unavailable")).toHaveTextContent(
+      "Actions come back once the sent transaction is mined.",
+    );
   });
 });
 
-describe("NameActionsModal — sections on a name the wallet really owns", () => {
+describe("Name page — sections on a name the wallet really owns", () => {
   it("keeps records, ownership and signing available", async () => {
     invokeMock.mockImplementation(
       route(
@@ -295,11 +296,13 @@ describe("NameActionsModal — sections on a name the wallet really owns", () =>
         }),
       ),
     );
-    render(<NameActionsModal name="ownedname" open onClose={() => {}} />, { wrapper: wrapper() });
-    await screen.findByTestId("name-phase");
+    render(<NamePageAt path="/names/ownedname?tab=dns" />, { wrapper: wrapper() });
 
     expect(await screen.findByTestId("dns-advanced-toggle")).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Renew" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: /^Transfer & sell/ }));
+    // The header primary and the Renew card.
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Renew" })).toHaveLength(2));
+    fireEvent.click(screen.getByRole("tab", { name: /^Sign message/ }));
     expect(await screen.findByText(/Sign message for/)).toBeInTheDocument();
   });
 
@@ -336,15 +339,15 @@ describe("NameActionsModal — sections on a name the wallet really owns", () =>
         }),
       ),
     );
-    render(<NameActionsModal name="ownedname" open onClose={() => {}} />, { wrapper: wrapper() });
-    await screen.findByTestId("name-phase");
+    render(<NamePageAt path="/names/ownedname?tab=transfer" />, { wrapper: wrapper() });
+    await screen.findByTestId("name-sell");
 
     expect(screen.queryByRole("button", { name: /sell with payment/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /buy with payment/i })).not.toBeInTheDocument();
   });
 });
 
-describe("NameActionsModal — the Register step", () => {
+describe("Name page — the Register step", () => {
   const wonInfo = {
     name: "wonname",
     state: "CLOSED",
@@ -376,26 +379,30 @@ describe("NameActionsModal — the Register step", () => {
   // say so, or the user stalls on a question the chain does not ask.
   it("says records are optional and keeps the editor out of the way", async () => {
     invokeMock.mockImplementation(route(wonInfo, wonCaps));
-    render(<NameActionsModal name="wonname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/wonname" />, { wrapper: wrapper() });
 
     await screen.findByText("Register Name");
     expect(screen.getByText(/DNS records are optional/i)).toBeInTheDocument();
     // Not in the way: no rows until the user asks for them.
     expect(screen.queryByTestId("dns-rows")).not.toBeInTheDocument();
-    // And Register is reachable without touching them.
-    expect(screen.getByRole("button", { name: "Register" })).toBeEnabled();
+    // And Register is reachable without touching them: the header primary and
+    // the guided panel's secondary.
+    await waitFor(() => {
+      for (const b of screen.getAllByRole("button", { name: "Register" })) expect(b).toBeEnabled();
+    });
+    expect(screen.getByTestId("name-primary")).toHaveTextContent("Register");
   });
 
   it("opens the editor for whoever does want records up front", async () => {
     invokeMock.mockImplementation(route(wonInfo, wonCaps));
-    render(<NameActionsModal name="wonname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/wonname" />, { wrapper: wrapper() });
 
     fireEvent.click(await screen.findByTestId("register-dns-toggle"));
     expect(await screen.findByTestId("dns-rows")).toBeInTheDocument();
   });
 });
 
-describe("NameActionsModal — the Register step, laid out", () => {
+describe("Name page — the Register step, laid out", () => {
   const wonRedeemInfo = {
     name: "wonredeem",
     state: "CLOSED",
@@ -423,36 +430,47 @@ describe("NameActionsModal — the Register step, laid out", () => {
     nextActionLabel: "Register Name",
   });
 
-  async function openAdvanced() {
+  async function openManual() {
     invokeMock.mockImplementation(route(wonRedeemInfo, wonRedeemCaps));
-    render(<NameActionsModal name="wonredeem" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/wonredeem" />, { wrapper: wrapper() });
     await screen.findByText("Register Name");
-    const toggle = screen.queryByTestId("all-actions-toggle");
-    if (toggle) fireEvent.click(toggle);
+    fireEvent.click(await screen.findByTestId("manual-auction-toggle"));
   }
 
   // The disclosure was a bare inline <button> beside the Register <Button>, so
   // the two shared a line and read as one broken control row.
   it("puts the optional-records disclosure on its own line, not beside Register", async () => {
     invokeMock.mockImplementation(route(wonRedeemInfo, wonRedeemCaps));
-    render(<NameActionsModal name="wonredeem" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/wonredeem" />, { wrapper: wrapper() });
 
     const toggle = await screen.findByTestId("register-dns-toggle");
-    const register = screen.getAllByRole("button", { name: "Register" })[0]!;
+    // The guided panel's Register (the header primary comes first).
+    const register = screen.getAllByRole("button", { name: "Register" }).slice(-1)[0]!;
     expect(toggle.parentElement).not.toBe(register.parentElement);
   });
 
-  // Register is the guided step. Repeating it inside the records section gave
-  // two identical live buttons for one action, with nothing to choose between.
-  it("offers Register exactly once while the guided step is showing it", async () => {
-    await openAdvanced();
+  // Register is the header primary. Repeating it inside the records section
+  // gave two identical live buttons for one action, with nothing to choose
+  // between; on Overview the guided panel's copy is secondary.
+  it("offers Register once on the DNS tab, and only one blue Register anywhere", async () => {
+    invokeMock.mockImplementation(route(wonRedeemInfo, wonRedeemCaps));
+    render(<NamePageAt path="/names/wonredeem?tab=dns" />, { wrapper: wrapper() });
+    await screen.findByTestId("dns-advanced-toggle");
     expect(screen.getAllByRole("button", { name: "Register" })).toHaveLength(1);
+    expect(screen.getByTestId("name-primary")).toHaveTextContent("Register");
+
+    fireEvent.click(screen.getByRole("tab", { name: /^Overview/ }));
+    await screen.findByTestId("register-dns-toggle");
+    const blue = screen
+      .getAllByRole("button", { name: "Register" })
+      .filter((b) => b.className.includes("bg-blue-600"));
+    expect(blue).toEqual([screen.getByTestId("name-primary")]);
   });
 
   // "Redeem" is a covenant name. On its own it tells the user nothing about
   // the 28 HNS the wallet is holding for them.
   it("says what Redeem reclaims, and hides the auction actions that are refused", async () => {
-    await openAdvanced();
+    await openManual();
     expect(screen.getByText(/28(\.0+)? HNS/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Redeem" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
@@ -460,7 +478,7 @@ describe("NameActionsModal — the Register step, laid out", () => {
   });
 });
 
-describe("NameActionsModal — the window between broadcasting and the block", () => {
+describe("Name page — the window between broadcasting and the block", () => {
   // Reported live on a just-registered name. The root cause was the backend
   // losing track of ownership while our own register was unmined (pinned in
   // `names_action_context_tests`), but the header had a fault of its own: it
@@ -495,16 +513,17 @@ describe("NameActionsModal — the window between broadcasting and the block", (
 
   it("does not urge an action the wallet has already broadcast", async () => {
     invokeMock.mockImplementation(route(lostInfo, redeemInFlight));
-    render(<NameActionsModal name="lostname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/lostname" />, { wrapper: wrapper() });
 
-    const badge = await screen.findByTestId("name-phase");
-    expect(badge).not.toHaveTextContent(/redeem now/i);
-    expect(badge).toHaveTextContent(/waiting for a block/i);
+    await waitFor(() =>
+      expect(screen.getByTestId("name-phase")).toHaveTextContent(/waiting for a block/i),
+    );
+    expect(screen.getByTestId("name-phase")).not.toHaveTextContent(/redeem now/i);
   });
 
   it("keeps the panel and the header telling the same story", async () => {
     invokeMock.mockImplementation(route(lostInfo, redeemInFlight));
-    render(<NameActionsModal name="lostname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/lostname" />, { wrapper: wrapper() });
 
     expect(await screen.findByText(/broadcast and waiting to be mined/i)).toBeInTheDocument();
     expect(screen.getByTestId("name-phase")).not.toHaveTextContent(/lost/i);

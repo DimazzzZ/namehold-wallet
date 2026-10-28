@@ -2,15 +2,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 
-// Guards the "built-but-not-broadcast draft cleanup" behaviour of
-// NameActionsModal. build_*_draft persists a row with reserved coins eagerly,
-// so an orphaned draft trips the backend double-action guard on retry
-// ("an auction for '…' is already being opened"). The modal must discard the
-// row when the user cancels the Confirm & Sign overlay or closes the modal
-// before broadcast — and must NOT discard once a broadcast may be in flight.
+// Guards the "built-but-not-broadcast draft cleanup" behaviour of the name
+// page. build_*_draft persists a row with reserved coins eagerly, so an
+// orphaned draft trips the backend double-action guard on retry ("an auction
+// for '…' is already being opened"). The page must discard the row when the
+// user cancels the Confirm & Sign overlay — and must NOT discard once a
+// broadcast may be in flight, nor when the user leaves mid-run (the run itself
+// owns the draft until it settles).
 
 const invokeMock = vi.fn();
 vi.mock("../../lib/invoke", () => ({
@@ -21,7 +21,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   readText: vi.fn().mockResolvedValue(""),
 }));
 
-import { NameActionsModal } from "../NameActionsModal";
+import { NamePageAt } from "../../test/namePage";
 import { useUiStore } from "../../stores/ui";
 
 const profile = {
@@ -114,11 +114,7 @@ function route(overrides: Record<string, () => Promise<unknown>> = {}) {
 function wrapper() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return function Wrapper({ children }: { children: ReactNode }) {
-    return (
-      <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
-      </QueryClientProvider>
-    );
+    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
   };
 }
 
@@ -127,13 +123,14 @@ beforeEach(() => {
   useUiStore.setState({ toastQueue: [], toastMessage: null });
 });
 
-async function placeBid(onClose: () => void) {
-  render(<NameActionsModal name="bidname" open onClose={onClose} />, { wrapper: wrapper() });
+async function placeBid() {
+  const utils = render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
   await screen.findByText("Place a Bid");
   fireEvent.change(screen.getByLabelText(/^Bid \(HNS\)/i), { target: { value: "10" } });
   fireEvent.change(screen.getByLabelText(/Lockup \(HNS\)/i), { target: { value: "12" } });
   const submitBtn = await screen.findByRole("button", { name: /Placing bid…|^Bid$/i });
   fireEvent.click(submitBtn);
+  return utils;
 }
 
 function invokedCommands(): string[] {
@@ -144,31 +141,28 @@ function deleteDraftCalls(): unknown[] {
   return invokeMock.mock.calls.filter((c) => c[0] === "delete_tx_draft").map((c) => c[1]);
 }
 
-describe("NameActionsModal — built-but-not-broadcast draft cleanup", () => {
+describe("Name page — built-but-not-broadcast draft cleanup", () => {
   // A sign-stage failure includes Cancel on the Confirm & Sign overlay
   // (useExecuteDraft tags unlock/sign rejections stage="sign"). The just-built
   // draft must be discarded so a retry isn't blocked by the double-action guard.
   it("discards the draft when the sign stage fails (Confirm & Sign cancel)", async () => {
-    const onClose = vi.fn();
     invokeMock.mockImplementation(
       route({ sign_tx_draft: () => Promise.reject(new Error("user cancelled")) }),
     );
-    await placeBid(onClose);
+    await placeBid();
 
     await waitFor(() => {
       expect(deleteDraftCalls()).toEqual([{ draftId: "draft-1" }]);
     });
-    expect(onClose).not.toHaveBeenCalled();
   });
 
   // A broadcast-stage failure means the tx may be in flight; deleting here
   // would be unsafe (and the backend delete_tx_draft refuses it anyway).
   it("does NOT discard the draft when the broadcast stage fails (tx may be in flight)", async () => {
-    const onClose = vi.fn();
     invokeMock.mockImplementation(
       route({ broadcast_tx_draft: () => Promise.reject(new Error("connection reset")) }),
     );
-    await placeBid(onClose);
+    await placeBid();
 
     await waitFor(() => {
       const toast = ((q) => q[q.length - 1])(useUiStore.getState().toastQueue);
@@ -179,11 +173,10 @@ describe("NameActionsModal — built-but-not-broadcast draft cleanup", () => {
 
   // Build-stage failures never persist a draft, so no cleanup should fire.
   it("does not call delete_tx_draft when the build stage fails", async () => {
-    const onClose = vi.fn();
     invokeMock.mockImplementation(
       route({ build_bid_draft: () => Promise.reject(new Error("insufficient funds")) }),
     );
-    await placeBid(onClose);
+    await placeBid();
 
     await waitFor(() => {
       const toast = ((q) => q[q.length - 1])(useUiStore.getState().toastQueue);
@@ -192,53 +185,56 @@ describe("NameActionsModal — built-but-not-broadcast draft cleanup", () => {
     expect(deleteDraftCalls()).toHaveLength(0);
   });
 
-  // Happy path: broadcast succeeds → nothing discarded, onClose fires.
+  // Happy path: broadcast succeeds → nothing discarded, a toast, and the page
+  // stays (no close after broadcast).
   it("does not discard on the successful build → sign → broadcast path", async () => {
-    const onClose = vi.fn();
     invokeMock.mockImplementation(route());
-    await placeBid(onClose);
+    await placeBid();
 
     await waitFor(() => {
-      expect(onClose).toHaveBeenCalledTimes(1);
+      const toast = ((q) => q[q.length - 1])(useUiStore.getState().toastQueue);
+      expect(toast?.message).toMatch(/^BID broadcast — abcdef012345…/);
     });
     expect(deleteDraftCalls()).toHaveLength(0);
     expect(invokedCommands()).toContain("broadcast_tx_draft");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(".bidname");
+    // The bid inputs are cleared for the next bid.
+    expect(screen.getByLabelText(/^Bid \(HNS\)/i)).toHaveValue(null);
   });
 
-  // Closing the modal (open → false) while a draft is tracked as un-broadcast
-  // (sign still hanging) must trigger the close-edge cleanup.
-  it("discards the draft when the modal is closed before broadcast", async () => {
-    const onClose = vi.fn();
-    let releaseSign: (v: unknown) => void = () => {};
+  it("makes no delete call when the page is left idle", async () => {
+    invokeMock.mockImplementation(route());
+    const utils = render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
+    await screen.findByText("Place a Bid");
+    utils.unmount();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(deleteDraftCalls()).toHaveLength(0);
+  });
+
+  // Leaving the page while a run is in flight (sign still hanging) must not
+  // discard: the run owns the draft until it settles, and discards it itself
+  // if the sign stage then fails.
+  it("does not discard when the page is left mid-sign; the failing run discards once", async () => {
+    let rejectSign: (e: unknown) => void = () => {};
     const hangingSign = () =>
-      new Promise<unknown>((resolve) => {
-        releaseSign = resolve;
+      new Promise<unknown>((_resolve, reject) => {
+        rejectSign = reject;
       });
     invokeMock.mockImplementation(route({ sign_tx_draft: hangingSign }));
 
-    const utils = render(<NameActionsModal name="bidname" open onClose={onClose} />, {
-      wrapper: wrapper(),
-    });
-    await screen.findByText("Place a Bid");
-    fireEvent.change(screen.getByLabelText(/^Bid \(HNS\)/i), { target: { value: "10" } });
-    fireEvent.change(screen.getByLabelText(/Lockup \(HNS\)/i), { target: { value: "12" } });
-    const submitBtn = await screen.findByRole("button", { name: /Placing bid…|^Bid$/i });
-    fireEvent.click(submitBtn);
-
+    const utils = await placeBid();
     await waitFor(() => {
       expect(invokedCommands()).toContain("build_bid_draft");
       expect(invokedCommands()).toContain("sign_tx_draft");
     });
 
-    utils.rerender(<NameActionsModal name="bidname" open={false} onClose={onClose} />);
+    utils.unmount();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(deleteDraftCalls()).toHaveLength(0);
 
+    rejectSign(new Error("user cancelled"));
     await waitFor(() => {
       expect(deleteDraftCalls()).toEqual([{ draftId: "draft-1" }]);
     });
-
-    // Release the hanging sign so no unresolved microtask leaks; it resolves
-    // after cleanup already ran and the modal is closed, so nothing observable
-    // happens.
-    releaseSign(null);
   });
 });

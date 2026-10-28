@@ -1,187 +1,222 @@
+import { useState, type ReactNode } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { useNameRecords } from "../../queries/read";
-import { useNodeLive } from "../../queries/node";
 import { Badge } from "../ui/Badge";
-import { formatHns } from "../../lib/utils";
+import { Icon } from "../ui/Icon";
 import { Tooltip } from "../ui/Tooltip";
-import type { HsdName } from "../../types";
+import { formatHns } from "../../lib/utils";
+import { auctionPhase, formatCountdown, type PhaseCountdown } from "../../lib/auction";
+import { approxBlocksDate, countdownForNetwork } from "../../lib/nameStatus";
+import { renderRecord } from "./ReadOnlyDnsRecords";
+import type { HsdName, NameActionCapabilities, WalletNetwork } from "../../types";
 
-/**
- * Render a single hsd DNS record as a compact, human-readable row. Handles
- * every real hsd record type (NS, GLUE4/6, TXT, SYNTH4/6, DS) explicitly and
- * falls back to a value dump for unknown types so no data is ever hidden.
- *
- * Moved here from the former NameInfoModal (Task T4: unify the read-only name
- * inspector into NameActionsModal). Single source of truth for read-only
- * name details now.
- */
-function renderRecord(rec: Record<string, unknown>): { label: string; value: string } {
-  const type = String(rec.type ?? "?");
-  switch (type) {
-    case "NS":
-      return { label: "NS", value: String(rec.ns ?? "") };
-    case "GLUE4":
-    case "GLUE6":
-      return {
-        label: type,
-        value: `${String(rec.ns ?? "")} → ${String(rec.address ?? "")}`,
-      };
-    case "SYNTH4":
-    case "SYNTH6":
-      return { label: type, value: String(rec.address ?? "") };
-    case "TXT": {
-      const txt = Array.isArray(rec.txt) ? rec.txt.map(String).join(" ") : "";
-      return { label: "TXT", value: txt };
-    }
-    case "DS": {
-      const parts = [
-        rec.keyTag !== undefined ? `keyTag=${rec.keyTag}` : null,
-        rec.algorithm !== undefined ? `alg=${rec.algorithm}` : null,
-        rec.digestType !== undefined ? `digestType=${rec.digestType}` : null,
-        rec.digest !== undefined ? `digest=${rec.digest}` : null,
-      ].filter(Boolean);
-      return { label: "DS", value: parts.join(" ") };
-    }
-    default: {
-      const rest = Object.entries(rec)
-        .filter(([k]) => k !== "type")
-        .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
-        .join(" ");
-      return { label: type, value: rest };
-    }
-  }
-}
+/** How many records the Details card previews before "Edit records". */
+const RECORDS_PREVIEW = 4;
 
 interface NameDetailsProps {
   name: string;
   profileId: string | null;
   info: HsdName | null | undefined;
-  /**
-   * When true, the DNS records table is owned by NameActionsModal's editable
-   * DnsRecordsEditor (owned names in the advanced section), so this read-only
-   * section suppresses its own DNS block to avoid showing records twice.
-   */
-  hideDnsRecords?: boolean;
+  caps?: NameActionCapabilities | null;
+  network?: WalletNetwork | null;
+  countdown?: PhaseCountdown | null;
+  /** Our own bid is known locally and worth showing (pre-reveal). */
+  showLocalBid?: boolean;
+  /** The editable records section is live (owned, registered). */
+  recordsLive?: boolean;
+  /** Go to the DNS records tab. */
+  onOpenRecords?: () => void;
+}
+
+function Row({
+  label,
+  value,
+  sub,
+  testId,
+}: {
+  label: ReactNode;
+  value: ReactNode;
+  sub?: ReactNode;
+  testId?: string;
+}) {
+  return (
+    <div className="flex justify-between gap-3 text-[13px]" data-testid={testId}>
+      <span className="text-gray-500">{label}</span>
+      <span className="text-right text-gray-900 tabular-nums">
+        {value}
+        {sub && <span className="text-gray-400">{sub}</span>}
+      </span>
+    </div>
+  );
 }
 
 /**
- * Read-only on-chain details for a name: registration/renewal heights,
- * transfer status, owner UTXO, closed-auction values, and DNS records.
- * Formerly the body of the standalone NameInfoModal; now embedded inside
- * NameActionsModal so one modal serves both inspection and actions.
- *
- * DNS records come ONLY from a synced local node (the explorer can't return
- * resources). Node-liveness distinguishes "genuinely no records" from "node
- * unavailable" — both return {records:[]} from the backend.
+ * The name page's Details card: what is known on-chain about the name (bids,
+ * price, expiry, heights), a preview of its records when it is ours, and the
+ * owner UTXO behind a Technical disclosure.
  */
-export function NameDetails({ name, profileId, info, hideDnsRecords }: NameDetailsProps) {
-  const nodeLive = useNodeLive();
-  const { data: resource } = useNameRecords(name, profileId);
+export function NameDetails({
+  name,
+  profileId,
+  info,
+  caps,
+  network,
+  countdown,
+  showLocalBid,
+  recordsLive,
+  onOpenRecords,
+}: NameDetailsProps) {
+  const [technical, setTechnical] = useState(false);
+  const owned = !!caps?.ownsName && (caps.nameIsRegistered || caps.transferPending);
+  const { data: resource } = useNameRecords(owned ? name : null, profileId);
 
   if (!info) return null;
 
-  const hasHeights = info.height !== null || info.renewal !== null;
-  const hasTransfer = info.transfer != null && info.transfer > 0;
-  const hasOwner = !!info.owner;
-  const hasClosedValues = info.state === "CLOSED" && (info.value !== null || info.highest !== null);
+  const { phase } = auctionPhase(info.state);
+  const closed = phase === "CLOSED";
+  const blocksLeft = info.stats?.blocksUntilExpire ?? null;
+  const exp = blocksLeft != null ? approxBlocksDate(blocksLeft, network) : null;
+  const blocks = (n: number) => `${n.toLocaleString("en-US")} blocks`;
+  const multi = (caps?.myBidCount ?? 0) > 1;
+
+  const rows: ReactNode[] = [];
+  if (showLocalBid && caps?.bidValueDoos != null) {
+    rows.push(
+      <Row
+        key="bid"
+        testId="name-your-bid"
+        label={
+          <Tooltip
+            hint
+            content="Your bid is sealed until reveal; the lockup is the most anyone can see."
+          >
+            {multi ? "Latest bid" : "Your bid"}
+          </Tooltip>
+        }
+        value={`${formatHns(caps.bidValueDoos)} HNS`}
+        sub={
+          <>
+            {caps.lockupValueDoos != null && (
+              <span data-testid="name-your-lockup">
+                {` · lockup ${formatHns(caps.lockupValueDoos)}`}
+              </span>
+            )}
+            {multi && (
+              <span data-testid="name-your-bid-count">{` · ${caps.myBidCount} of yours`}</span>
+            )}
+          </>
+        }
+      />,
+    );
+  }
+  // Our own bid, when known, says more than the blinded on-chain figure.
+  if (!showLocalBid && info.highest != null) {
+    rows.push(<Row key="high" label="High bid" value={`${formatHns(info.highest)} HNS`} />);
+  }
+  if (closed && info.value != null) {
+    rows.push(
+      <Row
+        key="paid"
+        label={
+          <Tooltip
+            hint
+            content="Handshake uses a Vickrey second-price auction: the winner pays the second-highest bid, not their own bid."
+          >
+            Paid price (2nd-price)
+          </Tooltip>
+        }
+        value={`${formatHns(info.value)} HNS`}
+      />,
+    );
+  }
+  if (closed && blocksLeft != null) {
+    rows.push(
+      exp ? (
+        <Row key="exp" label="Expires" value={exp.short} sub={` · in ${blocks(blocksLeft)}`} />
+      ) : (
+        <Row key="exp" label="Expires" value={`in ${blocks(blocksLeft)}`} />
+      ),
+    );
+  } else if (countdown) {
+    rows.push(
+      <Row
+        key="next"
+        testId="name-countdown"
+        label="Next step"
+        value={`${countdown.label} ${formatCountdown(countdownForNetwork(countdown, network))}`}
+      />,
+    );
+  }
+  if (info.renewal != null) {
+    rows.push(<Row key="renewed" label="Renewed" value={`block ${info.renewal}`} />);
+  }
+  if (info.height != null) {
+    rows.push(
+      <Row key="opened" label="Opened" value={`block ${info.height.toLocaleString("en-US")}`} />,
+    );
+  }
+
+  const records = resource?.records ?? [];
+  const recordsLink = !recordsLive ? "View" : records.length ? "Edit records" : "Add records";
 
   return (
-    <div className="space-y-4 text-sm" data-testid="name-details">
-      {hasHeights && (
-        <div className="text-xs space-y-1 border-t border-gray-200 pt-2">
-          {info.height !== null && (
-            <div className="flex justify-between">
-              <span className="text-gray-600">Opened:</span>
-              <span className="font-mono">Block {info.height}</span>
-            </div>
-          )}
-          {info.renewal !== null && (
-            <div className="flex justify-between">
-              <span className="text-gray-600">Renewed:</span>
-              <span className="font-mono">Block {info.renewal}</span>
-            </div>
-          )}
-        </div>
+    <section
+      className="bg-white border border-gray-200 rounded-lg p-4 flex flex-col gap-3"
+      data-testid="name-details"
+    >
+      <h3 className="text-sm font-semibold text-gray-900">Details</h3>
+      {rows.length ? (
+        <div className="flex flex-col gap-1.5">{rows}</div>
+      ) : (
+        <div className="text-[13px] text-gray-400">Nothing on-chain yet.</div>
       )}
 
-      {hasTransfer && (
-        <div className="text-xs bg-yellow-50 border border-yellow-200 rounded p-2">
-          <span className="text-yellow-900">Transfer in progress (height {info.transfer})</span>
-        </div>
-      )}
-
-      {hasOwner && (
-        <div className="text-xs space-y-1 border-t border-gray-200 pt-2">
-          <div className="text-gray-600">Owner UTXO:</div>
-          <div className="font-mono text-xs break-all">
-            {info.owner!.hash}:{info.owner!.index}
+      {owned && (
+        <div className="border-t border-gray-100 pt-3 flex flex-col gap-1.5">
+          <div className="flex items-center justify-between text-[13px]">
+            <span className="text-gray-500">Records</span>
+            <button
+              type="button"
+              className="text-blue-600 hover:underline"
+              onClick={onOpenRecords}
+              data-testid="details-records-link"
+            >
+              {recordsLink}
+            </button>
           </div>
+          {records.slice(0, RECORDS_PREVIEW).map((rec, i) => {
+            const { label, value } = renderRecord(rec);
+            return (
+              <div key={i} className="flex items-center gap-2 text-xs min-w-0">
+                <Badge variant="default">{label}</Badge>
+                <span className="font-mono text-gray-700 truncate">{value || "—"}</span>
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {hasClosedValues && (
-        <div className="text-xs space-y-1 border-t border-gray-200 pt-2">
-          {info.value !== null && (
-            <div className="flex justify-between">
-              <Tooltip content="Handshake uses a Vickrey second-price auction: the winner pays the second-highest bid, not their own bid.">
-                <span className="text-gray-600 cursor-help">Paid price (2nd-price):</span>
-              </Tooltip>
-              <span className="font-mono">{formatHns(info.value)}</span>
-            </div>
-          )}
-          {info.highest !== null && (
-            <div className="flex justify-between">
-              <span className="text-gray-600">Top bid:</span>
-              <span className="font-mono">{formatHns(info.highest)}</span>
+      {info.owner && (
+        <div className="border-t border-gray-100 pt-3 text-xs">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 text-gray-500 hover:text-gray-900"
+            onClick={() => setTechnical((t) => !t)}
+            aria-expanded={technical}
+          >
+            <Icon icon={technical ? ChevronDown : ChevronRight} size={13} />
+            Technical
+          </button>
+          {technical && (
+            <div className="mt-2 flex flex-col gap-1">
+              <div className="text-gray-500">Owner UTXO</div>
+              <div className="font-mono break-all text-gray-900">
+                {info.owner.hash}:{info.owner.index}
+              </div>
             </div>
           )}
         </div>
       )}
-
-      {!hideDnsRecords && (
-        <div className="text-xs space-y-2 border-t border-gray-200 pt-2">
-          <div className="font-medium text-gray-700">DNS Records</div>
-          {!nodeLive ? (
-            <div className="text-gray-500" data-testid="name-info-dns-no-node">
-              Requires a synced local node to display current records.
-            </div>
-          ) : (
-            <>
-              {resource?.ttl !== undefined && resource?.ttl !== null && (
-                <div className="text-gray-600">
-                  TTL: <span className="font-mono">{resource.ttl}s</span>
-                </div>
-              )}
-              {resource?.records && resource.records.length > 0 ? (
-                <table className="w-full text-xs" data-testid="name-info-dns-table">
-                  <thead>
-                    <tr className="text-left text-gray-500 border-b">
-                      <th className="py-1 pr-4 w-16">Type</th>
-                      <th className="py-1">Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {resource.records.map((rec, i) => {
-                      const { label, value } = renderRecord(rec);
-                      return (
-                        <tr key={i} className="border-t border-gray-100 hover:bg-gray-50 align-top">
-                          <td className="py-1 pr-4">
-                            <Badge variant="default">{label}</Badge>
-                          </td>
-                          <td className="py-1 font-mono break-all">
-                            {value || <span className="text-gray-400">—</span>}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              ) : (
-                <div className="text-gray-500">No records</div>
-              )}
-            </>
-          )}
-        </div>
-      )}
-    </div>
+    </section>
   );
 }

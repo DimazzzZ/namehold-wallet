@@ -16,6 +16,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 }));
 
 import { NamesView } from "../NamesView";
+import { LocationProbe } from "../../test/namePage";
 
 function wrapper(at = "/names?filter=watching") {
   const qc = new QueryClient({
@@ -214,18 +215,20 @@ describe("NamesView — watchlist", () => {
     });
   });
 
-  it("row click opens the unified name modal", async () => {
+  it("row click opens the name's page", async () => {
     invokeMock.mockImplementation(route());
-    render(<NamesView />, { wrapper: wrapper() });
+    render(
+      <>
+        <NamesView />
+        <LocationProbe />
+      </>,
+      { wrapper: wrapper() },
+    );
 
     const name = await screen.findByText(/\.example/);
     fireEvent.click(name.closest("tr")!);
 
-    // NameActionsModal renders — it typically shows the name prominently
-    await waitFor(() => {
-      // The modal will call invoke to fetch name info; just confirm it rendered
-      expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "example" });
-    });
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/names/example"));
   });
 
   it("export CSV button calls invoke", async () => {

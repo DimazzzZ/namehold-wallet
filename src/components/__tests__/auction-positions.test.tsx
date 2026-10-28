@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { ReactNode } from "react";
 
 const invokeMock = vi.fn();
@@ -12,6 +12,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
 import { NamesView } from "../NamesView";
+import { NameRoute } from "../NamePage";
+import { LocationProbe } from "../../test/namePage";
 
 const profile = {
   id: "p1",
@@ -156,9 +158,9 @@ describe("NamesView — auction positions merged with live caps (Task 2)", () =>
     expect(screen.getByTestId("names-chip-auction")).toHaveTextContent("In auction 1");
   });
 
-  it("routes the RAW name (punycode-safe) to the modal when a position row's action is clicked", async () => {
+  it("routes the RAW name (punycode-safe) to the name page when a position row's action is clicked", async () => {
     // `xn--e1adigm` decodes to "козел" — the row must render the pretty
-    // Unicode form while the click routes the RAW ACE name to the modal.
+    // Unicode form while the click routes the RAW ACE name to the page.
     invokeMock.mockImplementation(
       baseRoutes({
         positions: ["xn--e1adigm"],
@@ -174,20 +176,32 @@ describe("NamesView — auction positions merged with live caps (Task 2)", () =>
         },
       }),
     );
-    render(<NamesView />, { wrapper: wrapper() });
+    render(
+      <>
+        <Routes>
+          <Route path="/names" element={<NamesView />} />
+          <Route path="/names/:name" element={<NameRoute />} />
+        </Routes>
+        <LocationProbe />
+      </>,
+      { wrapper: wrapper() },
+    );
 
     expect(await screen.findByText(".козел")).toBeInTheDocument();
     expect(screen.queryByText(".xn--e1adigm")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Bid$/ }));
 
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent("/names/xn--e1adigm"),
+    );
     await waitFor(() => {
       const call = invokeMock.mock.calls.find((c) => c[0] === "read_name_info");
       expect(call?.[1]).toEqual({ name: "xn--e1adigm" });
     });
-    // This used to assert that the modal fetched `get_name_action_capabilities`
+    // This used to assert that the page fetched `get_name_action_capabilities`
     // for the raw name — which `openName`'s cache bridge, added in
     // the same commit as this test, deliberately prevents: it seeds the single
-    // capability query from the batch the table already holds, so the modal
+    // capability query from the batch the table already holds, so the page
     // opens on the row's task state instead of flashing the raw on-chain phase.
     // The RAW-name routing is already proven above; what is worth pinning here
     // is the bridge itself, keyed by the raw name so nothing refetches.

@@ -8,6 +8,7 @@ import { WalletView } from "./components/WalletView";
 import { ActivityView } from "./components/ActivityView";
 import MarketPage from "./components/market/MarketPage";
 import { NamesView } from "./components/NamesView";
+import { NameRoute } from "./components/NamePage";
 import { SettingsInterim } from "./components/interim/SettingsInterim";
 import { Onboarding } from "./components/Onboarding";
 import { useSettingsStore } from "./stores/settings";
@@ -54,6 +55,7 @@ function AppRoutes() {
         {/* Wallet-first: the wallet is the default landing screen. */}
         <Route path="/" element={<WalletView />} />
         <Route path="/names" element={<NamesView />} />
+        <Route path="/names/:name" element={<NameRoute />} />
         <Route path="/market" element={<MarketPage />} />
         <Route path="/activity" element={<ActivityView />} />
         <Route path="/settings" element={<SettingsInterim />} />

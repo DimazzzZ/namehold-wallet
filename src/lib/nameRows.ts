@@ -94,10 +94,8 @@ export interface NameRowsInput {
   isWatchOnly?: boolean;
 }
 
-/** Blocks keep wall-clock time on these networks (hsd's "main" is not a wallet value). */
-export function wallClock(network: string | null | undefined): boolean {
-  return network === "mainnet" || network === "testnet";
-}
+// Blocks keep wall-clock time on mainnet / testnet (hsd's "main" is not a wallet value).
+export { wallClock } from "./nameStatus";
 
 const short = (doos: number | null | undefined) => formatHnsShort(doos ?? 0);
 

@@ -59,7 +59,7 @@ export function NameSignMessage({
 
   return (
     <section className="space-y-2" data-testid="name-sign-message">
-      <div className="text-gray-600">Sign message for .{decoded}</div>
+      <div className="font-semibold text-gray-900">Sign message for .{decoded}</div>
       <p className="text-xs text-gray-500">
         Paste the exact text a third party (e.g. Namebase) gave you to verify ownership of this
         name, then Sign with your wallet key.

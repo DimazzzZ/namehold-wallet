@@ -1,3 +1,4 @@
+import { Children, type ReactNode } from "react";
 import { useNameBids } from "../../queries/read";
 import { Badge } from "../ui/Badge";
 import { Tooltip } from "../ui/Tooltip";
@@ -5,7 +6,7 @@ import { formatHns } from "../../lib/utils";
 import type { NameBid } from "../../types";
 
 /**
- * Phase-aware, honest bid list for the auction modal (Task 2).
+ * Phase-aware, honest bid list: the name page's "Auction" card (Task 2).
  *
  * The whole point of this component is to never let a Vickrey bidder mistake
  * a competitor's public LOCKUP (an upper bound they chose to obscure their
@@ -21,14 +22,16 @@ import type { NameBid } from "../../types";
  *   `win === true`.
  *
  * Degrades silently: loading/error/no-data/no-bids never throws and, outside
- * OPENING/BIDDING, renders nothing at all (no empty box cluttering the
- * modal).
+ * OPENING/BIDDING, renders nothing at all unless it has banners (`children`)
+ * to show.
  */
 export function NameBidsPanel({
   name,
   profileId,
   phase,
   suppressEmptyHint = false,
+  meta,
+  children,
 }: {
   name: string;
   profileId: string | null;
@@ -42,51 +45,68 @@ export function NameBidsPanel({
    * direct contradiction rather than as the obvious consequence.
    */
   suppressEmptyHint?: boolean;
+  /** Right of the card title, e.g. "Closed · 3 bids". */
+  meta?: string;
+  /** Banners about this name's bids (stranded, unchecked), under the list. */
+  children?: ReactNode;
 }) {
   const { data, isLoading, isError } = useNameBids(name, profileId);
+  const extra = Children.toArray(children).length > 0 ? children : null;
 
-  if (isLoading || isError) return null;
+  const body = ((): ReactNode => {
+    if (isLoading || isError) return null;
+    const bids = data?.bids ?? [];
+    const showEmptyHint = phase === "OPENING" || phase === "BIDDING";
 
-  const bids = data?.bids ?? [];
-  const showEmptyHint = phase === "OPENING" || phase === "BIDDING";
+    if (bids.length === 0) {
+      if (!showEmptyHint || suppressEmptyHint) return null;
+      return (
+        <div className="text-xs text-gray-400" data-testid="name-bids">
+          No bids yet
+        </div>
+      );
+    }
 
-  if (bids.length === 0) {
-    if (!showEmptyHint || suppressEmptyHint) return null;
+    const isRevealPhase = phase === "REVEAL" || phase === "CLOSED";
+    const myBidCount = data?.myBidCount ?? bids.filter((b) => b.mine).length;
+    // "N bids so far" counts what the chain has; a bid of ours still in the
+    // mempool is not one of them yet, and is called out separately.
+    const pendingCount = bids.filter((b) => b.pending).length;
+    const onChainCount = bids.length - pendingCount;
+
     return (
-      <div className="text-xs text-gray-400" data-testid="name-bids">
-        No bids yet
+      <div className="text-sm" data-testid="name-bids">
+        {!isRevealPhase && (
+          <div className="text-xs text-gray-500 mb-1">
+            {onChainCount} bids so far · yours: {myBidCount}
+            {pendingCount > 0 && ` · ${pendingCount} of yours waiting for a block`}
+          </div>
+        )}
+
+        {isRevealPhase && data?.highest != null && (
+          <div className="text-xs text-gray-500 mb-1">High bid: {formatHns(data.highest)} HNS</div>
+        )}
+
+        <ul className="space-y-1">
+          {bids.map((bid, i) => (
+            <BidRow key={bid.txid ?? `${bid.index ?? i}`} bid={bid} />
+          ))}
+        </ul>
       </div>
     );
-  }
+  })();
 
-  const isRevealPhase = phase === "REVEAL" || phase === "CLOSED";
-  const myBidCount = data?.myBidCount ?? bids.filter((b) => b.mine).length;
-  // "N bids so far" counts what the chain has; a bid of ours still in the
-  // mempool is not one of them yet, and is called out separately.
-  const pendingCount = bids.filter((b) => b.pending).length;
-  const onChainCount = bids.length - pendingCount;
+  if (!body && !extra) return null;
 
   return (
-    <div className="text-sm" data-testid="name-bids">
-      <div className="text-xs font-medium text-gray-600 mb-1">Bids</div>
-
-      {!isRevealPhase && (
-        <div className="text-xs text-gray-500 mb-1">
-          {onChainCount} bids so far · yours: {myBidCount}
-          {pendingCount > 0 && ` · ${pendingCount} of yours waiting for a block`}
-        </div>
-      )}
-
-      {isRevealPhase && data?.highest != null && (
-        <div className="text-xs text-gray-500 mb-1">High bid: {formatHns(data.highest)} HNS</div>
-      )}
-
-      <ul className="space-y-1">
-        {bids.map((bid, i) => (
-          <BidRow key={bid.txid ?? `${bid.index ?? i}`} bid={bid} />
-        ))}
-      </ul>
-    </div>
+    <section className="bg-white border border-gray-200 rounded-lg px-4 py-3 flex flex-col gap-2">
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className="font-semibold text-gray-900">Auction</h3>
+        {meta && <span className="text-xs text-gray-500">{meta}</span>}
+      </div>
+      {body}
+      {extra}
+    </section>
   );
 }
 

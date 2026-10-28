@@ -10,7 +10,7 @@ import { Input } from "./ui/Input";
 import { Select } from "./ui/Select";
 import { nameMatches } from "../lib/idn";
 import { useQueryClient } from "@tanstack/react-query";
-import { NameActionsModal } from "./NameActionsModal";
+import { useOpenName } from "../hooks/useOpenName";
 import { BlockInfoModal } from "./BlockInfoModal";
 import { TxInfoModal } from "./TxInfoModal";
 import { PaidSwapOffers } from "./PaidSwapOffers";
@@ -34,11 +34,11 @@ const ALL_ACTIONS = Object.keys(ACTION_META);
 const PAGE_SIZE = 50;
 
 export function ActivityView() {
-  const [infoName, setInfoName] = useState<string | null>(null);
   const [infoBlock, setInfoBlock] = useState<number | null>(null);
   const [infoTx, setInfoTx] = useState<string | null>(null);
-  // The one way a list opens a name (the name page replaces it later).
-  const openName = setInfoName;
+  // The one way a list opens a name: its page.
+  const openNamePage = useOpenName();
+  const openName = (name: string) => openNamePage(name);
 
   // --- Keyboard shortcut subscriptions (action bus) ---
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -313,10 +313,6 @@ export function ActivityView() {
       )}
 
       <PaidSwapOffers onNameClick={openName} />
-
-      {infoName && (
-        <NameActionsModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
-      )}
 
       {infoBlock != null && (
         <BlockInfoModal

@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 
 // Manage DNS: the DNS editor must seed from `read_name_records` and UPDATE must
@@ -17,7 +16,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   readText: vi.fn().mockResolvedValue(""),
 }));
 
-import { NameActionsModal } from "../NameActionsModal";
+import { NamePageAt } from "../../test/namePage";
 import { useUiStore } from "../../stores/ui";
 
 const profile = {
@@ -131,7 +130,7 @@ function wrapper() {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
+        <>{children}</>
       </QueryClientProvider>
     );
   };
@@ -142,12 +141,12 @@ beforeEach(() => {
   useUiStore.setState({ toastQueue: [], toastMessage: null });
 });
 
-describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
+describe("Name page — DNS records prefill (Manage DNS)", () => {
   it("seeds the editor with current records from read_name_records", async () => {
     invokeMock.mockImplementation(route());
-    render(<NameActionsModal name="myname" open onClose={vi.fn()} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/myname?tab=dns" />, { wrapper: wrapper() });
 
-    // Wait for the DNS section to appear (owned names auto-expand management).
+    // The DNS records tab, deep-linked.
     const rows = await screen.findByTestId("dns-rows-advanced");
     // Should have 2 rows (NS + DS) seeded from the mock records.
     const selects = rows.querySelectorAll("select");
@@ -168,7 +167,7 @@ describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
 
   it("passes the RAW name to read_name_records (not punycode-decoded)", async () => {
     invokeMock.mockImplementation(route());
-    render(<NameActionsModal name="myname" open onClose={vi.fn()} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/myname?tab=dns" />, { wrapper: wrapper() });
     await screen.findByTestId("dns-rows-advanced");
 
     const calls = invokeMock.mock.calls.filter((c: unknown[]) => c[0] === "read_name_records");
@@ -178,7 +177,7 @@ describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
 
   it("UPDATE sends remaining records after removing one row", async () => {
     invokeMock.mockImplementation(route());
-    render(<NameActionsModal name="myname" open onClose={vi.fn()} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/myname?tab=dns" />, { wrapper: wrapper() });
 
     const rows = await screen.findByTestId("dns-rows-advanced");
     // Remove the first row (NS).
@@ -186,7 +185,7 @@ describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
     fireEvent.click(removeButtons[0]!);
 
     // Click Update.
-    const updateBtn = await screen.findByRole("button", { name: /^Update$/ });
+    const updateBtn = await screen.findByRole("button", { name: /^Publish changes \(Update\)$/ });
     fireEvent.click(updateBtn);
 
     await waitFor(() => {
@@ -204,7 +203,7 @@ describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
 
   it("UPDATE sends [] when all records are removed (delete-all)", async () => {
     invokeMock.mockImplementation(route());
-    render(<NameActionsModal name="myname" open onClose={vi.fn()} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/myname?tab=dns" />, { wrapper: wrapper() });
 
     const rows = await screen.findByTestId("dns-rows-advanced");
     // Remove the first row (NS); the second (DS) becomes the only row.
@@ -217,7 +216,7 @@ describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
     fireEvent.change(keyTagInput, { target: { value: "" } });
 
     // Click Update.
-    const updateBtn = await screen.findByRole("button", { name: /^Update$/ });
+    const updateBtn = await screen.findByRole("button", { name: /^Publish changes \(Update\)$/ });
     fireEvent.click(updateBtn);
 
     await waitFor(() => {
@@ -236,7 +235,7 @@ describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
         read_name_records: () => Promise.resolve({ records: [] }),
       }),
     );
-    render(<NameActionsModal name="myname" open onClose={vi.fn()} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/myname?tab=dns" />, { wrapper: wrapper() });
 
     const hint = await screen.findByTestId("dns-records-hint");
     expect(hint).toBeInTheDocument();
@@ -249,13 +248,13 @@ describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
         read_name_records: () => Promise.reject(new Error("node not synced")),
       }),
     );
-    render(<NameActionsModal name="myname" open onClose={vi.fn()} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/myname?tab=dns" />, { wrapper: wrapper() });
 
     // The "can't read current records" banner appears...
     const banner = await screen.findByTestId("dns-records-stale-banner");
     expect(banner.textContent).toContain("Can't read");
     // ...and the UPDATE button is disabled (never render the editor either).
-    const updateBtn = await screen.findByRole("button", { name: /^Update$/ });
+    const updateBtn = await screen.findByRole("button", { name: /^Publish changes \(Update\)$/ });
     expect(updateBtn).toBeDisabled();
     // A Retry affordance is present.
     expect(screen.getByTestId("dns-records-retry")).toBeInTheDocument();
@@ -265,11 +264,11 @@ describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
 
   it("enables UPDATE only once a fresh read has seeded the editor", async () => {
     invokeMock.mockImplementation(route()); // read resolves with currentRecords
-    render(<NameActionsModal name="myname" open onClose={vi.fn()} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/myname?tab=dns" />, { wrapper: wrapper() });
 
     // Editor renders (gated on fresh) and UPDATE becomes enabled.
     await screen.findByTestId("dns-rows-advanced");
-    const updateBtn = await screen.findByRole("button", { name: /^Update$/ });
+    const updateBtn = await screen.findByRole("button", { name: /^Publish changes \(Update\)$/ });
     expect(updateBtn).not.toBeDisabled();
   });
 });

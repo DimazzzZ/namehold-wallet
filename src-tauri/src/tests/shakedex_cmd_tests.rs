@@ -2090,12 +2090,17 @@ fn refusal_sentences_match_the_uis_word_for_word() {
         crate::noncustodial::shakedex::sell::LISTING_LIFETIME_SECS
     );
     assert!(ui.contains(&decl), "marketText.ts lacks `{decl}`");
-    // A block's time, which the UI turns block counts into.
+    // A block's time, which the UI turns block counts into (one constant,
+    // in lib/auction.ts, shared by the market and the name page).
+    let auction = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/lib/auction.ts"),
+    )
+    .expect("auction.ts should be readable from the crate");
     let decl = format!(
-        "const SECS_PER_BLOCK = {};",
+        "export const SECS_PER_BLOCK = {};",
         crate::noncustodial::network::TARGET_SPACING_SECS
     );
-    assert!(ui.contains(&decl), "marketText.ts lacks `{decl}`");
+    assert!(auction.contains(&decl), "auction.ts lacks `{decl}`");
 }
 
 /// R7 (per-wallet read isolation, review M1): the market page is read for
