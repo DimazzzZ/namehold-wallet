@@ -192,6 +192,33 @@ export function formatDate(iso: string | null | undefined): string {
   return `${datePart} - ${timePart}`;
 }
 
+/**
+ * Compact UTC date + time for lists: "Jul 30, 2026 · 14:09", or without the
+ * year ("Jul 30, 14:09") inside a sentence. "—" for empty input.
+ */
+export function formatDateShort(
+  iso: string | null | undefined,
+  opts: { year?: boolean } = {},
+): string {
+  if (!iso?.trim()) return "—";
+  const s = iso.trim();
+  const d = new Date(normalizeTimestamp(s));
+  if (Number.isNaN(d.getTime())) return s;
+  const date = d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    ...(opts.year === false ? {} : { year: "numeric" }),
+    timeZone: "UTC",
+  });
+  const time = d.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "UTC",
+  });
+  return opts.year === false ? `${date}, ${time}` : `${date} · ${time}`;
+}
+
 /** Short date for a list cell ("Jul 30"); pair it with formatDate in a tooltip. */
 export function formatShortDate(iso: string | null | undefined): string {
   if (!iso?.trim()) return "—";

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { displayName } from "../lib/idn";
 import { formatHnsShort } from "../lib/utils";
+import { Tooltip } from "./ui/Tooltip";
 import type { PaidSwapOffer } from "../types";
 
 /**
@@ -10,7 +11,7 @@ import type { PaidSwapOffer } from "../types";
  * claim or remove one any more. Shown so a seller still sees the buyer and
  * price agreed; hidden when there are none.
  */
-export function PaidSwapOffers() {
+export function PaidSwapOffers({ onNameClick }: { onNameClick?: (name: string) => void } = {}) {
   const { data: offers = [] } = useQuery<PaidSwapOffer[]>({
     queryKey: ["paid-swap-offers"],
     queryFn: async () => (await invoke<PaidSwapOffer[] | null>("list_paid_swap_offers")) ?? [],
@@ -20,11 +21,11 @@ export function PaidSwapOffers() {
   return (
     <section
       data-testid="paid-swap-offers"
-      className="mt-6 rounded-md border border-gray-200 bg-white"
+      className="rounded-md border border-gray-200 bg-white"
       aria-labelledby="paid-swap-offers-title"
     >
-      <div className="border-b border-gray-100 px-4 py-2.5">
-        <h3 id="paid-swap-offers-title" className="text-sm font-semibold text-gray-700">
+      <div className="border-b border-gray-100 px-4 py-3">
+        <h3 id="paid-swap-offers-title" className="text-sm font-semibold text-gray-900">
           Paid swap offers
         </h3>
         <p className="mt-0.5 text-xs text-gray-500 [text-wrap:pretty]">
@@ -39,9 +40,21 @@ export function PaidSwapOffers() {
             data-testid="paid-swap-offer"
             className="grid grid-cols-[minmax(120px,1fr)_minmax(0,2fr)_auto_auto] items-center gap-4 px-4 py-2.5"
           >
-            <span className="truncate font-mono font-medium text-gray-900">
-              .{displayName(o.name)}
-            </span>
+            {onNameClick ? (
+              <Tooltip content="View name info" className="inline-flex min-w-0">
+                <button
+                  type="button"
+                  className="truncate text-left font-mono font-medium text-gray-900 hover:text-blue-700 hover:underline"
+                  onClick={() => onNameClick(o.name)}
+                >
+                  .{displayName(o.name)}
+                </button>
+              </Tooltip>
+            ) : (
+              <span className="truncate font-mono font-medium text-gray-900">
+                .{displayName(o.name)}
+              </span>
+            )}
             <span className="truncate font-mono text-xs text-gray-600">{o.buyerAddress}</span>
             <span className="text-right tabular-nums text-gray-900">
               {formatHnsShort(o.priceDoos)} HNS

@@ -151,7 +151,7 @@ fn the_frontend_default_rpc_urls_match_the_backend_port_table() {
 
 // --- The frontend's list of value-re-homing name actions ---
 
-/// `src/components/ActivityView.tsx::NAME_COVENANT_ACTIONS` names the actions
+/// `src/components/activity/activityText.ts::NAME_COVENANT_ACTIONS` names the actions
 /// whose covenant output re-homes a name's locked value onto the wallet's own
 /// coin, so the Amount cell shows it as information rather than a spend.
 ///
@@ -168,9 +168,10 @@ fn the_activity_view_name_actions_are_labels_the_backend_emits() {
     ];
 
     let src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/components/ActivityView.tsx"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../src/components/activity/activityText.ts"),
     )
-    .expect("ActivityView.tsx should be readable from the crate");
+    .expect("activityText.ts should be readable from the crate");
     let set = src
         .split_once("const NAME_COVENANT_ACTIONS = new Set([")
         .expect("NAME_COVENANT_ACTIONS should exist")
@@ -200,7 +201,7 @@ fn the_activity_view_name_actions_are_labels_the_backend_emits() {
 // --- The Activity labels of the Shakedex drafts ---
 
 /// Every Shakedex draft action reaches Activity under a label of its own:
-/// `src/components/ActivityView.tsx::ACTION_META` has a key spelled as each
+/// `src/components/activity/activityText.ts::ACTION_META` has a key spelled as each
 /// `*_ACTION` constant of the Shakedex module, found by scanning its files
 /// (`noncustodial::shakedex::action_constants`), so a new action needs a
 /// label. A key spelled otherwise never matches, and the draft shows as
@@ -208,9 +209,10 @@ fn the_activity_view_name_actions_are_labels_the_backend_emits() {
 #[test]
 fn the_activity_view_labels_every_shakedex_draft_action() {
     let src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/components/ActivityView.tsx"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../src/components/activity/activityText.ts"),
     )
-    .expect("ActivityView.tsx should be readable from the crate");
+    .expect("activityText.ts should be readable from the crate");
     let meta = src
         .split_once("export const ACTION_META")
         .expect("ACTION_META should exist")

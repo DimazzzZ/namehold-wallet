@@ -66,6 +66,27 @@ export function shortTxid(txid: string): string {
 }
 
 /**
+ * Why Speed up is refused for this draft, or null when it is offered. The
+ * button and a list row showing the reason read the same `speed_up_check`
+ * (React Query dedupes it). `disabledReason` answers without asking the node.
+ */
+export function useSpeedUpReason(
+  draftId: string,
+  opts: { disabledReason?: string } = {},
+): { reason: string | null; available: boolean; isLoading: boolean } {
+  const check = useSpeedUpCheck(draftId, !opts.disabledReason);
+  if (opts.disabledReason) {
+    return { reason: opts.disabledReason, available: false, isLoading: false };
+  }
+  const reason = check.isError
+    ? refusalText(check.error)
+    : check.data && !check.data.available
+      ? (check.data.reason ?? "This transaction cannot be sped up now.")
+      : null;
+  return { reason, available: check.data?.available === true, isLoading: check.isLoading };
+}
+
+/**
  * "Speed up" for one sent, unconfirmed draft: enabled when the backend
  * offers it, otherwise disabled with the backend's reason, never hidden.
  */
@@ -73,21 +94,18 @@ export function SpeedUpButton({
   draftId,
   isPurchase = false,
   size = "sm",
+  disabledReason,
 }: {
   draftId: string;
   /** A purchase's send moves its purchase record. */
   isPurchase?: boolean;
   size?: "sm" | "md";
+  /** Render disabled with this reason, without asking the node. */
+  disabledReason?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const check = useSpeedUpCheck(draftId);
+  const { reason, available, isLoading } = useSpeedUpReason(draftId, { disabledReason });
   const reasonId = useId();
-  const reason = check.isError
-    ? refusalText(check.error)
-    : check.data && !check.data.available
-      ? (check.data.reason ?? "This transaction cannot be sped up now.")
-      : null;
-  const available = check.data?.available === true;
   return (
     <>
       <Tooltip content={reason ?? "Pay a higher fee for it through a second transaction"}>
@@ -96,7 +114,7 @@ export function SpeedUpButton({
           variant="secondary"
           data-testid="speed-up-button"
           disabled={!available}
-          loading={check.isLoading}
+          loading={isLoading}
           aria-describedby={reason ? reasonId : undefined}
           onClick={() => setOpen(true)}
         >

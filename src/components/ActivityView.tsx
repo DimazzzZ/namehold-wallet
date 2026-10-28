@@ -1,104 +1,42 @@
-import { isSignerUnlockedFor } from "../lib/signer";
 import { explorerCoversNetwork } from "../lib/openExternal";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useActionHistory } from "../queries/read";
-import { invalidatePurchaseViews, PURCHASE_ACTION } from "../queries/shakedex";
-import {
-  useActiveProfile,
-  useTxDrafts,
-  useSignerSession,
-  useExecuteDraft,
-  useDeleteTxDraft,
-} from "../queries/wallet";
+import { useActiveProfile } from "../queries/wallet";
+import { useMergedActivity } from "../queries/activity";
 import { PageHeader } from "./ui/PageHeader";
-import { Badge } from "./ui/Badge";
-import { Tooltip } from "./ui/Tooltip";
 import { Input } from "./ui/Input";
 import { Select } from "./ui/Select";
-import { formatHns, formatDate, amountTone } from "../lib/utils";
-import { displayName, nameMatches } from "../lib/idn";
+import { nameMatches } from "../lib/idn";
 import { useQueryClient } from "@tanstack/react-query";
-import { useUiStore } from "../stores/ui";
-import { mapError, StagedError } from "../lib/errors";
 import { NameActionsModal } from "./NameActionsModal";
 import { BlockInfoModal } from "./BlockInfoModal";
 import { TxInfoModal } from "./TxInfoModal";
 import { PaidSwapOffers } from "./PaidSwapOffers";
-import { mergeActivity, type MergedRow } from "../lib/activity";
+import { partitionActivity } from "../lib/activity";
 import { subscribeAction } from "../lib/actionBus";
-import { SpeedUpButton, shortTxid } from "./SpeedUp";
-import { SPEED_UP_ACTION } from "../queries/speedUp";
+import { ACTION_META } from "./activity/activityText";
+import { ToFinishList } from "./activity/ToFinishList";
+import { WaitingList } from "./activity/WaitingList";
+import { HistoryTable } from "./activity/HistoryTable";
 
-// Action label + badge variant mapping.
-export const ACTION_META: Record<
-  string,
-  { label: string; variant: "default" | "success" | "warning" | "error" | "info" }
-> = {
-  send: { label: "Send", variant: "warning" },
-  receive: { label: "Receive", variant: "success" },
-  open: { label: "Open", variant: "info" },
-  bid: { label: "Bid", variant: "info" },
-  reveal: { label: "Reveal", variant: "info" },
-  redeem: { label: "Redeem", variant: "success" },
-  register: { label: "Register", variant: "success" },
-  update: { label: "Update", variant: "default" },
-  renew: { label: "Renew", variant: "default" },
-  transfer: { label: "Transfer", variant: "warning" },
-  finalize: { label: "Finalize", variant: "success" },
-  revoke: { label: "Revoke", variant: "error" },
-  claim: { label: "Claim", variant: "success" },
-  // Shakedex: draft actions, kept as the row's label once the chain row of the
-  // same tx is seen (`mergeActivity`; the chain's covenant label stays in
-  // `covenantAction`) (PURCHASE_ACTION / PURCHASE_FINALIZE_ACTION in
-  // shakedex/purchase.rs).
-  shakedex_purchase: { label: "Buy", variant: "warning" },
-  shakedex_purchase_finalize: { label: "Finalize purchase", variant: "success" },
-  // Selling: LOCK_ACTION / LOCK_FINALIZE_ACTION in shakedex/sell.rs and
-  // CANCEL_ACTION / CANCEL_FINALIZE_ACTION in shakedex/cancel.rs.
-  shakedex_lock: { label: "Lock for sale", variant: "warning" },
-  shakedex_lock_finalize: { label: "Finalize into lock", variant: "default" },
-  shakedex_cancel: { label: "Cancel listing", variant: "warning" },
-  shakedex_cancel_finalize: { label: "Finalize cancel", variant: "success" },
-  // A Speed up child (speed_up.rs::SPEED_UP_ACTION).
-  speed_up: { label: "Speed up", variant: "info" },
-  other: { label: "Other", variant: "default" },
-};
+// Kept for existing imports: the vocabulary moved to activity/activityText.ts
+// and lib/activity.ts.
+export { ACTION_META, FALLBACK_META } from "./activity/activityText";
+export { draftActionsForStatus } from "../lib/activity";
 
 const ALL_ACTIONS = Object.keys(ACTION_META);
 
-export const FALLBACK_META = { label: "Other", variant: "default" as const };
-
-// Actions whose covenant output re-homes the name's locked value onto the
-// wallet's own new coin. For these, the Amount cell shows the locked value as
-// an informational "⤷ N" (not a spend) with a tooltip; net flow stays 0.
-//
-// Deliberately a subset of the action labels the backend emits — "open",
-// "revoke" and "claim" move no locked value — so which actions belong here is
-// this screen's decision, not the backend's. What the backend does own is the
-// spelling: a renamed label would silently stop matching and quietly change
-// what the Amount cell shows. A Rust test reads this list and fails if any
-// entry is not a label `classify_tx` can produce.
-const NAME_COVENANT_ACTIONS = new Set([
-  "bid",
-  "reveal",
-  "redeem",
-  "register",
-  "update",
-  "renew",
-  "transfer",
-  "finalize",
-]);
-
-// Client-side page size for the full Activity table. The backend returns the
-// whole classified history in one call today, so pagination is purely a
-// render optimization + navigation affordance (see plan follow-up 2).
+// Client-side page size for History. The backend returns the whole
+// classified history in one call today, so pagination is purely a render
+// optimization + navigation affordance (see plan follow-up 2).
 const PAGE_SIZE = 50;
 
 export function ActivityView() {
   const [infoName, setInfoName] = useState<string | null>(null);
   const [infoBlock, setInfoBlock] = useState<number | null>(null);
   const [infoTx, setInfoTx] = useState<string | null>(null);
+  // The one way a list opens a name (the name page replaces it later).
+  const openName = setInfoName;
 
   // --- Keyboard shortcut subscriptions (action bus) ---
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -112,22 +50,20 @@ export function ActivityView() {
   };
   useEffect(() => subscribeAction((id) => actionHandlerRef.current(id)), []);
 
-  const { data: rows = [], isLoading, isError, error } = useActionHistory();
-  const { data: drafts = [] } = useTxDrafts();
+  const { rows: merged, isLoading, isFetching, isError, error } = useMergedActivity();
   const { data: profile } = useActiveProfile();
   const isMainnet = explorerCoversNetwork(profile?.network);
   const qc = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Merge on-chain history with local drafts, deduped by txid.
-  const merged = mergeActivity(rows, drafts);
-
   // Filters from URL params.
   const filterAction = searchParams.get("action") ?? "all";
   const filterStatus = searchParams.get("status") ?? "all";
-  const searchQuery = (searchParams.get("q") ?? "").toLowerCase();
+  const rawQuery = searchParams.get("q") ?? "";
+  const searchQuery = rawQuery.toLowerCase();
   const pageParam = Number.parseInt(searchParams.get("page") ?? "1", 10);
   const page = Number.isFinite(pageParam) && pageParam >= 1 ? pageParam : 1;
+  const filtering = filterAction !== "all" || filterStatus !== "all" || rawQuery !== "";
 
   // Set (or clear) a filter param AND reset paging to page 1 in a SINGLE
   // update — two separate setSearchParams calls in one handler race (both
@@ -143,8 +79,17 @@ export function ActivityView() {
       { replace: true },
     );
   };
+  const clearFilters = () => {
+    setSearchParams(
+      (prev) => {
+        for (const k of ["q", "action", "status", "page"]) prev.delete(k);
+        return prev;
+      },
+      { replace: true },
+    );
+  };
 
-  // Apply filters.
+  // Filters apply to all three lists: filter first, then partition.
   const filtered = merged.filter((r) => {
     if (filterAction !== "all" && r.action !== filterAction) return false;
     if (filterStatus === "confirmed" && !r.confirmed) return false;
@@ -155,14 +100,15 @@ export function ActivityView() {
     if (searchQuery && !nameMatches(r.name, searchQuery)) return false;
     return true;
   });
+  const { toFinish, waiting, history } = partitionActivity(filtered);
 
-  // Pagination math derived from the filtered list.
-  const totalRows = filtered.length;
+  // Only History is paged.
+  const totalRows = history.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
   const clampedPage = Math.min(page, totalPages);
   const pageStart = (clampedPage - 1) * PAGE_SIZE;
   const pageEnd = Math.min(pageStart + PAGE_SIZE, totalRows);
-  const pageRows = filtered.slice(pageStart, pageEnd);
+  const pageRows = history.slice(pageStart, pageEnd);
 
   // Two auto-corrections for the ?page param:
   //  1) Filter change shrinks the list past the current page → snap to page 1.
@@ -205,62 +151,36 @@ export function ActivityView() {
       ? ["--index-tx"]
       : ["--index-address"];
 
+  const noActivity = !isLoading && !isError && merged.length === 0;
+  const historyEmptyText =
+    filtered.length === 0
+      ? "No transactions match the current filters."
+      : filtering
+        ? "No finished transactions match the current filters."
+        : "Nothing finished yet.";
+
   return (
-    <div>
+    <div className="flex flex-col gap-5">
       <PageHeader
         title="Activity"
         subtitle="Every transaction and name action from this wallet."
         actions={[
           {
-            label: "Refresh",
-            variant: "ghost",
-            loading: isLoading,
-            onClick: () => qc.invalidateQueries({ queryKey: ["read", "action_history"] }),
+            label: isFetching ? "Working..." : "Refresh",
+            variant: "secondary",
+            disabled: isFetching,
+            onClick: () => {
+              qc.invalidateQueries({ queryKey: ["read", "action_history"] });
+              // To finish reads drafts.
+              qc.invalidateQueries({ queryKey: ["wallet", "drafts"] });
+            },
           },
         ]}
       />
 
-      {/* Toolbar: search + action chips + status filter */}
-      <div className="flex flex-wrap items-center gap-2 mb-4">
-        <Input
-          ref={searchInputRef}
-          inputSize="sm"
-          className="w-48 border-gray-200"
-          placeholder="Search by name..."
-          value={searchParams.get("q") ?? ""}
-          onChange={(e) => setFilter("q", e.target.value)}
-          data-testid="activity-search-input"
-        />
-        <Select
-          inputSize="sm"
-          className="border-gray-200"
-          options={[
-            { value: "all", label: "All actions" },
-            ...ALL_ACTIONS.map((a) => ({
-              value: a,
-              label: ACTION_META[a]?.label ?? a,
-            })),
-          ]}
-          value={filterAction}
-          onChange={(e) => setFilter("action", e.target.value)}
-        />
-        <Select
-          inputSize="sm"
-          className="border-gray-200"
-          options={[
-            { value: "all", label: "All statuses" },
-            { value: "confirmed", label: "Confirmed" },
-            { value: "pending", label: "Pending" },
-          ]}
-          value={filterStatus}
-          onChange={(e) => setFilter("status", e.target.value)}
-        />
-      </div>
-
-      {/* Error states */}
       {isIndexError && (
         <div
-          className="bg-yellow-50 border border-yellow-200 rounded p-4 mb-4 text-sm text-yellow-800"
+          className="bg-yellow-50 border border-yellow-200 rounded p-4 text-sm text-yellow-800"
           data-testid="activity-index-banner"
         >
           Your node does not have{" "}
@@ -275,66 +195,114 @@ export function ActivityView() {
         </div>
       )}
       {isError && !isIndexError && (
-        <div className="bg-red-50 border border-red-200 rounded p-4 mb-4 text-sm text-red-800">
+        <div className="bg-red-50 border border-red-200 rounded p-4 text-sm text-red-800">
           Failed to load activity: {errorText || "Unknown error"}
         </div>
       )}
 
-      {/* Table */}
       {isLoading ? (
-        <div className="text-gray-500 py-8 text-center">Loading activity...</div>
-      ) : filtered.length === 0 ? (
-        <div className="text-gray-400 text-sm py-8 text-center bg-white rounded border border-gray-200">
-          {merged.length === 0
-            ? "No activity yet on this wallet."
-            : "No transactions match the current filters."}
+        <div className="bg-white rounded-md border border-gray-200 py-8 text-center text-gray-500">
+          Loading activity...
+        </div>
+      ) : noActivity ? (
+        <div className="bg-white rounded-md border border-gray-200 py-8 text-center text-sm text-gray-400">
+          No activity yet on this wallet.
         </div>
       ) : (
         <>
-          <div className="bg-white rounded border border-gray-200 overflow-auto p-3">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 border-b">
-                  <th className="py-1 pr-4">Date</th>
-                  <th className="py-1 pr-4">Action</th>
-                  <th className="py-1 pr-4">Name</th>
-                  <th className="py-1 pr-4 text-right">Amount</th>
-                  <th className="py-1 pr-4 text-right">Fee</th>
-                  <th className="py-1 pr-4">Status</th>
-                  <th className="py-1 pr-4">Block</th>
-                  <th className="py-1 pr-4">Txid</th>
-                  <th className="py-1">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pageRows.map((row) => (
-                  <ActivityRow
-                    key={row.key}
-                    row={row}
-                    onNameClick={setInfoName}
-                    onBlockClick={setInfoBlock}
-                    onTxClick={setInfoTx}
-                    enableDraftActions
-                    profileId={profile?.id ?? null}
+          {/* Drafts are local: these two lists show even when the history read failed. */}
+          {toFinish.length > 0 && (
+            <ToFinishList
+              rows={toFinish}
+              profileId={profile?.id ?? null}
+              onNameClick={openName}
+              onTxClick={setInfoTx}
+            />
+          )}
+          {waiting.length > 0 && (
+            <WaitingList rows={waiting} onNameClick={openName} onTxClick={setInfoTx} />
+          )}
+          {!isError && (
+            <HistoryTable
+              rows={pageRows}
+              allRows={merged}
+              resetKey={`${rawQuery}|${filterAction}|${filterStatus}`}
+              toolbar={
+                <>
+                  <Input
+                    ref={searchInputRef}
+                    inputSize="sm"
+                    className="w-52 border-gray-200"
+                    placeholder="Search by name..."
+                    value={rawQuery}
+                    onChange={(e) => setFilter("q", e.target.value)}
+                    data-testid="activity-search-input"
                   />
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {totalRows > PAGE_SIZE && (
-            <Pager
-              page={clampedPage}
-              totalPages={totalPages}
-              startRow={pageStart + 1}
-              endRow={pageEnd}
-              totalRows={totalRows}
-              onGoTo={goToPage}
+                  <Select
+                    inputSize="sm"
+                    className="border-gray-200"
+                    options={[
+                      { value: "all", label: "All actions" },
+                      ...ALL_ACTIONS.map((a) => ({
+                        value: a,
+                        label: ACTION_META[a]?.label ?? a,
+                      })),
+                    ]}
+                    value={filterAction}
+                    onChange={(e) => setFilter("action", e.target.value)}
+                  />
+                  <Select
+                    inputSize="sm"
+                    className="border-gray-200"
+                    options={[
+                      { value: "all", label: "All statuses" },
+                      { value: "confirmed", label: "Confirmed" },
+                      { value: "pending", label: "Pending" },
+                    ]}
+                    value={filterStatus}
+                    onChange={(e) => setFilter("status", e.target.value)}
+                  />
+                  {filtering && (
+                    <button
+                      type="button"
+                      className="text-xs text-blue-600 hover:underline"
+                      onClick={clearFilters}
+                      data-testid="activity-clear-filters"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </>
+              }
+              note={
+                filtering && (toFinish.length > 0 || waiting.length > 0) ? (
+                  <p className="px-4 pt-2 text-xs text-gray-500">
+                    Filters apply to To finish and Waiting for a block too.
+                  </p>
+                ) : null
+              }
+              emptyText={historyEmptyText}
+              pager={
+                totalRows > 0
+                  ? {
+                      page: clampedPage,
+                      totalPages,
+                      startRow: pageStart + 1,
+                      endRow: pageEnd,
+                      totalRows,
+                      onGoTo: goToPage,
+                    }
+                  : null
+              }
+              onNameClick={openName}
+              onBlockClick={setInfoBlock}
+              onTxClick={setInfoTx}
             />
           )}
         </>
       )}
 
-      <PaidSwapOffers />
+      <PaidSwapOffers onNameClick={openName} />
 
       {infoName && (
         <NameActionsModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
@@ -357,411 +325,6 @@ export function ActivityView() {
           isMainnet={isMainnet}
         />
       )}
-    </div>
-  );
-}
-
-/**
- * Map a MergedRow status to a badge variant and display label.
- */
-function statusBadge(
-  status: string,
-  /**
-   * For an `onchain` row, whether a block has included it. The other statuses
-   * carry that in the status itself, so it is ignored there.
-   */
-  onchain: { confirmed: boolean; height: number | null },
-): {
-  variant: "default" | "success" | "warning" | "error" | "info";
-  label: string;
-  /** What the status means and what it is waiting on. */
-  hint: string;
-} {
-  if (status === "onchain") {
-    // "Onchain" alone is not a state a user can act on: a row the node has
-    // seen is either in a block or waiting for one. This used to return a
-    // placeholder the caller was expected to know to discard, which is a
-    // function answering a question it has the information to answer.
-    return onchain.confirmed
-      ? {
-          variant: "success",
-          label: "Confirmed",
-          hint: `Mined into a block${onchain.height != null ? ` (#${onchain.height})` : ""}.`,
-        }
-      : {
-          variant: "warning",
-          label: "Pending",
-          hint: "Seen by the node but not in a block yet.",
-        };
-  }
-  if (status === "confirmed") {
-    return { variant: "success", label: "Confirmed", hint: "Mined into a block. Done." };
-  }
-  if (status === "broadcasted" || status === "broadcast_pending") {
-    return {
-      variant: "warning",
-      label: "Pending",
-      hint: "Sent to the network and waiting in the mempool. Nothing changes on-chain until a block includes it.",
-    };
-  }
-  if (status === "dropped") {
-    return {
-      variant: "error",
-      label: "Not confirmed",
-      hint: "The network no longer has it. It was never mined, so nothing happened on-chain.",
-    };
-  }
-  if (status === "failed") {
-    return {
-      variant: "error",
-      label: "Failed",
-      hint: "It could not be sent. Nothing left this wallet.",
-    };
-  }
-  if (status === "signed") {
-    return { variant: "default", label: status, hint: "Signed but not sent yet." };
-  }
-  if (status === "draft") {
-    return { variant: "default", label: status, hint: "Built but neither signed nor sent." };
-  }
-  return { variant: "default", label: status, hint: "" };
-}
-
-/**
- * Which inline actions a draft row offers, keyed by its lifecycle status.
- * Returns an empty array for non-actionable statuses (onchain / broadcasted /
- * broadcast_pending / confirmed) — the backend `delete_tx_draft` also refuses
- * broadcasted/confirmed/broadcast_pending, so we never offer Discard there.
- *
- * - "execute" runs unlock → sign → broadcast (labelled per status).
- * - "discard" deletes the draft, freeing reserved coins.
- */
-export function draftActionsForStatus(status: MergedRow["status"]): {
-  execute: "Sign & broadcast" | "Broadcast" | "Retry" | null;
-  discard: boolean;
-} {
-  switch (status) {
-    case "draft":
-      return { execute: "Sign & broadcast", discard: true };
-    case "signed":
-      return { execute: "Broadcast", discard: true };
-    case "failed":
-    case "dropped":
-      return { execute: "Retry", discard: true };
-    default:
-      // onchain / broadcasted / broadcast_pending / confirmed
-      return { execute: null, discard: false };
-  }
-}
-
-export function ActivityRow({
-  row,
-  onNameClick,
-  onBlockClick,
-  onTxClick,
-  enableDraftActions = false,
-  profileId = null,
-}: {
-  row: MergedRow;
-  onNameClick: (name: string) => void;
-  onBlockClick: (height: number) => void;
-  onTxClick: (txid: string) => void;
-  /** When true, render inline Sign/Broadcast/Retry/Discard buttons for
-   *  actionable draft rows. Requires a real draftId on the row. */
-  enableDraftActions?: boolean;
-  /** Active wallet profile id — needed to unlock the signer before signing. */
-  profileId?: string | null;
-}) {
-  const [batchExpanded, setBatchExpanded] = useState(false);
-  const { data: signer } = useSignerSession();
-  const execDraft = useExecuteDraft();
-  const deleteDraft = useDeleteTxDraft();
-  const qc = useQueryClient();
-  const showToast = useUiStore((s) => s.showToast);
-  const [actionBusy, setActionBusy] = useState(false);
-
-  const unlocked = isSignerUnlockedFor(signer, profileId);
-  const draftActions = draftActionsForStatus(row.status);
-  const canAct = enableDraftActions && row.draftId != null;
-
-  const handleExecute = async () => {
-    if (!row.draftId || !profileId) return;
-    setActionBusy(true);
-    try {
-      const result = await execDraft.run(row.draftId, profileId, unlocked);
-      showToast(`Broadcast ${result.txid.slice(0, 12)}…`, "success");
-    } catch (e) {
-      const stage = e instanceof StagedError ? e.stage : undefined;
-      const prefix = stage === "broadcast" ? "Broadcast failed" : "Signing failed";
-      showToast(`${prefix}: ${mapError(e)}`, "error");
-    } finally {
-      // A purchase's send, whichever way it ended, moves its purchase record.
-      if (row.action === PURCHASE_ACTION) invalidatePurchaseViews(qc);
-      setActionBusy(false);
-    }
-  };
-
-  const handleDiscard = async () => {
-    if (!row.draftId) return;
-    if (
-      !window.confirm(
-        "Discard this draft? Any coins it reserved will be freed. This cannot be undone.",
-      )
-    ) {
-      return;
-    }
-    setActionBusy(true);
-    try {
-      await deleteDraft.mutateAsync(row.draftId);
-      showToast("Draft discarded", "success");
-    } catch (e) {
-      showToast(mapError(e), "error");
-    } finally {
-      // The discard deleted the purchase record Owned Names and the market read.
-      if (row.action === PURCHASE_ACTION) invalidatePurchaseViews(qc);
-      setActionBusy(false);
-    }
-  };
-
-  const meta = ACTION_META[row.action] ?? FALLBACK_META;
-  const timeStr =
-    row.sortTs > 0 ? formatDate(new Date(row.sortTs * 1000).toISOString()) : "Pending";
-  const tone = amountTone(row);
-  const toneClass =
-    tone === "income" ? "text-green-600" : tone === "spend" ? "text-red-600" : "text-gray-700";
-  const sign = tone === "income" ? "+" : tone === "spend" ? "-" : "";
-
-  // A covenant row whose net flow is 0 (locked value re-homed to our own coin,
-  // only the fee spent) but which still has a name value worth surfacing.
-  const showNameValue =
-    row.covenantAction != null &&
-    NAME_COVENANT_ACTIONS.has(row.covenantAction) &&
-    row.valueDoos === 0 &&
-    row.nameValueDoos != null;
-
-  // A lost purchase says so whatever its draft's status: one lost after it
-  // paid still reads "confirmed".
-  const badge = row.lostReason
-    ? { variant: "error" as const, label: "Lost", hint: row.lostReason }
-    : statusBadge(row.status, {
-        confirmed: row.confirmed,
-        height: row.height ?? null,
-      });
-  const { variant: badgeVariant, label: badgeLabel } = badge;
-  const badgeHint = row.statusNote ?? badge.hint;
-
-  const linkClass = "text-blue-500 hover:text-blue-700 hover:underline cursor-pointer";
-
-  return (
-    <tr className="border-t border-gray-100 hover:bg-gray-50">
-      <td className="py-1 pr-4 text-xs text-gray-500 whitespace-nowrap">{timeStr}</td>
-      <td className="py-1 pr-4">
-        <Badge variant={meta.variant}>{meta.label}</Badge>
-        {row.speedsUp && (
-          <div className="text-xs text-gray-500 font-mono" data-testid="activity-speeds-up">
-            Speeds up {shortTxid(row.speedsUp)}
-          </div>
-        )}
-        {row.spedUpBy && (
-          <div className="text-xs text-gray-500 font-mono" data-testid="activity-sped-up-by">
-            Sped up by {shortTxid(row.spedUpBy)}
-          </div>
-        )}
-      </td>
-      <td className="py-1 pr-4 text-xs font-mono">
-        {row.nameList && row.nameList.length > 1 ? (
-          // Batch action: collapsed summary with expand-on-click
-          <div>
-            <Tooltip content={batchExpanded ? "Collapse" : "Expand"}>
-              <button
-                type="button"
-                className="text-gray-600 hover:text-gray-900 hover:underline cursor-pointer text-left"
-                onClick={() => setBatchExpanded(!batchExpanded)}
-                data-testid="activity-batch-summary-toggle"
-              >
-                .{displayName(row.name ?? "")}
-              </button>
-            </Tooltip>
-            {batchExpanded && (
-              <ul className="text-xs space-y-0.5 mt-1">
-                {row.nameList.map((n) => (
-                  <li key={n}>
-                    <Tooltip content="View name info">
-                      <button
-                        type="button"
-                        className={linkClass}
-                        onClick={() => onNameClick(n)}
-                        data-testid="activity-name-info-link"
-                      >
-                        .{displayName(n)}
-                      </button>
-                    </Tooltip>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        ) : row.name ? (
-          <Tooltip content="View name info">
-            <button
-              type="button"
-              className={linkClass}
-              onClick={() => onNameClick(row.name!)}
-              data-testid="activity-name-info-link"
-            >
-              .{displayName(row.name)}
-            </button>
-          </Tooltip>
-        ) : (
-          <span className="text-gray-400">—</span>
-        )}
-      </td>
-      <td className="py-1 pr-4 text-right text-xs font-mono whitespace-nowrap">
-        {showNameValue ? (
-          <Tooltip
-            content={
-              <>
-                <span className="font-medium">{formatHns(row.nameValueDoos!)} HNS</span> is the
-                name's locked value, carried onto your own new coin — not spent. Only the network
-                fee leaves your wallet.
-              </>
-            }
-          >
-            <span className="text-gray-500">⤷&nbsp;{formatHns(row.nameValueDoos!)}</span>
-          </Tooltip>
-        ) : (
-          <span className={toneClass}>
-            {sign}
-            {formatHns(Math.abs(row.valueDoos))}
-          </span>
-        )}
-      </td>
-      <td className="py-1 pr-4 text-right text-xs font-mono text-gray-500">
-        {row.feeDoos == null ? "—" : formatHns(row.feeDoos)}
-      </td>
-      <td className="py-1 pr-4">
-        <Badge variant={badgeVariant} title={badgeHint}>
-          {badgeLabel}
-        </Badge>
-        {/* Losing a purchase is the one outcome the user must read without
-            hovering: whether anything was paid is in the reason. */}
-        {row.lostReason && (
-          <div className="text-xs text-red-700 mt-0.5" data-testid="activity-lost-reason">
-            {row.lostReason}
-          </div>
-        )}
-      </td>
-      <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
-        {row.height == null ? (
-          <span className="text-gray-400">—</span>
-        ) : (
-          <Tooltip content="View block info">
-            <button
-              type="button"
-              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-              onClick={() => onBlockClick(row.height!)}
-              data-testid="activity-block-info-link"
-            >
-              #{row.height}
-            </button>
-          </Tooltip>
-        )}
-      </td>
-      <td className="py-1 pr-4 text-xs font-mono text-gray-500">
-        {row.txid ? (
-          <Tooltip
-            content={`View transaction info — ${row.txid}`}
-            className="inline-flex align-bottom"
-          >
-            <button
-              type="button"
-              className="inline-block max-w-[140px] truncate text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-              onClick={() => onTxClick(row.txid!)}
-              data-testid="activity-tx-info-link"
-            >
-              {row.txid.slice(0, 10)}…
-            </button>
-          </Tooltip>
-        ) : (
-          <span className="text-gray-400">—</span>
-        )}
-      </td>
-      <td className="py-1 pr-2 text-xs whitespace-nowrap">
-        {/* Speed up: every sent, unconfirmed transaction of ours but a
-            child itself; refused ones show it disabled with the reason
-            (spec 2026-10-21 R16). */}
-        {canAct &&
-          row.status === "broadcasted" &&
-          !row.confirmed &&
-          row.action !== SPEED_UP_ACTION && (
-            <SpeedUpButton draftId={row.draftId!} isPurchase={row.action === PURCHASE_ACTION} />
-          )}
-        {canAct && draftActions.execute && (
-          <Tooltip content={draftActions.execute}>
-            <button
-              type="button"
-              className="px-2 py-0.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-              onClick={handleExecute}
-              disabled={actionBusy || execDraft.pending}
-              data-testid="activity-draft-execute"
-            >
-              {draftActions.execute}
-            </button>
-          </Tooltip>
-        )}
-        {canAct && draftActions.discard && (
-          <Tooltip content="Discard draft">
-            <button
-              type="button"
-              className="ml-1 px-2 py-0.5 bg-red-50 text-red-600 hover:bg-red-100 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-              onClick={handleDiscard}
-              disabled={actionBusy || deleteDraft.isPending}
-              data-testid="activity-draft-discard"
-            >
-              Discard
-            </button>
-          </Tooltip>
-        )}
-      </td>
-    </tr>
-  );
-}
-
-function Pager({
-  page,
-  totalPages,
-  startRow,
-  endRow,
-  totalRows,
-  onGoTo,
-}: {
-  page: number;
-  totalPages: number;
-  startRow: number;
-  endRow: number;
-  totalRows: number;
-  onGoTo: (n: number) => void;
-}) {
-  const canPrev = page > 1;
-  const canNext = page < totalPages;
-  const btn =
-    "text-blue-600 hover:underline disabled:opacity-40 disabled:cursor-not-allowed disabled:no-underline";
-  return (
-    <div className="flex items-center justify-between mt-3 text-sm text-gray-500">
-      <div>
-        Rows {startRow}–{endRow} of {totalRows}
-      </div>
-      <div className="flex items-center gap-4">
-        <button type="button" className={btn} disabled={!canPrev} onClick={() => onGoTo(page - 1)}>
-          ← Prev
-        </button>
-        <span className="text-gray-600">
-          Page {page} of {totalPages}
-        </span>
-        <button type="button" className={btn} disabled={!canNext} onClick={() => onGoTo(page + 1)}>
-          Next →
-        </button>
-      </div>
     </div>
   );
 }

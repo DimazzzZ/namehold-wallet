@@ -199,13 +199,17 @@ describe("Speed up in Activity (R16)", () => {
     async (status) => {
       invokeMock.mockImplementation(routes({ drafts: [sendDraft(status)] }));
       render(<ActivityView />, { wrapper: wrapper() });
-      // The row is drawn (header + one row) before its absence is read.
-      await waitFor(() => expect(screen.getAllByRole("row")).toHaveLength(2));
+      // The row is drawn, in whichever list it belongs, before its absence is read.
+      await waitFor(() =>
+        expect(screen.queryAllByTestId(/^activity-(to-finish|waiting|history)-row$/)).toHaveLength(
+          1,
+        ),
+      );
       expect(screen.queryByTestId("speed-up-button")).not.toBeInTheDocument();
     },
   );
 
-  it("a child's row names what it speeds up and offers no Speed up; its parent names the child", async () => {
+  it("a child's row names what it speeds up, and both rows show Speed up disabled with the reason", async () => {
     invokeMock.mockImplementation(
       routes({
         drafts: [sendDraft("broadcasted"), childDraft("broadcasted")],
@@ -223,10 +227,19 @@ describe("Speed up in Activity (R16)", () => {
     expect(screen.getByTestId("activity-sped-up-by")).toHaveTextContent(
       `Sped up by ${CHILD_TXID.slice(0, 10)}…`,
     );
-    // Only the parent's row has the button (disabled: already sped up).
+    // Both rows show Speed up disabled with a reason of their own, and
+    // neither asks the node: the answer is already known.
     const buttons = await screen.findAllByTestId("speed-up-button");
-    expect(buttons).toHaveLength(1);
-    expect(calls("speed_up_check").every((c) => c[1].draftId === "parent1")).toBe(true);
+    expect(buttons).toHaveLength(2);
+    buttons.forEach((b) => expect(b).toBeDisabled());
+    const reasons = screen.getAllByTestId("speed-up-reason").map((r) => r.textContent);
+    expect(reasons).toEqual(
+      expect.arrayContaining([
+        `Already sped up by ${CHILD_TXID.slice(0, 10)}…`,
+        "A speed-up can't be sped up again",
+      ]),
+    );
+    expect(calls("speed_up_check")).toHaveLength(0);
   });
 });
 
