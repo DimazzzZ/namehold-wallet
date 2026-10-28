@@ -1,15 +1,19 @@
 name: Labeler
 
-# Path-based auto-labeling for pull requests.
-# Applies `domain:` labels (and `type: docs` for pure-docs PRs) based on the
-# files a PR touches. Config: .github/labeler.yml.
+# Auto-labeling for pull requests.
+# `domain:` labels (and `type: docs` for pure-docs PRs) come from the files a
+# PR touches, per .github/labeler.yml. The `type:` label comes from the commit
+# type the PR title starts with (the closed list of docs/CODING_STANDARDS.md
+# §Commits): fix → bug, feat → feature, refactor → refactor, build and chore →
+# chore, docs → docs. A `test:` or `format:` title names no label, and a title
+# without a type leaves the type labels as they are.
 #
-# `type:` (except docs), `priority:`, triage, and flag labels are intentionally
-# NOT auto-applied — those are judgement calls left to the author or triager.
+# `priority:`, triage and flag labels are intentionally NOT auto-applied —
+# those are judgement calls left to the author or triager.
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, edited, synchronize, reopened]
 
 permissions:
   contents: read
@@ -17,10 +21,49 @@ permissions:
 
 jobs:
   label:
-    name: Apply domain labels
+    name: Apply domain and type labels
     runs-on: ubuntu-latest
     steps:
       - uses: actions/labeler@v7
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           sync-labels: true
+
+      # After the path labeler on purpose: with sync-labels on, it drops a
+      # `type: docs` it did not put there, so a `docs:` title gets it back
+      # here. The title is read from the environment, never pasted into the
+      # script: on pull_request_target it is the author's text under a write
+      # token.
+      - name: Apply the type label the title names
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: ${{ github.event.pull_request.title }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          re='^([a-z]+)(\([^)]*\))?!?: '
+          if [[ "$TITLE" =~ $re ]]; then
+            kind="${BASH_REMATCH[1]}"
+          else
+            echo "no commit type in the title; type labels left as they are"
+            exit 0
+          fi
+          case "$kind" in
+            fix) want="type: bug" ;;
+            feat) want="type: feature" ;;
+            refactor) want="type: refactor" ;;
+            build|chore) want="type: chore" ;;
+            docs) want="type: docs" ;;
+            *) echo "type '$kind' has no label"; exit 0 ;;
+          esac
+          # The title names one type, so the others this step hands out go;
+          # `type: docs` is the path rule's too and is only ever added.
+          have=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name')
+          args=(--add-label "$want")
+          for other in "type: bug" "type: feature" "type: refactor" "type: chore"; do
+            if [[ "$other" != "$want" ]] && grep -qxF -- "$other" <<<"$have"; then
+              args+=(--remove-label "$other")
+            fi
+          done
+          gh pr edit "$PR" --repo "$REPO" "${args[@]}"

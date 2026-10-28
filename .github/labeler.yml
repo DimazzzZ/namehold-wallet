@@ -2,8 +2,9 @@
 # Consumed by actions/labeler (see .github/workflows/labeler.yml).
 # Applies `domain:` labels based on which files a PR touches.
 #
-# Note: `type:` / `priority:` / triage labels are NOT auto-applied — those are
-# judgement calls left to the author / triager.
+# Note: the `type:` label comes from the commit type the PR title starts with
+# (see the workflow); `priority:` / triage labels are NOT auto-applied — those
+# are judgement calls left to the author / triager.
 
 "domain: wallet":
   - changed-files:
