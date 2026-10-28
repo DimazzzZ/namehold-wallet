@@ -192,6 +192,14 @@ export function formatDate(iso: string | null | undefined): string {
   return `${datePart} - ${timePart}`;
 }
 
+/** Short date for a list cell ("Jul 30"); pair it with formatDate in a tooltip. */
+export function formatShortDate(iso: string | null | undefined): string {
+  if (!iso?.trim()) return "—";
+  const d = new Date(normalizeTimestamp(iso.trim()));
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
 /**
  * Classify a history/activity row's amount for coloring and sign:
  * - `"income"`  → money entered the wallet (green, leading `+`).

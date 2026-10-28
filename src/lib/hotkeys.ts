@@ -95,10 +95,10 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
   {
     keys: "q",
     label: "Q",
-    description: "Toggle receive QR",
+    description: "Open Receive",
     category: "action",
     scope: "/",
-    actionId: "wallet:toggleQr",
+    actionId: "wallet:openReceive",
   },
   {
     keys: "/",

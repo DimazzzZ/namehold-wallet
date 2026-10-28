@@ -21,21 +21,20 @@ import { finalizeSentIds, usePurchaseFinalize } from "./market/usePurchase";
 import {
   useReadNames,
   useReadBalance,
-  useReadRenewals,
-  useNamesActionCapabilities,
   useActionHistory,
+  nameCapabilitiesQueryKey,
 } from "../queries/read";
+import { useNeedsYou } from "../queries/needsYou";
 import {
   useStartFullSync,
   useSyncStatus,
   useCancelFullSync,
   useNodeCoinsNotSyncedReason,
 } from "../queries/sync";
-import { useNodeLive, useStartHsd } from "../queries/node";
+import { useStartHsd } from "../queries/node";
 import { useSyncTriggerStore } from "../stores/syncTrigger";
 import {
   auctionPhase,
-  formatCountdown,
   pendingBroadcastBadge,
   shakedexStatusLabel,
   taskSummaryFromCapabilities,
@@ -46,6 +45,8 @@ import { BlockInfoModal } from "./BlockInfoModal";
 import { TxInfoModal } from "./TxInfoModal";
 import { ActivityRow } from "./ActivityView";
 import { WalletManager } from "./WalletManager";
+import { NeedsYouCard } from "./NeedsYouCard";
+import { ReceiveDialog } from "./ReceiveDialog";
 import { AddWalletForm } from "./AddWalletForm";
 import { UnlockButton } from "./UnlockButton";
 import { BatchConfirmModal } from "./BatchConfirmModal";
@@ -56,12 +57,10 @@ import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
 import { Dialog } from "./ui/Dialog";
 import { PageHeader } from "./ui/PageHeader";
-import { Alert } from "./ui/Alert";
-import { Card } from "./ui/Card";
 import { Disclosure } from "./ui/Disclosure";
-import { CopyField } from "./ui/CopyField";
 import {
   formatHns,
+  formatHnsShort,
   hnsToDollarydoos,
   dollarydoosToHns,
   formatDate,
@@ -72,11 +71,9 @@ import {
 } from "../lib/utils";
 import { mergeActivity } from "../lib/activity";
 import { mapError } from "../lib/errors";
-import { explorerAddressUrl, explorerCoversNetwork } from "../lib/openExternal";
+import { explorerCoversNetwork } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
-import { QRCodeSVG } from "qrcode.react";
-import { ReceiveAddressList } from "./ReceiveAddressList";
-import type { NameActionCapabilities, TxDraftSummary } from "../types";
+import type { TxDraftSummary } from "../types";
 import { subscribeAction } from "../lib/actionBus";
 import { Tooltip } from "./ui/Tooltip";
 import {
@@ -123,24 +120,12 @@ export function WalletView() {
         (n) => n.name.toLowerCase().includes(q) || displayName(n.name).toLowerCase().includes(q),
       )
     : names;
-  const { data: renewals } = useReadRenewals();
-  // Capability-driven urgency alerts (F2 fix) — ONE batch fetch pinned to the
-  // active wallet, replacing the old raw-phase filters below that showed a
-  // false "you lost, redeem" for any CLOSED/unowned name even when this
-  // wallet never placed a bid. Watch-only profiles never show these alerts
-  // (no actions to take), so skip the fetch entirely for them.
-  const { data: nameCaps = [], isError: nameCapsError } = useNamesActionCapabilities(
-    profile?.watchOnly ? [] : names.filter((n) => !n.shakedex).map((n) => n.name),
-    profile?.id ?? null,
-  );
-
-  // One index over the batch, for the urgency alerts, the batch-action
-  // eligibility and the Owned Names State column — they must all describe a
-  // name the same way.
-  const capsByName = useMemo(
-    () => new Map<string, NameActionCapabilities>(nameCaps.map((c) => [c.name, c])),
-    [nameCaps],
-  );
+  // Needs you and its ONE batch capability fetch (pinned to the active
+  // wallet, empty for watch-only). The same index drives the batch-action
+  // eligibility and the Owned Names State column, so a name is described the
+  // same way everywhere on the page.
+  const needsYou = useNeedsYou();
+  const { capsByName } = needsYou;
 
   const { finalize: finalizePurchaseDraft, finalizingId } = usePurchaseFinalize();
   const finalizeSent = useMemo(() => finalizeSentIds(drafts), [drafts]);
@@ -151,7 +136,6 @@ export function WalletView() {
   const syncStatus = useSyncStatus();
   const manualSync = useSyncTriggerStore((s) => s.manualSync);
   const setManualSync = useSyncTriggerStore((s) => s.setManualSync);
-  const nodeLive = useNodeLive();
   const unlock = useUnlockSigner();
   const lock = useLockSigner();
   const setActive = useSetActiveProfile();
@@ -170,10 +154,7 @@ export function WalletView() {
   const [batchRecipient, setBatchRecipient] = useState("");
   const [draft, setDraft] = useState<TxDraftSummary | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  // Toggle the QR alongside the receive address. Off by default — the address
-  // text is the primary artifact; the QR is only useful when handing the
-  // address to another device by camera.
-  const [showQr, setShowQr] = useState(false);
+  const [receiveOpen, setReceiveOpen] = useState(false);
   // A failed sign/broadcast must NOT look like success: we surface it as a
   // persistent in-dialog error (not just a transient toast) and keep the dialog
   // open so the user can see exactly what happened before deciding to retry.
@@ -210,7 +191,6 @@ export function WalletView() {
   const isWatchOnly = profile?.watchOnly ?? false;
   const canFinalizePurchase = canUseShakedex(profile?.kind, writeCap);
   const finalizeRefusal = shakedexRefusal(profile?.kind, writeCap);
-  const address = profile?.receiveAddress ?? null;
   // Spending uses node-synced coins (tracked_utxos), NOT the explorer balance.
   // If the explorer shows funds but nothing is synced yet, the user must connect
   // a node and Refresh before they can send.
@@ -221,6 +201,11 @@ export function WalletView() {
   const immatureInBlocks = balances?.immatureInBlocks ?? null;
   const explorerBalance = readBalance?.confirmed ?? 0;
   const needsNodeSync = explorerBalance > 0 && spendable === 0;
+  const sendBlockedReason =
+    writeCap?.reason ??
+    (needsNodeSync
+      ? "Sync your coins below, then unlock to send."
+      : "Connect a node, Refresh to sync your coins, then unlock to send.");
 
   const isRunning = syncStatus.data?.running ?? false;
   // The last sync could not read this wallet's coins from the node: the
@@ -263,13 +248,7 @@ export function WalletView() {
         } else {
           // Match the Send button's UX: the keyboard path must not silently
           // no-op. Surface the same reason the disabled button shows.
-          showToast(
-            writeCap?.reason ??
-              (needsNodeSync
-                ? "Sync your coins below, then unlock to send."
-                : "Connect a node, Refresh to sync your coins, then unlock to send."),
-            "info",
-          );
+          showToast(sendBlockedReason, "info");
         }
         break;
       case "wallet:sync":
@@ -279,8 +258,8 @@ export function WalletView() {
         if (unlocked) handleLock();
         else handleUnlock();
         break;
-      case "wallet:toggleQr":
-        setShowQr((v) => !v);
+      case "wallet:openReceive":
+        setReceiveOpen(true);
         break;
       case "wallet:focusFilter":
         filterInputRef.current?.focus();
@@ -338,7 +317,7 @@ export function WalletView() {
   // A batch action is "eligible" only when *every* selected name currently
   // supports it (canX.allowed = true). Empty selection ⇒ false.
   const batchEligibility = useMemo(() => {
-    if (selectedNames.size === 0 || nameCaps.length === 0) {
+    if (selectedNames.size === 0 || capsByName.size === 0) {
       return {
         canReveal: false,
         canRedeem: false,
@@ -371,7 +350,7 @@ export function WalletView() {
       if (!c.canRenew.allowed) canRenew = false;
     }
     return { canReveal, canRedeem, canFinalize, canTransfer, canRenew };
-  }, [selectedNames, nameCaps]);
+  }, [selectedNames, capsByName]);
 
   // Compute the fee-rate arg once for all batch handlers (null = use setting default).
   const batchFeeRateArg = parseFeeRateArg(batchFeeRate) ?? undefined;
@@ -516,6 +495,13 @@ export function WalletView() {
     }
   };
 
+  // Opening a name from Needs you: seed its single-name cache from the batch
+  // so the modal's badge doesn't flash a loading state.
+  const openName = (name: string) => {
+    qc.setQueryData(nameCapabilitiesQueryKey(profile?.id ?? null, name), capsByName.get(name));
+    setManageName(name);
+  };
+
   const handleUnlock = async () => {
     if (!profile) return;
     try {
@@ -622,7 +608,7 @@ export function WalletView() {
   const canMax = !!sendAddress.trim() && !addressError && spendable > 0;
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-5">
       <PageHeader
         title="Wallet"
         subtitle="Non-custodial. Keys are held locally and never leave this device."
@@ -798,379 +784,175 @@ export function WalletView() {
         onClose={() => setWalletManagerOpen(false)}
       />
 
-      {/* Receive & share — the receive address (primary), an opt-in QR, and the
-          account xpub tucked behind a disclosure. The xpub is public material
-          (reveals derived addresses; cannot spend), consulted rarely (Namebase
-          setup), so it stays collapsed by default. If a multisig wallet kind is
-          ever added, the xpub disclosure MUST gate on single-sig, since Namebase
-          only supports single-signature xpubs. */}
-      <Card
-        title="Receive & share"
-        actions={
-          address ? (
-            <Button size="sm" variant="ghost" onClick={() => setShowQr((v) => !v)}>
-              {showQr ? "Hide QR" : "Show QR"}
-            </Button>
-          ) : undefined
-        }
-      >
-        <div className="space-y-4" data-testid="account-xpub-card">
-          {address ? (
-            <>
-              <CopyField
-                label={
-                  <span className="flex items-center gap-2">
-                    <span>Receive Address</span>
-                    <Badge variant={profile.network === "mainnet" ? "info" : "warning"}>
-                      {profile.network}
-                    </Badge>
-                    {profile.network !== "mainnet" && (
-                      <span className="text-xs text-amber-600">
-                        — {profile.network} addresses differ from mainnet
-                      </span>
-                    )}
-                  </span>
-                }
-                value={address}
-                copyLabel="Copy Address"
-                toastLabel="Address"
-                externalUrl={
-                  explorerCoversNetwork(profile.network) ? explorerAddressUrl(address) : undefined
-                }
-                externalTestId="receive-address-explorer-link"
-              />
-              {showQr && (
-                <div className="flex justify-center">
-                  <QRCodeSVG value={address} size={128} level="M" />
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="text-gray-400">No address derived yet. Try syncing.</div>
-          )}
-
-          {address && (
-            <Disclosure
-              summary={
-                <span className="flex items-center gap-2">
-                  <span>View all addresses</span>
-                </span>
-              }
+      {/* Balance first: Spendable is the hero (what coin selection can
+          actually use after a node sync), the rest is one muted line, and the
+          page's one primary action — Send — sits right under it. Confirmed
+          lives in the Spendable tooltip: it can differ from spendable while
+          the node isn't synced. */}
+      <section className="bg-white rounded-lg border border-gray-200 px-5 pt-5 pb-[18px]">
+        <Tooltip
+          content={`Spendable balance from node sync · confirmed ${formatHns(
+            readBalance?.confirmed ?? 0,
+          )} HNS`}
+          className="flex w-fit"
+        >
+          <div className="text-[13px] text-gray-500">Spendable</div>
+        </Tooltip>
+        <Tooltip content={`${formatHns(spendable)} HNS`} className="flex w-fit">
+          <div className="flex items-baseline gap-2 w-fit">
+            <span
+              className="text-[34px] font-bold tabular-nums text-gray-900"
+              data-testid="balance-spendable"
             >
-              <ReceiveAddressList />
-            </Disclosure>
-          )}
-
-          <Disclosure
-            summary={
-              <span className="flex items-center gap-2">
-                <span>Show account public key (xpub) for Namebase</span>
-                <span className="font-mono text-xs text-gray-400">
-                  {truncateMiddle(profile.accountXpub)}
+              {formatHnsShort(spendable)}
+            </span>
+            <span className="text-sm text-gray-500">HNS</span>
+          </div>
+        </Tooltip>
+        <div className="flex flex-wrap gap-x-7 gap-y-1.5 mt-2.5 text-xs text-gray-500">
+          <Tooltip
+            content={`Received but not in a block yet · ${formatHns(readBalance?.unconfirmed ?? 0)} HNS`}
+          >
+            <span data-testid="balance-unconfirmed">
+              Unconfirmed{" "}
+              <span className="font-medium text-gray-700 tabular-nums">
+                {formatHnsShort(readBalance?.unconfirmed ?? 0)}
+              </span>
+            </span>
+          </Tooltip>
+          {immature > 0 && (
+            <Tooltip
+              content={`Freshly mined coins — spendable once they mature · ${formatHns(immature)} HNS`}
+            >
+              <span data-testid="balance-immature">
+                Immature
+                {immatureInBlocks !== null && immatureInBlocks > 0
+                  ? ` (${immatureInBlocks} ${immatureInBlocks === 1 ? "block" : "blocks"})`
+                  : ""}{" "}
+                <span className="font-medium text-gray-700 tabular-nums">
+                  {formatHnsShort(immature)}
                 </span>
               </span>
-            }
-          >
-            <div className="text-sm text-gray-500 mb-1 flex items-center gap-2">
-              <span>Account public key (xpub)</span>
-              <Badge variant={profile.network === "mainnet" ? "info" : "warning"}>
-                {profile.network}
-              </Badge>
-            </div>
-            <CopyField
-              value={profile.accountXpub}
-              valueTestId="account-xpub-value"
-              copyTestId="copy-xpub"
-              copyLabel="Copy public key"
-              toastLabel="Account public key"
-            />
-            <Alert tone="info" title="For Namebase / xpub-import payees only" className="mt-3">
-              Paste this into Namebase's "account public key (xpub)" field so buyers pay your wallet
-              directly. This is a single-signature wallet, so the addresses derived from it are
-              yours to spend. Anyone with this key can see every address and balance you'll ever
-              use, but cannot move your funds.
-            </Alert>
-          </Disclosure>
-        </div>
-      </Card>
-
-      {/* Balance — Spendable is the hero (what coin selection can actually use
-          after a node sync); Confirmed/Unconfirmed and the name-bound totals
-          are secondary text-xs cells. Confirmed/Unconfirmed come from the node
-          when available, otherwise the explorer. */}
-      <Card title="Balance">
-        <div className="flex items-baseline gap-2">
-          <span className="text-3xl font-bold tabular-nums">
-            {formatHns(balances?.liquidDoos ?? 0)}
-          </span>
-          <span className="text-sm text-gray-500">HNS · spendable (from node sync)</span>
+            </Tooltip>
+          )}
+          {(balances?.nameLockupDoos ?? 0) > 0 && (
+            <Tooltip
+              content={`In-flight bids — returned on reveal/redeem · ${formatHns(balances!.nameLockupDoos)} HNS`}
+            >
+              <span data-testid="balance-locked-auctions">
+                Locked in auctions{" "}
+                <span className="font-medium text-gray-700 tabular-nums">
+                  {formatHnsShort(balances!.nameLockupDoos)}
+                </span>
+              </span>
+            </Tooltip>
+          )}
+          {(balances?.nameControlDoos ?? 0) > 0 && (
+            <Tooltip
+              content={`Value bound to names you control · ${formatHns(balances!.nameControlDoos)} HNS`}
+            >
+              <span data-testid="balance-name-value">
+                Name value{" "}
+                <span className="font-medium text-gray-700 tabular-nums">
+                  {formatHnsShort(balances!.nameControlDoos)}
+                </span>
+              </span>
+            </Tooltip>
+          )}
         </div>
         {nodeCoinsReason && (
           <div
-            className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
+            className="mt-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
             data-testid="balance-node-not-authoritative"
           >
             Your node can't report this wallet's coins: {nodeCoinsReason}
           </div>
         )}
-        <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2 text-xs text-gray-500">
-          <div>
-            <div>Confirmed</div>
-            <div className="text-sm text-gray-800 tabular-nums font-mono">
-              {formatHns(readBalance?.confirmed ?? 0)}
-            </div>
-          </div>
-          <div>
-            <div>Unconfirmed</div>
-            <div className="text-sm text-gray-800 tabular-nums font-mono">
-              {formatHns(readBalance?.unconfirmed ?? 0)}
-            </div>
-          </div>
-          {immature > 0 && (
-            <div data-testid="balance-immature">
-              <Tooltip content="Freshly mined coins — spendable once they mature">
-                <div>
-                  Immature
-                  {immatureInBlocks !== null && immatureInBlocks > 0
-                    ? ` (${immatureInBlocks} ${immatureInBlocks === 1 ? "block" : "blocks"})`
-                    : ""}
-                </div>
-              </Tooltip>
-              <div className="text-sm text-gray-800 tabular-nums font-mono">
-                {formatHns(immature)}
-              </div>
-            </div>
-          )}
-          {(balances?.nameLockupDoos ?? 0) > 0 && (
-            <div data-testid="balance-locked-auctions">
-              <Tooltip content="In-flight bids — returned on reveal/redeem">
-                <div>Locked in Auctions</div>
-              </Tooltip>
-              <div className="text-sm text-gray-800 tabular-nums font-mono">
-                {formatHns(balances!.nameLockupDoos)}
-              </div>
-            </div>
-          )}
-          {(balances?.nameControlDoos ?? 0) > 0 && (
-            <div data-testid="balance-name-value">
-              <Tooltip content="Value bound to names you control">
-                <div>Name Value</div>
-              </Tooltip>
-              <div className="text-sm text-gray-800 tabular-nums font-mono">
-                {formatHns(balances!.nameControlDoos)}
-              </div>
-            </div>
-          )}
-        </div>
-      </Card>
-
-      {/* Degraded notice (Task 12 review folded into Task 14): the batch
-          capabilities query silently renders nothing while loading (the
-          transient window is short and self-healing per Task 12's review),
-          but a PERSISTENT failure (isError) must not look identical to "no
-          urgent tasks" — it means we genuinely can't tell.
-          Only show when the node is NOT live — when the node is live, the
-          query self-heals on the next 30s poll, so the error is transient. */}
-      {!isWatchOnly && nameCapsError && !nodeLive && (
-        <div
-          className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
-          data-testid="urgent-tasks-degraded"
-        >
-          Couldn't verify urgent auction tasks — data may be stale.
-        </div>
-      )}
-
-      {/* Auction urgency alerts (F2 fix) — driven ENTIRELY by the backend
-          capability model (taskState), not raw phase filters. The old
-          phase-based filters showed "you lost, redeem" for ANY CLOSED name
-          with no owner — including names this wallet never bid on — and
-          never showed a countdown. Capabilities are the single source of
-          truth for "does this wallet actually have a redeemable/revealable/
-          registerable coin for this name". */}
-      {!isWatchOnly &&
-        (() => {
-          // Countdown fragment for a name's capabilities — honest: when the
-          // backend has no live countdown (e.g. node unreachable/no stats),
-          // this is null and the banner renders WITHOUT a countdown fragment
-          // rather than fabricating one.
-          const countdownFragment = (name: string): string | null => {
-            const c = capsByName.get(name);
-            if (!c || c.countdownBlocks == null) return null;
-            return formatCountdown({
-              label: c.countdownLabel ?? "",
-              blocks: c.countdownBlocks,
-              hours: c.countdownHours,
-            });
-          };
-
-          const revealNeeded = names.filter(
-            (n) => capsByName.get(n.name)?.taskState === "readyToReveal",
-          );
-          const wonNeeded = names.filter(
-            (n) => capsByName.get(n.name)?.taskState === "wonNeedsRegister",
-          );
-          // Only a name whose capability model says lostNeedsRedeem — i.e. we
-          // hold a redeemable reveal coin for it — surfaces here. A CLOSED
-          // name with no owner that this wallet never bid on (or already
-          // redeemed) never reaches this state, so it never shows a false
-          // "you lost" banner.
-          const lostNeeded = names.filter(
-            (n) => capsByName.get(n.name)?.taskState === "lostNeedsRedeem",
-          );
-          if (revealNeeded.length === 0 && wonNeeded.length === 0 && lostNeeded.length === 0)
-            return null;
-
-          const revealCountdown =
-            revealNeeded.length > 0 ? countdownFragment(revealNeeded[0]!.name) : null;
-
-          return (
-            <>
-              {revealNeeded.length > 0 && (
-                <div
-                  className="flex items-center justify-between gap-3 text-sm text-amber-900 bg-amber-50 border border-amber-300 rounded p-3"
-                  data-testid="reveal-alert"
-                >
-                  <div>
-                    <strong>Action required: reveal your bid</strong> —{" "}
-                    {revealNeeded.map((n) => `.${displayName(n.name)}`).join(", ")}{" "}
-                    {revealNeeded.length === 1 ? "is" : "are"} in the reveal phase. Reveal before
-                    the window closes or your locked bid can't be reclaimed.
-                    {revealCountdown && <> Reveal ends in {revealCountdown}.</>}
-                  </div>
-                  <Button size="sm" onClick={() => setManageName(revealNeeded[0]!.name)}>
-                    Reveal
-                  </Button>
-                </div>
-              )}
-              {wonNeeded.length > 0 && (
-                <div
-                  className="flex items-center justify-between gap-3 text-sm text-green-900 bg-green-50 border border-green-300 rounded p-3"
-                  data-testid="register-alert"
-                >
-                  <div>
-                    <strong>Won! Register now</strong> —{" "}
-                    {wonNeeded.map((n) => `.${displayName(n.name)}`).join(", ")}{" "}
-                    {wonNeeded.length === 1 ? "was" : "were"} won. Register to finalize ownership
-                    and set DNS records.
-                  </div>
-                  <Button size="sm" onClick={() => setManageName(wonNeeded[0]!.name)}>
-                    Register
-                  </Button>
-                </div>
-              )}
-              {lostNeeded.length > 0 && (
-                <div
-                  className="flex items-center justify-between gap-3 text-sm text-red-900 bg-red-50 border border-red-300 rounded p-3"
-                  data-testid="redeem-alert"
-                >
-                  <div>
-                    <strong>Lost bid — redeem lockup</strong> —{" "}
-                    {lostNeeded.map((n) => `.${displayName(n.name)}`).join(", ")}{" "}
-                    {lostNeeded.length === 1 ? "was" : "were"} not won. Redeem your reveal coin to
-                    reclaim the funds.
-                  </div>
-                  <Button size="sm" onClick={() => setManageName(lostNeeded[0]!.name)}>
-                    Redeem
-                  </Button>
-                </div>
-              )}
-            </>
-          );
-        })()}
-
-      {/* Renewal urgency alert — chain-sourced only: CSV-imported expiry data
-          is stale by definition and must not fire a "renew now" alarm. */}
-      {!isWatchOnly &&
-        (() => {
-          const expiring = (renewals?.names ?? []).filter(
-            (r) => r.expiringSoon && r.source === "chain",
-          );
-          if (expiring.length === 0) return null;
-          return (
-            <div
-              className="flex items-center justify-between gap-3 text-sm text-red-900 bg-red-50 border border-red-300 rounded p-3"
-              data-testid="expiring-alert"
-            >
-              <div>
-                <strong>Renew soon — name{expiring.length === 1 ? "" : "s"} expiring</strong> —{" "}
-                {expiring.map((r) => `.${displayName(r.name)}`).join(", ")}{" "}
-                {expiring.length === 1 ? "is" : "are"} close to the end of the renewal window. Renew
-                now — an expired Handshake name is lost forever.
-              </div>
-              <Button size="sm" onClick={() => setManageName(expiring[0]!.name)}>
-                Renew
-              </Button>
-            </div>
-          );
-        })()}
-
-      {/* Actions — spend + go-to-Auctions merged into one card. The Send button
-          gates on canWrite (writeCap.reason surfaced next to it) and the
-          spendable balance; needs-node-sync warns when explorer shows funds
-          but nothing is synced yet. */}
-      {!isWatchOnly && (
-        <Card title="Actions">
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-3">
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {!isWatchOnly && (
+            <Tooltip content={!canWrite ? sendBlockedReason : undefined}>
               <Button
                 variant="primary"
                 onClick={() => setSendOpen(true)}
                 disabled={!canWrite || spendable === 0}
+                data-testid="wallet-send"
               >
-                Send HNS
+                Send
               </Button>
-              <Button size="sm" variant="secondary" onClick={() => navigate("/auctions")}>
-                Auctions
+            </Tooltip>
+          )}
+          <Button
+            variant="secondary"
+            onClick={() => setReceiveOpen(true)}
+            data-testid="receive-open"
+          >
+            Receive
+          </Button>
+          {!canWrite && !isWatchOnly && (
+            <>
+              <span className="text-[13px] text-amber-700">{sendBlockedReason}</span>
+              <UnlockButton size="sm" variant="secondary" label="Unlock" />
+            </>
+          )}
+        </div>
+        {isWatchOnly && (
+          <div className="mt-2.5 text-xs text-gray-500">
+            Watch-only wallet — it can receive and track balances and names, but it can't sign or
+            spend.
+          </div>
+        )}
+        {needsNodeSync && !isWatchOnly && (
+          <div
+            className="mt-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 space-y-2"
+            data-testid="needs-node-sync"
+          >
+            <div>
+              Your balance is read from the explorer, but spending requires a synced node. Start
+              your node to load your spendable coins.
+            </div>
+            <div className="flex items-center gap-3">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => void handleStartNodeAndSync()}
+                disabled={startHsd.isPending || startSync.isPending}
+                data-testid="needs-node-sync-start"
+              >
+                {startHsd.isPending ? "Starting…" : "Start node"}
               </Button>
-              {!canWrite && (
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-amber-600">
-                    {writeCap?.reason ??
-                      (needsNodeSync
-                        ? "Sync your coins below, then unlock to send."
-                        : "Connect a node, Refresh to sync your coins, then unlock to send.")}
-                  </span>
-                  <UnlockButton size="sm" variant="primary" label="Unlock" />
-                </div>
+              {startNodeFailed && (
+                <button
+                  type="button"
+                  className="text-amber-900 underline hover:no-underline"
+                  onClick={() => navigate("/settings")}
+                  data-testid="needs-node-sync-settings"
+                >
+                  Open Settings
+                </button>
               )}
             </div>
-            <div className="text-xs text-gray-500">
-              Get a TLD: acquire new Handshake domains through the Vickrey auction system.
-            </div>
-            {needsNodeSync && (
-              <div
-                className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 space-y-2"
-                data-testid="needs-node-sync"
-              >
-                <div>
-                  Your balance is read from the explorer, but spending requires a synced node. Start
-                  your node to load your spendable coins.
-                </div>
-                <div className="flex items-center gap-3">
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    onClick={() => void handleStartNodeAndSync()}
-                    disabled={startHsd.isPending || startSync.isPending}
-                    data-testid="needs-node-sync-start"
-                  >
-                    {startHsd.isPending ? "Starting…" : "Start node"}
-                  </Button>
-                  {startNodeFailed && (
-                    <button
-                      type="button"
-                      className="text-amber-900 underline hover:no-underline"
-                      onClick={() => navigate("/settings")}
-                      data-testid="needs-node-sync-settings"
-                    >
-                      Open Settings
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
-        </Card>
+        )}
+      </section>
+
+      {/* Every task the wallet owes the chain, one row each, most urgent
+          first. Replaces the reveal/won/lost/expiring banners. */}
+      {!isWatchOnly && (
+        <NeedsYouCard
+          items={needsYou.items}
+          isLoading={needsYou.isLoading}
+          isDegraded={needsYou.isDegraded}
+          onOpenName={openName}
+          onFinalizePurchase={(item) =>
+            void finalizePurchaseDraft(
+              item.purchaseId!,
+              () =>
+                `.${displayName(item.name)} finalize sent · it moves into your wallet once mined`,
+            )
+          }
+          finalizingId={finalizingId}
+          finalizeRefusal={finalizeRefusal}
+        />
       )}
 
       {/* Owned Names (from local name-state cache) */}
@@ -1538,11 +1320,12 @@ export function WalletView() {
           <div className="text-gray-400 text-sm py-4 text-center">
             {false
               ? "Scanning the explorer for names this wallet owns…"
-              : "No owned names found yet. Click Refresh to scan for names this wallet owns."}
+              : "No owned names found yet. Click Sync to scan for names this wallet owns."}
           </div>
         )}
       </div>
 
+      {/* slot: activity-split RecentActivityCard */}
       {/* Recent activity — real on-chain history from the node (node-indexed). */}
       {/* Merged activity: on-chain history + local drafts, deduped by txid. */}
       <div className="bg-white rounded p-4 border border-gray-200">
@@ -1642,6 +1425,8 @@ export function WalletView() {
           isMainnet={explorerCoversNetwork(profile.network)}
         />
       )}
+
+      <ReceiveDialog open={receiveOpen} onClose={() => setReceiveOpen(false)} profile={profile} />
 
       {/* Send dialog: form → preview → confirm */}
       <Dialog open={sendOpen} onClose={resetSend} title="Send HNS">

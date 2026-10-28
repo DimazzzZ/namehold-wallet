@@ -4,7 +4,7 @@ import { useActiveProfile } from "../queries/wallet";
 import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { writeText } from "../lib/clipboard";
-import { formatDate, truncateMiddle } from "../lib/utils";
+import { formatDate, formatShortDate, truncateMiddle } from "../lib/utils";
 import { explorerAddressUrl, explorerCoversNetwork } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import { mapError } from "../lib/errors";
@@ -42,7 +42,7 @@ export function ReceiveAddressList() {
   };
 
   if (isLoading) {
-    return <div className="text-sm text-gray-400 py-2">Loading addresses…</div>;
+    return <div className="text-xs text-gray-500 py-2">Loading addresses…</div>;
   }
 
   const rows = addresses ?? [];
@@ -50,7 +50,7 @@ export function ReceiveAddressList() {
   return (
     <div className="space-y-2" data-testid="receive-address-list">
       {rows.length === 0 ? (
-        <div className="text-sm text-gray-400">
+        <div className="text-xs text-gray-500">
           No addresses derived yet. Generate one or run a sync.
         </div>
       ) : (
@@ -70,9 +70,9 @@ export function ReceiveAddressList() {
                 <Badge variant={row.used ? "default" : "success"}>
                   {row.used ? "used" : "fresh"}
                 </Badge>
-                <Tooltip content={`First derived ${row.firstSeenAt}`}>
+                <Tooltip content={`First derived ${formatDate(row.firstSeenAt)}`}>
                   <span className="text-gray-400 font-mono" data-testid={`first-seen-${row.index}`}>
-                    {formatDate(row.firstSeenAt)}
+                    {formatShortDate(row.firstSeenAt)}
                   </span>
                 </Tooltip>
                 {explorerCoversNetwork(profile?.network) && (

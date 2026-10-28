@@ -264,8 +264,7 @@ describe("WalletView — auction UX", () => {
     await screen.findByText("Primary");
 
     const card = await screen.findByTestId("balance-locked-auctions");
-    expect(card).toHaveTextContent("Locked in Auctions");
-    expect(card).toHaveTextContent("2.000000");
+    expect(card).toHaveTextContent("Locked in auctions 2");
   });
 
   it("hides the Locked in Auctions card when there is no lockup", async () => {
@@ -275,7 +274,7 @@ describe("WalletView — auction UX", () => {
     expect(screen.queryByTestId("balance-locked-auctions")).toBeNull();
   });
 
-  it("raises a reveal-required alert for names the capability model marks readyToReveal", async () => {
+  it("lists a Needs you reveal row for names the capability model marks readyToReveal", async () => {
     invokeMock.mockImplementation(
       routeWallet({
         names: [
@@ -304,14 +303,14 @@ describe("WalletView — auction UX", () => {
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
 
-    const alert = await screen.findByTestId("reveal-alert");
-    expect(alert).toHaveTextContent(/Action required: reveal/i);
+    const alert = await screen.findByTestId("needs-you-row");
+    expect(alert).toHaveTextContent(/Reveal your bid/i);
     expect(alert).toHaveTextContent(".examplename");
     // Countdown fragment included honestly (F2 fix).
     expect(alert).toHaveTextContent(/12 blocks/i);
   });
 
-  it("does NOT raise a reveal alert for a name in REVEAL phase this wallet never bid on", async () => {
+  it("does NOT list a reveal task for a name in REVEAL phase this wallet never bid on", async () => {
     // Old bug (F2): the banner used to filter by raw phase alone, so ANY
     // REVEAL-phase name — even one this wallet has no bid on — triggered the
     // alert. The capability model must be the only source of truth.
@@ -331,10 +330,10 @@ describe("WalletView — auction UX", () => {
     );
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
-    expect(screen.queryByTestId("reveal-alert")).toBeNull();
+    expect(screen.queryByTestId("needs-you-row")).toBeNull();
   });
 
-  it("does NOT raise a lost/redeem alert for a CLOSED-no-owner name without our reveal coin", async () => {
+  it("does NOT list a lost/redeem task for a CLOSED-no-owner name without our reveal coin", async () => {
     // F2 fix: a CLOSED name with owner:null used to ALWAYS show "you lost,
     // redeem" even when this wallet never placed a bid. Only a genuine
     // lostNeedsRedeem capability (we hold a redeemable reveal coin) may
@@ -355,7 +354,7 @@ describe("WalletView — auction UX", () => {
     );
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
-    expect(screen.queryByTestId("redeem-alert")).toBeNull();
+    expect(screen.queryByTestId("needs-you-row")).toBeNull();
   });
 
   it("shows a degraded notice when the batch capabilities query persistently errors (Task 12 review / Task 14)", async () => {
@@ -375,7 +374,7 @@ describe("WalletView — auction UX", () => {
     const notice = await screen.findByTestId("urgent-tasks-degraded");
     expect(notice).toHaveTextContent(/Couldn't verify urgent auction tasks/i);
     // No false "everything is fine" — no urgency banner shows either.
-    expect(screen.queryByTestId("reveal-alert")).toBeNull();
+    expect(screen.queryByTestId("needs-you-row")).toBeNull();
   });
 
   it("shows no degraded notice when the batch capabilities query succeeds", async () => {
@@ -397,7 +396,7 @@ describe("WalletView — auction UX", () => {
     expect(screen.queryByTestId("urgent-tasks-degraded")).toBeNull();
   });
 
-  it("raises the redeem alert only when the capability model says lostNeedsRedeem", async () => {
+  it("lists a Needs you redeem row only when the capability model says lostNeedsRedeem", async () => {
     invokeMock.mockImplementation(
       routeWallet({
         names: [
@@ -415,8 +414,8 @@ describe("WalletView — auction UX", () => {
     );
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
-    const alert = await screen.findByTestId("redeem-alert");
-    expect(alert).toHaveTextContent(/Lost bid/i);
+    const alert = await screen.findByTestId("needs-you-row");
+    expect(alert).toHaveTextContent(/You lost/i);
     expect(alert).toHaveTextContent(".lostbid");
   });
 });
