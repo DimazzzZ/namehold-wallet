@@ -11,7 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
-import { AuctionsView } from "../AuctionsView";
+import { NamesView } from "../NamesView";
 
 const profile = {
   id: "p1",
@@ -37,7 +37,7 @@ function wrapper() {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={["/auctions"]}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={["/names?filter=auction"]}>{children}</MemoryRouter>
       </QueryClientProvider>
     );
   };
@@ -137,8 +137,7 @@ const CAPS_BY_NAME: Record<string, Record<string, unknown>> = {
   }),
   // Pre-bid opening period: on-chain phase is OPENING (raw label "Opening"),
   // but the task state is waitingForBidding (label "Waiting for Bidding").
-  // This is the row↔modal divergence case: the modal must show the SAME
-  // task-state label as the table, not the raw on-chain phase.
+  // The modal must open on that task-state label, not flash the raw phase.
   openingname: baseCaps("openingname", {
     phase: "OPENING",
     taskState: "waitingForBidding",
@@ -175,6 +174,9 @@ function routeInvoke() {
           canWrite: true,
           reason: null,
         });
+      case "list_watchlist":
+      case "list_tx_drafts":
+        return Promise.resolve([]);
       case "read_names":
         return Promise.resolve([
           {
@@ -186,8 +188,7 @@ function routeInvoke() {
             stats: null,
           },
           // registered: false explicitly (genuine "won, not yet registered" /
-          // "lost, not yet redeemed" cases) — required for the CLOSED-phase
-          // gate in AuctionsView, which only admits an explicit `false`.
+          // "lost, not yet redeemed" cases).
           {
             name: "wonname",
             state: "CLOSED",
@@ -213,24 +214,30 @@ function routeInvoke() {
   };
 }
 
-describe("AuctionsView — task-driven row rendering", () => {
-  it("shows task-state labels for won / lost / reveal names", async () => {
+// The Auctions page is the Names page's In auction chip now.
+describe("NamesView — task-driven row rendering", () => {
+  it("shows task-state statuses for won / lost / reveal names", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    // Wait for capability-derived labels using getAllByText with await
-    expect(await screen.findByText(/Won — Register Now/i)).toBeInTheDocument();
-    expect(await screen.findByText(/Lost — Redeem Now/i)).toBeInTheDocument();
-    expect(await screen.findByText(/Ready to Reveal/i)).toBeInTheDocument();
+    // Wait for capability-derived statuses
+    expect(await screen.findByText("You won")).toBeInTheDocument();
+    expect(await screen.findByText("You lost")).toBeInTheDocument();
+    expect(await screen.findByText("Reveal your bid")).toBeInTheDocument();
+    // Each row's action
+    expect(screen.getByRole("button", { name: "Register" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Redeem" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reveal" })).toBeInTheDocument();
     // The count reflects the actual visible rows
-    expect(screen.getByText(/Active Auctions \(3\)/i)).toBeInTheDocument();
+    expect(screen.getByTestId("names-chip-auction")).toHaveTextContent("In auction 3");
+    expect(screen.getAllByTestId("names-row")).toHaveLength(3);
   });
 
   it("fetches capabilities with ONE batch invoke, not one per row", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    await screen.findByText(/Won — Register Now/i);
+    await screen.findByText("You won");
 
     const batchCalls = invokeMock.mock.calls.filter(
       (c) => c[0] === "get_names_action_capabilities",
@@ -248,33 +255,31 @@ describe("AuctionsView — task-driven row rendering", () => {
 
   it("sorts rows by urgency: readyToReveal, then wonNeedsRegister, then lostNeedsRedeem", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    await screen.findByText(/Won — Register Now/i);
-    const rows = screen.getAllByRole("row").slice(1); // drop the header row
-    const rowText = rows.map((r) => r.textContent ?? "");
-    const revealIdx = rowText.findIndex((t) => /Ready to Reveal/i.test(t));
-    const wonIdx = rowText.findIndex((t) => /Won — Register Now/i.test(t));
-    const lostIdx = rowText.findIndex((t) => /Lost — Redeem Now/i.test(t));
+    await screen.findByText("You won");
+    const rowText = screen.getAllByTestId("names-row").map((r) => r.textContent ?? "");
+    const revealIdx = rowText.findIndex((t) => /Reveal your bid/.test(t));
+    const wonIdx = rowText.findIndex((t) => /You won/.test(t));
+    const lostIdx = rowText.findIndex((t) => /You lost/.test(t));
     expect(revealIdx).toBeGreaterThanOrEqual(0);
     expect(wonIdx).toBeGreaterThan(revealIdx);
     expect(lostIdx).toBeGreaterThan(wonIdx);
   });
 
-  it("renders a countdown in the countdown column instead of raw height", async () => {
+  it("renders the countdown in the status detail instead of a raw height column", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    await screen.findByText(/Ready to Reveal/i);
-    expect(screen.getByText(/Countdown/i)).toBeInTheDocument();
+    await screen.findByText("Reveal your bid");
     expect(screen.queryByText(/^Height$/i)).not.toBeInTheDocument();
     // revealname has countdownBlocks: 12, countdownHours: 2.
-    expect(screen.getByText(/12 blocks/i)).toBeInTheDocument();
+    expect(screen.getByText("· 12 blocks (~2h) left")).toBeInTheDocument();
     // Names without countdown data fall back to an em dash.
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 
-  it("excludes CLOSED names with unknown registered status, includes explicit registered:false", async () => {
+  it("keeps an owned CLOSED name with no task out of In auction, includes a won one", async () => {
     invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
       if (cmd === "get_names_action_capabilities") {
         const names = (args as { names?: string[] })?.names ?? [];
@@ -303,9 +308,7 @@ describe("AuctionsView — task-driven row rendering", () => {
                   nextActionLabel: "Register Name",
                   nextActionReason: "You won the auction! Register to finalize ownership.",
                 })
-              : // Not expected to be requested for the owned/unknown-registered
-                // name below since it must be filtered out before it's ever
-                // added to the batch — but return something sane if it is.
+              : // The owned name below: nothing to do, so not in an auction.
                 baseCaps(n, {
                   phase: "CLOSED",
                   taskState: "ownedNoAction",
@@ -341,12 +344,15 @@ describe("AuctionsView — task-driven row rendering", () => {
             canWrite: true,
             reason: null,
           });
+        case "list_watchlist":
+        case "list_tx_drafts":
+          return Promise.resolve([]);
         case "read_names":
           return Promise.resolve([
             // Genuinely-owned name whose `registered` flag is UNKNOWN (the field
-            // is omitted entirely — this is the real reproduction of the bug:
-            // explorer-sourced or otherwise-incomplete data must NOT be treated
-            // as "still needs a task"). Must be excluded from Active Auctions.
+            // is omitted entirely): explorer-sourced or otherwise-incomplete
+            // data must NOT be treated as "still needs a task". Must be
+            // excluded from In auction.
             {
               name: "unknownregisteredname",
               state: "CLOSED",
@@ -356,7 +362,7 @@ describe("AuctionsView — task-driven row rendering", () => {
               stats: null,
             },
             // Genuine "won, not yet registered" case — `registered` is
-            // EXPLICITLY false. Must remain included in Active Auctions.
+            // EXPLICITLY false. Must remain included in In auction.
             {
               name: "wonneedsregister",
               state: "CLOSED",
@@ -372,37 +378,35 @@ describe("AuctionsView — task-driven row rendering", () => {
       }
     });
 
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     // The genuine "won, needs register" name shows up as actionable.
-    expect(await screen.findByText(/Won — Register Now/i)).toBeInTheDocument();
+    expect(await screen.findByText("You won")).toBeInTheDocument();
 
     // The owned name with unknown `registered` status must NOT leak into
-    // Active Auctions, and the count must reflect only the real task.
+    // In auction, and the count must reflect only the real task. (v2 sends
+    // every owned name in the one caps batch; it lands under Owned instead.)
     expect(screen.queryByText(/unknownregisteredname/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/Active Auctions \(1\)/i)).toBeInTheDocument();
-
-    // And it must never even be sent in the batch request.
-    const batchCall = invokeMock.mock.calls.find((c) => c[0] === "get_names_action_capabilities");
-    expect((batchCall?.[1] as { names?: string[] })?.names).toEqual(["wonneedsregister"]);
+    expect(screen.getByTestId("names-chip-auction")).toHaveTextContent("In auction 1");
+    expect(screen.getByTestId("names-chip-owned")).toHaveTextContent("Owned 1");
   });
 });
 
-describe("AuctionsView — canonical table design", () => {
-  it("the auctions table follows the unified table contract", async () => {
+describe("NamesView — canonical table design", () => {
+  it("the names table follows the unified table contract", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<AuctionsView />, { wrapper: wrapper() });
-    await screen.findByText(/Won — Register Now/i);
+    render(<NamesView />, { wrapper: wrapper() });
+    await screen.findByText("You won");
 
     const { assertCanonicalTable } = await import("../../test/canonicalTable");
     const table = document.querySelector("table");
     expect(table).toBeTruthy();
-    assertCanonicalTable(table as HTMLTableElement, { name: "Auctions" });
+    assertCanonicalTable(table as HTMLTableElement, { name: "Names" });
   });
 });
 
-describe("AuctionsView — batch-bid button", () => {
-  it("batch-bid button hidden when profile is watch-only", async () => {
+describe("NamesView — batch-bid button", () => {
+  it("batch-bid button disabled with its reason when profile is watch-only", async () => {
     const watchOnlyProfile = { ...profile, watchOnly: true };
     const route = (cmd: string, _args?: Record<string, unknown>) => {
       if (cmd === "get_names_action_capabilities") {
@@ -424,6 +428,9 @@ describe("AuctionsView — batch-bid button", () => {
             canWrite: false,
             reason: "Watch-only",
           });
+        case "list_watchlist":
+        case "list_tx_drafts":
+          return Promise.resolve([]);
         case "read_names":
           return Promise.resolve([]);
         default:
@@ -431,35 +438,38 @@ describe("AuctionsView — batch-bid button", () => {
       }
     };
     invokeMock.mockImplementation(route);
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     // Wait for the view to load (empty state shows this message)
     await screen.findByText(/No active auctions/i);
 
-    // Batch-bid button should NOT be present once the watch-only profile
-    // resolves. Use waitFor to allow the profile query to settle — the button
-    // renders optimistically (isWatchOnly defaults to false) until then.
-    await waitFor(() => {
-      expect(screen.queryByTestId("open-batch-bid-btn")).not.toBeInTheDocument();
-    });
+    // Batch-bid is disabled once the watch-only profile resolves. Use waitFor
+    // to allow the profile query to settle — the button renders enabled
+    // (isWatchOnly defaults to false) until then.
+    const btn = screen.getByTestId("open-batch-bid-btn");
+    await waitFor(() => expect(btn).toBeDisabled());
+    fireEvent.mouseEnter(btn.parentElement!);
+    expect(await screen.findByText("Watch-only wallets can't bid")).toBeInTheDocument();
+    fireEvent.click(btn);
+    expect(screen.queryByText("Batch Bid")).not.toBeInTheDocument();
   });
 
-  it("batch-bid button visible when profile is non-custodial", async () => {
+  it("batch-bid button enabled when profile is non-custodial", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     // Wait for the view to load
-    await screen.findByText(/Active Auctions/i);
+    await screen.findByText("You won");
 
-    // Batch-bid button should be present
-    expect(screen.getByTestId("open-batch-bid-btn")).toBeInTheDocument();
+    // Batch-bid button should be enabled
+    expect(screen.getByTestId("open-batch-bid-btn")).toBeEnabled();
   });
 
   it("clicking batch-bid button opens BatchBidModal", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    await screen.findByText(/Active Auctions/i);
+    await screen.findByText("You won");
     const batchBidBtn = screen.getByTestId("open-batch-bid-btn");
     fireEvent.click(batchBidBtn);
 
@@ -469,16 +479,16 @@ describe("AuctionsView — batch-bid button", () => {
     });
   });
 
-  it("auctions:batchBid action-bus event opens modal when not watch-only", async () => {
+  it("names:batchBid action-bus event opens modal when not watch-only", async () => {
     const { dispatchAction } = await import("../../lib/actionBus");
     invokeMock.mockImplementation(routeInvoke());
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    await screen.findByText(/Active Auctions/i);
+    await screen.findByText("You won");
 
     // Dispatch the action-bus event
     act(() => {
-      dispatchAction("auctions:batchBid");
+      dispatchAction("names:batchBid");
     });
 
     // Modal should open
@@ -489,9 +499,9 @@ describe("AuctionsView — batch-bid button", () => {
 
   it("closing BatchBidModal hides it", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    await screen.findByText(/Active Auctions/i);
+    await screen.findByText("You won");
     const batchBidBtn = screen.getByTestId("open-batch-bid-btn");
     fireEvent.click(batchBidBtn);
 
@@ -510,14 +520,14 @@ describe("AuctionsView — batch-bid button", () => {
   });
 });
 
-describe("AuctionsView ↔ NameActionsModal — task-state label consistency", () => {
+describe("NamesView ↔ NameActionsModal — task-state label consistency", () => {
   // Regression: the row showed the capability-derived task-state label
   // ("Waiting for Bidding") while the modal, on open, briefly showed the raw
   // on-chain phase ("Opening") until its own single-name capability fetch
   // resolved. That flash is a state divergence the user can see: the row and
   // the modal for the SAME name disagree about the phase.
   //
-  // Fix under test: (1) a cache bridge in AuctionsView.handleOpenManagement
+  // Fix under test: (1) a cache bridge in NamesView's openName
   // that seeds the modal's single-name caps query from the batch result the
   // table already has, and (2) a loading gate in the modal that suppresses
   // the raw-phase fallback until caps has settled. Together, the modal must
@@ -543,6 +553,9 @@ describe("AuctionsView ↔ NameActionsModal — task-state label consistency", (
           canWrite: true,
           reason: null,
         });
+      case "list_watchlist":
+      case "list_tx_drafts":
+        return Promise.resolve([]);
       case "read_names":
         return Promise.resolve([
           {
@@ -571,21 +584,19 @@ describe("AuctionsView ↔ NameActionsModal — task-state label consistency", (
     }
   }
 
-  it("modal shows the SAME task-state label as the row it opened from", async () => {
+  it("modal opens on the row's task state, never the raw phase", async () => {
     invokeMock.mockImplementation(routeOpening);
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    // The row shows the capability-derived task-state label — the baseline the
-    // modal must match — and never the raw on-chain phase.
-    const rowLabel = await screen.findByText(/^Waiting for Bidding$/);
-    expect(rowLabel).toBeInTheDocument();
-    expect(screen.queryByText(/^Opening$/)).not.toBeInTheDocument();
+    // The row shows the capability-derived status (nameRows wording for
+    // waitingForBidding: "Opening · bidding opens in …").
+    const row = await screen.findByTestId("names-row");
+    await waitFor(() => expect(row).toHaveTextContent("bidding opens in 20 blocks (~3h)"));
 
-    // Open the modal via the row's action button. For a waitingForBidding row
-    // the button label collapses to "View" (no inline action).
-    const viewBtn = screen.getByRole("button", { name: /^View$/ });
+    // Open the modal by clicking the row (a waitingForBidding row has no
+    // button of its own).
     await act(async () => {
-      fireEvent.click(viewBtn);
+      fireEvent.click(row);
     });
 
     // The modal's phase badge (data-testid="name-phase") must show the same

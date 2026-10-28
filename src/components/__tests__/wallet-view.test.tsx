@@ -23,6 +23,7 @@ vi.mock("../../lib/clipboard", () => ({
 }));
 
 import { WalletView } from "../WalletView";
+import { NamesView } from "../NamesView";
 import { WalletSwitcher } from "../shell/WalletSwitcher";
 import { ReadinessPill } from "../shell/ReadinessPill";
 import { WalletManager } from "../WalletManager";
@@ -151,6 +152,8 @@ function routeInvoke(o: Overrides = {}) {
             },
           ],
         );
+      case "list_watchlist":
+        return Promise.resolve([]);
       case "build_send_hns_draft":
         return Promise.resolve(
           o.draft ?? {
@@ -180,14 +183,14 @@ function routeInvoke(o: Overrides = {}) {
   };
 }
 
-function wrapper() {
+function wrapper(at = "/wallet") {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={["/wallet"]}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={[at]}>{children}</MemoryRouter>
       </QueryClientProvider>
     );
   };
@@ -388,53 +391,15 @@ describe("WalletView (non-custodial)", () => {
     expect(await screen.findByTestId("needs-node-sync-settings")).toBeInTheDocument();
   });
 
-  it("renders Owned Names from the cache-backed read_names command", async () => {
+  it("lists owned names from the cache-backed read_names command in the Your names card", async () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByTestId("receive-open");
-    expect(await screen.findByText(/Owned Names/i)).toBeInTheDocument();
-    expect(await screen.findByText(/\.example/)).toBeInTheDocument();
-  });
-
-  /// An Owned Names row is not clickable as a whole — its actions are its own
-  /// controls. It used to be, and since the cells hold buttons, pressing one
-  /// ran the cell's handler and then the row's as the click bubbled: two
-  /// dialogs, stacked.
-  it("clicking a cell button in an Owned Names row opens only that button's dialog", async () => {
-    invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
-    render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText(/\.example/);
-
-    fireEvent.click(screen.getByTestId("owned-name-height-info-link"));
-
-    const dialogs = await screen.findAllByRole("dialog");
-    expect(dialogs).toHaveLength(1);
-    // …and it is the block dialog, not the name one the row would have opened.
-    expect(dialogs[0]).toHaveTextContent(/Block #100/i);
-  });
-
-  it("checking the select box in an Owned Names row does not open the name dialog", async () => {
-    invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
-    render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText(/\.example/);
-
-    fireEvent.click(screen.getByLabelText(/^Select example$/i));
-    expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  it("clicking the row itself does nothing — only its controls act", async () => {
-    invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
-    render(<WalletView />, { wrapper: wrapper() });
-    const nameCell = await screen.findByText(/\.example/);
-
-    const row = nameCell.closest("tr")!;
-    fireEvent.click(row);
-    expect(screen.queryByRole("dialog")).toBeNull();
-
-    // The row is still reachable — by its own controls.
-    fireEvent.click(screen.getByTestId("owned-name-info-link"));
-    expect(await screen.findAllByRole("dialog")).toHaveLength(1);
+    const card = await screen.findByTestId("your-names");
+    expect(await within(card).findByText(".example")).toBeInTheDocument();
+    expect(within(card).getAllByTestId("your-names-row")).toHaveLength(1);
+    expect(within(card).getByTestId("your-names-all")).toHaveTextContent("All 1 names");
   });
 
   it("Recent transactions: a covenant UPDATE shows net Amount 0 (name value carried, not spent), a send shows its amount", async () => {
@@ -502,75 +467,6 @@ describe("WalletView (non-custodial)", () => {
     expect(carried.className).toContain("text-gray-500");
     // A real send still shows its outgoing amount (short, with U+2212).
     expect(screen.getByText("\u22121")).toBeInTheDocument();
-  });
-
-  const multiNames = [
-    {
-      name: "example",
-      state: "CLOSED",
-      height: 100,
-      renewal: 200,
-      owner: { hash: "tx1", index: 0 },
-      stats: null,
-    },
-    {
-      name: "another",
-      state: "CLOSED",
-      height: 101,
-      renewal: 201,
-      owner: { hash: "tx2", index: 0 },
-      stats: null,
-    },
-    // "козёл" (Russian for "goat") — its ACE/raw form is xn--g1afek0h.
-    {
-      name: "xn--g1afek0h",
-      state: "CLOSED",
-      height: 102,
-      renewal: 202,
-      owner: { hash: "tx3", index: 0 },
-      stats: null,
-    },
-  ];
-
-  it("Owned Names filter: narrows by ASCII substring, unicode substring, and clears back to full list", async () => {
-    invokeMock.mockImplementation(routeInvoke({ unlocked: false, names: multiNames }));
-    render(<WalletView />, { wrapper: wrapper() });
-
-    await screen.findByTestId("receive-open");
-    // All three rows present up front, including the decoded unicode name.
-    expect(await screen.findByText(/\.example/)).toBeInTheDocument();
-    expect(screen.getByText(/\.another/)).toBeInTheDocument();
-    expect(screen.getByText(/\.козёл/)).toBeInTheDocument();
-    expect(screen.getByText("Owned Names (3)")).toBeInTheDocument();
-
-    const filterInput = screen.getByPlaceholderText(/filter/i);
-
-    // ASCII substring narrows to the matching raw name.
-    fireEvent.change(filterInput, { target: { value: "exam" } });
-    expect(screen.getByText(/\.example/)).toBeInTheDocument();
-    expect(screen.queryByText(/\.another/)).toBeNull();
-    expect(screen.queryByText(/\.козёл/)).toBeNull();
-    expect(screen.getByText("Owned Names (1 of 3)")).toBeInTheDocument();
-
-    // Unicode substring that only appears in the decoded displayName still
-    // finds the underlying xn-- row.
-    fireEvent.change(filterInput, { target: { value: "коз" } });
-    expect(screen.getByText(/\.козёл/)).toBeInTheDocument();
-    expect(screen.queryByText(/\.example/)).toBeNull();
-    expect(screen.queryByText(/\.another/)).toBeNull();
-    expect(screen.getByText("Owned Names (1 of 3)")).toBeInTheDocument();
-
-    // A query matching nothing shows a message instead of an empty table.
-    fireEvent.change(filterInput, { target: { value: "zzzznotfound" } });
-    expect(screen.getByText(/No names match/i)).toBeInTheDocument();
-    expect(screen.getByText("Owned Names (0 of 3)")).toBeInTheDocument();
-
-    // Clearing the input restores the full list.
-    fireEvent.change(filterInput, { target: { value: "" } });
-    expect(screen.getByText(/\.example/)).toBeInTheDocument();
-    expect(screen.getByText(/\.another/)).toBeInTheDocument();
-    expect(screen.getByText(/\.козёл/)).toBeInTheDocument();
-    expect(screen.getByText("Owned Names (3)")).toBeInTheDocument();
   });
 
   it("watch-only profiles hide spend + unlock controls", async () => {
@@ -883,55 +779,6 @@ describe("WalletView — sync Stop button + honest progress", () => {
   });
 });
 
-describe("WalletView — punycode display (Task 4)", () => {
-  it("renders the decoded Unicode form of an xn-- owned name, but sends the RAW name to the backend on Manage", async () => {
-    const base = routeInvoke({ unlocked: true, canWrite: true });
-    invokeMock.mockImplementation((cmd: string) => {
-      if (cmd === "read_names") {
-        return Promise.resolve([
-          {
-            name: "xn--e1adigm",
-            state: "CLOSED",
-            height: 100,
-            renewal: 200,
-            owner: { hash: "tx1", index: 0 },
-            registered: true,
-            stats: null,
-          },
-        ]);
-      }
-      return base(cmd);
-    });
-    render(<WalletView />, { wrapper: wrapper() });
-
-    await screen.findByTestId("receive-open");
-
-    // The table renders the decoded Unicode label ("козел" is the Cyrillic
-    // decoding of xn--e1adigm), not the raw ACE form.
-    expect(await screen.findByText(".козел")).toBeInTheDocument();
-    expect(screen.queryByText(".xn--e1adigm")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: /^Manage$/i }));
-
-    // Opening NameActionsModal must query the backend with the RAW on-chain
-    // name — punycode decoding is display-only and must never leak into an
-    // invoke() call.
-    await waitFor(() => {
-      const call = invokeMock.mock.calls.find((c) => c[0] === "read_name_info");
-      expect(call?.[1]).toEqual({ name: "xn--e1adigm" });
-    });
-    const capsCall = invokeMock.mock.calls.find((c) => c[0] === "get_name_action_capabilities");
-    expect(capsCall?.[1]).toMatchObject({ name: "xn--e1adigm" });
-
-    // The modal title shows the decoded name with the raw ACE form alongside
-    // it in parentheses, so the user can still see the on-chain form. (The
-    // table row behind the modal also shows ".козел", so there are two
-    // matches for that text — this asserts at least one, i.e. the modal's.)
-    expect((await screen.findAllByText(".козел")).length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("(.xn--e1adigm)")).toBeInTheDocument();
-  });
-});
-
 describe("WalletView — expiring-soon renewal in Needs you (Task 3 / C3)", () => {
   const expiringRenewals = (source: string) => ({
     walletProfileId: "p1",
@@ -1025,7 +872,7 @@ describe("WalletView — Recent transactions shows the name (Task 2)", () => {
     // Action and Name are now separate columns. The "Open" badge is in the
     // Action cell; the name ".example" is in the Name cell. Verify both exist
     // in the same row.
-    // ".example" appears in both the Owned Names table and the Recent
+    // ".example" appears in both the Your names card and the Recent
     // transactions table. Find the row that also contains the "Open" badge
     // (only the drafts table uses ACTION_META badges).
     const nameCells = await screen.findAllByText(".example");
@@ -1226,9 +1073,9 @@ describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () =
 });
 
 describe("WalletView — canonical table design", () => {
-  it("the Owned Names, Recent activity, and Recent transactions tables all follow the unified contract", async () => {
+  it("the Your names and Recent activity tables follow the unified contract", async () => {
     // A minimal fixture that guarantees every table renders at least one
-    // row: one owned name (Owned Names + Recent activity via history) and
+    // row: one owned name (Your names + Recent activity via history) and
     // one draft (Recent transactions).
     const drafts = [
       {
@@ -1273,7 +1120,7 @@ describe("WalletView — canonical table design", () => {
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByTestId("receive-open");
-    // Wait for all three tables to be populated. `.example` = Owned Names
+    // Wait for all three tables to be populated. `.example` = Your names
     // (from routeInvoke's default `read_names`), the draft txid slice =
     // Recent transactions, "Receive" badge (SPAN, not filter option) =
     // Recent activity.
@@ -1282,7 +1129,7 @@ describe("WalletView — canonical table design", () => {
 
     const { assertCanonicalTable } = await import("../../test/canonicalTable");
     const tables = Array.from(document.querySelectorAll("table"));
-    // Owned Names + Merged Recent activity (on-chain + drafts) = 2 tables.
+    // Your names + Merged Recent activity (on-chain + drafts) = 2 tables.
     expect(tables.length).toBe(2);
     tables.forEach((t, i) => {
       assertCanonicalTable(t as HTMLTableElement, { name: `WalletView#${i}` });
@@ -1502,172 +1349,6 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       await waitFor(() => expect(screen.getByTestId("receive-dialog")).toBeInTheDocument());
     });
 
-    it("wallet:focusFilter focuses the filter input", async () => {
-      const { dispatchAction } = await import("../../lib/actionBus");
-      invokeMock.mockImplementation(routeInvoke());
-      render(<WalletView />, { wrapper: wrapper() });
-
-      const filterInput = await screen.findByTestId("wallet-name-filter");
-      expect(document.activeElement).not.toBe(filterInput);
-
-      act(() => {
-        dispatchAction("wallet:focusFilter");
-      });
-      await waitFor(() => {
-        expect(document.activeElement).toBe(filterInput);
-      });
-    });
-
-    it("wallet:list:next increments selected name index", async () => {
-      const { dispatchAction } = await import("../../lib/actionBus");
-      invokeMock.mockImplementation(
-        routeInvoke({
-          names: [
-            {
-              name: "name1",
-              state: "CLOSED",
-              height: 100,
-              renewal: 200,
-              owner: { hash: "tx1", index: 0 },
-              stats: null,
-            },
-            {
-              name: "name2",
-              state: "CLOSED",
-              height: 100,
-              renewal: 200,
-              owner: { hash: "tx1", index: 0 },
-              stats: null,
-            },
-            {
-              name: "name3",
-              state: "CLOSED",
-              height: 100,
-              renewal: 200,
-              owner: { hash: "tx1", index: 0 },
-              stats: null,
-            },
-          ],
-        }),
-      );
-      render(<WalletView />, { wrapper: wrapper() });
-
-      // Wait for names to render (dot prefix is added by WalletView)
-      await screen.findByText(/\.name1/);
-      const getSelectedRow = () => {
-        const rows = screen.getAllByRole("row");
-        return rows.find((r) => r.getAttribute("aria-selected") === "true");
-      };
-
-      // Initially no row selected
-      expect(getSelectedRow()).toBeUndefined();
-
-      // Dispatch list:next — first row should be selected
-      act(() => {
-        dispatchAction("wallet:list:next");
-      });
-      await waitFor(() => {
-        const selected = getSelectedRow();
-        expect(selected).toBeDefined();
-        expect(selected?.textContent).toContain("name1");
-      });
-
-      // Dispatch again — second row should be selected
-      act(() => {
-        dispatchAction("wallet:list:next");
-      });
-      await waitFor(() => {
-        const selected = getSelectedRow();
-        expect(selected?.textContent).toContain("name2");
-      });
-    });
-
-    it("wallet:list:prev decrements selected name index", async () => {
-      const { dispatchAction } = await import("../../lib/actionBus");
-      invokeMock.mockImplementation(
-        routeInvoke({
-          names: [
-            {
-              name: "name1",
-              state: "CLOSED",
-              height: 100,
-              renewal: 200,
-              owner: { hash: "tx1", index: 0 },
-              stats: null,
-            },
-            {
-              name: "name2",
-              state: "CLOSED",
-              height: 100,
-              renewal: 200,
-              owner: { hash: "tx1", index: 0 },
-              stats: null,
-            },
-          ],
-        }),
-      );
-      render(<WalletView />, { wrapper: wrapper() });
-
-      await screen.findByText(/\.name1/);
-      const getSelectedRow = () => {
-        const rows = screen.getAllByRole("row");
-        return rows.find((r) => r.getAttribute("aria-selected") === "true");
-      };
-
-      // Move to index 1 first
-      act(() => {
-        dispatchAction("wallet:list:next");
-      });
-      await waitFor(() => {
-        expect(getSelectedRow()?.textContent).toContain("name1");
-      });
-
-      // Move back to index 0
-      act(() => {
-        dispatchAction("wallet:list:prev");
-      });
-      await waitFor(() => {
-        // After prev from index 1, should clamp to 0 (no row selected since we started at -1)
-        const selected = getSelectedRow();
-        expect(selected?.textContent).not.toContain("name2");
-      });
-    });
-
-    it("wallet:list:open opens NameActionsModal for selected name", async () => {
-      const { dispatchAction } = await import("../../lib/actionBus");
-      invokeMock.mockImplementation(
-        routeInvoke({
-          names: [
-            {
-              name: "example",
-              state: "CLOSED",
-              height: 100,
-              renewal: 200,
-              owner: { hash: "tx1", index: 0 },
-              stats: null,
-            },
-          ],
-        }),
-      );
-      render(<WalletView />, { wrapper: wrapper() });
-
-      // Wait for the name to render, then select it
-      await screen.findByText(/\.example/);
-      act(() => {
-        dispatchAction("wallet:list:next");
-      });
-
-      // Dispatch list:open
-      act(() => {
-        dispatchAction("wallet:list:open");
-      });
-
-      // NameActionsModal should render and call read_name_info
-      await waitFor(() => {
-        expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "example" });
-      });
-    });
-
     it("wallet:toggleLock when unlocked calls handleLock", async () => {
       const { dispatchAction } = await import("../../lib/actionBus");
       invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true }));
@@ -1711,7 +1392,7 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
   });
 });
 
-describe("WalletView — Owned Names State column", () => {
+describe("WalletView — Your names Status column", () => {
   const capsBase = {
     name: "n",
     phase: "CLOSED",
@@ -1753,7 +1434,7 @@ describe("WalletView — Owned Names State column", () => {
   // auction phase and the task state — but a user sees one name described two
   // ways. The auction phase is also nearly constant down this column: every
   // name you own has a closed auction, so it spends a column to say nothing.
-  it("says what the name needs, not which auction phase it is in", async () => {
+  it("the Your names card says what the name needs, not which auction phase it is in", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "get_names_action_capabilities") {
         return Promise.resolve([
@@ -1811,8 +1492,9 @@ describe("WalletView — Owned Names State column", () => {
 
     render(<WalletView />, { wrapper: wrapper() });
 
-    expect(await screen.findByText("Won — Register Now")).toBeInTheDocument();
-    expect(screen.queryByText("Closed")).not.toBeInTheDocument();
+    const row = await screen.findByTestId("your-names-row");
+    await waitFor(() => expect(row).toHaveTextContent("Won · register it"));
+    expect(row).not.toHaveTextContent("Closed");
   });
 
   // Reported live: the row read "Owned" while the modal it opens was headed
@@ -2075,10 +1757,276 @@ describe("WalletView — balance card names a node that can't report the wallet'
 });
 
 describe("WalletView — one capability fetch", () => {
-  it("Needs you and the Owned Names table share one get_names_action_capabilities call", async () => {
+  it("Needs you and the Your names card share one get_names_action_capabilities call", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByTestId("receive-open");
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.filter((c) => c[0] === "get_names_action_capabilities"),
+      ).toHaveLength(1),
+    );
+  });
+});
+
+const threeNames = (names: string[]) =>
+  names.map((name) => ({
+    name,
+    state: "CLOSED",
+    height: 100,
+    renewal: 200,
+    owner: { hash: "tx1", index: 0 },
+    stats: null,
+  }));
+
+// The Wallet page's Owned Names table moved to the Names page.
+describe("NamesView — the owned names table (moved from Wallet)", () => {
+  const renderNames = () => render(<NamesView />, { wrapper: wrapper("/names") });
+
+  const multiNames = [
+    {
+      name: "example",
+      state: "CLOSED",
+      height: 100,
+      renewal: 200,
+      owner: { hash: "tx1", index: 0 },
+      stats: null,
+    },
+    {
+      name: "another",
+      state: "CLOSED",
+      height: 101,
+      renewal: 201,
+      owner: { hash: "tx2", index: 0 },
+      stats: null,
+    },
+    // "козёл" (Russian for "goat") — its ACE/raw form is xn--g1afek0h.
+    {
+      name: "xn--g1afek0h",
+      state: "CLOSED",
+      height: 102,
+      renewal: 202,
+      owner: { hash: "tx3", index: 0 },
+      stats: null,
+    },
+  ];
+
+  // A row opens its name, and its inner controls act on their own: pressing
+  // one must never also open the name as the click bubbles (two dialogs).
+  it("clicking a block link in a row opens only the block dialog", async () => {
+    invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
+    renderNames();
+    await screen.findByText(".example");
+
+    fireEvent.click(screen.getByRole("button", { name: "#100" }));
+
+    const dialogs = await screen.findAllByRole("dialog");
+    expect(dialogs).toHaveLength(1);
+    // …and it is the block dialog, not the name one the row would have opened.
+    expect(dialogs[0]).toHaveTextContent(/Block #100/i);
+  });
+
+  it("checking the select box in a row does not open the name dialog", async () => {
+    invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
+    renderNames();
+    await screen.findByText(".example");
+
+    fireEvent.click(screen.getByLabelText(/^Select example$/i));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("clicking the row itself opens the name, in one dialog", async () => {
+    invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
+    renderNames();
+    fireEvent.click(await screen.findByTestId("names-row"));
+    expect(await screen.findAllByRole("dialog")).toHaveLength(1);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "example" }),
+    );
+  });
+
+  it("filter: narrows by ASCII substring, unicode substring, and clears back to full list", async () => {
+    invokeMock.mockImplementation(routeInvoke({ unlocked: false, names: multiNames }));
+    renderNames();
+
+    // All three rows present up front, including the decoded unicode name.
+    expect(await screen.findByText(".example")).toBeInTheDocument();
+    expect(screen.getByText(".another")).toBeInTheDocument();
+    expect(screen.getByText(".козёл")).toBeInTheDocument();
+    const count = screen.getByTestId("names-count");
+    expect(count).toHaveTextContent("3 names");
+
+    const filterInput = screen.getByTestId("names-filter");
+
+    // ASCII substring narrows to the matching raw name.
+    fireEvent.change(filterInput, { target: { value: "exam" } });
+    expect(screen.getByText(".example")).toBeInTheDocument();
+    expect(screen.queryByText(".another")).toBeNull();
+    expect(screen.queryByText(".козёл")).toBeNull();
+    expect(count).toHaveTextContent("1 of 3");
+
+    // Unicode substring that only appears in the decoded displayName still
+    // finds the underlying xn-- row.
+    fireEvent.change(filterInput, { target: { value: "коз" } });
+    expect(screen.getByText(".козёл")).toBeInTheDocument();
+    expect(screen.queryByText(".example")).toBeNull();
+    expect(screen.queryByText(".another")).toBeNull();
+    expect(count).toHaveTextContent("1 of 3");
+
+    // A query matching nothing shows a message instead of an empty table.
+    fireEvent.change(filterInput, { target: { value: "zzzznotfound" } });
+    expect(screen.getByTestId("names-empty")).toHaveTextContent('No names match "zzzznotfound"');
+    expect(count).toHaveTextContent("0 of 3");
+
+    // Clearing the input restores the full list.
+    fireEvent.change(filterInput, { target: { value: "" } });
+    expect(screen.getByText(".example")).toBeInTheDocument();
+    expect(screen.getByText(".another")).toBeInTheDocument();
+    expect(screen.getByText(".козёл")).toBeInTheDocument();
+    expect(count).toHaveTextContent("3 names");
+  });
+
+  it("renders the decoded Unicode form of an xn-- name, but sends the RAW name to the backend on open", async () => {
+    invokeMock.mockImplementation(
+      routeInvoke({ unlocked: true, canWrite: true, names: threeNames(["xn--e1adigm"]) }),
+    );
+    renderNames();
+
+    // The table renders the decoded Unicode label ("козел" is the Cyrillic
+    // decoding of xn--e1adigm), with the raw ACE form alongside it.
+    expect(await screen.findByText(".козел")).toBeInTheDocument();
+    expect(screen.queryByText(".xn--e1adigm")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("names-row"));
+
+    // Opening NameActionsModal must query the backend with the RAW on-chain
+    // name — punycode decoding is display-only and must never leak into an
+    // invoke() call.
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find((c) => c[0] === "read_name_info");
+      expect(call?.[1]).toEqual({ name: "xn--e1adigm" });
+    });
+    const capsCall = invokeMock.mock.calls.find((c) => c[0] === "get_name_action_capabilities");
+    expect(capsCall?.[1]).toMatchObject({ name: "xn--e1adigm" });
+    expect(screen.getByText("(.xn--e1adigm)")).toBeInTheDocument();
+  });
+
+  it("names:focusLookup focuses the lookup input", async () => {
+    const { dispatchAction } = await import("../../lib/actionBus");
+    invokeMock.mockImplementation(routeInvoke());
+    renderNames();
+
+    const input = await screen.findByTestId("names-lookup-input");
+    expect(document.activeElement).not.toBe(input);
+    act(() => dispatchAction("names:focusLookup"));
+    await waitFor(() => expect(document.activeElement).toBe(input));
+  });
+
+  it("names:list:next / prev move the selected row and list:open opens it", async () => {
+    const { dispatchAction } = await import("../../lib/actionBus");
+    invokeMock.mockImplementation(routeInvoke({ names: threeNames(["name1", "name2", "name3"]) }));
+    renderNames();
+
+    await screen.findByText(".name1");
+    const selectedRow = () =>
+      screen.getAllByRole("row").find((r) => r.getAttribute("aria-selected") === "true");
+
+    // Initially no row selected.
+    expect(selectedRow()).toBeUndefined();
+
+    act(() => dispatchAction("names:list:next"));
+    await waitFor(() => expect(selectedRow()?.textContent).toContain("name1"));
+    act(() => dispatchAction("names:list:next"));
+    await waitFor(() => expect(selectedRow()?.textContent).toContain("name2"));
+    act(() => dispatchAction("names:list:prev"));
+    await waitFor(() => expect(selectedRow()?.textContent).toContain("name1"));
+    // prev clamps at the first row.
+    act(() => dispatchAction("names:list:prev"));
+    await waitFor(() => expect(selectedRow()?.textContent).toContain("name1"));
+
+    act(() => dispatchAction("names:list:open"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "name1" }),
+    );
+  });
+
+  it("says what the name needs, not which auction phase it is in", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_names_action_capabilities") {
+        return Promise.resolve([
+          {
+            name: "wonname",
+            phase: "CLOSED",
+            taskState: "wonNeedsRegister",
+            ownsName: true,
+            nameIsRegistered: false,
+            transferPending: false,
+            redeemableRevealCount: 0,
+            redeemableValueDoos: 0,
+            hasBidCommitment: false,
+            hasBidCoin: false,
+            hasRevealCoin: true,
+            hasOwnerCoin: true,
+            revealTxid: null,
+            bidValueDoos: null,
+            lockupValueDoos: null,
+            myBidCount: 0,
+            canOpen: { allowed: false, reason: null },
+            canBid: { allowed: false, reason: null },
+            canReveal: { allowed: false, reason: null },
+            canRedeem: { allowed: false, reason: null },
+            canRegister: { allowed: true, reason: null },
+            canUpdate: { allowed: false, reason: null },
+            canTransfer: { allowed: false, reason: null },
+            canFinalize: { allowed: false, reason: null },
+            canCancelTransfer: { allowed: false, reason: null },
+            canRenew: { allowed: false, reason: null },
+            canRevoke: { allowed: false, reason: null },
+            nextActionKey: "REGISTER",
+            nextActionLabel: "Register Name",
+            nextActionReason: null,
+            countdownLabel: null,
+            countdownBlocks: null,
+            countdownHours: null,
+          },
+        ]);
+      }
+      return routeInvoke({
+        names: [
+          {
+            name: "wonname",
+            state: "CLOSED",
+            height: 100,
+            renewal: 200,
+            owner: { hash: "tx1", index: 0 },
+            registered: false,
+            stats: null,
+          },
+        ],
+      })(cmd);
+    });
+
+    render(<NamesView />, { wrapper: wrapper("/names") });
+
+    expect(await screen.findByText("You won")).toBeInTheDocument();
+    expect(screen.getByText("· register it to make it yours")).toBeInTheDocument();
+    expect(screen.queryByText("Closed")).not.toBeInTheDocument();
+  });
+
+  it("follows the unified table contract", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    renderNames();
+    await screen.findByText(".example");
+    const { assertCanonicalTable } = await import("../../test/canonicalTable");
+    assertCanonicalTable(document.querySelector("table") as HTMLTableElement, {
+      name: "NamesView",
+    });
+  });
+
+  it("reuses Needs you's one get_names_action_capabilities call", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    renderNames();
+    await screen.findByText(".example");
     await waitFor(() =>
       expect(
         invokeMock.mock.calls.filter((c) => c[0] === "get_names_action_capabilities"),

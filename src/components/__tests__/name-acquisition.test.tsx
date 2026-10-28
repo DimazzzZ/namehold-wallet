@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 
 // Tests for the simplified name-acquisition flow:
-//   * AuctionsView renders input and opens the modal
+//   * the Names page lookup renders input and opens the modal
 //   * NameActionsModal shows guided phase-based UI for AVAILABLE names
 //   * NameActionsModal shows guided UI for BIDDING/REVEAL/CLOSED names
 //   * Write-capability gating is preserved
@@ -21,7 +21,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   readText: vi.fn().mockResolvedValue(""),
 }));
 
-import { AuctionsView } from "../AuctionsView";
+import { NamesView } from "../NamesView";
 import { NameActionsModal } from "../NameActionsModal";
 import { makeCapabilities, refused } from "../../test/fixtures/capabilities";
 
@@ -57,9 +57,12 @@ function wrapper(initialEntries = ["/wallet"]) {
 
 beforeEach(() => invokeMock.mockReset());
 
-describe("AuctionsView — name lookup and modal", () => {
-  function routeAuctions() {
-    return (cmd: string) => {
+// The Auctions page's "Get a TLD" lookup is the Names page's lookup card now:
+// a name you don't have yet shows a result card, which opens the modal.
+describe("NamesView — name lookup and modal", () => {
+  /** Routes the page needs; `nameInfo` is what `read_name_info` returns. */
+  function routeNames(nameInfo: unknown = null) {
+    return (cmd: string, args?: { name?: string }) => {
       switch (cmd) {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
@@ -76,36 +79,52 @@ describe("AuctionsView — name lookup and modal", () => {
             canWrite: true,
             reason: null,
           });
+        case "read_names":
+        case "list_tx_drafts":
+        case "list_watchlist":
+          return Promise.resolve([]);
+        case "get_name_action_capabilities":
+          return Promise.resolve(
+            makeCapabilities({
+              name: args?.name ?? "",
+              phase: "AVAILABLE",
+              taskState: "availableToOpen",
+            }),
+          );
+        case "read_name_info":
+          return Promise.resolve(nameInfo);
         default:
           return Promise.resolve(null);
       }
     };
   }
 
-  it("renders the page header and input", async () => {
-    invokeMock.mockImplementation(routeAuctions());
-    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
+  const renderNames = async () => {
+    render(<NamesView />, { wrapper: wrapper(["/names"]) });
+    await screen.findByRole("heading", { name: "Names" });
+    return screen.getByTestId("names-lookup-input") as HTMLInputElement;
+  };
 
-    expect(await screen.findByText("Auctions")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("example")).toBeInTheDocument();
+  it("renders the page header and input", async () => {
+    invokeMock.mockImplementation(routeNames());
+    const input = await renderNames();
+
+    expect(input).toHaveAttribute("placeholder", "Find a name to open, bid on or watch");
     expect(screen.getByRole("button", { name: /Look up/i })).toBeInTheDocument();
   });
 
   it("Look up button is disabled when input is empty", async () => {
-    invokeMock.mockImplementation(routeAuctions());
-    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
-    await screen.findByText("Auctions");
+    invokeMock.mockImplementation(routeNames());
+    await renderNames();
 
     const btn = screen.getByRole("button", { name: /Look up/i });
     expect(btn).toBeDisabled();
   });
 
-  it("enables Look up after typing a name and opens the modal on click", async () => {
-    invokeMock.mockImplementation(routeAuctions());
-    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
-    await screen.findByText("Auctions");
+  it("enables Look up after typing a name, shows its result card, and opens the modal from it", async () => {
+    invokeMock.mockImplementation(routeNames());
+    const input = await renderNames();
 
-    const input = screen.getByPlaceholderText("example");
     fireEvent.change(input, { target: { value: "myname" } });
 
     const btn = screen.getByRole("button", { name: /Look up/i });
@@ -113,111 +132,80 @@ describe("AuctionsView — name lookup and modal", () => {
 
     fireEvent.click(btn);
 
-    // Modal should open — it will show the name in the header
+    // A name we don't have yet: the result card, with its real phase.
+    const card = await screen.findByTestId("names-lookup-result");
+    expect(within(card).getByText(".myname")).toBeInTheDocument();
+    expect(await within(card).findByText("Available")).toBeInTheDocument();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Open auction…" }));
+
+    // Modal should open — it fetches the name and shows it in the header
     await waitFor(() => {
-      expect(screen.getByText(/\.myname/)).toBeInTheDocument();
+      expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "myname" });
     });
+    expect(await screen.findByRole("dialog")).toHaveTextContent(".myname");
+    expect(screen.queryByTestId("names-lookup-result")).toBeNull();
   });
 
-  it("Enter key in the input opens the modal", async () => {
-    invokeMock.mockImplementation(routeAuctions());
-    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
-    await screen.findByText("Auctions");
+  it("Enter key in the input looks the name up", async () => {
+    invokeMock.mockImplementation(routeNames());
+    const input = await renderNames();
 
-    const input = screen.getByPlaceholderText("example");
     fireEvent.change(input, { target: { value: "coolname" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    await waitFor(() => {
-      expect(screen.getByText(/\.coolname/)).toBeInTheDocument();
-    });
+    const card = await screen.findByTestId("names-lookup-result");
+    expect(within(card).getByText(".coolname")).toBeInTheDocument();
   });
 
   it("keeps typed characters verbatim during typing; normalizes only at submit", async () => {
-    invokeMock.mockImplementation((cmd: string) => {
-      switch (cmd) {
-        case "list_wallet_profiles":
-          return Promise.resolve([profile]);
-        case "get_signer_session":
-          return Promise.resolve({
-            walletProfileId: profile.id,
-            unlocked: true,
-            unlockedUntilEpochMs: Date.now() + 60000,
-          });
-        case "get_write_capability":
-          return Promise.resolve({
-            signerUnlocked: true,
-            broadcasterAvailable: true,
-            canWrite: true,
-            reason: null,
-          });
-        case "read_name_info":
-          return Promise.resolve({ name: "helloworld123", state: "AVAILABLE" });
-        default:
-          return Promise.resolve(null);
-      }
-    });
-    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
-    await screen.findByText("Auctions");
+    invokeMock.mockImplementation(routeNames({ name: "helloworld123", state: "AVAILABLE" }));
+    const input = await renderNames();
 
-    const input = screen.getByPlaceholderText("example") as HTMLInputElement;
     // During typing: no live cleanup — the input echoes the DOM value verbatim.
     fireEvent.change(input, { target: { value: "Hello World! 123" } });
     expect(input.value).toBe("Hello World! 123");
 
     // At submit: the pipeline lowercases, strips invalid chars, and would encode
-    // to ACE (this input is ASCII so encoding is a no-op). Modal opens for the
-    // normalized name.
+    // to ACE (this input is ASCII so encoding is a no-op). The lookup and the
+    // modal both use the normalized name.
     fireEvent.click(screen.getByRole("button", { name: /Look up/i }));
-    await waitFor(() => {
-      expect(screen.getByText(/\.helloworld123/)).toBeInTheDocument();
-    });
-    expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "helloworld123" });
+    const card = await screen.findByTestId("names-lookup-result");
+    expect(within(card).getByText(".helloworld123")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("get_name_action_capabilities", {
+        name: "helloworld123",
+        walletProfileId: profile.id,
+      }),
+    );
+    fireEvent.click(await within(card).findByRole("button", { name: "Open auction…" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "helloworld123" }),
+    );
   });
 
   it("shows Unicode verbatim during typing; encodes to ACE only on Look up", async () => {
-    invokeMock.mockImplementation((cmd: string) => {
-      switch (cmd) {
-        case "list_wallet_profiles":
-          return Promise.resolve([profile]);
-        case "get_signer_session":
-          return Promise.resolve({
-            walletProfileId: profile.id,
-            unlocked: true,
-            unlockedUntilEpochMs: Date.now() + 60000,
-          });
-        case "get_write_capability":
-          return Promise.resolve({
-            signerUnlocked: true,
-            broadcasterAvailable: true,
-            canWrite: true,
-            reason: null,
-          });
-        case "read_name_info":
-          return Promise.resolve({ name: "xn--90ai7ab", state: "AVAILABLE" });
-        default:
-          return Promise.resolve(null);
-      }
-    });
+    invokeMock.mockImplementation(routeNames({ name: "xn--90ai7ab", state: "AVAILABLE" }));
+    const input = await renderNames();
 
-    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
-    await screen.findByText("Auctions");
-
-    const input = screen.getByPlaceholderText("example") as HTMLInputElement;
     // During typing: the input shows the raw Unicode the user typed (NOT the
     // punycode form — encoding on keystroke was the previous regression).
     fireEvent.change(input, { target: { value: "сбер" } });
     expect(input.value).toBe("сбер");
     expect(input.value).not.toMatch(/^xn--/);
 
-    // Look up encodes and opens the modal with the ACE form.
+    // Look up encodes: the backend only ever sees the ACE form, while the
+    // card shows the decoded name.
     const btn = screen.getByRole("button", { name: /Look up/i });
     expect(btn).not.toBeDisabled();
     fireEvent.click(btn);
-    await waitFor(() => {
-      expect(screen.getByText(/\.xn--90ai7ab/)).toBeInTheDocument();
-    });
-    expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "xn--90ai7ab" });
+    const card = await screen.findByTestId("names-lookup-result");
+    expect(within(card).getByText(".сбер")).toBeInTheDocument();
+    fireEvent.click(await within(card).findByRole("button", { name: "Open auction…" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "xn--90ai7ab" }),
+    );
+    expect(await screen.findByText("(.xn--90ai7ab)")).toBeInTheDocument();
   });
 
   it("allows typing a Cyrillic word character-by-character without re-encoding mid-type", async () => {
@@ -227,34 +215,8 @@ describe("AuctionsView — name lookup and modal", () => {
     // and the next keystroke appends to that punycode prefix instead of extending
     // "с". This test simulates sequential typing and asserts the input preserves
     // exactly what the user typed at every intermediate step.
-    invokeMock.mockImplementation((cmd: string) => {
-      switch (cmd) {
-        case "list_wallet_profiles":
-          return Promise.resolve([profile]);
-        case "get_signer_session":
-          return Promise.resolve({
-            walletProfileId: profile.id,
-            unlocked: true,
-            unlockedUntilEpochMs: Date.now() + 60000,
-          });
-        case "get_write_capability":
-          return Promise.resolve({
-            signerUnlocked: true,
-            broadcasterAvailable: true,
-            canWrite: true,
-            reason: null,
-          });
-        case "read_name_info":
-          return Promise.resolve({ name: "xn--90ai7ab", state: "AVAILABLE" });
-        default:
-          return Promise.resolve(null);
-      }
-    });
-
-    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
-    await screen.findByText("Auctions");
-
-    const input = screen.getByPlaceholderText("example") as HTMLInputElement;
+    invokeMock.mockImplementation(routeNames({ name: "xn--90ai7ab", state: "AVAILABLE" }));
+    const input = await renderNames();
 
     // Type each character sequentially. On a controlled input, the new value the
     // browser sends is `<current value> + <new char>`, so we always append to
@@ -274,10 +236,12 @@ describe("AuctionsView — name lookup and modal", () => {
 
     // And Look up still encodes correctly to the ACE form.
     fireEvent.click(screen.getByRole("button", { name: /Look up/i }));
-    await waitFor(() => {
-      expect(screen.getByText(/\.xn--90ai7ab/)).toBeInTheDocument();
-    });
-    expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "xn--90ai7ab" });
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("get_name_action_capabilities", {
+        name: "xn--90ai7ab",
+        walletProfileId: profile.id,
+      }),
+    );
   });
 });
 

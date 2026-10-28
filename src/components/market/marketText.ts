@@ -135,6 +135,12 @@ export const TONE_DOT: Record<StatusTone, string> = {
   bad: "bg-red-500",
 };
 
+/** Names-page dots: the Market tones plus a blue "in progress". */
+export const NAME_TONE_DOT: Record<StatusTone | "info", string> = {
+  ...TONE_DOT,
+  info: "bg-blue-500",
+};
+
 /** `commands/shakedex.rs::OWN_LISTING` (R33): a row this device locked, above its disabled Buy. */
 export const OWN_LISTING =
   "this is your own listing: cancel it instead (My listings), buying it would only cost you network fees";

@@ -615,6 +615,23 @@ export interface WalletReadModel {
 // Frontend UI-facing types (routing, shell status, workspace tabs, view models)
 // ---------------------------------------------------------------------------
 
+/** A name on the watchlist (`list_watchlist`). */
+export interface WatchedName {
+  name: string;
+  addedAt: string;
+  notes: string;
+  tags: string;
+}
+
+/** A name's watchlist membership and cached state (`get_watchlist_status`). */
+export interface WatchlistStatus {
+  name: string;
+  watched: boolean;
+  tags: string;
+  state: string | null;
+  expiry: number | null;
+}
+
 /** The five primary nav sections (shell v2). */
 export type NavKey = "wallet" | "names" | "market" | "activity" | "settings";
 

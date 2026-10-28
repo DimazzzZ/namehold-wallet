@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -20,7 +20,7 @@ vi.mock("../../lib/clipboard", () => ({
 }));
 
 import { WalletView } from "../WalletView";
-import { dispatchAction } from "../../lib/actionBus";
+import { NamesView } from "../NamesView";
 import { useUiStore } from "../../stores/ui";
 import { makeProfile, makeSession } from "../../test/fixtures/wallet";
 import type { ShakedexListingState, ShakedexNameState, WalletProfileSummary } from "../../types";
@@ -111,6 +111,8 @@ function route(
         });
       case "read_names":
         return Promise.resolve(names);
+      case "list_watchlist":
+        return Promise.resolve([]);
       case "list_tx_drafts":
         return Promise.resolve(drafts);
       case "read_action_history":
@@ -130,14 +132,14 @@ function route(
   };
 }
 
-function wrapper() {
+function wrapper(at = "/names") {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={["/wallet"]}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={[at]}>{children}</MemoryRouter>
       </QueryClientProvider>
     );
   };
@@ -149,8 +151,8 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
 });
 
-describe("WalletView purchases", () => {
-  it("shows Unconfirmed purchase", async () => {
+describe("NamesView purchases", () => {
+  it("shows an unconfirmed purchase as Bought, waiting to confirm", async () => {
     invokeMock.mockImplementation(
       route([
         purchaseRow({
@@ -164,12 +166,14 @@ describe("WalletView purchases", () => {
         }),
       ]),
     );
-    render(<WalletView />, { wrapper: wrapper() });
-    expect(await screen.findByText("Unconfirmed purchase")).toBeInTheDocument();
+    render(<NamesView />, { wrapper: wrapper() });
+    expect(await screen.findByText("Bought")).toBeInTheDocument();
+    expect(screen.getByText("· waiting for the purchase to confirm")).toBeInTheDocument();
+    expect(screen.getByText("5 paid")).toBeInTheDocument();
     expect(screen.queryByTestId("owned-name-finalize")).toBeNull();
   });
 
-  it("shows Awaiting finalize with blocks and no Finalize yet", async () => {
+  it("shows Bought · awaiting finalize with blocks and no Finalize yet", async () => {
     invokeMock.mockImplementation(
       route([
         purchaseRow({
@@ -183,8 +187,8 @@ describe("WalletView purchases", () => {
         }),
       ]),
     );
-    render(<WalletView />, { wrapper: wrapper() });
-    expect(await screen.findByText("Awaiting finalize · 214 blocks")).toBeInTheDocument();
+    render(<NamesView />, { wrapper: wrapper() });
+    expect(await screen.findByText("· awaiting finalize · 214 blocks left")).toBeInTheDocument();
     expect(screen.queryByTestId("owned-name-finalize")).toBeNull();
   });
 
@@ -202,8 +206,8 @@ describe("WalletView purchases", () => {
         }),
       ]),
     );
-    render(<WalletView />, { wrapper: wrapper() });
-    expect(await screen.findByText("Ready to finalize")).toBeInTheDocument();
+    render(<NamesView />, { wrapper: wrapper() });
+    expect(await screen.findByText("· ready to finalize")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("owned-name-finalize"));
 
     await waitFor(() => {
@@ -236,7 +240,7 @@ describe("WalletView purchases", () => {
     invokeMock.mockImplementation((cmd: string) =>
       cmd === "sign_tx_draft" ? Promise.reject("cancelled") : base(cmd),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
     fireEvent.click(await screen.findByTestId("owned-name-finalize"));
     await waitFor(() => {
       const call = invokeMock.mock.calls.find((c) => c[0] === "delete_tx_draft");
@@ -245,7 +249,7 @@ describe("WalletView purchases", () => {
     expect(invokeMock.mock.calls.some((c) => c[0] === "broadcast_tx_draft")).toBe(false);
   });
 
-  it("purchase rows have no Manage button or batch checkbox", async () => {
+  it("purchase rows have no open button or batch checkbox", async () => {
     invokeMock.mockImplementation(
       route([
         purchaseRow({
@@ -259,10 +263,12 @@ describe("WalletView purchases", () => {
         }),
       ]),
     );
-    render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Ready to finalize");
-    expect(screen.queryByTestId("owned-name-manage")).toBeNull();
+    render(<NamesView />, { wrapper: wrapper() });
+    await screen.findByText("· ready to finalize");
+    // The row's one button is Finalize; there is no "open" button on it.
+    expect(screen.getByTestId("names-row")).toHaveTextContent(/Finalize$/);
     expect(screen.queryByRole("checkbox", { name: /Select .*dexreviews/ })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Select all names" })).toBeNull();
     // Purchase rows are kept out of the capabilities batch as well.
     await waitFor(() => {
       const caps = invokeMock.mock.calls.filter((c) => c[0] === "get_names_action_capabilities");
@@ -287,9 +293,11 @@ describe("WalletView purchases", () => {
         makeProfile({ watchOnly: true }),
       ),
     );
-    render(<WalletView />, { wrapper: wrapper() });
-    expect(await screen.findByText("Ready to finalize")).toBeInTheDocument();
+    render(<NamesView />, { wrapper: wrapper() });
+    expect(await screen.findByText("· ready to finalize")).toBeInTheDocument();
     expect(screen.queryByTestId("owned-name-finalize")).toBeNull();
+    // A ghost View takes the signing action's place.
+    expect(screen.getByRole("button", { name: "View" })).toBeInTheDocument();
   });
 
   it.each([
@@ -323,7 +331,7 @@ describe("WalletView purchases", () => {
         canSend,
       ),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
     const button = await screen.findByTestId("owned-name-finalize");
     await waitFor(() => expect(button).toBeDisabled());
     fireEvent.mouseEnter(button.parentElement!);
@@ -332,50 +340,6 @@ describe("WalletView purchases", () => {
     expect(
       invokeMock.mock.calls.some((c) => c[0] === "shakedex_build_purchase_finalize_draft"),
     ).toBe(false);
-  });
-
-  it("the name of a purchase row opens no dialog", async () => {
-    invokeMock.mockImplementation(
-      route([
-        purchaseRow({
-          state: "awaitingFinalize",
-          blocksRemaining: 0,
-          purchaseId: "p1",
-          purchaseDraftId: "draft-p1",
-          priceDoos: 5_000_000,
-          lockupBlocks: 10,
-          wallClockTiming: false,
-        }),
-      ]),
-    );
-    render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Ready to finalize");
-    expect(screen.queryByTestId("owned-name-info-link")).toBeNull();
-    const label = screen.getByTestId("owned-name-purchase-label");
-    expect(label).toHaveTextContent(".dexreviews");
-    fireEvent.click(label);
-    expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  it("keyboard open on a selected purchase row opens no dialog", async () => {
-    invokeMock.mockImplementation(
-      route([
-        purchaseRow({
-          state: "awaitingFinalize",
-          blocksRemaining: 0,
-          purchaseId: "p1",
-          purchaseDraftId: "draft-p1",
-          priceDoos: 5_000_000,
-          lockupBlocks: 10,
-          wallClockTiming: false,
-        }),
-      ]),
-    );
-    render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Ready to finalize");
-    act(() => dispatchAction("wallet:list:next"));
-    act(() => dispatchAction("wallet:list:open"));
-    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("one block before the lockup ends there is no Finalize yet", async () => {
@@ -392,8 +356,8 @@ describe("WalletView purchases", () => {
         }),
       ]),
     );
-    render(<WalletView />, { wrapper: wrapper() });
-    expect(await screen.findByText("Awaiting finalize · 1 block")).toBeInTheDocument();
+    render(<NamesView />, { wrapper: wrapper() });
+    expect(await screen.findByText("· awaiting finalize · 1 block left")).toBeInTheDocument();
     expect(screen.queryByTestId("owned-name-finalize")).toBeNull();
   });
 
@@ -415,7 +379,7 @@ describe("WalletView purchases", () => {
         ? new Promise((resolve) => (finish = resolve))
         : base(cmd),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
     const button = await screen.findByTestId("owned-name-finalize");
     await waitFor(() => expect(button).toBeEnabled());
     fireEvent.click(button);
@@ -451,9 +415,10 @@ describe("WalletView purchases", () => {
           [finalizeDraft("fd0", status, "p1")],
         ),
       );
-      render(<WalletView />, { wrapper: wrapper() });
+      render(<NamesView />, { wrapper: wrapper() });
       expect(await screen.findByText("Finalize · waiting for a block")).toBeInTheDocument();
-      expect(screen.queryByText("Ready to finalize")).toBeNull();
+      // v2 keeps the detail ("ready to finalize"); the pending badge and the
+      // missing button are what say the finalize is already on its way.
       expect(screen.queryByTestId("owned-name-finalize")).toBeNull();
     },
   );
@@ -479,8 +444,8 @@ describe("WalletView purchases", () => {
           [finalizeDraft("fd0", status, "p1"), finalizeDraft("fd9", "broadcasted", "other")],
         ),
       );
-      render(<WalletView />, { wrapper: wrapper() });
-      expect(await screen.findByText("Ready to finalize")).toBeInTheDocument();
+      render(<NamesView />, { wrapper: wrapper() });
+      expect(await screen.findByText("· ready to finalize")).toBeInTheDocument();
       expect(screen.getByTestId("owned-name-finalize")).toBeInTheDocument();
     },
   );
@@ -514,9 +479,9 @@ function renderWithMarketRoute() {
   });
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/wallet"]}>
+      <MemoryRouter initialEntries={["/names"]}>
         <Routes>
-          <Route path="/wallet" element={<WalletView />} />
+          <Route path="/names" element={<NamesView />} />
           <Route path="/market" element={<AtMarket />} />
         </Routes>
       </MemoryRouter>
@@ -524,23 +489,33 @@ function renderWithMarketRoute() {
   );
 }
 
+// The Wallet page's "Your names" card still names a listing's state.
 describe("WalletView listings", () => {
   it("shows a name's listing state on its row, the lockup counted while Locking", async () => {
     invokeMock.mockImplementation(route([listedRow("locking", 4)]));
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WalletView />, { wrapper: wrapper("/wallet") });
     expect(await screen.findByText("Locking · 4 blocks")).toBeInTheDocument();
   });
 
   it("names a Listed name's state on its row", async () => {
     invokeMock.mockImplementation(route([listedRow("listed", null)]));
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WalletView />, { wrapper: wrapper("/wallet") });
     expect(await screen.findByText("Listed for sale")).toBeInTheDocument();
+  });
+});
+
+describe("NamesView listings", () => {
+  it("shows a name's listing state on its row, the lockup counted while Locking", async () => {
+    invokeMock.mockImplementation(route([listedRow("locking", 4)]));
+    render(<NamesView />, { wrapper: wrapper() });
+    expect(await screen.findByText("Listed for sale")).toBeInTheDocument();
+    expect(screen.getByText("· Locking · 4 blocks")).toBeInTheDocument();
   });
 
   it("names a restored lock as R32 does and links to My listings", async () => {
     invokeMock.mockImplementation(route([listedRow("restored", null)]));
     renderWithMarketRoute();
-    expect(await screen.findByText("Locked — listing details unknown")).toBeInTheDocument();
+    expect(await screen.findByText("· Locked — listing details unknown")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("owned-name-my-listings"));
     expect(await screen.findByTestId("at-market")).toHaveTextContent("?tab=mine");
   });
@@ -548,8 +523,8 @@ describe("WalletView listings", () => {
   it("offers My listings only on a name with a listing", async () => {
     const plain = { ...listedRow("listed", null), name: "plain", listing: undefined };
     invokeMock.mockImplementation(route([plain]));
-    render(<WalletView />, { wrapper: wrapper() });
-    expect(await screen.findByTestId("owned-name-manage")).toBeInTheDocument();
+    render(<NamesView />, { wrapper: wrapper() });
+    expect(await screen.findByText(".plain")).toBeInTheDocument();
     expect(screen.queryByTestId("owned-name-my-listings")).toBeNull();
   });
 });

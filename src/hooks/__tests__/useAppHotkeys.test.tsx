@@ -187,17 +187,18 @@ describe("route-scoped action keys", () => {
   });
 
   it("pressing '/' dispatches the route-appropriate focus action", () => {
+    // The Wallet page has no name filter any more: '/' does nothing there.
     let harness = renderHarness("/");
     let spy = spyOnActionBus();
     dispatchKey("/", "Slash");
-    expect(spy.events).toEqual([{ actionId: "wallet:focusFilter" }]);
+    expect(spy.events).toEqual([]);
     spy.stop();
     harness.unmount();
 
     harness = renderHarness("/names");
     spy = spyOnActionBus();
     dispatchKey("/", "Slash");
-    expect(spy.events).toEqual([{ actionId: "auctions:focusLookup" }]);
+    expect(spy.events).toEqual([{ actionId: "names:focusLookup" }]);
     spy.stop();
     harness.unmount();
 
@@ -209,17 +210,27 @@ describe("route-scoped action keys", () => {
     harness.unmount();
   });
 
-  it("j/k/Enter at / dispatch list navigation actions", () => {
-    renderHarness("/");
+  it("j/k/Enter at /names dispatch list navigation actions", () => {
+    renderHarness("/names");
     const spy = spyOnActionBus();
     dispatchKey("j", "KeyJ");
     dispatchKey("k", "KeyK");
     dispatchKey("Enter", "Enter");
     expect(spy.events.map((e) => e.actionId)).toEqual([
-      "wallet:list:next",
-      "wallet:list:prev",
-      "wallet:list:open",
+      "names:list:next",
+      "names:list:prev",
+      "names:list:open",
     ]);
+    spy.stop();
+  });
+
+  it("j/k/Enter at / dispatch nothing (the Wallet page has no name list)", () => {
+    renderHarness("/");
+    const spy = spyOnActionBus();
+    dispatchKey("j", "KeyJ");
+    dispatchKey("k", "KeyK");
+    dispatchKey("Enter", "Enter");
+    expect(spy.events).toEqual([]);
     spy.stop();
   });
 

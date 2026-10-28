@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -11,7 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
-import { AuctionsView } from "../AuctionsView";
+import { NamesView } from "../NamesView";
 
 const profile = {
   id: "p1",
@@ -37,7 +37,7 @@ function wrapper() {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={["/auctions"]}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={["/names?filter=auction"]}>{children}</MemoryRouter>
       </QueryClientProvider>
     );
   };
@@ -118,14 +118,17 @@ function baseRoutes(o: {
         return Promise.resolve(null);
       case "read_auction_position_names":
         return Promise.resolve(o.positions ?? []);
+      case "list_watchlist":
+        return Promise.resolve([]);
       default:
         return Promise.resolve(null);
     }
   };
 }
 
-describe("AuctionsView — auction positions merged with live caps (Task 2)", () => {
-  it("shows a confirmed-open position with readyToBid caps as a Bidding row with countdown + Place Bid action", async () => {
+// Auction positions are rows of the Names page now (chip In auction).
+describe("NamesView — auction positions merged with live caps (Task 2)", () => {
+  it("shows a confirmed-open position with readyToBid caps as a Bidding row with countdown + Bid action", async () => {
     invokeMock.mockImplementation(
       baseRoutes({
         positions: ["namehold"],
@@ -144,13 +147,13 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
         },
       }),
     );
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     expect(await screen.findByText(".namehold")).toBeInTheDocument();
-    expect(screen.getByText(/Ready to Bid/i)).toBeInTheDocument();
-    expect(screen.getByText(/5 blocks/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Place Bid$/i })).toBeInTheDocument();
-    expect(screen.getByText(/Active Auctions \(1\)/i)).toBeInTheDocument();
+    expect(screen.getByText("Bidding")).toBeInTheDocument();
+    expect(screen.getByText("· 5 blocks (~1h)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Bid$/ })).toBeInTheDocument();
+    expect(screen.getByTestId("names-chip-auction")).toHaveTextContent("In auction 1");
   });
 
   it("routes the RAW name (punycode-safe) to the modal when a position row's action is clicked", async () => {
@@ -171,18 +174,18 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
         },
       }),
     );
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     expect(await screen.findByText(".козел")).toBeInTheDocument();
     expect(screen.queryByText(".xn--e1adigm")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /^Place Bid$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Bid$/ }));
 
     await waitFor(() => {
       const call = invokeMock.mock.calls.find((c) => c[0] === "read_name_info");
       expect(call?.[1]).toEqual({ name: "xn--e1adigm" });
     });
     // This used to assert that the modal fetched `get_name_action_capabilities`
-    // for the raw name — which `handleOpenManagement`'s cache bridge, added in
+    // for the raw name — which `openName`'s cache bridge, added in
     // the same commit as this test, deliberately prevents: it seeds the single
     // capability query from the batch the table already holds, so the modal
     // opens on the row's task state instead of flashing the raw on-chain phase.
@@ -210,13 +213,23 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
         ],
       }),
     );
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    await screen.findByText(/No active auctions/i);
+    await screen.findByTestId("names-empty");
+    expect(screen.getByTestId("names-empty")).toHaveTextContent(/No active auctions/i);
     expect(screen.queryByText(".ownedname")).not.toBeInTheDocument();
-    expect(screen.getByText(/Active Auctions \(0\)/i)).toBeInTheDocument();
-    // Deduped BEFORE the caps batch — never even requested.
-    expect(invokeMock.mock.calls.some((c) => c[0] === "get_names_action_capabilities")).toBe(false);
+    expect(screen.getByTestId("names-chip-auction")).toHaveTextContent("In auction 0");
+    // One row in total: the owned one, not a second position row.
+    expect(screen.getByTestId("names-chip-all")).toHaveTextContent("All 1");
+    // Deduped before the caps batch: the owned name is requested once, as owned.
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some((c) => c[0] === "get_names_action_capabilities")).toBe(
+        true,
+      ),
+    );
+    for (const c of invokeMock.mock.calls.filter((c) => c[0] === "get_names_action_capabilities")) {
+      expect((c[1] as { names: string[] }).names).toEqual(["ownedname"]);
+    }
   });
 
   it("does NOT show a position whose live caps say unavailableOther (nothing to do)", async () => {
@@ -229,11 +242,16 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
         },
       }),
     );
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    await screen.findByText(/No active auctions/i);
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some((c) => c[0] === "get_names_action_capabilities")).toBe(
+        true,
+      ),
+    );
+    expect(await screen.findByTestId("names-empty")).toHaveTextContent(/No active auctions/i);
     expect(screen.queryByText(".donename")).not.toBeInTheDocument();
-    expect(screen.getByText(/Active Auctions \(0\)/i)).toBeInTheDocument();
+    expect(screen.getByTestId("names-chip-auction")).toHaveTextContent("In auction 0");
   });
 
   it("keeps a position whose closed auction has a bid of ours not settled yet (offline)", async () => {
@@ -253,14 +271,16 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
         },
       }),
     );
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     // The lockup is ours and its outcome unknown: the row must not vanish.
     expect(await screen.findByText(".unsettled")).toBeInTheDocument();
-    expect(screen.getByText(/Active Auctions \(1\)/i)).toBeInTheDocument();
+    expect(screen.getByText("Auction closed")).toBeInTheDocument();
+    expect(screen.getByText("· sync to see the result")).toBeInTheDocument();
+    expect(screen.getByTestId("names-chip-auction")).toHaveTextContent("In auction 1");
   });
 
-  it("a confirmed open whose caps are still availableToOpen shows 'In auction' / 'View' — never invites a re-open", async () => {
+  it("a confirmed open whose caps are still availableToOpen shows 'Opening the auction' with no row button — never invites a re-open", async () => {
     invokeMock.mockImplementation(
       baseRoutes({
         positions: ["justopened"],
@@ -276,15 +296,18 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
         },
       }),
     );
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     expect(await screen.findByText(".justopened")).toBeInTheDocument();
-    expect(screen.getByText(/In auction/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^View$/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Open Auction/i })).not.toBeInTheDocument();
+    const row = screen.getByTestId("names-row");
+    expect(within(row).getByText("Opening the auction")).toBeInTheDocument();
+    expect(within(row).getByText("· waiting for the open to be mined")).toBeInTheDocument();
+    // The row itself opens the name; it carries no button of its own.
+    expect(within(row).queryAllByRole("button")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: /Open auction/i })).not.toBeInTheDocument();
   });
 
-  it("a broadcasted open the node/explorer hasn't caught up to (waitingForBidding) shows Waiting for Bidding / View", async () => {
+  it("a broadcasted open the node/explorer hasn't caught up to (waitingForBidding) shows Opening with no row button", async () => {
     invokeMock.mockImplementation(
       baseRoutes({
         positions: ["waitingname"],
@@ -299,14 +322,15 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
         },
       }),
     );
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     expect(await screen.findByText(".waitingname")).toBeInTheDocument();
-    expect(screen.getByText(/Waiting for Bidding/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^View$/i })).toBeInTheDocument();
+    const row = screen.getByTestId("names-row");
+    expect(within(row).getByText("Opening")).toBeInTheDocument();
+    expect(within(row).queryAllByRole("button")).toHaveLength(0);
     // Folded into the count, not the empty state.
-    expect(screen.getByText(/Active Auctions \(1\)/i)).toBeInTheDocument();
-    expect(screen.queryByText(/No active auctions/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId("names-chip-auction")).toHaveTextContent("In auction 1");
+    expect(screen.queryByTestId("names-empty")).not.toBeInTheDocument();
   });
 
   it("an action of ours still in the mempool outranks the phase label", async () => {
@@ -329,13 +353,14 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
         },
       }),
     );
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     expect(await screen.findByText(".inflight")).toBeInTheDocument();
     expect(await screen.findByTestId("auction-pending-block")).toHaveTextContent(
       "Bid · waiting for a block",
     );
-    expect(screen.queryByText(/^Ready to Bid$/i)).toBeNull();
+    // …and the row's Bid action is hidden while it is.
+    expect(screen.queryByRole("button", { name: /^Bid$/ })).toBeNull();
   });
 
   it("filters a dropped-open position (no live caps) while keeping a live bidding sibling — the vmp3rt3/vmp3rt4 case", async () => {
@@ -366,15 +391,14 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
         },
       }),
     );
-    render(<AuctionsView />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     expect(await screen.findByText(".vmp3rt3")).toBeInTheDocument();
-    // Multi-bid: a BIDDING row that already holds a commitment (readyToBid +
-    // hasBidCommitment) is labeled "Bidding" to match the modal's phase badge,
-    // while still inviting another independent bid.
-    expect(screen.getByText(/Bidding/i)).toBeInTheDocument();
+    // A BIDDING row that already holds a commitment (readyToBid +
+    // hasBidCommitment) is labeled "Bidding" to match the modal's phase badge.
+    expect(screen.getByText("Bidding")).toBeInTheDocument();
     // vmp3rt4 must not render as a row, and the count reflects only the live one.
     expect(screen.queryByText(".vmp3rt4")).not.toBeInTheDocument();
-    expect(screen.getByText(/Active Auctions \(1\)/i)).toBeInTheDocument();
+    expect(screen.getByTestId("names-chip-auction")).toHaveTextContent("In auction 1");
   });
 });

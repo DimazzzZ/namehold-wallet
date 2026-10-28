@@ -19,7 +19,7 @@ vi.mock("../../lib/clipboard", () => ({
   readText: vi.fn().mockResolvedValue(""),
 }));
 
-import { WalletView } from "../WalletView";
+import { NamesView } from "../NamesView";
 
 const RECIPIENT = "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2";
 
@@ -139,6 +139,8 @@ function routeInvoke(o: Overrides = {}) {
           expiringSoonThresholdDays: 30,
           names: [],
         });
+      case "list_watchlist":
+        return Promise.resolve([]);
       case "read_names":
         return Promise.resolve(names);
       case "get_names_action_capabilities":
@@ -185,7 +187,7 @@ function wrapper() {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={["/wallet"]}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={["/names"]}>{children}</MemoryRouter>
       </QueryClientProvider>
     );
   };
@@ -194,10 +196,8 @@ function wrapper() {
 async function selectBothNames() {
   await screen.findByText(/\.alpha/);
   await screen.findByText(/\.bravo/);
-  const boxes = document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
-  // boxes[0] is the header select-all checkbox; a single click selects every
-  // filtered name (alpha + bravo). boxes[1]/[2] are the per-row checkboxes.
-  fireEvent.click(boxes[0]!);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select alpha" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select bravo" }));
   await screen.findByTestId("batch-transfer-btn");
 }
 
@@ -206,11 +206,10 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
 });
 
-describe("WalletView — batch transfer", () => {
+describe("NamesView — batch transfer", () => {
   it("Transfer Selected is disabled when the recipient input is empty", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByTestId("receive-open");
+    render(<NamesView />, { wrapper: wrapper() });
     await selectBothNames();
 
     const btn = screen.getByTestId("batch-transfer-btn");
@@ -226,8 +225,7 @@ describe("WalletView — batch transfer", () => {
     invokeMock.mockImplementation(
       routeInvoke({ caps: [cap("alpha", true), cap("bravo", false, "already mid-transfer")] }),
     );
-    render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByTestId("receive-open");
+    render(<NamesView />, { wrapper: wrapper() });
     await selectBothNames();
 
     fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
@@ -238,8 +236,7 @@ describe("WalletView — batch transfer", () => {
 
   it("clicking Transfer invokes build_batch_transfer_draft with { names, recipient, feeRate: undefined }", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByTestId("receive-open");
+    render(<NamesView />, { wrapper: wrapper() });
     await selectBothNames();
 
     fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
@@ -260,8 +257,7 @@ describe("WalletView — batch transfer", () => {
 
   it("after build, confirming the modal signs then broadcasts and shows the recipient", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByTestId("receive-open");
+    render(<NamesView />, { wrapper: wrapper() });
     await selectBothNames();
 
     fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
@@ -290,8 +286,7 @@ describe("WalletView — batch transfer", () => {
     const uiStore = await import("../../stores/ui");
     uiStore.useUiStore.getState().clearToast();
 
-    render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByTestId("receive-open");
+    render(<NamesView />, { wrapper: wrapper() });
     await selectBothNames();
 
     fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {

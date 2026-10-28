@@ -97,14 +97,6 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
     scope: "/",
     actionId: "wallet:openReceive",
   },
-  {
-    keys: "/",
-    label: "/",
-    description: "Focus name filter",
-    category: "action",
-    scope: "/",
-    actionId: "wallet:focusFilter",
-  },
 
   {
     keys: "/",
@@ -112,7 +104,7 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
     description: "Find a name",
     category: "action",
     scope: "/names",
-    actionId: "auctions:focusLookup",
+    actionId: "names:focusLookup",
   },
   {
     keys: "b",
@@ -120,25 +112,8 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
     description: "Open batch bid",
     category: "action",
     scope: "/names",
-    actionId: "auctions:batchBid",
+    actionId: "names:batchBid",
     requiresWrite: true,
-  },
-
-  {
-    keys: "a",
-    label: "A",
-    description: "Focus add name",
-    category: "action",
-    scope: "/names",
-    actionId: "watchlist:focusAdd",
-  },
-  {
-    keys: "e",
-    label: "E",
-    description: "Export CSV",
-    category: "action",
-    scope: "/names",
-    actionId: "watchlist:exportCsv",
   },
 
   {
@@ -167,30 +142,30 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
     actionId: "market:import",
   },
 
-  // --- List navigation (Wallet owned-names list) ---
+  // --- List navigation (Names table) ---
   {
     keys: "j,down",
     label: "J / ↓",
     description: "Next name in list",
     category: "list",
-    scope: "/",
-    actionId: "wallet:list:next",
+    scope: "/names",
+    actionId: "names:list:next",
   },
   {
     keys: "k,up",
     label: "K / ↑",
     description: "Previous name in list",
     category: "list",
-    scope: "/",
-    actionId: "wallet:list:prev",
+    scope: "/names",
+    actionId: "names:list:prev",
   },
   {
     keys: "enter",
     label: "Enter",
     description: "Open selected name",
     category: "list",
-    scope: "/",
-    actionId: "wallet:list:open",
+    scope: "/names",
+    actionId: "names:list:open",
   },
 
   // --- List navigation (Market listings) ---
