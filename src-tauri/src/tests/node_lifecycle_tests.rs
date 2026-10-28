@@ -454,6 +454,12 @@ async fn start_hsd_surfaces_data_dir_lock_when_child_dies_with_lock() {
         msg.contains("LOCK"),
         "expected log tail with LOCK, got: {msg}"
     );
+    // The error names the URL this wallet reaches the node at (the global
+    // one here, a custom port): the user sees which port the app is on.
+    assert!(
+        msg.contains("reach its RPC at http://127.0.0.1:1 "),
+        "expected the probed URL in the error, got: {msg}"
+    );
     // The dead child was reaped from the handle.
     assert!(state.hsd_children.lock().unwrap().is_empty());
 }
