@@ -67,50 +67,59 @@ function IcannRow({ c }: { c: IcannCollision }) {
   const applicants = icannApplicants(c);
   const named = applicants.slice(0, ICANN_NAMED);
   const rest = applicants.slice(ICANN_NAMED);
+  const contention = c.applications.some((a) => a.contention);
   const date = new Date(ICANN_LIST_FETCHED_AT).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
     timeZone: "UTC",
   });
+  // Two lines, not one Row: the Details card is narrow and the applicant
+  // list is long, so the count sits beside the label and the names get a
+  // full-width line of their own.
   return (
-    <Row
-      testId="name-icann"
-      label={
-        <Tooltip hint content={ICANN_HINT}>
-          ICANN 2026 round
-        </Tooltip>
-      }
-      value={
-        <>
-          {n} application{n === 1 ? "" : "s"} ·{" "}
-          {named.map((a, i) => (
-            <Fragment key={a.applicant}>
-              {i > 0 && ", "}
-              <button
-                type="button"
-                className="underline decoration-dotted underline-offset-2 hover:text-blue-600"
-                onClick={() => void openExternal(icannApplicationUrl(a.ids[0]!))}
-              >
-                {a.applicant}
-              </button>
-            </Fragment>
-          ))}
-          {rest.length > 0 && (
-            <>
-              {" "}
-              and{" "}
-              <Tooltip content={rest.map((a) => a.applicant).join(", ")} className="inline">
-                <span className="cursor-help underline decoration-dotted underline-offset-2">
-                  {rest.length} more
-                </span>
-              </Tooltip>
-            </>
-          )}
-        </>
-      }
-      sub={` · ICANN list as of ${date}`}
-    />
+    <div className="flex flex-col gap-0.5 text-[13px]" data-testid="name-icann">
+      <div className="flex justify-between gap-3">
+        <span className="text-gray-500">
+          <Tooltip hint content={ICANN_HINT}>
+            ICANN 2026 round
+          </Tooltip>
+        </span>
+        <span className="text-right text-gray-900 tabular-nums">
+          {n} application{n === 1 ? "" : "s"}
+          {contention && <span className="text-gray-500"> · in contention</span>}
+        </span>
+      </div>
+      <div className="text-xs leading-snug text-gray-500" data-testid="name-icann-applicants">
+        {named.map((a, i) => (
+          <Fragment key={a.applicant}>
+            {i > 0 && ", "}
+            <button
+              type="button"
+              className="underline decoration-dotted underline-offset-2 hover:text-blue-600"
+              onClick={() => void openExternal(icannApplicationUrl(a.ids[0]!))}
+            >
+              {a.applicant}
+            </button>
+          </Fragment>
+        ))}
+        {rest.length > 0 && (
+          <>
+            {" "}
+            and{" "}
+            <Tooltip content={rest.map((a) => a.applicant).join(", ")} className="inline">
+              <span className="cursor-help underline decoration-dotted underline-offset-2">
+                {rest.length} more
+              </span>
+            </Tooltip>
+          </>
+        )}
+        <span className="text-gray-400">
+          {" "}
+          · ICANN list as of <span className="whitespace-nowrap">{date}</span>
+        </span>
+      </div>
+    </div>
   );
 }
 

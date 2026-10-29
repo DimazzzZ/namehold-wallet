@@ -251,6 +251,12 @@ describe("NameDetails — ICANN 2026 round row (spec R6)", () => {
     expect(row).not.toHaveTextContent(agent.applications[3]!.applicant);
     expect(screen.getAllByRole("button", { name: /Agent Applicant/ })).toHaveLength(3);
     expect(row).toHaveTextContent(`ICANN list as of ${date}`);
+    // Two lines: the count beside the label, the applicants on a line of their
+    // own under it, so a long list never squeezes the label (narrow card).
+    const applicants = screen.getByTestId("name-icann-applicants");
+    expect(applicants).toHaveTextContent(agent.applications[0]!.applicant);
+    expect(applicants).not.toHaveTextContent("applications");
+    expect(row.lastElementChild).toBe(applicants);
   });
 
   it("opens an applicant's application on ICANN's site", () => {
@@ -269,7 +275,8 @@ describe("NameDetails — ICANN 2026 round row (spec R6)", () => {
       wrapper: wrapper(),
     });
     const row = screen.getByTestId("name-icann");
-    expect(row).toHaveTextContent("4 applications · Apex Co");
+    expect(row).toHaveTextContent("4 applications");
+    expect(screen.getByTestId("name-icann-applicants")).toHaveTextContent("Apex Co");
     expect(row).not.toHaveTextContent("more");
     expect(screen.getAllByRole("button", { name: "Apex Co" })).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "Apex Co" }));
