@@ -297,6 +297,28 @@ describe("WalletView send flow (asset safety)", () => {
     expect(screen.queryByTestId("send-recipient")).toBeNull();
   });
 
+  it("Max fills a balance of a thousand HNS or more (a number field drops thousands separators)", async () => {
+    const route = routeInvoke();
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "estimate_tx_draft_fee"
+        ? Promise.resolve({
+            feeDoos: 1410,
+            changeDoos: 0,
+            inputTotalDoos: 2_043_661_410,
+            numInputs: 3,
+            maxSendDoos: 2_043_660_000,
+          })
+        : route(cmd),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByTestId("receive-open");
+    fireEvent.click(screen.getByTestId("wallet-send"));
+    fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
+    fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
+
+    await waitFor(() => expect(screen.getByLabelText(/Amount \(HNS\)/i)).toHaveValue(2043.66));
+  });
+
   it("Max, then Review with the amount untouched, builds the sweep", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });

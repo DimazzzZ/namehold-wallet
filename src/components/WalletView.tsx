@@ -46,7 +46,6 @@ import {
   formatHns,
   formatHnsShort,
   hnsToDollarydoos,
-  dollarydoosToHns,
   isLikelyHnsAddress,
   hnsAddressPrefix,
 } from "../lib/utils";
@@ -246,7 +245,9 @@ export function WalletView() {
   const handleMax = async () => {
     try {
       const est = await estimateMax.mutateAsync(parseFeeRateArg(sendFeeRate) ?? undefined);
-      setSendAmount(dollarydoosToHns(est.maxSendDoos));
+      // Plain digits: the amount field is a number input, which drops a value
+      // with thousands separators (dollarydoosToHns adds them).
+      setSendAmount((est.maxSendDoos / 1_000_000).toFixed(6));
       setMaxFill(est.maxSendDoos);
     } catch (e) {
       showToast(mapError(e), "error");
