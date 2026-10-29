@@ -162,3 +162,61 @@ describe("ReadOnlyDnsRecords", () => {
     expect(screen.getByText(/Requires a synced local node/)).toBeInTheDocument();
   });
 });
+
+describe("NameDetails — a name bought on the market", () => {
+  // Reported live: .ferratorr was bought on the market for 250 HNS, and Details
+  // read "High bid 0.01 HNS · Paid price (2nd-price) 0 HNS" — its original
+  // auction (one bid, so a second price of 0) — with nothing about the 250.
+  it("leads with the market price and labels the rest as the auction's", async () => {
+    route();
+    render(
+      <NameDetails
+        name="ferratorr"
+        profileId="p1"
+        info={baseInfo({
+          name: "ferratorr",
+          value: 0,
+          highest: 10_000,
+          purchase: { priceDoos: 250_000_000, height: 353_400 },
+        })}
+      />,
+      { wrapper: wrapper() },
+    );
+    const card = await screen.findByTestId("name-details");
+    expect(screen.getByTestId("name-market-purchase")).toHaveTextContent(
+      /Bought on the market\s*250 HNS/,
+    );
+    expect(card).toHaveTextContent(/Auction winner's bid\s*0\.01 HNS/);
+    expect(card).toHaveTextContent(/Auction price \(2nd-price\)\s*nothing — no second bid/);
+    expect(card).not.toHaveTextContent(/\b0 HNS/);
+  });
+
+  it("never shows a 0 HNS second price, bought or not", async () => {
+    route();
+    render(
+      <NameDetails name="solo" profileId="p1" info={baseInfo({ value: 0, highest: 10_000 })} />,
+      {
+        wrapper: wrapper(),
+      },
+    );
+    const card = await screen.findByTestId("name-details");
+    expect(card).toHaveTextContent(/Paid price \(2nd-price\)\s*nothing — no second bid/);
+    expect(card).not.toHaveTextContent(/\b0 HNS/);
+    expect(screen.queryByTestId("name-market-purchase")).toBeNull();
+  });
+});
+
+describe("NameDetails — a name with no auction", () => {
+  it("shows no price at all for a claimed name (no bid, value 0)", async () => {
+    route();
+    render(
+      <NameDetails name="claimed" profileId="p1" info={baseInfo({ value: 0, highest: 0 })} />,
+      {
+        wrapper: wrapper(),
+      },
+    );
+    const card = await screen.findByTestId("name-details");
+    expect(card).not.toHaveTextContent(/2nd-price/);
+    expect(card).not.toHaveTextContent(/no second bid/);
+  });
+});

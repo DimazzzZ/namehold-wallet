@@ -89,6 +89,22 @@ export function NameDetails({
   const multi = (caps?.myBidCount ?? 0) > 1;
 
   const rows: ReactNode[] = [];
+  // Bought on the market: that price is what this wallet paid. The auction
+  // figures below are the name's original auction, so they say so.
+  const bought = info.purchase ?? null;
+  if (bought) {
+    rows.push(
+      <Row
+        key="bought"
+        testId="name-market-purchase"
+        label="Bought on the market"
+        value={<Hns doos={bought.priceDoos} />}
+        sub={
+          bought.height != null ? ` · block ${bought.height.toLocaleString("en-US")}` : undefined
+        }
+      />,
+    );
+  }
   if (showLocalBid && caps?.bidValueDoos != null) {
     rows.push(
       <Row
@@ -135,12 +151,13 @@ export function NameDetails({
       <Row
         key="high"
         testId="name-high-bid"
-        label="High bid"
+        label={bought ? "Auction winner's bid" : "High bid"}
         value={<Hns doos={info.highest!} />}
       />,
     );
   }
-  if (closed && info.value != null) {
+  // A claimed (reserved) name never had an auction: no bid, no price to show.
+  if (closed && info.value != null && (info.value > 0 || (info.highest ?? 0) > 0)) {
     rows.push(
       <Row
         key="paid"
@@ -149,10 +166,17 @@ export function NameDetails({
             hint
             content="Handshake uses a Vickrey second-price auction: the winner pays the second-highest bid, not their own bid."
           >
-            Paid price (2nd-price)
+            {bought ? "Auction price (2nd-price)" : "Paid price (2nd-price)"}
           </Tooltip>
         }
-        value={<Hns doos={info.value} />}
+        value={
+          info.value > 0 ? (
+            <Hns doos={info.value} />
+          ) : (
+            // One bid, so no second price: the winner paid nothing, never "0 HNS".
+            <span className="text-gray-500">nothing — no second bid</span>
+          )
+        }
       />,
     );
   }
