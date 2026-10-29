@@ -4942,3 +4942,75 @@ async fn capabilities_without_a_wallet_profile_refuse_every_action() {
         assert_eq!(cap.reason.as_deref(), Some("no active wallet profile"));
     }
 }
+
+/// A lost auction read as owned (`namehold`, 2026-10-29): the tracked row named
+/// another bidder's winning reveal as the owner coin but kept our address, left
+/// from an earlier read that took our losing reveal for the owner. When the
+/// node says that owner coin pays someone else, the tracked address is stale:
+/// the name is not ours and the address is cleared.
+#[tokio::test]
+async fn capabilities_node_synced_owner_coin_paying_someone_else_is_not_ours() {
+    let mut server = mockito::Server::new_async().await;
+    let owner_txid = "f586bec906f45fc27c75da57bbd569b62ad222c6e9aa4d8912c1434d0c1bbd70";
+    let _chain = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(format!(
+            r#"{{"result":{{"info":{{"name":"testname","state":"CLOSED","registered":false,"owner":{{"hash":"{owner_txid}","index":0}},"stats":{{}}}}}},"error":null,"id":1}}"#
+        ))
+        .create_async()
+        .await;
+    let _txout = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("gettxout".into()))
+        .with_body(r#"{"result":{"value":11,"address":{"version":0,"hash":"85c2","string":"rs1qsomeoneelse000000000000000000000000000"},"covenant":{"action":"REVEAL"}},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        let our_addr = first_derived_address(&conn, &id);
+        conn.execute(
+            "INSERT INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, owner_address, height)
+             VALUES (?1, 'testname', 'aabb', 'CLOSED', ?2, 0, ?3, 100)",
+            rusqlite::params![&id, owner_txid, &our_addr],
+        )
+        .unwrap();
+        id
+    };
+    let app = mock_app_with(state);
+    let caps = names::get_name_action_capabilities(
+        app.state(),
+        "testname".into(),
+        Some(profile_id.clone()),
+    )
+    .await
+    .expect("capabilities resolve via the node path");
+
+    assert!(
+        !caps.owns_name,
+        "the owner coin pays someone else: not ours"
+    );
+    let stored: Option<String> = app
+        .state::<crate::AppState>()
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT owner_address FROM tracked_name_states WHERE wallet_profile_id = ?1 AND name = 'testname'",
+            rusqlite::params![&profile_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, None, "the stale address is cleared");
+}
