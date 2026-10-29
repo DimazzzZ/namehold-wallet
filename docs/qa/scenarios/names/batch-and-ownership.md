@@ -110,14 +110,14 @@ Expected:
 
 Steps:
 
-1. Open the name. Read the status line under the name, the timeline, every card of Overview, and the header buttons (hover the disabled `Finalize transfer`).
+1. Names → `Owned`: read the name's row. Open the name. Read the status line under the name, the timeline, every card of Overview, and the header buttons (hover the disabled `Finalize transfer`).
 2. Wallet → Your names: read the name's row if it is listed.
 3. `mine 9`, Sync. Read the name page again.
 4. `Finalize transfer` (or, for N2's names, Names → select them → `Finalize Selected`, a series like N2) → confirm. `mine 1`, Sync.
 
 Expected:
 
-- Step 1: status line `Transferring · finalize opens in <b> blocks` (regtest shows blocks only, never hours); exactly **one** card, "Transfer in progress", reading "Sent at block <h>. Finalize opens in <b> blocks; then the name leaves this wallet. Until then you can cancel." with `Cancel transfer`; no card titled "Finalize Transfer", no sentence "Renew is the blue button"; no `Auction` card (the name is registered and ours; Details has its price); block numbers with thousands separators.
+- Step 1: the Names row reads `Transferring · finalize in <b> blocks` (blocks only on regtest; on mainnet `finalize in <b> blocks (~<h>h)`); status line `Transferring · finalize opens in <b> blocks` (regtest shows blocks only, never hours); exactly **one** card, "Transfer in progress", reading "Sent at block <h>. Finalize opens in <b> blocks; then the name leaves this wallet. Until then you can cancel." with `Cancel transfer`; no card titled "Finalize Transfer", no sentence "Renew is the blue button"; no `Auction` card (the name is registered and ours; Details has its price); block numbers with thousands separators.
 - Step 2: `Transferring` with `finalize in <b> blocks`, never "Transfer ready" or "finalize it".
 - Step 3: status line `Transferring · ready to finalize`; the card reads "The transfer lockup is over: finalize it with the button above and the name leaves this wallet. Until then you can cancel."; `Finalize transfer` enabled.
 - Step 4: after the block the name is no longer in the seller's Names.

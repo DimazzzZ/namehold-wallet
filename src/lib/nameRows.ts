@@ -295,7 +295,17 @@ function describeCaps(
           }
         : {
             status: "Transferring",
-            detail: "finalize once the transfer lockup ends",
+            // When Finalize opens, from hsd's lockup stats (the backend's
+            // countdown while a transfer is pending); hours only where blocks
+            // keep time.
+            detail:
+              c.countdownBlocks != null
+                ? `finalize in ${formatCountdown({
+                    label: "",
+                    blocks: c.countdownBlocks,
+                    hours: clock ? c.countdownHours : null,
+                  })}`
+                : "finalize once the transfer lockup ends",
             tone: "info",
             value,
             valueDoos: n?.value ?? null,
