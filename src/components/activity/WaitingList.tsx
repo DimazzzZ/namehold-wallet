@@ -1,5 +1,6 @@
 import type { MergedRow } from "../../lib/activity";
-import { formatDateShort } from "../../lib/utils";
+import { useEffect, useState } from "react";
+import { formatDate, formatSince } from "../../lib/utils";
 import { PURCHASE_ACTION } from "../../queries/shakedex";
 import { SPEED_UP_ACTION } from "../../queries/speedUp";
 import { shortTxid, SpeedUpButton, useSpeedUpReason } from "../SpeedUp";
@@ -17,6 +18,12 @@ export function WaitingList({
   onNameClick: (name: string) => void;
   onTxClick: (txid: string) => void;
 }) {
+  // One clock for the list: "sent 14 min ago" moves on every minute.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
   return (
     <section className="rounded-md border border-gray-200 bg-white" data-testid="activity-waiting">
       <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100">
@@ -31,6 +38,7 @@ export function WaitingList({
             key={row.key}
             row={row}
             first={i === 0}
+            now={now}
             onNameClick={onNameClick}
             onTxClick={onTxClick}
           />
@@ -56,11 +64,13 @@ function speedUpFor(row: MergedRow): { draftId: string; disabledReason?: string 
 function WaitingRow({
   row,
   first,
+  now,
   onNameClick,
   onTxClick,
 }: {
   row: MergedRow;
   first: boolean;
+  now: number;
   onNameClick: (name: string) => void;
   onTxClick: (txid: string) => void;
 }) {
@@ -98,9 +108,15 @@ function WaitingRow({
       </div>
       {row.txid && <TxLink txid={row.txid} onClick={onTxClick} />}
       {row.sortTs > 0 && (
-        <Tooltip content={rowBadge(row).hint} className="inline-flex">
-          <span className="text-xs text-gray-500 whitespace-nowrap">
-            sent {formatDateShort(rowIso(row))}
+        <Tooltip
+          content={`Sent ${formatDate(rowIso(row))} UTC. ${rowBadge(row).hint}`}
+          className="inline-flex"
+        >
+          <span
+            className="text-xs text-gray-500 whitespace-nowrap"
+            data-testid="activity-waiting-sent"
+          >
+            sent {formatSince(rowIso(row), now)}
           </span>
         </Tooltip>
       )}
