@@ -37,7 +37,15 @@ export interface NameRow {
   pending: string | null;
   statusTitle: string;
   value: string | null;
+  /** The number behind `value` (bid / lockup / name value / highest / paid); null with no value. */
+  valueDoos: number | null;
   expires: { text: string; className: string } | null;
+  /** blocksUntilExpire when `expires` is shown (sort key); null otherwise. */
+  expiresBlocks: number | null;
+  /** The backend's daysUntilExpire when `expires` is shown (Expires filter on mainnet/testnet). */
+  expiresDays: number | null;
+  /** Watch tags, trimmed; [] when not watched. */
+  tags: string[];
   action: {
     label: string;
     kind: "open" | "myListings" | "finalizePurchase" | "viewPurchase";
@@ -138,7 +146,7 @@ function expiresCell(n: HsdName | undefined, clock: boolean, watched: boolean): 
   return { text: `in ${sp}`, className };
 }
 
-type Described = Pick<NameRow, "status" | "detail" | "tone" | "value" | "action"> & {
+type Described = Pick<NameRow, "status" | "detail" | "tone" | "value" | "valueDoos" | "action"> & {
   /** For the "auction" chip. */
   inAuction: boolean;
 };
@@ -165,6 +173,7 @@ function describeCaps(
         detail: cd && `${cd} left`,
         tone: "warn",
         value: bid,
+        valueDoos: c.bidValueDoos,
         action: open("Reveal"),
         inAuction: true,
       };
@@ -174,6 +183,7 @@ function describeCaps(
         detail: `waiting to confirm${cd ? ` · auction closes in ${cd}` : ""}`,
         tone: "info",
         value: bid,
+        valueDoos: c.bidValueDoos,
         action: null,
         inAuction: true,
       };
@@ -183,6 +193,7 @@ function describeCaps(
         detail: `waiting for close${cd ? ` · ${cd}` : ""}`,
         tone: "info",
         value: bid,
+        valueDoos: c.bidValueDoos,
         action: null,
         inAuction: true,
       };
@@ -192,6 +203,7 @@ function describeCaps(
         detail: "register it to make it yours",
         tone: "warn",
         value,
+        valueDoos: n?.value ?? null,
         action: open("Register"),
         inAuction: true,
       };
@@ -202,6 +214,7 @@ function describeCaps(
           detail: `reclaim your ${redeemable}lockup`,
           tone: "warn",
           value: redeemable ? `${short(c.redeemableValueDoos)} locked` : null,
+          valueDoos: redeemable ? c.redeemableValueDoos : null,
           action: open("Redeem"),
           inAuction: false,
         };
@@ -212,6 +225,7 @@ function describeCaps(
           detail: redeemable ? `reclaim ${redeemable}from your other bids` : "reclaim your lockup",
           tone: "warn",
           value,
+          valueDoos: n?.value ?? null,
           action: open("Redeem"),
           inAuction: false,
         };
@@ -221,6 +235,7 @@ function describeCaps(
         detail: redeemable ? `get your ${redeemable}back` : "get your lockup back",
         tone: "warn",
         value: redeemable ? `${short(c.redeemableValueDoos)} locked` : null,
+        valueDoos: redeemable ? c.redeemableValueDoos : null,
         action: open("Redeem"),
         inAuction: true,
       };
@@ -230,6 +245,7 @@ function describeCaps(
         detail: "bid not revealed in time — the lockup can't be reclaimed",
         tone: "muted",
         value: null,
+        valueDoos: null,
         action: null,
         inAuction: auctionPhaseNow,
       };
@@ -239,6 +255,7 @@ function describeCaps(
         detail: "sync to see the result",
         tone: "info",
         value: bid,
+        valueDoos: c.bidValueDoos,
         action: null,
         inAuction: true,
       };
@@ -248,6 +265,7 @@ function describeCaps(
         detail: sp ? `expires in ${sp}` : null,
         tone: "bad",
         value,
+        valueDoos: n?.value ?? null,
         action: open("Renew"),
         inAuction: false,
       };
@@ -257,6 +275,7 @@ function describeCaps(
         detail: sp ? `renew within ${sp}` : null,
         tone: "ok",
         value,
+        valueDoos: n?.value ?? null,
         action: null,
         inAuction: false,
       };
@@ -267,6 +286,7 @@ function describeCaps(
             detail: "ready to finalize",
             tone: "info",
             value,
+            valueDoos: n?.value ?? null,
             action: open("Finalize"),
             inAuction: false,
           }
@@ -275,6 +295,7 @@ function describeCaps(
             detail: "finalize once the transfer lockup ends",
             tone: "info",
             value,
+            valueDoos: n?.value ?? null,
             action: null,
             inAuction: false,
           };
@@ -285,6 +306,7 @@ function describeCaps(
             detail: `your bid ${short(c.bidValueDoos)} HNS${cd ? ` · ${cd}` : ""}`,
             tone: "info",
             value: bid,
+            valueDoos: c.bidValueDoos,
             action: null,
             inAuction: true,
           }
@@ -293,6 +315,7 @@ function describeCaps(
             detail: cd,
             tone: "info",
             value: null,
+            valueDoos: null,
             action: open("Bid"),
             inAuction: true,
           };
@@ -302,6 +325,7 @@ function describeCaps(
         detail: cd ? `bidding opens in ${cd}` : "bidding opens soon",
         tone: "info",
         value: null,
+        valueDoos: null,
         action: null,
         inAuction: true,
       };
@@ -311,11 +335,12 @@ function describeCaps(
         detail: "waiting for the open to be mined",
         tone: "info",
         value: null,
+        valueDoos: null,
         action: null,
         inAuction: true,
       };
     default:
-      return describePhase(n, value, auctionPhaseNow);
+      return describePhase(n, value, n?.value ?? null, auctionPhaseNow);
   }
 }
 
@@ -323,6 +348,7 @@ function describeCaps(
 function describePhase(
   n: HsdName | undefined,
   value: string | null,
+  valueDoos: number | null,
   inAuction: boolean,
 ): Described {
   const t = n ? nextTransition(n.state, n.stats) : null;
@@ -331,6 +357,7 @@ function describePhase(
     detail: t ? `${t.label.toLowerCase()} ${formatCountdown(t)}` : null,
     tone: "muted",
     value,
+    valueDoos,
     action: null,
     inAuction,
   };
@@ -352,12 +379,31 @@ export function buildNameRows(input: NameRowsInput): NameRow[] {
   const rows: NameRow[] = [];
   const seen = new Set<string>();
 
-  const withWatch = (r: Omit<NameRow, "watch" | "cats"> & { cats: NameCat[] }): NameRow => {
+  const withWatch = (
+    r: Omit<NameRow, "watch" | "cats" | "tags" | "expiresBlocks" | "expiresDays"> & {
+      cats: NameCat[];
+    },
+    /** The name's chain info, for the Expires sort / filter keys. */
+    info?: HsdName,
+  ): NameRow => {
     const w = watchedBy.get(r.name);
     const cats = [...r.cats];
     if (w && !cats.includes("watching")) cats.push("watching");
     if (needNames.includes(r.name) && !cats.includes("needs")) cats.unshift("needs");
-    return { ...r, cats, watch: w ? { tags: w.tags, addedAt: w.addedAt } : null };
+    const shown = r.expires != null;
+    return {
+      ...r,
+      cats,
+      watch: w ? { tags: w.tags, addedAt: w.addedAt } : null,
+      tags: w
+        ? w.tags
+            .split(",")
+            .map((t) => t.trim())
+            .filter(Boolean)
+        : [],
+      expiresBlocks: shown ? (info?.stats?.blocksUntilExpire ?? null) : null,
+      expiresDays: shown ? (info?.stats?.daysUntilExpire ?? null) : null,
+    };
   };
 
   for (const n of input.owned) {
@@ -393,6 +439,7 @@ export function buildNameRows(input: NameRowsInput): NameRow[] {
           pending: sent ? "Finalize · waiting for a block" : null,
           statusTitle: "",
           value: `${short(s.priceDoos)} paid`,
+          valueDoos: s.priceDoos,
           action: sent
             ? null
             : ready
@@ -406,19 +453,23 @@ export function buildNameRows(input: NameRowsInput): NameRow[] {
     }
     if (n.listing) {
       rows.push(
-        withWatch({
-          ...base,
-          kind: "listing",
-          cats: ["owned"],
-          status: "Listed for sale",
-          detail: listingStateLabel(n.listing.state, n.listing.blocksUntilFinalize),
-          tone: "info",
-          statusTitle: "",
-          value: n.value != null ? short(n.value) : null,
-          action: { label: MY_LISTINGS_TAB, kind: "myListings", signs: false },
-          selectable: true,
-          expires: expiresCell(n, clock, watchedBy.has(n.name)),
-        }),
+        withWatch(
+          {
+            ...base,
+            kind: "listing",
+            cats: ["owned"],
+            status: "Listed for sale",
+            detail: listingStateLabel(n.listing.state, n.listing.blocksUntilFinalize),
+            tone: "info",
+            statusTitle: "",
+            value: n.value != null ? short(n.value) : null,
+            valueDoos: n.value ?? null,
+            action: { label: MY_LISTINGS_TAB, kind: "myListings", signs: false },
+            selectable: true,
+            expires: expiresCell(n, clock, watchedBy.has(n.name)),
+          },
+          n,
+        ),
       );
       continue;
     }
@@ -428,7 +479,7 @@ export function buildNameRows(input: NameRowsInput): NameRow[] {
     const d =
       c && c.taskState !== "availableToOpen"
         ? describeCaps(n, c, clock)
-        : describePhase(n, n.value != null ? short(n.value) : null, false);
+        : describePhase(n, n.value != null ? short(n.value) : null, n.value ?? null, false);
     const pending = pendingBroadcastBadge(c?.pendingBroadcastAction);
     const { phase } = auctionPhase(c?.phase ?? n.state);
     const ownedNow = phase === "CLOSED" || phase === "TRANSFER" || phase === "REVOKED";
@@ -441,20 +492,25 @@ export function buildNameRows(input: NameRowsInput): NameRow[] {
     if (d.inAuction) cats.push("auction");
     if (ownedNow && !pendingTask) cats.push("owned");
     rows.push(
-      withWatch({
-        ...base,
-        kind: "owned",
-        cats,
-        status: d.status,
-        detail: d.detail,
-        tone: d.tone,
-        pending,
-        statusTitle: c?.countdownLabel && countdown(c) ? `${c.countdownLabel} ${countdown(c)}` : "",
-        value: d.value,
-        action: pending ? null : d.action,
-        selectable: true,
-        expires: pendingTask || d.inAuction ? null : expiresCell(n, clock, watchedBy.has(n.name)),
-      }),
+      withWatch(
+        {
+          ...base,
+          kind: "owned",
+          cats,
+          status: d.status,
+          detail: d.detail,
+          tone: d.tone,
+          pending,
+          statusTitle:
+            c?.countdownLabel && countdown(c) ? `${c.countdownLabel} ${countdown(c)}` : "",
+          value: d.value,
+          valueDoos: d.valueDoos,
+          action: pending ? null : d.action,
+          selectable: true,
+          expires: pendingTask || d.inAuction ? null : expiresCell(n, clock, watchedBy.has(n.name)),
+        },
+        n,
+      ),
     );
   }
 
@@ -476,6 +532,7 @@ export function buildNameRows(input: NameRowsInput): NameRow[] {
         pending,
         statusTitle: c.countdownLabel && countdown(c) ? `${c.countdownLabel} ${countdown(c)}` : "",
         value: d.value,
+        valueDoos: d.valueDoos,
         expires: null,
         action: pending ? null : d.action,
         selectable: false,
@@ -492,27 +549,32 @@ export function buildNameRows(input: NameRowsInput): NameRow[] {
     if (seen.has(item.name)) continue;
     seen.add(item.name);
     const r = renewalBy.get(item.name);
-    const stats = r && {
-      blocksUntilExpire: r.blocksUntilExpire,
-      daysUntilExpire: r.daysUntilExpire,
-    };
+    const info = r
+      ? ({
+          stats: { blocksUntilExpire: r.blocksUntilExpire, daysUntilExpire: r.daysUntilExpire },
+        } as HsdName)
+      : undefined;
     rows.push(
-      withWatch({
-        name: item.name,
-        kind: "owned",
-        cats: item.kind === "renew" ? ["owned"] : [],
-        status: item.text,
-        detail: item.when,
-        tone: item.tone,
-        pending: null,
-        statusTitle: "",
-        value: null,
-        expires: stats ? expiresCell({ stats } as HsdName, clock, watchedBy.has(item.name)) : null,
-        action: open(item.actionLabel),
-        selectable: false,
-        height: null,
-        renewal: null,
-      }),
+      withWatch(
+        {
+          name: item.name,
+          kind: "owned",
+          cats: item.kind === "renew" ? ["owned"] : [],
+          status: item.text,
+          detail: item.when,
+          tone: item.tone,
+          pending: null,
+          statusTitle: "",
+          value: null,
+          valueDoos: null,
+          expires: info ? expiresCell(info, clock, watchedBy.has(item.name)) : null,
+          action: open(item.actionLabel),
+          selectable: false,
+          height: null,
+          renewal: null,
+        },
+        info,
+      ),
     );
   }
 
@@ -534,26 +596,30 @@ export function buildNameRows(input: NameRowsInput): NameRow[] {
           : null;
     const auctionNow = key === "OPENING" || key === "BIDDING" || key === "REVEAL";
     rows.push(
-      withWatch({
-        name: w.name,
-        kind: "watch",
-        cats: auctionNow ? ["watching", "auction"] : ["watching"],
-        status,
-        detail,
-        tone: key === "BIDDING" || key === "REVEAL" ? "info" : "muted",
-        pending: null,
-        statusTitle: t?.label ?? "",
-        value: info?.highest != null && info.highest > 0 ? `${short(info.highest)} high` : null,
-        expires: key === "CLOSED" ? expiresCell(info, clock, true) : null,
-        action: key === "BIDDING" ? open("Bid") : null,
-        selectable: false,
-        height: info?.height ?? null,
-        renewal: info?.renewal ?? null,
-      }),
+      withWatch(
+        {
+          name: w.name,
+          kind: "watch",
+          cats: auctionNow ? ["watching", "auction"] : ["watching"],
+          status,
+          detail,
+          tone: key === "BIDDING" || key === "REVEAL" ? "info" : "muted",
+          pending: null,
+          statusTitle: t?.label ?? "",
+          value: info?.highest != null && info.highest > 0 ? `${short(info.highest)} high` : null,
+          valueDoos: info?.highest != null && info.highest > 0 ? info.highest : null,
+          expires: key === "CLOSED" ? expiresCell(info, clock, true) : null,
+          action: key === "BIDDING" ? open("Bid") : null,
+          selectable: false,
+          height: info?.height ?? null,
+          renewal: info?.renewal ?? null,
+        },
+        info,
+      ),
     );
   }
 
-  return sortRows(rows, input);
+  return urgencySort(rows, input);
 }
 
 function group(r: NameRow): number {
@@ -564,7 +630,7 @@ function group(r: NameRow): number {
   return 2;
 }
 
-function sortRows(rows: NameRow[], input: NameRowsInput): NameRow[] {
+function urgencySort(rows: NameRow[], input: NameRowsInput): NameRow[] {
   const needNames = [...new Set(input.needs.map((i) => i.name))];
   const needIndex = (n: string) => needNames.indexOf(n);
   return rows.sort((a, b) => {

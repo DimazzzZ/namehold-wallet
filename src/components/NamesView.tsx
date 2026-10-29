@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   ArrowUpRight,
   Download,
   Ellipsis,
@@ -37,6 +40,25 @@ import {
   useWatchlistStatuses,
 } from "../queries/watchlist";
 import { buildNameRows, chipCounts, wallClock, type NameCat, type NameRow } from "../lib/nameRows";
+import {
+  activeFilterCount,
+  NATURAL_DIR,
+  NO_FILTERS,
+  namesParams,
+  parseNamesParams,
+  passesFilters,
+  sortRows,
+  type NameFilters,
+  type NameSort,
+  type NamesViewState,
+  type SortDir,
+} from "../lib/nameFilters";
+import {
+  CHAR_LABELS,
+  expiresLabels,
+  LENGTH_LABELS,
+  NameFiltersPopover,
+} from "./names/NameFiltersPopover";
 import { auctionPhase, formatCountdown, taskStateLabel } from "../lib/auction";
 import { displayName, nameMatches } from "../lib/idn";
 import { fromInteractiveChild } from "../lib/rowClick";
@@ -77,17 +99,17 @@ const EMPTY: Record<Filter, string> = {
   watching: "No names on your watchlist yet. Look up a name above and choose Watch.",
 };
 
-function parseFilter(raw: string | null): Filter {
-  return FILTERS.some((f) => f.key === raw) ? (raw as Filter) : "all";
-}
-
 /** Names you own, bid on or watch, and finding new ones — one table, one row per name. */
 export function NamesView() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const showToast = useUiStore((s) => s.showToast);
   const [params, setParams] = useSearchParams();
-  const filter = parseFilter(params.get("filter"));
+  // The whole view lives in the URL (Back, reload and links keep it).
+  const view = parseNamesParams(params);
+  const { filter, sort, dir, filters } = view;
+  const setView = (patch: Partial<NamesViewState>) =>
+    setParams(namesParams({ ...view, ...patch }), { replace: true });
 
   const { data: profile } = useActiveProfile();
   const profileId = profile?.id ?? null;
@@ -150,11 +172,62 @@ export function NamesView() {
 
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
-  const shown = rows.filter(
-    (r) => (filter === "all" || r.cats.includes(filter)) && (!q || nameMatches(r.name, q)),
+  const clock = wallClock(profile?.network);
+  const tagCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of rows) for (const t of r.tags) m.set(t, (m.get(t) ?? 0) + 1);
+    return [...m].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [rows]);
+  // A tag no row carries any more drops out of the view.
+  const liveFilters: NameFilters = {
+    ...filters,
+    tags: filters.tags.filter((t) => tagCounts.some(([k]) => k === t)),
+  };
+  const filtering = activeFilterCount(liveFilters) > 0;
+  const shown = useMemo(
+    () =>
+      sortRows(
+        rows.filter(
+          (r) =>
+            (filter === "all" || r.cats.includes(filter)) &&
+            (!q || nameMatches(r.name, q) || r.tags.some((t) => t.toLowerCase().includes(q))) &&
+            passesFilters(r, liveFilters, clock),
+        ),
+        sort,
+        dir,
+      ),
+    // liveFilters is rebuilt each render; its parts are the real inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      rows,
+      filter,
+      q,
+      sort,
+      dir,
+      clock,
+      filters.expires,
+      filters.len,
+      filters.chars,
+      liveFilters.tags.join("\u0000"),
+    ],
   );
+  const setFilters = (f: NameFilters) => setView({ filters: f });
+  const clearFilters = () => setView({ filters: NO_FILTERS });
+  const sortBy = (col: NameSort) =>
+    setView(
+      col === sort ? { dir: dir === "asc" ? "desc" : "asc" } : { sort: col, dir: NATURAL_DIR[col] },
+    );
 
   const batch = useNameBatchActions({ profile, capsByName, unlocked });
+  // A batch never includes a row the chip, text or filters hide.
+  const { setSelected } = batch;
+  useEffect(() => {
+    const visible = new Set(shown.map((r) => r.name));
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((n) => visible.has(n)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [shown, setSelected]);
 
   const [infoBlock, setInfoBlock] = useState<number | null>(null);
   const [batchBidOpen, setBatchBidOpen] = useState(false);
@@ -226,8 +299,8 @@ export function NamesView() {
   };
   useEffect(() => subscribeAction((id) => actionHandlerRef.current(id)), []);
 
-  const setFilter = (key: Filter) =>
-    setParams(key === "all" ? {} : { filter: key }, { replace: true });
+  // Chips merge into the view: the sort and filters stay.
+  const setFilter = (key: Filter) => setView({ filter: key });
 
   const selectable = isWatchOnly ? [] : shown.filter((r) => r.selectable);
   const allSelected = selectable.length > 0 && selectable.every((r) => batch.selected.has(r.name));
@@ -476,17 +549,54 @@ export function NamesView() {
           </button>
         ))}
         <span className="ml-auto text-xs text-gray-500 tabular-nums" data-testid="names-count">
-          {filter !== "all" || q ? `${shown.length} of ${rows.length}` : `${rows.length} names`}
+          {filter !== "all" || q || filtering
+            ? `${shown.length} of ${rows.length}`
+            : `${rows.length} names`}
         </span>
         <Input
           inputSize="sm"
-          className="w-40"
-          placeholder="Filter…"
+          className="w-48"
+          placeholder="Filter by name or tag…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           data-testid="names-filter"
         />
+        <NameFiltersPopover
+          filters={liveFilters}
+          onChange={setFilters}
+          tagCounts={tagCounts}
+          clock={clock}
+        />
       </div>
+
+      {filtering && (
+        <div className="flex flex-wrap items-center gap-2 -mt-2" data-testid="names-active-filters">
+          {activePills(liveFilters, clock).map((p) => (
+            <span
+              key={p.key}
+              className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-0.5 text-xs text-blue-800"
+            >
+              {p.label}
+              <button
+                type="button"
+                aria-label="Remove filter"
+                className="rounded-full hover:bg-blue-100"
+                onClick={() => setFilters(p.remove(liveFilters))}
+                data-testid="names-active-filter-remove"
+              >
+                <Icon icon={X} size={12} />
+              </button>
+            </span>
+          ))}
+          <button
+            type="button"
+            className="text-xs text-blue-600 hover:underline"
+            onClick={clearFilters}
+          >
+            Clear filters
+          </button>
+        </div>
+      )}
 
       {batch.selected.size > 0 && !isWatchOnly && <NameBatchBar batch={batch} />}
 
@@ -508,8 +618,27 @@ export function NamesView() {
             ))}
           </div>
         ) : shown.length === 0 ? (
-          <div className="py-8 text-center text-sm text-gray-500" data-testid="names-empty">
-            {q ? `No names match "${query.trim()}"` : EMPTY[filter]}
+          <div
+            className="py-8 text-center text-sm text-gray-500 flex flex-col items-center gap-3"
+            data-testid="names-empty"
+          >
+            {filtering ? (
+              <>
+                No names match these filters.
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={clearFilters}
+                  data-testid="names-filters-empty-clear"
+                >
+                  Clear filters
+                </Button>
+              </>
+            ) : q ? (
+              `No names match "${query.trim()}"`
+            ) : (
+              EMPTY[filter]
+            )}
           </div>
         ) : (
           <div className="p-4 pb-0">
@@ -538,10 +667,15 @@ export function NamesView() {
                       />
                     )}
                   </th>
-                  <th className="py-1 pr-4 font-normal">Name</th>
-                  <th className="py-1 pr-4 font-normal">Status</th>
-                  <th className="py-1 pr-4 font-normal text-right">Value / bid</th>
-                  <th className="py-1 pr-4 font-normal">Expires</th>
+                  {SORT_COLUMNS.map((c) => (
+                    <SortHeader
+                      key={c.key}
+                      column={c}
+                      active={sort === c.key}
+                      dir={dir}
+                      onSort={sortBy}
+                    />
+                  ))}
                   <th className="py-1" />
                 </tr>
               </thead>
@@ -832,4 +966,87 @@ function MenuItem({
       <Icon icon={icon} size={14} /> {children}
     </button>
   );
+}
+
+const SORT_COLUMNS: { key: NameSort; label: string; tip: string; right?: boolean }[] = [
+  { key: "name", label: "Name", tip: "Sort by name" },
+  { key: "status", label: "Status", tip: "Sort by what needs you first (default)" },
+  { key: "value", label: "Value / bid", tip: "Sort by value or bid", right: true },
+  { key: "expires", label: "Expires", tip: "Sort by expiry, soonest first" },
+];
+
+/** A sortable column header: click sorts, a second click reverses. */
+function SortHeader({
+  column,
+  active,
+  dir,
+  onSort,
+}: {
+  column: (typeof SORT_COLUMNS)[number];
+  active: boolean;
+  dir: SortDir;
+  onSort: (c: NameSort) => void;
+}) {
+  return (
+    <th
+      className={`py-1 pr-4 font-normal ${column.right ? "text-right" : ""}`}
+      aria-sort={active ? (dir === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <Tooltip content={column.tip} className="inline-flex">
+        <button
+          type="button"
+          onClick={() => onSort(column.key)}
+          data-testid={`names-sort-${column.key}`}
+          className={`inline-flex items-center gap-1 ${
+            active ? "text-gray-900 font-medium" : "text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          {column.label}
+          {active ? (
+            <Icon icon={dir === "asc" ? ArrowUp : ArrowDown} size={13} />
+          ) : (
+            <Icon icon={ArrowUpDown} size={13} className="text-gray-300" />
+          )}
+        </button>
+      </Tooltip>
+    </th>
+  );
+}
+
+/** One removable pill per active filter. */
+function activePills(
+  f: NameFilters,
+  clock: boolean,
+): { key: string; label: string; remove: (f: NameFilters) => NameFilters }[] {
+  const pills: { key: string; label: string; remove: (f: NameFilters) => NameFilters }[] = [];
+  if (f.expires !== "any") {
+    const label = expiresLabels(clock)[f.expires];
+    pills.push({
+      key: "expires",
+      label: `Expires ${label.charAt(0).toLowerCase()}${label.slice(1)}`,
+      remove: (x) => ({ ...x, expires: "any" }),
+    });
+  }
+  if (f.len !== "any") {
+    pills.push({
+      key: "len",
+      label: `Length ${LENGTH_LABELS[f.len]}`,
+      remove: (x) => ({ ...x, len: "any" }),
+    });
+  }
+  if (f.chars !== "any") {
+    pills.push({
+      key: "chars",
+      label: CHAR_LABELS[f.chars],
+      remove: (x) => ({ ...x, chars: "any" }),
+    });
+  }
+  for (const t of f.tags) {
+    pills.push({
+      key: `tag:${t}`,
+      label: `Tag: ${t}`,
+      remove: (x) => ({ ...x, tags: x.tags.filter((y) => y !== t) }),
+    });
+  }
+  return pills;
 }
