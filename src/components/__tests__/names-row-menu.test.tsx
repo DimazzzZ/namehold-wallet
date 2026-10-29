@@ -173,7 +173,7 @@ beforeEach(() => {
 });
 
 describe("Names — the row menu", () => {
-  it("an owned name has a menu with its actions, its tabs and Watch, never Revoke", async () => {
+  it("an owned name has a menu with its actions and its tabs, never Revoke", async () => {
     render(<NamesView />, { wrapper: wrapper() });
     await openMenu("beta");
     await screen.findByRole("menuitem", { name: "Renew" });
@@ -184,7 +184,6 @@ describe("Names — the row menu", () => {
       "Transfer or sell…",
       "Edit DNS records",
       "Sign message",
-      "Watch",
     ]);
   });
 
@@ -222,12 +221,38 @@ describe("Names — the row menu", () => {
     expect(screen.queryByTestId("batch-action-bar")).toBeNull();
   });
 
-  it("Watch from the menu adds the name to the watchlist", async () => {
+  it("every row has a visible star that watches the name, and unwatches it once watched", async () => {
+    let watched: { name: string; tags: string; addedAt: string }[] = [];
+    const base = route();
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "list_watchlist") return watched;
+      if (cmd === "add_to_watchlist") {
+        watched = [{ name: args?.name as string, tags: "", addedAt: "2026-10-29" }];
+        return null;
+      }
+      if (cmd === "remove_from_watchlist") {
+        watched = [];
+        return null;
+      }
+      return base(cmd, args);
+    });
     render(<NamesView />, { wrapper: wrapper() });
-    await openMenu("gamma");
-    fireEvent.click(screen.getByRole("menuitem", { name: "Watch" }));
+    const row = (await screen.findByLabelText("Select gamma")).closest("tr")!;
+    const star = within(row).getByRole("button", { name: "Watch .gamma" });
+    expect(star).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(star);
     await waitFor(() =>
       expect(calls("add_to_watchlist").map((c) => c[1])).toEqual([{ name: "gamma" }]),
+    );
+    const on = await within(row).findByRole("button", { name: "Unwatch .gamma" });
+    expect(on).toHaveAttribute("aria-pressed", "true");
+    // The row stays put (no row is opened by the click).
+    expect(screen.getAllByTestId("names-row")).toHaveLength(3);
+
+    fireEvent.click(on);
+    await waitFor(() =>
+      expect(calls("remove_from_watchlist").map((c) => c[1])).toEqual([{ name: "gamma" }]),
     );
   });
 });

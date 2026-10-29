@@ -7,11 +7,7 @@ export type RowMenuAction = "renew" | "reveal" | "redeem" | "finalize";
 export interface RowMenuItem {
   label: string;
   do:
-    | { kind: "open"; tab?: NameTab }
-    | { kind: "run"; action: RowMenuAction }
-    | { kind: "watch" }
-    | { kind: "editTags" }
-    | { kind: "unwatch" };
+    { kind: "open"; tab?: NameTab } | { kind: "run"; action: RowMenuAction } | { kind: "editTags" };
 }
 
 const RUN: { action: RowMenuAction; label: string; cap: keyof NameActionCapabilities }[] = [
@@ -25,9 +21,10 @@ const RUN: { action: RowMenuAction; label: string; cap: keyof NameActionCapabili
  * The ⋯ menu of a Names row. One-click actions the name allows right now run
  * in place; those that need input open the tab of the name page that holds
  * them. Revoke is never here: it burns the name, so it stays on the name page
- * behind its own confirmation. A watch-only wallet signs nothing, so it gets
- * Open and the watchlist only. Without capabilities (not fetched yet) no
- * action is offered.
+ * behind its own confirmation. Watching is the row's own star column, so the
+ * menu only edits a watched name's tags. A watch-only wallet signs nothing,
+ * so it gets no actions. Without capabilities (not fetched yet) no action is
+ * offered.
  */
 export function nameRowMenu({
   caps,
@@ -59,11 +56,6 @@ export function nameRowMenu({
       items.push({ label: "Sign message", do: { kind: "open", tab: "sign" } });
     }
   }
-  if (watched) {
-    items.push({ label: "Edit tags", do: { kind: "editTags" } });
-    items.push({ label: "Remove from watchlist", do: { kind: "unwatch" } });
-  } else {
-    items.push({ label: "Watch", do: { kind: "watch" } });
-  }
+  if (watched) items.push({ label: "Edit tags", do: { kind: "editTags" } });
   return items;
 }

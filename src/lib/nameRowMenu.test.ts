@@ -31,7 +31,7 @@ function caps(over: Partial<NameActionCapabilities> = {}): NameActionCapabilitie
 const labels = (items: ReturnType<typeof nameRowMenu>) => items.map((i) => i.label);
 
 describe("nameRowMenu", () => {
-  it("an owned, registered name: its allowed actions, its tabs, then Watch", () => {
+  it("an owned, registered name: its allowed actions, then its tabs", () => {
     const items = nameRowMenu({
       caps: caps({ canRenew: yes, canTransfer: yes, canUpdate: yes, canRevoke: yes }),
       watched: false,
@@ -43,7 +43,6 @@ describe("nameRowMenu", () => {
       "Transfer or sell…",
       "Edit DNS records",
       "Sign message",
-      "Watch",
     ]);
     expect(items.find((i) => i.label === "Renew")?.do).toEqual({ kind: "run", action: "renew" });
     expect(items.find((i) => i.label === "Edit DNS records")?.do).toEqual({
@@ -63,13 +62,7 @@ describe("nameRowMenu", () => {
       watched: false,
       watchOnly: false,
     });
-    expect(labels(items)).toEqual([
-      "Open name",
-      "Finalize",
-      "Cancel transfer…",
-      "Sign message",
-      "Watch",
-    ]);
+    expect(labels(items)).toEqual(["Open name", "Finalize", "Cancel transfer…", "Sign message"]);
     expect(items.find((i) => i.label === "Cancel transfer…")?.do).toEqual({ kind: "open" });
   });
 
@@ -79,18 +72,17 @@ describe("nameRowMenu", () => {
       watched: false,
       watchOnly: false,
     });
-    expect(labels(items)).toEqual(["Open name", "Reveal", "Redeem", "Watch"]);
+    expect(labels(items)).toEqual(["Open name", "Reveal", "Redeem"]);
   });
 
-  it("a watched name: Edit tags and Remove from watchlist instead of Watch", () => {
+  it("a watched name gets Edit tags; watching itself is the row's star, not the menu", () => {
     const items = nameRowMenu({ caps: undefined, watched: true, watchOnly: false });
-    expect(labels(items)).toEqual(["Open name", "Edit tags", "Remove from watchlist"]);
+    expect(labels(items)).toEqual(["Open name", "Edit tags"]);
   });
 
-  it("no capabilities yet: only Open name and the watchlist", () => {
+  it("no capabilities yet: only Open name", () => {
     expect(labels(nameRowMenu({ caps: undefined, watched: false, watchOnly: false }))).toEqual([
       "Open name",
-      "Watch",
     ]);
   });
 
@@ -100,6 +92,6 @@ describe("nameRowMenu", () => {
       watched: false,
       watchOnly: true,
     });
-    expect(labels(items)).toEqual(["Open name", "Watch"]);
+    expect(labels(items)).toEqual(["Open name"]);
   });
 });

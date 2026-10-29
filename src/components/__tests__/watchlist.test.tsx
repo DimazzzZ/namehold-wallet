@@ -174,14 +174,13 @@ describe("NamesView — watchlist", () => {
     });
   });
 
-  it("Remove from watchlist in the row's More menu removes a name", async () => {
+  it("the row's star removes a watched name", async () => {
     invokeMock.mockImplementation(route({ remove_from_watchlist: null }));
     render(<NamesView />, { wrapper: wrapper() });
 
     // Wait for table to render
     await screen.findByText(/\.example/);
-    fireEvent.click(screen.getAllByRole("button", { name: "More" })[0]!);
-    fireEvent.click(await screen.findByRole("menuitem", { name: /Remove from watchlist/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Unwatch .example" }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("remove_from_watchlist", { name: "example" });

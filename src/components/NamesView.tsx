@@ -16,7 +16,6 @@ import {
   Settings2,
   Signature,
   Star,
-  StarOff,
   Tag,
   Upload,
   X,
@@ -751,6 +750,9 @@ export function NamesView() {
                       />
                     )}
                   </th>
+                  <th className="py-1 pr-4 w-6">
+                    <span className="sr-only">Watchlist</span>
+                  </th>
                   {SORT_COLUMNS.map((c) => (
                     <SortHeader
                       key={c.key}
@@ -797,13 +799,33 @@ export function NamesView() {
                           />
                         )}
                       </td>
+                      <td className="py-1 pr-4 align-top">
+                        <Tooltip
+                          content={r.watch ? "On your watchlist: remove" : "Add to watchlist"}
+                          className="inline-flex"
+                        >
+                          <button
+                            type="button"
+                            aria-label={`${r.watch ? "Unwatch" : "Watch"} .${displayName(r.name)}`}
+                            aria-pressed={!!r.watch}
+                            disabled={addWatch.isPending || removeWatch.isPending}
+                            className={`p-0.5 rounded hover:bg-gray-100 ${
+                              r.watch ? "text-amber-500" : "text-gray-300 hover:text-gray-500"
+                            }`}
+                            onClick={() =>
+                              r.watch ? removeWatch.mutate(r.name) : addWatch.mutate(r.name)
+                            }
+                          >
+                            <Icon
+                              icon={Star}
+                              size={14}
+                              className={r.watch ? "fill-current" : undefined}
+                            />
+                          </button>
+                        </Tooltip>
+                      </td>
                       <td className="py-1 pr-4">
                         <div className="flex items-center gap-1.5">
-                          {r.watch && (
-                            <Tooltip content="On your watchlist" className="inline-flex">
-                              <Icon icon={Star} size={13} className="text-amber-500" />
-                            </Tooltip>
-                          )}
                           <span className="font-mono text-[13px] text-gray-900">
                             .{displayName(r.name)}
                           </span>
@@ -956,9 +978,6 @@ export function NamesView() {
                                 <MenuItem
                                   key={item.label}
                                   icon={menuIcon(item)}
-                                  className={
-                                    item.do.kind === "unwatch" ? "text-red-700" : undefined
-                                  }
                                   onClick={() => {
                                     close();
                                     const d = item.do;
@@ -969,8 +988,6 @@ export function NamesView() {
                                       });
                                     else if (d.kind === "run")
                                       void batch.runFor(d.action, [r.name]);
-                                    else if (d.kind === "watch") addWatch.mutate(r.name);
-                                    else if (d.kind === "unwatch") removeWatch.mutate(r.name);
                                     else {
                                       setEditingTags(r.name);
                                       setTagValue(r.watch?.tags ?? "");
@@ -1051,9 +1068,7 @@ const RUN_ICONS = {
 function menuIcon(item: RowMenuItem): Parameters<typeof Icon>[0]["icon"] {
   const d = item.do;
   if (d.kind === "run") return RUN_ICONS[d.action];
-  if (d.kind === "watch") return Star;
   if (d.kind === "editTags") return Tag;
-  if (d.kind === "unwatch") return StarOff;
   if (d.tab === "transfer") return Send;
   if (d.tab === "dns") return Settings2;
   if (d.tab === "sign") return Signature;
