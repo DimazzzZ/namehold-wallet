@@ -64,6 +64,9 @@ export function BatchConfirmModal({
     setConfirming(true);
     try {
       await onConfirm();
+    } catch {
+      // The caller reports the failure (a toast) and rejects only to keep this
+      // dialog open for a retry; nothing is left to handle here.
     } finally {
       setConfirming(false);
     }

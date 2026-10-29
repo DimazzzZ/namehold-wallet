@@ -94,6 +94,12 @@ mod tests {
             extract_countdown("CLOSED", Some(&stats)),
             (Some("Finalize opens in".into()), Some(282), Some(47.0))
         );
+        // The lockup is over: still the transfer's countdown, at zero.
+        let ready = json!({ "blocksUntilExpire": 87_512, "blocksUntilValidFinalize": 0 });
+        assert_eq!(
+            extract_countdown("CLOSED", Some(&ready)),
+            (Some("Finalize opens in".into()), Some(0), None)
+        );
         let owned = json!({ "blocksUntilExpire": 87_512 });
         assert_eq!(
             extract_countdown("CLOSED", Some(&owned)),

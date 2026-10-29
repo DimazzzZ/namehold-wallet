@@ -117,14 +117,16 @@ export function useNameActions(name: string) {
   const badge = auctionPhase(info?.state);
   // While a transfer is pending the next thing to happen is Finalize, which
   // only the backend's capability countdown knows (hsd's lockup stats).
-  const countdown =
-    caps?.transferPending && caps.countdownLabel && caps.countdownBlocks != null
+  const countdown = caps?.transferPending
+    ? caps.countdownLabel && caps.countdownBlocks != null
       ? {
           label: caps.countdownLabel,
           blocks: caps.countdownBlocks,
           hours: caps.countdownHours ?? null,
         }
-      : nextTransition(info?.state, info?.stats);
+      : // Not the expiry: "expires in …; then the name leaves this wallet" is false.
+        null
+    : nextTransition(info?.state, info?.stats);
   // A revoked name has no guided step of its own, except a losing reveal of
   // ours to redeem before it expires.
   const guide =

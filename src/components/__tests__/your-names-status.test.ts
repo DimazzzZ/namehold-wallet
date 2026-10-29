@@ -38,4 +38,18 @@ describe("Your names: a name with a transfer pending", () => {
       suffix: "ready to finalize",
     });
   });
+
+  it("without a countdown it says the lockup has to end first", () => {
+    const c = makeCapabilities({
+      name: "abzanov",
+      taskState: "transferPendingFinalize",
+      canFinalize: refused("lockup"),
+      countdownBlocks: null,
+      countdownHours: null,
+    });
+    expect(yourNamesStatus(name, c, "mainnet")).toEqual({
+      main: "Transferring",
+      suffix: "finalize once the transfer lockup ends",
+    });
+  });
 });

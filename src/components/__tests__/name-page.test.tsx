@@ -542,6 +542,47 @@ describe("Name page — a transfer in progress says it once", () => {
     expect(screen.getByTestId("name-phase")).toHaveTextContent(/Transferring.*ready to finalize/);
   });
 
+  it("on regtest the countdown is in blocks, without hours", async () => {
+    invokeMock.mockImplementation(
+      route({ name: "ownedname", caps: transferring, info: { transfer: 353_498 } }),
+    );
+    renderAt("/names/ownedname");
+    const card = await screen.findByTestId("transfer-card");
+    expect(card).toHaveTextContent(/Finalize opens in 282 blocks/);
+    expect(card).not.toHaveTextContent(/~?\d+\s*h\b/);
+  });
+
+  it("without a countdown it says Finalize opens once the lockup ends", async () => {
+    invokeMock.mockImplementation(
+      route({
+        name: "ownedname",
+        caps: {
+          ...transferring,
+          countdownLabel: null,
+          countdownBlocks: null,
+          countdownHours: null,
+        },
+        info: { transfer: 353_498 },
+      }),
+    );
+    renderAt("/names/ownedname");
+    expect(await screen.findByTestId("transfer-card")).toHaveTextContent(
+      "Finalize opens once the transfer lockup ends",
+    );
+  });
+
+  it("keeps the Auction card when it has stranded bids of ours to report", async () => {
+    invokeMock.mockImplementation(
+      route({
+        name: "ownedname",
+        caps: { ...owned, strandedBidCount: 1, strandedLockupDoos: 2_000_000 },
+      }),
+    );
+    renderAt("/names/ownedname");
+    expect(await screen.findByRole("heading", { name: "Auction" })).toBeInTheDocument();
+    expect(screen.getByTestId("stranded-bids")).toBeInTheDocument();
+  });
+
   it("a locked wallet is a warning, not an error", async () => {
     invokeMock.mockImplementation(
       route({

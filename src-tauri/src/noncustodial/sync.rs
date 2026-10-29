@@ -755,6 +755,30 @@ mod tests {
     }
 
     #[test]
+    fn a_name_without_info_drops_its_owner_address() {
+        let conn = mem_db();
+        let info = serde_json::json!({ "info": {
+            "name": "gone", "nameHash": "ab", "state": "CLOSED",
+            "owner": { "hash": "ours", "index": 0 }
+        }});
+        upsert_name_state(&conn, "p1", "gone", &info).unwrap();
+        conn.execute(
+            "UPDATE tracked_name_states SET owner_address = 'hs1qours'",
+            [],
+        )
+        .unwrap();
+        upsert_name_state(&conn, "p1", "gone", &serde_json::json!({ "info": null })).unwrap();
+        let addr: Option<String> = conn
+            .query_row(
+                "SELECT owner_address FROM tracked_name_states WHERE name = 'gone'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(addr, None);
+    }
+
+    #[test]
     fn upsert_name_state_handles_known_and_unknown() {
         let conn = mem_db();
 

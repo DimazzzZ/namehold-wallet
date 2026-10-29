@@ -352,7 +352,7 @@ export function useNamesActionCapabilities(
       for (let i = 0; i < names.length; i += CAPABILITIES_CHUNK) {
         chunks.push(names.slice(i, i + CAPABILITIES_CHUNK));
       }
-      const parts = await Promise.all(
+      const parts = await Promise.allSettled(
         chunks.map((chunk) =>
           invoke<NameActionCapabilities[] | null>("get_names_action_capabilities", {
             names: chunk,
@@ -360,7 +360,16 @@ export function useNamesActionCapabilities(
           }),
         ),
       );
-      return parts.flatMap((raw) => (Array.isArray(raw) ? raw : []));
+      // One chunk the node failed to answer must not cost every other name
+      // its actions; only when every chunk failed is the query an error.
+      const answered = parts.filter(
+        (p): p is PromiseFulfilledResult<NameActionCapabilities[] | null> =>
+          p.status === "fulfilled",
+      );
+      if (answered.length === 0 && parts.length > 0) {
+        throw (parts[0] as PromiseRejectedResult).reason;
+      }
+      return answered.flatMap((p) => (Array.isArray(p.value) ? p.value : []));
     },
     staleTime: STALE_TIME,
     // Poll capabilities while the node is live so the auctions row advances

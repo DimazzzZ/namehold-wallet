@@ -15,7 +15,7 @@ The definitions live here; the results of a run never do. The short checklists i
 | [scenarios/](scenarios/) | the cases, one file per area |
 | [report-template.md](report-template.md) | the skeleton of a run's report |
 
-Procedures: [mine-and-sync](procedures/mine-and-sync.md), [switch-profile](procedures/switch-profile.md), [lock-and-list](procedures/lock-and-list.md), [cancel-and-bring-home](procedures/cancel-and-bring-home.md), [restore-and-import](procedures/restore-and-import.md), [cli-list-a-name](procedures/cli-list-a-name.md), [cli-fill](procedures/cli-fill.md), [buy-a-cli-listing](procedures/buy-a-cli-listing.md).
+Procedures: [mine-and-sync](procedures/mine-and-sync.md), [switch-profile](procedures/switch-profile.md), [lock-and-list](procedures/lock-and-list.md), [cancel-and-bring-home](procedures/cancel-and-bring-home.md), [restore-and-import](procedures/restore-and-import.md), [cli-list-a-name](procedures/cli-list-a-name.md), [cli-fill](procedures/cli-fill.md), [buy-a-cli-listing](procedures/buy-a-cli-listing.md), [seed-many-names](procedures/seed-many-names.md).
 
 ## Scenario index
 
@@ -30,6 +30,7 @@ Procedures: [mine-and-sync](procedures/mine-and-sync.md), [switch-profile](proce
 | [shakedex/profiles.md](scenarios/shakedex/profiles.md) | per-profile reads and signing | R7 X6 | P2–P3 | 0 |
 | [shakedex/mainnet-absence.md](scenarios/shakedex/mainnet-absence.md) | mainnet-only parts checked by absence, the mainnet Market page and the listing expiry line in the browser mock; not checkable on regtest | M1 M2 M3 M5 M6 C5 | P1–P3 | 0 |
 | [wallet/speed-up.md](scenarios/wallet/speed-up.md) | Speed up (child pays for parent) of an ordinary send: the form, the secure window, refusals, the linked rows | U1 U2 U3 | P1–P2 | 3 |
+| [names/batch-and-ownership.md](scenarios/names/batch-and-ownership.md) | batch actions on 200+ names (capabilities, a series of transactions, blockers named and dropped, the fee shown), a name in transfer, a lost auction, the lock banner | N1 … N7 | P1–P3 | ~36 setup + ~45 |
 
 Case ids are unique across all files. Setup ([environment](environment.md#test-names-for-a-run)) costs about 90 blocks more.
 

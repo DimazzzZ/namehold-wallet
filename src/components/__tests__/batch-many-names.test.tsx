@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, configure } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -25,6 +25,11 @@ vi.mock("../../lib/clipboard", () => ({
 }));
 
 import { NamesView } from "../NamesView";
+
+// Hundreds of real table rows render slowly when the whole suite runs in
+// parallel: give these tests and their waits room instead of flaking.
+vi.setConfig({ testTimeout: 30_000 });
+configure({ asyncUtilTimeout: 10_000 });
 
 const RECIPIENT = "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2";
 const FEE = 15_933;
@@ -92,12 +97,21 @@ interface Opts {
   failBroadcast?: number;
   /** Builds wait for this promise. */
   buildGate?: Promise<void>;
+  /** The nth build (1-based) fails. */
+  failBuild?: number;
+  /** The nth sign (1-based) fails (a declined secure window). */
+  failSign?: number;
+  /** The second sign waits for this promise. */
+  secondSignGate?: Promise<void>;
+  /** The capability call for a chunk containing this name fails. */
+  failCapsWith?: string;
 }
 
 function route(o: Opts = {}) {
   const list = o.names ?? many(150);
   let builds = 0;
   let broadcasts = 0;
+  let signs = 0;
   return async (cmd: string, args?: Record<string, unknown>) => {
     switch (cmd) {
       case "list_wallet_profiles":
@@ -127,10 +141,15 @@ function route(o: Opts = {}) {
         };
       case "get_names_action_capabilities":
         if (o.capsPending) return new Promise(() => {});
+        if (o.failCapsWith && (args?.names as string[]).includes(o.failCapsWith)) {
+          throw new Error("node did not answer");
+        }
         return (args?.names as string[]).map(cap);
+      case "build_batch_renew_draft":
       case "build_batch_transfer_draft": {
         if (o.buildGate) await o.buildGate;
         builds += 1;
+        if (builds === o.failBuild) throw new Error("could not build the draft");
         const names = args?.names as string[];
         return {
           id: `draft-${builds}`,
@@ -155,6 +174,9 @@ function route(o: Opts = {}) {
         };
       }
       case "sign_tx_draft":
+        signs += 1;
+        if (signs === o.failSign) throw new Error("Confirmation declined");
+        if (signs === 2 && o.secondSignGate) await o.secondSignGate;
         return { id: args?.draftId };
       case "broadcast_tx_draft":
         broadcasts += 1;
@@ -289,5 +311,167 @@ describe("Names — a wallet with hundreds of names", () => {
     open();
     await screen.findByText(/Confirm batch transfer/i);
     expect(screen.queryByTestId("batch-progress")).toBeNull();
+  });
+
+  describe("edge cases", () => {
+    const confirm = () => fireEvent.click(screen.getByRole("button", { name: /^Confirm$/i }));
+    const dialogText = () => screen.getByRole("dialog").textContent ?? "";
+
+    it("exactly 100 names is one transaction and says nothing about a series", async () => {
+      invokeMock.mockImplementation(route({ names: many(100) }));
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAllTransferable();
+      startTransfer();
+      await screen.findByText(/Confirm batch transfer/i);
+      expect(dialogText()).not.toMatch(/transactions/);
+      confirm();
+      await waitFor(() => expect(calls("broadcast_tx_draft")).toHaveLength(1));
+      expect(
+        calls("build_batch_transfer_draft").map((c) => (c[1].names as string[]).length),
+      ).toEqual([100]);
+    });
+
+    it("101 names is 100 then 1", async () => {
+      invokeMock.mockImplementation(route({ names: many(101) }));
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAllTransferable();
+      startTransfer();
+      await screen.findByText(/Confirm batch transfer/i);
+      expect(dialogText()).toMatch(/in\s*2\s*transactions/);
+      confirm();
+      await waitFor(() => expect(calls("broadcast_tx_draft")).toHaveLength(2));
+      expect(
+        calls("build_batch_transfer_draft").map((c) => (c[1].names as string[]).length),
+      ).toEqual([100, 1]);
+    });
+
+    it("a failed build of the second transaction keeps the names not yet sent selected", async () => {
+      invokeMock.mockImplementation(route({ failBuild: 2 }));
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAllTransferable();
+      startTransfer();
+      await screen.findByText(/Confirm batch transfer/i);
+      confirm();
+      await waitFor(() => expect(screen.getByText("50 selected")).toBeInTheDocument());
+      expect(calls("broadcast_tx_draft")).toHaveLength(1);
+      expect(screen.queryByTestId("batch-progress")).toBeNull();
+    });
+
+    it("a declined first signature sends nothing and keeps the confirmation open", async () => {
+      invokeMock.mockImplementation(route({ failSign: 1 }));
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAllTransferable();
+      startTransfer();
+      await screen.findByText(/Confirm batch transfer/i);
+      confirm();
+      await waitFor(() => expect(calls("sign_tx_draft")).toHaveLength(1));
+      expect(calls("broadcast_tx_draft")).toHaveLength(0);
+      expect(screen.getByText(/Confirm batch transfer/i)).toBeInTheDocument();
+      expect(screen.getByText("150 selected")).toBeInTheDocument();
+    });
+
+    it("Cancel after the first draft, then Transfer again, starts the series from the first chunk", async () => {
+      invokeMock.mockImplementation(route());
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAllTransferable();
+      startTransfer();
+      await screen.findByText(/Confirm batch transfer/i);
+      fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
+      fireEvent.click(screen.getByTestId("batch-transfer-btn"));
+      await screen.findByText(/Confirm batch transfer/i);
+      confirm();
+      await waitFor(() => expect(calls("broadcast_tx_draft")).toHaveLength(2));
+      expect(
+        calls("build_batch_transfer_draft").map((c) => (c[1].names as string[]).length),
+      ).toEqual([100, 100, 50]);
+      expect(calls("sign_tx_draft").map((c) => c[1].draftId)).toEqual(["draft-2", "draft-3"]);
+    });
+
+    it("a renewal of 150 names is a series too", async () => {
+      invokeMock.mockImplementation(route());
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAllTransferable();
+      fireEvent.click(screen.getByTestId("batch-renew-btn"));
+      await screen.findByText(/Confirm batch renew/i);
+      confirm();
+      await waitFor(() => expect(calls("broadcast_tx_draft")).toHaveLength(2));
+      expect(calls("build_batch_renew_draft").map((c) => (c[1].names as string[]).length)).toEqual([
+        100, 50,
+      ]);
+    });
+
+    it("shows which transaction is being signed and sent", async () => {
+      let open!: () => void;
+      const secondSignGate = new Promise<void>((r) => (open = r));
+      invokeMock.mockImplementation(route({ secondSignGate }));
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAllTransferable();
+      startTransfer();
+      await screen.findByText(/Confirm batch transfer/i);
+      confirm();
+      expect(await screen.findByTestId("batch-progress")).toHaveTextContent(
+        "Signing and sending transfer transaction 2 of 2…",
+      );
+      open();
+      await waitFor(() => expect(screen.queryByTestId("batch-progress")).toBeNull());
+    });
+
+    it("names each chain fact that blocks a transfer, and a capability's own reason", async () => {
+      const names = [
+        owned("plain"),
+        owned("moving", { transfer: 100 }),
+        owned("bidding", { state: "BIDDING" }),
+        owned("nostats", { stats: null }),
+        owned("listed"),
+      ];
+      invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "get_names_action_capabilities") {
+          return (args?.names as string[]).map((n) =>
+            n === "listed"
+              ? {
+                  ...cap(n),
+                  canTransfer: { allowed: false, reason: "this name is locked for sale" },
+                }
+              : cap(n),
+          );
+        }
+        return route({ names })(cmd, args);
+      });
+      render(<NamesView />, { wrapper: wrapper() });
+      await screen.findByText(/\.listed/);
+      await waitFor(() => expect(calls("get_names_action_capabilities").length).toBeGreaterThan(0));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Select all names" }));
+      const help = await screen.findByTestId("batch-transfer-help");
+      await waitFor(() => expect(help).toHaveTextContent("listed (this name is locked for sale)"));
+      expect(help).toHaveTextContent(/moving \(a transfer is already pending\)/);
+      expect(help).not.toHaveTextContent(/plain \(|nostats \(/);
+      fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
+        target: { value: RECIPIENT },
+      });
+      expect(screen.getByTestId("batch-transfer-btn")).toBeDisabled();
+      fireEvent.click(screen.getByTestId("batch-drop-blockers"));
+      expect(screen.getByTestId("batch-transfer-btn")).not.toBeDisabled();
+    });
+
+    it("exactly 100 names ask for capabilities once, 101 twice", async () => {
+      invokeMock.mockImplementation(route({ names: many(100) }));
+      const first = render(<NamesView />, { wrapper: wrapper() });
+      await waitFor(() => expect(calls("get_names_action_capabilities")).toHaveLength(1));
+      first.unmount();
+      invokeMock.mockReset();
+      invokeMock.mockImplementation(route({ names: many(101) }));
+      render(<NamesView />, { wrapper: wrapper() });
+      await waitFor(() => expect(calls("get_names_action_capabilities")).toHaveLength(2));
+    });
+
+    it("a failed capability chunk keeps the answers of the others", async () => {
+      // name150 sits in the second chunk of 100; the first chunk still answers.
+      invokeMock.mockImplementation(route({ names: many(150), failCapsWith: "name149" }));
+      render(<NamesView />, { wrapper: wrapper() });
+      await screen.findByText(/\.name000/);
+      const row = (n: string) =>
+        screen.getAllByTestId("names-row").find((r) => r.textContent?.includes(`.${n}`))!;
+      await waitFor(() => expect(row("name000")).toHaveTextContent(/Owned/));
+    });
   });
 });
