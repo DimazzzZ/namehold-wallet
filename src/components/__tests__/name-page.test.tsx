@@ -16,6 +16,9 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn(),
   readText: vi.fn().mockResolvedValue(""),
 }));
+vi.mock("../../data/icann-gtld-2026.json", async () => ({
+  default: (await import("../../test/fixtures/icann-list")).ICANN_FIXTURE,
+}));
 
 import { NamePageAt } from "../../test/namePage";
 import { allowed, makeCapabilities, refused } from "../../test/fixtures/capabilities";

@@ -202,6 +202,14 @@ export function buildStringsList(
       );
     }
   }
+  // "In contention" means more than one applicant for the string (spec Terms).
+  // The Reveal Day CSV predates the Replacement Period, so a string whose
+  // rivals all switched away would keep a stale flag on its lone applicant.
+  for (const e of Object.values(strings)) {
+    if (new Set(e.applications.map((a) => a.applicant)).size <= 1) {
+      for (const a of e.applications) a.contention = false;
+    }
+  }
   const sorted: Record<string, IcannEntry> = {};
   for (const k of Object.keys(strings).sort()) sorted[k] = strings[k]!;
   return {

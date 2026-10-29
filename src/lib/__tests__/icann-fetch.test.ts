@@ -35,8 +35,18 @@ describe("the ICANN strings list builder (spec R1)", () => {
 
   it("marks contention only where id and string still match", () => {
     expect(list.strings.agent!.applications.map((a) => a.contention)).toEqual([true, true]);
-    expect(list.strings["xn--3ds831g"]!.applications[0]!.contention).toBe(true);
     expect(list.strings.account!.applications[0]!.contention).toBe(false);
+  });
+
+  it("drops contention when the rivals left and one applicant remains", () => {
+    // `base`: Rival Co switched to `other`, Base Inc stays alone; the Reveal Day
+    // CSV still lists both on `base`.
+    expect(list.strings.base!.applications).toEqual([
+      { id: "G8-T8", applicant: "Base Inc", contention: false },
+    ]);
+    expect(list.strings.other!.applications[0]!.id).toBe("F7-T7-R");
+    // A lone applicant with a variant is alone on the variant too.
+    expect(list.strings["xn--3ds831g"]!.applications[0]!.contention).toBe(false);
   });
 
   it("sorts keys and lowercases them", () => {

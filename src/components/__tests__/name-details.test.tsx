@@ -16,6 +16,9 @@ const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
+vi.mock("../../data/icann-gtld-2026.json", async () => ({
+  default: (await import("../../test/fixtures/icann-list")).ICANN_FIXTURE,
+}));
 vi.mock("../../lib/openExternal", async (orig) => ({
   ...(await orig<typeof import("../../lib/openExternal")>()),
   openExternal: vi.fn(),
@@ -246,6 +249,7 @@ describe("NameDetails — ICANN 2026 round row (spec R6)", () => {
     for (const a of agent.applications.slice(0, 3)) expect(row).toHaveTextContent(a.applicant);
     expect(row).toHaveTextContent(`and ${agent.applications.length - 3} more`);
     expect(row).not.toHaveTextContent(agent.applications[3]!.applicant);
+    expect(screen.getAllByRole("button", { name: /Agent Applicant/ })).toHaveLength(3);
     expect(row).toHaveTextContent(`ICANN list as of ${date}`);
   });
 
@@ -257,6 +261,20 @@ describe("NameDetails — ICANN 2026 round row (spec R6)", () => {
     fireEvent.click(screen.getByRole("button", { name: first.applicant }));
     expect(openExternal).toHaveBeenCalledWith(
       `https://newgtldprogram-aps.icann.org/applications/${first.id}/summary`,
+    );
+  });
+
+  it("names an applicant once however many applications they filed", () => {
+    render(<NameDetails name="apex" profileId="p1" info={baseInfo({ name: "apex" })} />, {
+      wrapper: wrapper(),
+    });
+    const row = screen.getByTestId("name-icann");
+    expect(row).toHaveTextContent("4 applications · Apex Co");
+    expect(row).not.toHaveTextContent("more");
+    expect(screen.getAllByRole("button", { name: "Apex Co" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Apex Co" }));
+    expect(openExternal).toHaveBeenCalledWith(
+      "https://newgtldprogram-aps.icann.org/applications/AP1-T1/summary",
     );
   });
 
@@ -280,7 +298,8 @@ describe("NameDetails — ICANN 2026 round row (spec R6)", () => {
     render(<NameDetails name="agent" profileId="p1" info={null} />, { wrapper: wrapper() });
     expect(screen.getByTestId("name-details")).toBeInTheDocument();
     expect(screen.getByTestId("name-icann")).toBeInTheDocument();
-    expect(screen.queryByText("Nothing on-chain yet.")).toBeNull();
+    // The row is about the string; the chain still has nothing (spec R6).
+    expect(screen.getByText("Nothing on-chain yet.")).toBeInTheDocument();
   });
 
   it("has no row for a name nobody applied for, and no card without info", () => {

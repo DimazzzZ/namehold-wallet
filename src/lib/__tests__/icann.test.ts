@@ -1,19 +1,23 @@
-import { describe, expect, it } from "vitest";
-import list from "../../data/icann-gtld-2026.json";
+import { describe, expect, it, vi } from "vitest";
+vi.mock("../../data/icann-gtld-2026.json", async () => ({
+  default: (await import("../../test/fixtures/icann-list")).ICANN_FIXTURE,
+}));
+import { ICANN_FIXTURE as list } from "../../test/fixtures/icann-list";
 import {
   ICANN_LIST_FETCHED_AT,
+  icannApplicants,
   icannApplicationUrl,
   icannBadgeTitle,
   icannCollision,
   type IcannCollision,
 } from "../icann";
 
-const collision = (n: number, contention = false): IcannCollision => ({
+const collision = (n: number, contention = false, applicants = n): IcannCollision => ({
   string: "x",
   uLabel: null,
   applications: Array.from({ length: n }, (_, i) => ({
     id: `ID-${i}`,
-    applicant: `Applicant ${i}`,
+    applicant: `Applicant ${i % applicants}`,
     contention: contention && i === 0,
   })),
 });
@@ -22,12 +26,12 @@ describe("icannCollision (spec R2)", () => {
   it("finds an applied-for string by its ACE name", () => {
     const c = icannCollision("agent");
     expect(c?.string).toBe("agent");
-    expect(c?.applications).toHaveLength(11);
+    expect(c?.applications).toHaveLength(list.strings.agent.applications.length);
     expect(c?.uLabel).toBeNull();
   });
 
   it("lowercases before looking up", () => {
-    expect(icannCollision("Agent")?.applications).toHaveLength(11);
+    expect(icannCollision("Agent")?.applications).toEqual(list.strings.agent.applications);
   });
 
   it("finds an IDN by its A-label and carries its Unicode label", () => {
@@ -44,17 +48,27 @@ describe("icannCollision (spec R2)", () => {
   });
 
   it("resolves a variant key to its primary string", () => {
-    const [key, entry] = Object.entries(list.strings).find(([, e]) => "variantOf" in e) as [
-      string,
-      { variantOf: string },
-    ];
-    const c = icannCollision(key);
-    expect(c?.string).toBe(entry.variantOf);
-    expect(c?.applications).toEqual(icannCollision(entry.variantOf)?.applications);
+    const c = icannCollision("xn--3ds831g");
+    expect(c?.string).toBe("xn--uirx50m");
+    expect(c?.uLabel).toBe("在線");
+    expect(c?.applications).toEqual(icannCollision("xn--uirx50m")?.applications);
   });
 
   it("exposes the list's fetch date", () => {
     expect(ICANN_LIST_FETCHED_AT).toBe(list.fetchedAt);
+  });
+});
+
+describe("icannApplicants", () => {
+  it("groups applications by applicant, first seen first, keeping every id", () => {
+    expect(icannApplicants(collision(4, false, 1))).toEqual([
+      { applicant: "Applicant 0", ids: ["ID-0", "ID-1", "ID-2", "ID-3"] },
+    ]);
+    expect(icannApplicants(collision(3)).map((a) => a.applicant)).toEqual([
+      "Applicant 0",
+      "Applicant 1",
+      "Applicant 2",
+    ]);
   });
 });
 
@@ -67,6 +81,11 @@ describe("icannBadgeTitle", () => {
   it("counts several applicants", () => {
     expect(icannBadgeTitle(collision(2))).toBe(
       "Applied for as a gTLD in ICANN's 2026 round by 2 applicants",
+    );
+  });
+  it("counts applicants, not applications", () => {
+    expect(icannBadgeTitle(collision(4, false, 1))).toBe(
+      "Applied for as a gTLD in ICANN's 2026 round by 1 applicant",
     );
   });
   it("says when the string is in contention", () => {

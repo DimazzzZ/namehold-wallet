@@ -5,7 +5,7 @@ import list from "../../data/icann-gtld-2026.json";
 describe("src/data/icann-gtld-2026.json", () => {
   const keys = Object.keys(list.strings);
   const entries = Object.values(list.strings) as {
-    applications: { id: string; applicant: string }[];
+    applications: { id: string; applicant: string; contention: boolean }[];
   }[];
 
   it("keys are lowercase ACE labels, sorted", () => {
@@ -29,8 +29,18 @@ describe("src/data/icann-gtld-2026.json", () => {
     expect(Number.isNaN(Date.parse(list.fetchedAt))).toBe(false);
   });
 
-  it("holds agent and not a string its applicant switched away from", () => {
-    expect(keys).toContain("agent");
-    expect(keys).not.toContain("action");
+  it("has variant keys that point at a primary key", () => {
+    const variants = Object.entries(list.strings).filter(([, e]) => "variantOf" in e);
+    expect(variants.length).toBeGreaterThan(0);
+    for (const [, e] of variants) expect(keys).toContain((e as { variantOf: string }).variantOf);
+  });
+
+  it("never marks a lone applicant as in contention", () => {
+    for (const e of entries) {
+      const applicants = new Set(e.applications.map((a) => a.applicant));
+      if (applicants.size === 1) {
+        expect(e.applications.some((a) => a.contention)).toBe(false);
+      }
+    }
   });
 });

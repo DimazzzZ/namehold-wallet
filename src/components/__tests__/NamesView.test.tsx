@@ -8,6 +8,9 @@ import type { ReactNode } from "react";
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock("../../data/icann-gtld-2026.json", async () => ({
+  default: (await import("../../test/fixtures/icann-list")).ICANN_FIXTURE,
+}));
 
 import { NamesView } from "../NamesView";
 import { makeCapabilities } from "../../test/fixtures/capabilities";
@@ -291,7 +294,7 @@ describe("NamesView — sort and filters", () => {
       fireEvent.mouseEnter(badge!.parentElement!); // the Tooltip's reference span
       await waitFor(() =>
         expect(screen.getByRole("tooltip")).toHaveTextContent(
-          "Applied for as a gTLD in ICANN's 2026 round by 11 applicants",
+          "Applied for as a gTLD in ICANN's 2026 round by 11 applicants · in contention",
         ),
       );
       expect(rowOf("zzzz-not-applied").querySelector('[data-testid="icann-badge"]')).toBeNull();

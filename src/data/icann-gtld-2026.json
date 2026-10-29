@@ -1,6 +1,6 @@
 {
   "round": "2026",
-  "fetchedAt": "2026-10-29T15:28:28.759Z",
+  "fetchedAt": "2026-10-29T15:54:47.201Z",
   "source": {
     "applications": "https://newgtldprogram-aps.icann.org/aps/applications/export/csv",
     "contentionSets": "https://newgtldprogram.icann.org/en/application-rounds/round2/reveal-day-contention-sets.csv"
@@ -184,7 +184,7 @@
         {
           "id": "GEL2647T-T58027",
           "applicant": "Glass Emotion, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -279,7 +279,7 @@
         {
           "id": "LFGL2683T-T42435",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -354,7 +354,7 @@
         {
           "id": "PTL2645T-T76631",
           "applicant": "Pirin Tablet, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -528,7 +528,7 @@
         {
           "id": "NA2631T-T80151",
           "applicant": "Registry Services, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -654,7 +654,7 @@
         {
           "id": "TA2664T-T61672",
           "applicant": "TOEI ANIMATION CO., LTD.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -1177,7 +1177,7 @@
         {
           "id": "XL2625T-T62309",
           "applicant": "XYZ.COM LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -1222,7 +1222,7 @@
         {
           "id": "CTI2649T-T85441",
           "applicant": "Coinbase Technologies, Inc.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -1258,7 +1258,7 @@
         {
           "id": "NA2631T-T48096",
           "applicant": "Registry Services, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -1335,7 +1335,7 @@
         {
           "id": "EDCL2689T-T45717",
           "applicant": "ECHO Domain Co L.L.C.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -1413,7 +1413,7 @@
         {
           "id": "RTIS2674T-T50870",
           "applicant": "Radix Technologies Inc SEZC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -1543,7 +1543,7 @@
         {
           "id": "XL2625T-T80284",
           "applicant": "XYZ.COM LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -1723,7 +1723,7 @@
         {
           "id": "XL2625T-T96876",
           "applicant": "XYZ.COM LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -1932,7 +1932,7 @@
         {
           "id": "LFGL2683T-T20815",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -1977,7 +1977,7 @@
         {
           "id": "IRI2679T-T44455",
           "applicant": "Intercap Registry Inc.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -2160,7 +2160,7 @@
         {
           "id": "XL2625T-T58660",
           "applicant": "XYZ.COM LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -2259,7 +2259,7 @@
         {
           "id": "SRL2616T-T28234",
           "applicant": "Squarespace Registry LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -2394,7 +2394,7 @@
         {
           "id": "SS2654T-T49354",
           "applicant": "Hair Apparent, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -2440,7 +2440,7 @@
         {
           "id": "XL2625T-T71228",
           "applicant": "XYZ.COM LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -2541,7 +2541,7 @@
         {
           "id": "CRL2688T-T52382",
           "applicant": "Config Registry LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -2574,7 +2574,7 @@
         {
           "id": "VSL2633T-T13908",
           "applicant": "Vinyl Strings, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -2633,7 +2633,7 @@
         {
           "id": "NA2626T-T56898",
           "applicant": "ShortDot (Ireland) Limited",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -2753,7 +2753,7 @@
         {
           "id": "SI2639T-T23718",
           "applicant": "Suffix Inc.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -2762,7 +2762,7 @@
         {
           "id": "XL2625T-T24851",
           "applicant": "XYZ.COM LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -2813,7 +2813,7 @@
         {
           "id": "XL2625T-T20823",
           "applicant": "XYZ.COM LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -3092,7 +3092,7 @@
         {
           "id": "OOL2614T-T79659",
           "applicant": "OPENAI OPCO, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -3215,7 +3215,7 @@
         {
           "id": "LFGL2683T-T33762",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -3425,7 +3425,7 @@
         {
           "id": "ARSI2666T-T58152",
           "applicant": "Amazon Registry Services, Inc.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -3652,7 +3652,7 @@
         {
           "id": "LFGL2683T-T81276",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -3825,7 +3825,7 @@
         {
           "id": "XL2625T-T92094",
           "applicant": "XYZ.COM LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -3852,7 +3852,7 @@
         {
           "id": "IRI2679T-T94602",
           "applicant": "Intercap Registry Inc.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -4769,7 +4769,7 @@
         {
           "id": "SRL2616T-T16041",
           "applicant": "Squarespace Registry LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -4979,7 +4979,7 @@
         {
           "id": "APEC2611T-T17170",
           "applicant": "Aruba PEC S.P.A.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -5161,7 +5161,7 @@
         {
           "id": "APEC2611T-T53245",
           "applicant": "Aruba PEC S.P.A.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -5383,7 +5383,7 @@
         {
           "id": "IXBL2597-T54394",
           "applicant": "IA XYZ Benefit LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -5447,7 +5447,7 @@
         {
           "id": "GEL2647T-T15541",
           "applicant": "Glass Emotion, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -5465,7 +5465,7 @@
         {
           "id": "LFGL2683T-T55257",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -5560,7 +5560,7 @@
         {
           "id": "XL2625T-T91340",
           "applicant": "XYZ.COM LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -5646,7 +5646,7 @@
         {
           "id": "XL2625T-T77143",
           "applicant": "XYZ.COM LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -6006,7 +6006,7 @@
         {
           "id": "VC2665T-T40556",
           "applicant": "Vanity Check, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -6327,7 +6327,7 @@
         {
           "id": "LFGL2683T-T52366",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -6363,7 +6363,7 @@
         {
           "id": "NA2631T-T90328",
           "applicant": "Registry Services, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -6468,7 +6468,7 @@
         {
           "id": "SS2654T-T62301",
           "applicant": "Hair Apparent, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -6546,7 +6546,7 @@
         {
           "id": "FCL2632T-T60164",
           "applicant": "Fore Course, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -6564,7 +6564,7 @@
         {
           "id": "OD2692T-T16170",
           "applicant": "Oyster Dream, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -6573,7 +6573,7 @@
         {
           "id": "OI2692T-T96497",
           "applicant": "Oinkadot Inc",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -6654,7 +6654,7 @@
         {
           "id": "LFGL2683T-T84042",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -6755,7 +6755,7 @@
         {
           "id": "KL2611T-T91723",
           "applicant": "Kodansha Ltd.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -7286,7 +7286,7 @@
         {
           "id": "MEI2699T-T97630",
           "applicant": "Mirfak Exploration, Inc.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -7524,7 +7524,7 @@
         {
           "id": "CFL2645T-T67079",
           "applicant": "Cold Fleet, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -7569,7 +7569,7 @@
         {
           "id": "IRI2679T-T68974",
           "applicant": "Intercap Registry Inc.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -7587,7 +7587,7 @@
         {
           "id": "LFGL2683T-T22827",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -7692,7 +7692,7 @@
         {
           "id": "XITS2684T-T48217",
           "applicant": "Xingyin Information Technology (Shanghai) Co., Ltd.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -8092,7 +8092,7 @@
         {
           "id": "LFGL2683T-T56765",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -8174,7 +8174,7 @@
         {
           "id": "IRI2679T-T80651",
           "applicant": "Intercap Registry Inc.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -8638,7 +8638,7 @@
         {
           "id": "VTL2632T-T30500",
           "applicant": "Velvet Taupe, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -8695,7 +8695,7 @@
         {
           "id": "LFGL2683T-T22198",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -8738,7 +8738,7 @@
         {
           "id": "NS2662T-T52874",
           "applicant": "Neigh Sayer, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -8880,7 +8880,7 @@
         {
           "id": "IRI2679T-T41306",
           "applicant": "Intercap Registry Inc.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -9370,7 +9370,7 @@
         {
           "id": "XL2625T-T71857",
           "applicant": "XYZ.COM LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -9397,7 +9397,7 @@
         {
           "id": "XL2625T-T79776",
           "applicant": "XYZ.COM LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -9618,7 +9618,7 @@
         {
           "id": "PTL2645T-T57902",
           "applicant": "Pirin Tablet, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -9854,7 +9854,7 @@
         {
           "id": "ISL2626T-T93227",
           "applicant": "Innovation Service Limited",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -10129,7 +10129,7 @@
         {
           "id": "CRRI2564-T30121",
           "applicant": "Charleston Road Registry Inc.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -10229,7 +10229,7 @@
         {
           "id": "XL2625T-T30633",
           "applicant": "XYZ.COM LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -11309,7 +11309,7 @@
         {
           "id": "MH2645T-T36407",
           "applicant": "Mystic Hammer, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -11637,7 +11637,7 @@
         {
           "id": "SI2639T-T18690",
           "applicant": "Suffix Inc.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -11669,7 +11669,7 @@
         {
           "id": "LFGL2683T-T45201",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -11939,7 +11939,7 @@
         {
           "id": "LFGL2683T-T84796",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -12234,7 +12234,7 @@
         {
           "id": "RTIS2674T-T72736",
           "applicant": "Radix Technologies Inc SEZC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -12297,7 +12297,7 @@
         {
           "id": "OD2692T-T29117",
           "applicant": "Oyster Dream, LLC",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -12324,7 +12324,7 @@
         {
           "id": "WPL2688T-T32887",
           "applicant": "Wise Payments Limited",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -12711,7 +12711,7 @@
         {
           "id": "HERI2445-T27601",
           "applicant": "Hangzhou E-commerce Research Institute",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -12852,7 +12852,7 @@
         {
           "id": "BB2676T-T97243",
           "applicant": "Booking.com B.V.",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -13027,7 +13027,7 @@
         {
           "id": "LFGL2683T-T58148",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
+          "contention": false
         }
       ]
     }

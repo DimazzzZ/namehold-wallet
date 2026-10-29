@@ -38,8 +38,9 @@ export default defineConfig({
         manualChunks(id) {
           // The committed ICANN strings list (src/data/icann-gtld-2026.json) is
           // a few hundred kB of data that changes on its own schedule: its own
-          // chunk keeps the main chunk under the size warning and lets a data
-          // refresh leave the code chunk's hash alone.
+          // chunk keeps it out of the main chunk (which was already past Vite's
+          // size warning before it) and lets a data refresh leave the code
+          // chunk's hash alone.
           if (id.includes("/src/data/icann-")) return "data-icann";
           if (id.includes("node_modules")) {
             if (id.includes("react-dom")) return "vendor-react";

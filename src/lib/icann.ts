@@ -55,9 +55,24 @@ export function icannApplicationUrl(id: string): string {
   return `https://newgtldprogram-aps.icann.org/applications/${encodeURIComponent(id)}/summary`;
 }
 
+/**
+ * The applications grouped by applicant, first seen first. One applicant may
+ * file several applications for one string (`.apex`: four by one company);
+ * the UI counts and names applicants, and links every application.
+ */
+export function icannApplicants(c: IcannCollision): { applicant: string; ids: string[] }[] {
+  const out: { applicant: string; ids: string[] }[] = [];
+  for (const a of c.applications) {
+    const g = out.find((x) => x.applicant === a.applicant);
+    if (g) g.ids.push(a.id);
+    else out.push({ applicant: a.applicant, ids: [a.id] });
+  }
+  return out;
+}
+
 /** The badge tooltip (R4, R5): a fact about the round, never a prediction (R8). */
 export function icannBadgeTitle(c: IcannCollision): string {
-  const n = c.applications.length;
+  const n = icannApplicants(c).length;
   const base = `Applied for as a gTLD in ICANN's 2026 round by ${n} applicant${n === 1 ? "" : "s"}`;
   return c.applications.some((a) => a.contention) ? `${base} · in contention` : base;
 }

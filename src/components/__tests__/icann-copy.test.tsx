@@ -6,6 +6,9 @@ import { ICANN_LABELS } from "../names/NameFiltersPopover";
 import { ICANN_HINT, icannBadgeTitle, icannCollision } from "../../lib/icann";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: () => Promise.resolve(null) }));
+vi.mock("../../data/icann-gtld-2026.json", async () => ({
+  default: (await import("../../test/fixtures/icann-list")).ICANN_FIXTURE,
+}));
 
 // Spec R8: the flag states a fact. Nothing in its copy predicts delegation or
 // calls the name taken or lost.

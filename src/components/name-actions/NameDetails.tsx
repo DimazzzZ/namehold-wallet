@@ -8,6 +8,7 @@ import { formatHns, formatHnsShort } from "../../lib/utils";
 import {
   ICANN_HINT,
   ICANN_LIST_FETCHED_AT,
+  icannApplicants,
   icannApplicationUrl,
   icannCollision,
   type IcannCollision,
@@ -63,8 +64,9 @@ const ICANN_NAMED = 3;
 
 function IcannRow({ c }: { c: IcannCollision }) {
   const n = c.applications.length;
-  const named = c.applications.slice(0, ICANN_NAMED);
-  const rest = c.applications.slice(ICANN_NAMED);
+  const applicants = icannApplicants(c);
+  const named = applicants.slice(0, ICANN_NAMED);
+  const rest = applicants.slice(ICANN_NAMED);
   const date = new Date(ICANN_LIST_FETCHED_AT).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -83,12 +85,12 @@ function IcannRow({ c }: { c: IcannCollision }) {
         <>
           {n} application{n === 1 ? "" : "s"} ·{" "}
           {named.map((a, i) => (
-            <Fragment key={a.id}>
+            <Fragment key={a.applicant}>
               {i > 0 && ", "}
               <button
                 type="button"
                 className="underline decoration-dotted underline-offset-2 hover:text-blue-600"
-                onClick={() => void openExternal(icannApplicationUrl(a.id))}
+                onClick={() => void openExternal(icannApplicationUrl(a.ids[0]!))}
               >
                 {a.applicant}
               </button>
@@ -285,9 +287,9 @@ export function NameDetails({
       data-testid="name-details"
     >
       <h3 className="text-sm font-semibold text-gray-900">Details</h3>
-      {rows.length ? (
-        <div className="flex flex-col gap-1.5">{rows}</div>
-      ) : (
+      {rows.length > 0 && <div className="flex flex-col gap-1.5">{rows}</div>}
+      {/* The ICANN row is about the string, not this chain's record of it. */}
+      {rows.length === (icann ? 1 : 0) && (
         <div className="text-[13px] text-gray-400">Nothing on-chain yet.</div>
       )}
 
