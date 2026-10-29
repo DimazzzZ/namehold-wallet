@@ -1,8 +1,9 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useNameRecords } from "../../queries/read";
 import { Badge } from "../ui/Badge";
 import { Icon } from "../ui/Icon";
+import { Popover } from "../ui/Popover";
 import { Tooltip } from "../ui/Tooltip";
 import { formatHns, formatHnsShort } from "../../lib/utils";
 import {
@@ -59,14 +60,9 @@ function Row({
   );
 }
 
-/** How many applicants the ICANN row names before "and N more". */
-const ICANN_NAMED = 3;
-
 function IcannRow({ c }: { c: IcannCollision }) {
-  const n = c.applications.length;
   const applicants = icannApplicants(c);
-  const named = applicants.slice(0, ICANN_NAMED);
-  const rest = applicants.slice(ICANN_NAMED);
+  const n = applicants.length;
   const contention = c.applications.some((a) => a.contention);
   const date = new Date(ICANN_LIST_FETCHED_AT).toLocaleDateString("en-US", {
     month: "short",
@@ -74,52 +70,63 @@ function IcannRow({ c }: { c: IcannCollision }) {
     year: "numeric",
     timeZone: "UTC",
   });
-  // Two lines, not one Row: the Details card is narrow and the applicant
-  // list is long, so the count sits beside the label and the names get a
-  // full-width line of their own.
+  // One short row like the others; the applicant list, with its links, opens
+  // in a popover from the count. A list of names inline made the card ragged.
   return (
-    <div className="flex flex-col gap-0.5 text-[13px]" data-testid="name-icann">
-      <div className="flex justify-between gap-3">
-        <span className="text-gray-500">
-          <Tooltip hint content={ICANN_HINT}>
-            ICANN 2026 round
-          </Tooltip>
-        </span>
-        <span className="text-right text-gray-900 tabular-nums">
-          {n} application{n === 1 ? "" : "s"}
-          {contention && <span className="text-gray-500"> · in contention</span>}
-        </span>
-      </div>
-      <div className="text-xs leading-snug text-gray-500" data-testid="name-icann-applicants">
-        {named.map((a, i) => (
-          <Fragment key={a.applicant}>
-            {i > 0 && ", "}
+    <Row
+      testId="name-icann"
+      label={
+        <Tooltip hint content={ICANN_HINT}>
+          ICANN 2026 round
+        </Tooltip>
+      }
+      value={
+        <Popover
+          align="right"
+          role="dialog"
+          aria-label="ICANN 2026 round applicants"
+          panelClassName="w-72 p-3 text-left font-sans"
+          data-testid="name-icann-applicants"
+          trigger={({ toggle }) => (
             <button
               type="button"
+              onClick={toggle}
               className="underline decoration-dotted underline-offset-2 hover:text-blue-600"
-              onClick={() => void openExternal(icannApplicationUrl(a.ids[0]!))}
             >
-              {a.applicant}
+              {n} applicant{n === 1 ? "" : "s"}
             </button>
-          </Fragment>
-        ))}
-        {rest.length > 0 && (
-          <>
-            {" "}
-            and{" "}
-            <Tooltip content={rest.map((a) => a.applicant).join(", ")} className="inline">
-              <span className="cursor-help underline decoration-dotted underline-offset-2">
-                {rest.length} more
-              </span>
-            </Tooltip>
-          </>
-        )}
-        <span className="text-gray-400">
-          {" "}
-          · ICANN list as of <span className="whitespace-nowrap">{date}</span>
-        </span>
-      </div>
-    </div>
+          )}
+        >
+          {() => (
+            <div className="flex flex-col gap-2 text-[13px]">
+              <div className="font-medium text-gray-900">
+                Applied for as a gTLD in ICANN's 2026 round
+              </div>
+              <ul className="flex flex-col gap-1">
+                {applicants.map((a) => (
+                  <li key={a.applicant} className="flex items-baseline justify-between gap-3">
+                    <button
+                      type="button"
+                      className="text-left text-gray-900 underline decoration-dotted underline-offset-2 hover:text-blue-600"
+                      onClick={() => void openExternal(icannApplicationUrl(a.ids[0]!))}
+                    >
+                      {a.applicant}
+                    </button>
+                    {a.ids.length > 1 && (
+                      <span className="shrink-0 text-xs text-gray-500">
+                        {a.ids.length} applications
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <div className="text-xs text-gray-400">ICANN list as of {date}</div>
+            </div>
+          )}
+        </Popover>
+      }
+      sub={contention ? " · in contention" : undefined}
+    />
   );
 }
 
@@ -278,7 +285,13 @@ export function NameDetails({
       );
     }
     if (info.renewal != null) {
-      rows.push(<Row key="renewed" label="Renewed" value={`block ${info.renewal}`} />);
+      rows.push(
+        <Row
+          key="renewed"
+          label="Renewed"
+          value={`block ${info.renewal.toLocaleString("en-US")}`}
+        />,
+      );
     }
     if (info.height != null) {
       rows.push(

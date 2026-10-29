@@ -238,31 +238,30 @@ describe("NameDetails — ICANN 2026 round row (spec R6)", () => {
     year: "numeric",
     timeZone: "UTC",
   });
+  const openApplicants = (label: string) => {
+    fireEvent.click(screen.getByRole("button", { name: label }));
+    return screen.getByTestId("name-icann-applicants");
+  };
 
-  it("names the count, three applicants and the rest, with the list date", () => {
+  it("is one short row like the others; the applicants wait in a popover", () => {
     render(<NameDetails name="agent" profileId="p1" info={baseInfo({ name: "agent" })} />, {
       wrapper: wrapper(),
     });
     const row = screen.getByTestId("name-icann");
     expect(row).toHaveTextContent("ICANN 2026 round");
-    expect(row).toHaveTextContent(`${agent.applications.length} applications`);
-    for (const a of agent.applications.slice(0, 3)) expect(row).toHaveTextContent(a.applicant);
-    expect(row).toHaveTextContent(`and ${agent.applications.length - 3} more`);
-    expect(row).not.toHaveTextContent(agent.applications[3]!.applicant);
-    expect(screen.getAllByRole("button", { name: /Agent Applicant/ })).toHaveLength(3);
-    expect(row).toHaveTextContent(`ICANN list as of ${date}`);
-    // Two lines: the count beside the label, the applicants on a line of their
-    // own under it, so a long list never squeezes the label (narrow card).
-    const applicants = screen.getByTestId("name-icann-applicants");
-    expect(applicants).toHaveTextContent(agent.applications[0]!.applicant);
-    expect(applicants).not.toHaveTextContent("applications");
-    expect(row.lastElementChild).toBe(applicants);
+    expect(row).toHaveTextContent(`${agent.applications.length} applicants · in contention`);
+    expect(row).not.toHaveTextContent(agent.applications[0]!.applicant);
+    expect(screen.queryByTestId("name-icann-applicants")).toBeNull();
+    const panel = openApplicants(`${agent.applications.length} applicants`);
+    for (const a of agent.applications) expect(panel).toHaveTextContent(a.applicant);
+    expect(panel).toHaveTextContent(`ICANN list as of ${date}`);
   });
 
   it("opens an applicant's application on ICANN's site", () => {
     render(<NameDetails name="agent" profileId="p1" info={baseInfo({ name: "agent" })} />, {
       wrapper: wrapper(),
     });
+    openApplicants(`${agent.applications.length} applicants`);
     const first = agent.applications[0]!;
     fireEvent.click(screen.getByRole("button", { name: first.applicant }));
     expect(openExternal).toHaveBeenCalledWith(
@@ -270,15 +269,16 @@ describe("NameDetails — ICANN 2026 round row (spec R6)", () => {
     );
   });
 
-  it("names an applicant once however many applications they filed", () => {
+  it("counts and names an applicant once however many applications they filed", () => {
     render(<NameDetails name="apex" profileId="p1" info={baseInfo({ name: "apex" })} />, {
       wrapper: wrapper(),
     });
     const row = screen.getByTestId("name-icann");
-    expect(row).toHaveTextContent("4 applications");
-    expect(screen.getByTestId("name-icann-applicants")).toHaveTextContent("Apex Co");
-    expect(row).not.toHaveTextContent("more");
+    expect(row).toHaveTextContent("1 applicant");
+    expect(row).not.toHaveTextContent("contention");
+    const panel = openApplicants("1 applicant");
     expect(screen.getAllByRole("button", { name: "Apex Co" })).toHaveLength(1);
+    expect(panel).toHaveTextContent("4 applications");
     fireEvent.click(screen.getByRole("button", { name: "Apex Co" }));
     expect(openExternal).toHaveBeenCalledWith(
       "https://newgtldprogram-aps.icann.org/applications/AP1-T1/summary",
@@ -321,5 +321,14 @@ describe("NameDetails — ICANN 2026 round row (spec R6)", () => {
     });
     expect(r2.container.firstChild).toBeNull();
     expect(container.firstChild).toBeNull();
+  });
+});
+
+describe("NameDetails — Renewed", () => {
+  it("groups the block number like the other heights", () => {
+    render(<NameDetails name="example" profileId="p1" info={baseInfo({ renewal: 322192 })} />, {
+      wrapper: wrapper(),
+    });
+    expect(screen.getByText("Renewed").parentElement).toHaveTextContent("block 322,192");
   });
 });
