@@ -143,6 +143,12 @@ export interface HsdName {
    * lockup left while Locking, null otherwise or until known.
    */
   listing?: ShakedexNameListing;
+  /**
+   * Present on a name this wallet bought on the market and now owns
+   * (`read_name_info`): what was paid to the seller, and the purchase's block.
+   * The auction fields above describe the name's original auction, not this.
+   */
+  purchase?: { priceDoos: number; height: number | null } | null;
 }
 
 export interface ShakedexNameState {

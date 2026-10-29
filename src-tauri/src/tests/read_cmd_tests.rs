@@ -1938,6 +1938,63 @@ async fn read_name_info_node_ready_uses_node_branch() {
 }
 
 // ---------------------------------------------------------------------------
+// read_name_info — a name bought on the market carries its purchase
+// ---------------------------------------------------------------------------
+
+/// Reported live: the name page of a name bought on the market for 250 HNS
+/// showed only its original auction ("Paid price (2nd-price) 0 HNS"), because
+/// nothing passed the purchase to the page. An owned purchase of the active
+/// wallet now rides along as `purchase { priceDoos, height }`; one that is
+/// still on its way, lost, or another wallet's does not.
+#[tokio::test]
+async fn read_name_info_attaches_the_active_wallets_owned_market_purchase() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(
+            r#"{"result":{"info":{"name":"foo","state":"CLOSED","height":100,"value":0,"highest":10000}},"error":null,"id":1}"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    add_profile(&conn, "W2", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    let purchase = |id: &str, profile: &str, name: &str, price: i64, state: &str| {
+        conn.execute(
+            "INSERT INTO shakedex_purchases
+                (id, wallet_profile_id, name, listing_json, lock_txid, lock_vout, price_doos,
+                 purchase_draft_id, purchase_txid, destination_address, state, purchase_height)
+             VALUES (?1, ?2, ?3, '{}', ?1, 0, ?4, 'd', 't', 'hs1q', ?5, 350)",
+            rusqlite::params![id, profile, name, price, state],
+        )
+        .unwrap();
+    };
+    purchase("a", "W1", "foo", 250_000_000, "owned");
+    purchase("b", "W1", "foo", 9, "lost");
+    purchase("c", "W2", "bar", 7, "owned");
+    purchase("d", "W1", "baz", 5, "awaiting_finalize");
+
+    let app = app_with(conn);
+    let foo = read_name_info(app.state(), "foo".into()).await.unwrap();
+    assert_eq!(foo["purchase"]["priceDoos"], 250_000_000i64);
+    assert_eq!(foo["purchase"]["height"], 350);
+    // The auction fields stay as the node reports them.
+    assert_eq!(foo["value"], 0);
+    for other in ["bar", "baz"] {
+        let v = read_name_info(app.state(), other.into()).await.unwrap();
+        assert!(
+            v.get("purchase").is_none_or(|p| p.is_null()),
+            "{other}: {v}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // read_balance — explorer-fallback path (with pre-provisioned addresses)
 // ---------------------------------------------------------------------------
 

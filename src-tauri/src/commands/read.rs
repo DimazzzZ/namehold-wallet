@@ -746,7 +746,7 @@ pub async fn read_name_info(
     // fallback is still keyed off global settings + the profile's network —
     // that surface hasn't been split per-profile yet, and the network gate in
     // `explorer_client_from_settings` still prevents cross-network reads.
-    let (explorer_opt, node_opt) = {
+    let (explorer_opt, node_opt, purchase) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
         // A network that cannot be read is unknown, not mainnet. `Network`
@@ -757,13 +757,31 @@ pub async fn read_name_info(
         let explorer_opt =
             crate::commands::active_profile::active_profile_network_opt_from_conn(&conn)
                 .and_then(|network| explorer_client(&settings, network));
-        let node_opt = match queries::get_active_profile_id(&conn) {
-            Ok(id) if !id.is_empty() => Some(crate::noncustodial::rpc::NodeRpcClient::for_profile(
-                &conn, &id,
+        let active = queries::get_active_profile_id(&conn)
+            .ok()
+            .filter(|id| !id.is_empty());
+        let node_opt = match active.as_deref() {
+            Some(id) => Some(crate::noncustodial::rpc::NodeRpcClient::for_profile(
+                &conn, id,
             )?),
-            _ => None,
+            None => None,
         };
-        (explorer_opt, node_opt)
+        // Bought on the market: the name page shows that price beside the
+        // name's original auction figures, which are all the chain knows.
+        let purchase = match active.as_deref() {
+            Some(id) => queries::owned_shakedex_purchase(&conn, id, &name)?,
+            None => None,
+        };
+        (explorer_opt, node_opt, purchase)
+    };
+    let with_purchase = |mut v: serde_json::Value| {
+        if let (Some((price, height)), Some(obj)) = (purchase, v.as_object_mut()) {
+            obj.insert(
+                "purchase".into(),
+                serde_json::json!({ "priceDoos": price, "height": height }),
+            );
+        }
+        v
     };
 
     // Node first — but ONLY when it is fully synced. An unsynced node answers
@@ -775,7 +793,7 @@ pub async fn read_name_info(
     if let Some(node) = node_opt.as_ref() {
         if crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await {
             if let Some(shaped) = read_name_info_node_with_client(node, &name).await {
-                return Ok(serde_json::to_value(&shaped)?);
+                return Ok(with_purchase(serde_json::to_value(&shaped)?));
             }
         }
     }
@@ -794,10 +812,12 @@ pub async fn read_name_info(
     // 5xx) still propagate as `Err` instead of silently degrading to
     // AVAILABLE.
     match explorer.get_name_info_optional(&name).await {
-        Ok(Some(info)) => Ok(serde_json::to_value(&info)?),
+        Ok(Some(info)) => Ok(with_purchase(serde_json::to_value(&info)?)),
         Ok(None) => {
             // Explorer confirms the name is unknown — synthesize AVAILABLE.
-            Ok(serde_json::to_value(synthesize_available_name(&name))?)
+            Ok(with_purchase(serde_json::to_value(
+                synthesize_available_name(&name),
+            )?))
         }
         Err(e) => Err(e),
     }

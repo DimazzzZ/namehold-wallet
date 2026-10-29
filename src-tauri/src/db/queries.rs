@@ -4489,6 +4489,25 @@ pub struct PurchaseNameState {
     pub wall_clock_timing: bool,
 }
 
+/// The market purchase through which `profile_id` came to own `name`, as
+/// `(price_doos, purchase_height)`: the latest one in state `owned`, or `None`.
+/// The name page shows it beside the name's original auction figures.
+pub fn owned_shakedex_purchase(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+) -> Result<Option<(i64, Option<i64>)>, AppError> {
+    Ok(conn
+        .query_row(
+            "SELECT price_doos, purchase_height FROM shakedex_purchases
+             WHERE wallet_profile_id = ?1 AND name = ?2 AND state = 'owned'
+             ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+            params![profile_id, name],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+}
+
 /// A profile's purchased names still on their way (`unconfirmed` or
 /// `awaiting_finalize`), shaped like [`read_cached_names`] rows so Owned Names
 /// can list them (the chain fields null, since the name is not ours yet, and
