@@ -27,6 +27,7 @@ const row = (name: string, over: Partial<NameRow> = {}): NameRow => ({
   expiresBlocks: null,
   expiresDays: null,
   tags: [],
+  icann: null,
   action: null,
   selectable: true,
   height: null,

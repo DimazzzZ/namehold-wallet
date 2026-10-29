@@ -383,3 +383,34 @@ describe("Owned chip", () => {
     expect(by("lost").cats).not.toContain("owned");
   });
 });
+
+describe("buildNameRows — ICANN collision (spec R3)", () => {
+  it("an owned name that is an applied-for string carries its collision", () => {
+    const r = one({ owned: [name("agent")] });
+    expect(r.icann?.applications).toHaveLength(11);
+  });
+
+  it("an auction position carries it too", () => {
+    const r = one({
+      positions: ["agent"],
+      capsByName: caps([
+        makeCapabilities({ name: "agent", taskState: "readyToBid", phase: "BIDDING" }),
+      ]),
+    });
+    expect(r.kind).toBe("auction");
+    expect(r.icann?.applications).toHaveLength(11);
+  });
+
+  it("a watch-only name carries it too", () => {
+    const r = one({
+      watched: [{ name: "agent", addedAt: "", notes: "", tags: "" }],
+      watchInfo: { agent: name("agent", { state: "BIDDING", highest: 3_000_000, stats: null }) },
+    });
+    expect(r.kind).toBe("watch");
+    expect(r.icann?.applications).toHaveLength(11);
+  });
+
+  it("a name nobody applied for carries null", () => {
+    expect(one({ owned: [name("zzzz-not-applied")] }).icann).toBeNull();
+  });
+});
