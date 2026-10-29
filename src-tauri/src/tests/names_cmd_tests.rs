@@ -4942,3 +4942,136 @@ async fn capabilities_without_a_wallet_profile_refuse_every_action() {
         assert_eq!(cap.reason.as_deref(), Some("no active wallet profile"));
     }
 }
+
+/// The tracked row says our address owns `testname`; the synced node names an
+/// owner outpoint and answers `gettxout` for it with `pays` (`None`: the node
+/// does not know the coin; `Some("OURS")`: our own address). With
+/// `our_coin_is_owner` the wallet holds that owner coin itself. Returns the
+/// capabilities and the stored owner address afterwards.
+async fn owner_check(
+    pays: Option<&str>,
+    our_coin_is_owner: bool,
+) -> (
+    crate::commands::names::NameActionCapabilities,
+    Option<String>,
+) {
+    let mut server = mockito::Server::new_async().await;
+    let owner_txid = "f586bec906f45fc27c75da57bbd569b62ad222c6e9aa4d8912c1434d0c1bbd70";
+    let state = create_full_test_state();
+    let (profile_id, our_addr) = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        let our_addr = first_derived_address(&conn, &id);
+        if our_coin_is_owner {
+            conn.execute(
+                "INSERT INTO tracked_utxos
+                    (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                     value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+                 VALUES (?1, 0, ?2, ?3, '00', 10000, 6, NULL, 'name_control', NULL)",
+                rusqlite::params![owner_txid, &id, &our_addr],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, owner_address, height)
+             VALUES (?1, 'testname', 'aabb', 'CLOSED', ?2, 0, ?3, 100)",
+            rusqlite::params![&id, owner_txid, &our_addr],
+        )
+        .unwrap();
+        (id, our_addr)
+    };
+    let _chain = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(format!(
+            r#"{{"result":{{"info":{{"name":"testname","state":"CLOSED","registered":true,"owner":{{"hash":"{owner_txid}","index":0}},"stats":{{}}}}}},"error":null,"id":1}}"#
+        ))
+        .create_async()
+        .await;
+    let result = match pays {
+        None => "null".to_string(),
+        Some(p) => format!(
+            r#"{{"value":11,"address":{{"version":0,"hash":"00","string":"{}"}}}}"#,
+            if p == "OURS" { our_addr.as_str() } else { p }
+        ),
+    };
+    let _txout = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("gettxout".into()))
+        .with_body(format!(r#"{{"result":{result},"error":null,"id":1}}"#))
+        .create_async()
+        .await;
+    let app = mock_app_with(state);
+    let caps = names::get_name_action_capabilities(
+        app.state(),
+        "testname".into(),
+        Some(profile_id.clone()),
+    )
+    .await
+    .expect("capabilities resolve via the node path");
+    let stored: Option<String> = app
+        .state::<crate::AppState>()
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT owner_address FROM tracked_name_states WHERE wallet_profile_id = ?1 AND name = 'testname'",
+            rusqlite::params![&profile_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    (caps, stored)
+}
+
+const SOMEONE_ELSE: &str = "rs1qsomeoneelse000000000000000000000000000";
+
+/// A lost auction read as owned (`namehold`, 2026-10-29): the tracked row named
+/// another bidder's winning reveal as the owner coin but kept our address, left
+/// from an earlier read that took our losing reveal for the owner. When the
+/// node says that owner coin pays someone else, the tracked address is stale:
+/// the name is not ours and the address is cleared.
+#[tokio::test]
+async fn capabilities_node_synced_owner_coin_paying_someone_else_is_not_ours() {
+    let (caps, stored) = owner_check(Some(SOMEONE_ELSE), false).await;
+    assert!(
+        !caps.owns_name,
+        "the owner coin pays someone else: not ours"
+    );
+    assert_eq!(stored, None, "the stale address is cleared");
+}
+
+/// The node does not know the owner coin (null: spent or unknown): no positive
+/// evidence, so the name stays ours, spend-locked, and the address stays.
+#[tokio::test]
+async fn capabilities_owner_coin_unknown_to_the_node_keeps_the_tracked_owner() {
+    let (caps, stored) = owner_check(None, false).await;
+    assert!(caps.owns_name);
+    assert!(!caps.can_transfer.allowed, "still spend-locked");
+    assert!(stored.is_some());
+}
+
+/// The node says the owner coin pays our own address: confirmed, kept.
+#[tokio::test]
+async fn capabilities_owner_coin_paying_our_address_keeps_the_tracked_owner() {
+    let (caps, stored) = owner_check(Some("OURS"), false).await;
+    assert!(caps.owns_name);
+    assert!(stored.is_some());
+}
+
+/// With our own owner coin in hand the address is not the only evidence: a
+/// wrong gettxout answer changes nothing (the node is not asked).
+#[tokio::test]
+async fn capabilities_with_our_owner_coin_ignore_a_wrong_owner_answer() {
+    let (caps, stored) = owner_check(Some(SOMEONE_ELSE), true).await;
+    assert!(caps.owns_name, "our owner coin decides");
+    assert!(caps.has_owner_coin);
+    assert!(stored.is_some(), "the address is not cleared");
+}

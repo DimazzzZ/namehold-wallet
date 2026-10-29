@@ -1,27 +1,49 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { parseFeeRateArg } from "../lib/feeRate";
-import { mapError } from "../lib/errors";
-import {
-  useBroadcastTxDraft,
-  useNameAction,
-  useSignTxDraft,
-  useUnlockSigner,
-} from "../queries/wallet";
+import { mapError, unwrapStaged } from "../lib/errors";
+import { useNameAction } from "../queries/wallet";
+import { useDraftRunner } from "../queries/useDraftRunner";
 import { useUiStore } from "../stores/ui";
 import type { NameActionCapabilities, TxDraftSummary, WalletProfileSummary } from "../types";
 
 export type BatchAction = "renew" | "reveal" | "redeem" | "finalize" | "transfer";
 
+/**
+ * Names per transaction. The backend builds at most this many into one draft
+ * (`MAX_BATCH_SIZE`, spec 2026-09-15 B3); a larger selection is sent as a
+ * series of transactions of this size, one confirm for the whole series.
+ */
+export const MAX_BATCH = 100;
+
 export interface BatchModalState {
   open: boolean;
   action: BatchAction;
+  /** Every selected name, across all transactions of the series. */
   names: string[];
+  /** The fee of the first transaction times the number of transactions. */
   feeDoos: number;
   amountDoos: number;
+  /** The first transaction's draft, built before the modal opens. */
   draftId: string;
   recipient?: string;
+  /** How many transactions the series takes (1 for up to MAX_BATCH names). */
+  batches: number;
 }
+
+export interface BatchProgress {
+  action: BatchAction;
+  step: "building" | "sending";
+  /** 1-based index of the transaction being built or sent. */
+  index: number;
+  total: number;
+}
+
+const chunk = (list: string[]): string[][] => {
+  const out: string[][] = [];
+  for (let i = 0; i < list.length; i += MAX_BATCH) out.push(list.slice(i, i + MAX_BATCH));
+  return out;
+};
 
 /**
  * Selection + the five batch name actions (renew, reveal, redeem, finalize,
@@ -33,12 +55,22 @@ export function useNameBatchActions({
   profile,
   capsByName,
   unlocked,
+  transferable,
 }: {
   profile: WalletProfileSummary | null | undefined;
   capsByName: Map<string, NameActionCapabilities>;
   unlocked: boolean;
+  /**
+   * Names known to be transferable from the chain's own facts (registered,
+   * not expired, no transfer pending). When given, a transfer is eligible as
+   * soon as every selected name is in it, without waiting for the capability
+   * query, which reads the node many times per name and takes minutes on a
+   * wallet with hundreds of names.
+   */
+  transferable?: Set<string>;
 }) {
   const qc = useQueryClient();
+  const runner = useDraftRunner();
   const showToast = useUiStore((s) => s.showToast);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [recipient, setRecipient] = useState("");
@@ -46,6 +78,15 @@ export function useNameBatchActions({
   // global setting default.
   const [feeRate, setFeeRate] = useState("");
   const [modal, setModal] = useState<BatchModalState | null>(null);
+  // What a running series is doing right now, for the batch bar: building a
+  // draft takes seconds per hundred names and signing several in a row longer.
+  const [progress, setProgress] = useState<BatchProgress | null>(null);
+  // The series behind an open modal: the chunks still to build after the
+  // first, and the builder that makes a draft for one chunk.
+  const series = useRef<{
+    rest: string[][];
+    build: (names: string[]) => Promise<TxDraftSummary>;
+  } | null>(null);
 
   useEffect(() => {
     setSelected(new Set());
@@ -58,9 +99,6 @@ export function useNameBatchActions({
   const finalizeM = useNameAction("build_batch_finalize_draft");
   // Transfers N selected names to one shared recipient.
   const transferM = useNameAction("build_batch_transfer_draft");
-  const unlock = useUnlockSigner();
-  const signDraft = useSignTxDraft();
-  const broadcast = useBroadcastTxDraft();
 
   const toggle = (name: string) =>
     setSelected((prev) => {
@@ -81,26 +119,29 @@ export function useNameBatchActions({
       canTransfer: false,
       canRenew: false,
     };
-    if (selected.size === 0 || capsByName.size === 0) return none;
-    const e = {
-      canReveal: true,
-      canRedeem: true,
-      canFinalize: true,
-      canTransfer: true,
-      canRenew: true,
-    };
-    for (const n of selected) {
+    if (selected.size === 0) return none;
+    // Transfer: the chain's facts (when given) and the capability check (when
+    // it has answered for a name) must both allow it. A name whose capability
+    // has not arrived yet rests on the chain's facts alone, so a wallet with
+    // hundreds of names can transfer before the slow capability query is done.
+    const canTransfer = [...selected].every((n) => {
       const c = capsByName.get(n);
-      if (!c) return none;
-      if (!c.canReveal.allowed) e.canReveal = false;
-      if (!c.canRedeem.allowed) e.canRedeem = false;
-      if (!c.canFinalize.allowed) e.canFinalize = false;
-      if (!c.canTransfer.allowed) e.canTransfer = false;
+      if (transferable && !transferable.has(n)) return false;
+      if (c) return c.canTransfer.allowed;
+      return !!transferable;
+    });
+    const all = [...selected].map((n) => capsByName.get(n));
+    if (all.some((c) => !c)) return { ...none, canTransfer };
+    const caps = all as NameActionCapabilities[];
+    return {
+      canReveal: caps.every((c) => c.canReveal.allowed),
+      canRedeem: caps.every((c) => c.canRedeem.allowed),
+      canFinalize: caps.every((c) => c.canFinalize.allowed),
+      canTransfer,
       // R27: a name locked for sale (or not renewable yet) refuses a renewal.
-      if (!c.canRenew.allowed) e.canRenew = false;
-    }
-    return e;
-  }, [selected, capsByName]);
+      canRenew: caps.every((c) => c.canRenew.allowed),
+    };
+  }, [selected, capsByName, transferable]);
 
   const feeRateArg = () => parseFeeRateArg(feeRate) ?? undefined;
   const names = () => Array.from(selected);
@@ -110,74 +151,116 @@ export function useNameBatchActions({
   // failure is reported the same way.
   const runBatch = async (
     action: BatchAction,
-    build: () => Promise<TxDraftSummary>,
+    build: (names: string[]) => Promise<TxDraftSummary>,
     extra: { recipient?: string } = {},
   ) => {
     const list = names();
     if (list.length === 0) return;
+    const [first, ...rest] = chunk(list);
     try {
-      showToast(`Building batch ${action} draft…`, "info");
-      const draft = await build();
+      setProgress({ action, step: "building", index: 1, total: rest.length + 1 });
+      const draft = await build(first!);
+      setProgress(null);
+      series.current = { rest, build };
       setModal({
         open: true,
         action,
         names: list,
-        feeDoos: draft.summary?.feeDoos ?? 0,
+        feeDoos: (draft.summary?.feeDoos ?? 0) * (rest.length + 1),
         amountDoos: draft.summary?.sendTotalDoos ?? 0,
         draftId: draft.id,
+        batches: rest.length + 1,
         ...extra,
       });
     } catch (e) {
+      setProgress(null);
       showToast(`Batch ${action} failed: ${mapError(e)}`, "error");
     }
   };
 
   const run = {
-    renew: () =>
-      runBatch("renew", () => renewM.mutateAsync({ names: names(), feeRate: feeRateArg() })),
+    renew: () => runBatch("renew", (n) => renewM.mutateAsync({ names: n, feeRate: feeRateArg() })),
     reveal: () =>
-      runBatch("reveal", () => revealM.mutateAsync({ names: names(), feeRate: feeRateArg() })),
+      runBatch("reveal", (n) => revealM.mutateAsync({ names: n, feeRate: feeRateArg() })),
     redeem: () =>
-      runBatch("redeem", () => redeemM.mutateAsync({ names: names(), feeRate: feeRateArg() })),
+      runBatch("redeem", (n) => redeemM.mutateAsync({ names: n, feeRate: feeRateArg() })),
     finalize: () =>
-      runBatch("finalize", () => finalizeM.mutateAsync({ names: names(), feeRate: feeRateArg() })),
+      runBatch("finalize", (n) => finalizeM.mutateAsync({ names: n, feeRate: feeRateArg() })),
     transfer: () => {
       const to = recipient.trim();
       if (!to) return;
       return runBatch(
         "transfer",
-        () => transferM.mutateAsync({ names: names(), recipient: to, feeRate: feeRateArg() }),
+        (n) => transferM.mutateAsync({ names: n, recipient: to, feeRate: feeRateArg() }),
         { recipient: to },
       );
     },
   };
 
-  // Confirm a pending batch draft: unlock (if needed) → sign → broadcast.
+  // Confirm a pending batch series: unlock (if needed) → sign → broadcast the
+  // first draft, then build → sign → broadcast each remaining chunk. A failure
+  // keeps the names not yet sent selected, so the series can be resumed.
   const confirm = async () => {
     if (!modal || !profile) return;
-    const { draftId, names: list, action } = modal;
-    try {
-      if (!unlocked) await unlock.mutateAsync(profile.id);
-      await signDraft.mutateAsync(draftId);
-      const result = await broadcast.mutateAsync(draftId);
+    const { draftId, names: list, action, batches } = modal;
+    const s = series.current;
+    const sent: string[] = [];
+    // The first draft is the confirmation's: a failure keeps it for a retry
+    // (Cancel abandons it). A later one was built here: a failure before its
+    // broadcast discards it (useDraftRunner).
+    const sendOne = async (id: string, chunkNames: string[], index: number) => {
+      setProgress({ action, step: "sending", index, total: batches });
+      const result = await runner.send(id, profile.id, index > 1 || unlocked, {
+        keepOnFailure: index === 1,
+      });
+      sent.push(...chunkNames);
       showToast(
-        `Batch ${action} broadcast ${result.txid.slice(0, 12)}… (${list.length} name(s))`,
+        `Batch ${action} ${batches > 1 ? `${index} of ${batches} ` : ""}broadcast ${result.txid.slice(0, 12)}… (${chunkNames.length} name(s))`,
         "success",
       );
+    };
+    try {
+      const first = chunk(list)[0] ?? [];
+      await sendOne(draftId, first, 1);
       setModal(null);
+      for (const [i, chunkNames] of (s?.rest ?? []).entries()) {
+        setProgress({ action, step: "building", index: i + 2, total: batches });
+        const draft = await s!.build(chunkNames);
+        await sendOne(draft.id, chunkNames, i + 2);
+      }
+      series.current = null;
+      setProgress(null);
       clear();
       setRecipient("");
       qc.invalidateQueries({ queryKey: ["wallet"] });
     } catch (e) {
-      showToast(`Batch ${action} failed: ${mapError(e)}`, "error");
-      // Keep the modal open so the user can retry or cancel.
+      setProgress(null);
+      const left = list.filter((n) => !sent.includes(n));
+      showToast(
+        `Batch ${action} failed after ${sent.length} of ${list.length} name(s): ${mapError(unwrapStaged(e))}`,
+        "error",
+      );
+      if (sent.length > 0) {
+        // The modal's draft is spent; keep what is left selected for a retry.
+        series.current = null;
+        setModal(null);
+        setSelected(new Set(left));
+        qc.invalidateQueries({ queryKey: ["wallet"] });
+        return;
+      }
+      // Nothing sent: keep the modal open so the user can retry or cancel.
       throw e;
     }
   };
 
-  // Cancel: just close. The draft row stays and its coin reservations block
-  // nothing; it can be replayed or discarded from Activity.
-  const cancel = () => setModal(null);
+  // Cancel discards the draft built for the confirmation: it reserves the
+  // coins that pay its fee, and a draft nobody sends would keep them from every
+  // later send ("not enough funds") until discarded by hand in Activity.
+  const cancel = () => {
+    if (modal) void runner.abandon(modal.draftId);
+    series.current = null;
+    setModal(null);
+  };
 
   return {
     selected,
@@ -185,6 +268,7 @@ export function useNameBatchActions({
     setSelected,
     clear,
     eligibility,
+    progress,
     recipient,
     setRecipient,
     feeRate,

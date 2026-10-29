@@ -1,12 +1,38 @@
-import type { NameBatchActions } from "../../hooks/useNameBatchActions";
+import { MAX_BATCH, type NameBatchActions } from "../../hooks/useNameBatchActions";
 import { Button } from "../ui/Button";
 import { FeeRateOverride } from "../ui/FeeRateOverride";
 import { Input } from "../ui/Input";
 import { Tooltip } from "../ui/Tooltip";
 
 /** The batch bar for the selected names. Secondary buttons: Look up is the page's primary. */
-export function NameBatchBar({ batch }: { batch: NameBatchActions }) {
-  const { eligibility: e, run, selected, recipient, setRecipient } = batch;
+export function NameBatchBar({
+  batch,
+  transferBlockers = [],
+  onSelectTransferable,
+  onDropBlockers,
+  transferableLeft = 0,
+}: {
+  batch: NameBatchActions;
+  /** Selected names that refuse a transfer, with the backend's reason (or none yet). */
+  transferBlockers?: { name: string; reason: string }[];
+  /** Replace the selection with every shown name that can be transferred. */
+  onSelectTransferable?: () => void;
+  /** Drop every selected name that cannot be transferred, keep the rest selected. */
+  onDropBlockers?: () => void;
+  /** How many shown names can be transferred and are not yet selected. */
+  transferableLeft?: number;
+}) {
+  const { eligibility: e, run, selected, recipient, setRecipient, progress } = batch;
+  const batches = Math.ceil(selected.size / MAX_BATCH);
+  const blockerText =
+    transferBlockers.length > 0
+      ? `Not transferable: ${transferBlockers
+          .slice(0, 3)
+          .map((b) => `${b.name} (${b.reason})`)
+          .join(
+            ", ",
+          )}${transferBlockers.length > 3 ? ` and ${transferBlockers.length - 3} more` : ""}`
+      : null;
   const actions = [
     {
       key: "renew",
@@ -38,10 +64,14 @@ export function NameBatchBar({ batch }: { batch: NameBatchActions }) {
     },
   ];
   const transferWhy = !e.canTransfer
-    ? "All selected names must be transferable (owned, not mid-transfer)"
+    ? (blockerText ?? "Capabilities are still loading for some selected names")
     : !recipient.trim()
       ? "Enter a recipient address"
       : undefined;
+  const seriesNote =
+    batches > 1
+      ? `${selected.size} names go out as ${batches} transactions of up to ${MAX_BATCH}, one confirm for all`
+      : null;
   return (
     <div
       className="bg-blue-50 border border-blue-200 rounded-md px-3 py-2.5 flex flex-col gap-2"
@@ -93,6 +123,50 @@ export function NameBatchBar({ batch }: { batch: NameBatchActions }) {
           Clear
         </Button>
       </div>
+      {progress && (
+        <div
+          className="text-sm font-medium text-blue-900"
+          role="status"
+          data-testid="batch-progress"
+        >
+          {progress.step === "building" ? "Building" : "Signing and sending"} {progress.action}{" "}
+          {progress.total > 1
+            ? `transaction ${progress.index} of ${progress.total}`
+            : "transaction"}
+          …
+        </div>
+      )}
+      {(transferWhy || onSelectTransferable) && (
+        <div
+          className="flex flex-wrap items-center gap-2 text-xs text-blue-900"
+          data-testid="batch-transfer-help"
+        >
+          {transferWhy && !e.canTransfer && <span>{transferWhy}</span>}
+          {transferBlockers.length > 0 && onDropBlockers && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onDropBlockers}
+              data-testid="batch-drop-blockers"
+            >
+              Drop {transferBlockers.length} not transferable, keep{" "}
+              {selected.size - transferBlockers.length}
+            </Button>
+          )}
+          {seriesNote && <span>{seriesNote}</span>}
+          {onSelectTransferable && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onSelectTransferable}
+              disabled={transferableLeft === 0}
+              data-testid="batch-select-transferable"
+            >
+              Select all {transferableLeft} transferable
+            </Button>
+          )}
+        </div>
+      )}
       <FeeRateOverride
         value={batch.feeRate}
         onChange={batch.setFeeRate}

@@ -10,6 +10,8 @@ export interface BatchConfirmModalProps {
   open: boolean;
   action: "bid" | "renew" | "reveal" | "redeem" | "finalize" | "transfer";
   names: string[];
+  /** Transactions in the series; above 1 the modal says so. */
+  batches?: number;
   estimatedFeeDoos: number;
   /**
    * What the transaction moves, summed over every output except change (B9).
@@ -39,6 +41,7 @@ export function BatchConfirmModal({
   open,
   action,
   names,
+  batches = 1,
   estimatedFeeDoos,
   amountDoos,
   recipient,
@@ -61,6 +64,9 @@ export function BatchConfirmModal({
     setConfirming(true);
     try {
       await onConfirm();
+    } catch {
+      // The caller reports the failure (a toast) and rejects only to keep this
+      // dialog open for a retry; nothing is left to handle here.
     } finally {
       setConfirming(false);
     }
@@ -74,17 +80,27 @@ export function BatchConfirmModal({
             <span className="text-gray-700">
               You&apos;re about to <strong>{actionLabel}</strong> <strong>{names.length}</strong>{" "}
               name
-              {names.length !== 1 ? "s" : ""}.
+              {names.length !== 1 ? "s" : ""}
+              {batches > 1 ? (
+                <>
+                  {" "}
+                  in <strong>{batches}</strong> transactions, signed and sent one after another
+                  after this confirm
+                </>
+              ) : null}
+              .
             </span>
           </div>
           <div data-testid="batch-amount">
             <span className="text-gray-700">
               Amount: <strong>{formatHns(amountDoos)}</strong> HNS
+              {batches > 1 ? ` in the first of ${batches} transactions` : null}
             </span>
           </div>
           <div>
             <span className="text-gray-700">
-              Estimated fee: <strong>~{formatHns(estimatedFeeDoos / 1_000_000)}</strong> HNS
+              Estimated fee: <strong>~{formatHns(estimatedFeeDoos)}</strong> HNS
+              {batches > 1 ? " for all transactions" : null}
             </span>
           </div>
           {action === "transfer" && recipient && (
