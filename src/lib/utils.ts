@@ -219,6 +219,29 @@ export function formatDateShort(
   return opts.year === false ? `${date}, ${time}` : `${date} · ${time}`;
 }
 
+/**
+ * Time since an in-progress item was sent (DESIGN_SYSTEM §5): "just now",
+ * "14 min ago", "3 h ago"; from 24 h on the UTC date, "Oct 27 · 13:05".
+ * Pair it with formatDate in a tooltip and re-render every minute.
+ */
+export function formatSince(iso: string | null | undefined, now: number = Date.now()): string {
+  if (!iso?.trim()) return "—";
+  const d = new Date(normalizeTimestamp(iso.trim()));
+  if (Number.isNaN(d.getTime())) return iso;
+  const min = Math.floor((now - d.getTime()) / 60_000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min} min ago`;
+  if (min < 24 * 60) return `${Math.floor(min / 60)} h ago`;
+  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  const time = d.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "UTC",
+  });
+  return `${date} · ${time}`;
+}
+
 /** Short date for a list cell ("Jul 30"); pair it with formatDate in a tooltip. */
 export function formatShortDate(iso: string | null | undefined): string {
   if (!iso?.trim()) return "—";
