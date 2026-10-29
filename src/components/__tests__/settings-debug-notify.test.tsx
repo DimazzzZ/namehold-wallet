@@ -82,7 +82,7 @@ afterEach(() => {
 
 describe("Settings — Debug notifications panel", () => {
   it("renders the dev-only panel with a button per kind", async () => {
-    renderSettings();
+    renderSettings("notifications");
     expect(await screen.findByTestId("debug-notifications-panel")).toBeInTheDocument();
     for (const kind of ["reveal", "renewal", "bidding", "reopened", "bidding_soon", "highbid"]) {
       expect(screen.getByTestId(`sim-notify-${kind}`)).toBeInTheDocument();
@@ -90,7 +90,7 @@ describe("Settings — Debug notifications panel", () => {
   });
 
   it("invokes simulate_notification with the clicked kind", async () => {
-    renderSettings();
+    renderSettings("notifications");
     const btn = await screen.findByTestId("sim-notify-bidding");
     fireEvent.click(btn);
     await waitFor(() => {

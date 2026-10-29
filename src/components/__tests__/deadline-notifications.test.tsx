@@ -93,7 +93,7 @@ beforeEach(() => {
 
 describe("Settings — deadline notifications (I1 / Task 4)", () => {
   it("is off by default and hides lead-time inputs", async () => {
-    renderSettings();
+    renderSettings("notifications");
     const toggle = await screen.findByTestId("deadline-notify-toggle");
     expect(toggle).not.toBeChecked();
     expect(screen.queryByText(/Reveal window lead time/i)).toBeNull();
@@ -102,7 +102,7 @@ describe("Settings — deadline notifications (I1 / Task 4)", () => {
   it("requests OS permission the moment the toggle is turned on, and shows lead-time inputs once granted", async () => {
     isPermissionGrantedMock.mockResolvedValue(false);
     requestPermissionMock.mockResolvedValue("granted");
-    renderSettings();
+    renderSettings("notifications");
 
     const toggle = await screen.findByTestId("deadline-notify-toggle");
     fireEvent.click(toggle);
@@ -115,7 +115,7 @@ describe("Settings — deadline notifications (I1 / Task 4)", () => {
   it("shows a non-blocking warning (not a crash) when the OS denies permission", async () => {
     isPermissionGrantedMock.mockResolvedValue(false);
     requestPermissionMock.mockResolvedValue("denied");
-    renderSettings();
+    renderSettings("notifications");
 
     const toggle = await screen.findByTestId("deadline-notify-toggle");
     fireEvent.click(toggle);
@@ -135,7 +135,7 @@ describe("Settings — deadline notifications (I1 / Task 4)", () => {
     // warning as an explicit denial. It must not.
     loadSettings({ deadline_notify_enabled: "true" });
     isPermissionGrantedMock.mockResolvedValue(null);
-    renderSettings();
+    renderSettings("notifications");
 
     await screen.findByText(/Reveal window lead time/i);
     expect(screen.queryByTestId("notification-permission-denied")).toBeNull();
@@ -144,7 +144,7 @@ describe("Settings — deadline notifications (I1 / Task 4)", () => {
   it("does not prompt for permission again if already granted", async () => {
     loadSettings({ deadline_notify_enabled: "true" });
     isPermissionGrantedMock.mockResolvedValue(true);
-    renderSettings();
+    renderSettings("notifications");
 
     await screen.findByText(/Reveal window lead time/i);
     expect(requestPermissionMock).not.toHaveBeenCalled();
@@ -153,7 +153,7 @@ describe("Settings — deadline notifications (I1 / Task 4)", () => {
   it("turning the toggle off does not request permission", async () => {
     loadSettings({ deadline_notify_enabled: "true" });
     isPermissionGrantedMock.mockResolvedValue(true);
-    renderSettings();
+    renderSettings("notifications");
 
     const toggle = await screen.findByTestId("deadline-notify-toggle");
     await waitFor(() => expect(toggle).toBeChecked());

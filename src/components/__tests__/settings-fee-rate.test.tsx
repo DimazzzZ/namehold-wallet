@@ -42,7 +42,7 @@ beforeEach(() => {
 describe("Settings — Fee rate override", () => {
   it("renders fee-rate input with correct initial value", async () => {
     loadSettings({ fee_rate_doos_per_kvb: "5000" });
-    renderSettings();
+    renderSettings("advanced");
 
     const input = await screen.findByTestId("settings-fee-rate");
     expect(input).toHaveValue("5000");
@@ -50,7 +50,7 @@ describe("Settings — Fee rate override", () => {
 
   it("shows error when input is non-numeric", async () => {
     loadSettings();
-    renderSettings();
+    renderSettings("advanced");
 
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "abc" } });
@@ -63,7 +63,7 @@ describe("Settings — Fee rate override", () => {
 
   it("clears error when input is valid", async () => {
     loadSettings();
-    renderSettings();
+    renderSettings("advanced");
 
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "abc" } });
@@ -82,14 +82,15 @@ describe("Settings — Fee rate override", () => {
 
   it("disables Save button when error is present", async () => {
     loadSettings();
-    renderSettings();
+    renderSettings("advanced");
 
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "not-a-number" } });
 
     await screen.findByTestId("settings-fee-rate-error");
 
-    // Trigger dirty state by changing another field
+    // Trigger dirty state by changing a field in another section
+    fireEvent.click(screen.getByTestId("settings-section-node"));
     fireEvent.click(await screen.findByTestId("autostart-hsd-checkbox"));
 
     // Save button should be disabled
@@ -99,7 +100,7 @@ describe("Settings — Fee rate override", () => {
 
   it("enables Save button when input is valid", async () => {
     loadSettings();
-    renderSettings();
+    renderSettings("advanced");
 
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "4000" } });
@@ -111,7 +112,7 @@ describe("Settings — Fee rate override", () => {
 
   it("sends update_setting call when saving valid fee rate", async () => {
     loadSettings();
-    renderSettings();
+    renderSettings("advanced");
 
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "3500" } });
@@ -133,7 +134,7 @@ describe("Settings — Fee rate override", () => {
 
   it("allows empty fee rate (clears the override)", async () => {
     loadSettings({ fee_rate_doos_per_kvb: "5000" });
-    renderSettings();
+    renderSettings("advanced");
 
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "" } });

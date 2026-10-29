@@ -61,6 +61,7 @@ describe("Settings — Node RPC api-key (write-only)", () => {
     renderSettings();
     // Toggle a checkbox to trigger the dirty state so the Save button appears
     // (without touching the api-key field, which is the subject under test).
+    fireEvent.click(screen.getByTestId("settings-section-node"));
     fireEvent.click(await screen.findByTestId("autostart-hsd-checkbox"));
     const save = await screen.findByTestId("settings-save");
     fireEvent.click(save);
@@ -103,6 +104,7 @@ describe("Settings — Node RPC api-key (write-only)", () => {
     loadWithoutStoredKey();
     renderSettings();
     // Trigger dirty state without touching the api-key field.
+    fireEvent.click(screen.getByTestId("settings-section-node"));
     fireEvent.click(await screen.findByTestId("autostart-hsd-checkbox"));
     const save = await screen.findByTestId("settings-save");
     fireEvent.click(save);

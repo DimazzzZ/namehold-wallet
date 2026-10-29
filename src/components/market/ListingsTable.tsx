@@ -1,3 +1,5 @@
+import { ChevronDown, ChevronRight } from "lucide-react";
+import { Icon } from "../ui/Icon";
 import type { RefObject } from "react";
 import { Button } from "../ui/Button";
 import { Spinner } from "../ui/Spinner";
@@ -198,7 +200,10 @@ export function ListingsTable(p: ListingsTableProps) {
               onClick={p.onToggleHidden}
               className="cursor-pointer text-left text-xs text-gray-600 hover:text-gray-900"
             >
-              {toggle}
+              <span className="inline-flex items-center gap-1">
+                <Icon icon={p.hiddenOpen ? ChevronDown : ChevronRight} size={13} />
+                {toggle}
+              </span>
             </button>
           ) : (
             <span />

@@ -39,20 +39,20 @@ beforeEach(() => {
 
 describe("Settings — Watchlist notifications", () => {
   it("renders the enable toggle unchecked by default", async () => {
-    renderSettings();
+    renderSettings("notifications");
     const box = await screen.findByTestId("watchlist-notify-toggle");
     expect(box).not.toBeChecked();
   });
 
   it("shows the lead-time and threshold inputs only when enabled", async () => {
     loadSettings({ watchlist_notify_enabled: "true" });
-    renderSettings();
+    renderSettings("notifications");
     expect(await screen.findByTestId("watchlist-notify-bidding-lead-input")).toBeInTheDocument();
     expect(await screen.findByTestId("watchlist-notify-highbid-input")).toBeInTheDocument();
   });
 
   it("persists all three keys via update_setting when Save is clicked", async () => {
-    renderSettings();
+    renderSettings("notifications");
 
     // Enable
     const toggle = await screen.findByTestId("watchlist-notify-toggle");

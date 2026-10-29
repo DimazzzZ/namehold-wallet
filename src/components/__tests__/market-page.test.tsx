@@ -212,8 +212,11 @@ describe("MarketPage: the list", () => {
     await screen.findAllByText(".plain");
     const falling = rowNamed("falling");
     expect(within(falling).getByTestId("market-row-price")).toHaveTextContent("1,200 HNS");
-    expect(falling).toHaveTextContent("↓ 1,100 HNS in ~6 h");
-    expect(within(falling).getByTestId("market-row-check")).toHaveTextContent("✓ Verified");
+    expect(falling).toHaveTextContent("1,100 HNS in ~6 h");
+    // The drop is shown by a down-trend icon, which a fixed price has not.
+    expect(falling.querySelector(".lucide-trending-down")).not.toBeNull();
+    expect(rowNamed("plain").querySelector(".lucide-trending-down")).toBeNull();
+    expect(within(falling).getByTestId("market-row-check")).toHaveTextContent("Verified");
     expect(rowNamed("plain")).toHaveTextContent("Fixed price");
     // Lowest price first, and selected.
     expect(rows()[0]).toHaveTextContent(".plain");
@@ -369,11 +372,11 @@ describe("MarketPage: listings that cannot be bought", () => {
     renderPage();
     const toggle = await screen.findByTestId("hidden-toggle");
     expect(toggle).toHaveTextContent(
-      "▸ 4 unavailable listings hidden: 2 sold, 1 failed the check, 1 not valid yet",
+      "4 unavailable listings hidden: 2 sold, 1 failed the check, 1 not valid yet",
     );
     expect(screen.queryByTestId("hidden-row")).toBeNull();
     fireEvent.click(toggle);
-    expect(toggle).toHaveTextContent("▾ Hide 4 unavailable listings");
+    expect(toggle).toHaveTextContent("Hide 4 unavailable listings");
     const hidden = screen.getAllByTestId("hidden-row");
     expect(hidden.map((h) => h.textContent)).toEqual([
       ".gone—Already sold or cancelled",
@@ -402,7 +405,7 @@ describe("MarketPage: listings that cannot be bought", () => {
     expect(row).toHaveAttribute("aria-selected", "false");
     await waitFor(() =>
       expect(within(rowNamed("cooljobs")).getByTestId("market-row-check")).toHaveTextContent(
-        "✓ Verified",
+        "Verified",
       ),
     );
     expect(calls("shakedex_import_listing")[0]![1]).toEqual({
@@ -426,7 +429,7 @@ describe("MarketPage: a Retry's answer", () => {
     fireEvent.click(within(rowNamed("cooljobs")).getByTestId("market-row-retry"));
     await waitFor(() =>
       expect(within(rowNamed("cooljobs")).getByTestId("market-row-check")).toHaveTextContent(
-        "✓ Verified",
+        "Verified",
       ),
     );
     // The market fetched again still could not check it: that is the news.
@@ -590,7 +593,7 @@ describe("MarketPage: the mainnet gate", () => {
     fireEvent.click(screen.getByTestId("market-gate-turn-on"));
     await waitFor(() => expect(screen.queryByTestId("market-gate-banner")).toBeNull());
     expect(calls("update_setting")[0]![1]).toEqual({ key: "shakedex_experimental", value: "true" });
-    expect(toasts()).toContain("Mainnet buying turned on · also in Settings › Shakedex");
+    expect(toasts()).toContain("Mainnet buying turned on · also in Settings › Advanced");
     await waitFor(() =>
       expect(screen.getByTestId("purchase-buy")).toHaveTextContent(/^Buy \.dexreviews for/),
     );

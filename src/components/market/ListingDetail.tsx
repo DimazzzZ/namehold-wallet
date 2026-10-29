@@ -1,3 +1,5 @@
+import { Check as CheckIcon, ChevronDown, ChevronRight, CircleAlert } from "lucide-react";
+import { Icon } from "../ui/Icon";
 import { useEffect, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import { Button } from "../ui/Button";
 import { displayName } from "../../lib/idn";
@@ -120,12 +122,12 @@ function Selected(p: ListingDetailProps & { entry: Entry }) {
   );
 }
 
-/** A check the node made, in one sentence: ✓ green, or ! amber. */
+/** A check the node made, in one sentence: a green check, or an amber alert. */
 function Check({ ok, children }: { ok: boolean; children: ReactNode }) {
   return (
     <li className="grid grid-cols-[16px_1fr] gap-1">
-      <span aria-hidden className={ok ? "text-green-700" : "font-semibold text-amber-700"}>
-        {ok ? "✓" : "!"}
+      <span className={`pt-0.5 ${ok ? "text-green-700" : "text-amber-700"}`}>
+        <Icon icon={ok ? CheckIcon : CircleAlert} size={14} />
       </span>
       <span className={ok ? "text-gray-700" : "text-amber-800"}>{children}</span>
     </li>
@@ -332,9 +334,9 @@ function Verified(p: ListingDetailProps & { entry: ListedEntry }) {
                 data-testid="fee-rate-toggle"
                 aria-expanded={feeOpen}
                 onClick={() => setFeeOpen((o) => !o)}
-                className="cursor-pointer text-gray-600 hover:text-gray-900"
+                className="cursor-pointer text-gray-600 hover:text-gray-900 inline-flex items-center gap-1"
               >
-                {feeOpen ? "▾" : "▸"} Fee rate
+                <Icon icon={feeOpen ? ChevronDown : ChevronRight} size={13} /> Fee rate
                 {!feeOpen && feeRateRaw.trim() !== "" ? `: ${feeRateRaw.trim()} doos/kvB` : ""}
               </button>
               {feeOpen && (

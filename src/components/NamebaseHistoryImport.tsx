@@ -1,3 +1,5 @@
+import { Upload } from "lucide-react";
+import { Icon } from "./ui/Icon";
 import { useMemo, useState } from "react";
 import { open } from "../lib/dialog";
 import {
@@ -20,7 +22,7 @@ import { displayName } from "../lib/idn";
 import { Tooltip } from "./ui/Tooltip";
 
 /**
- * "Account history (imported)" card inside the Move-from-Namebase screen.
+ * "Account history (imported)" card in Settings › Backup & import.
  *
  * Displays imported Namebase account-history events (bids, fees, sales, etc.)
  * with a clear "imported — not on-chain" label to distinguish them from
@@ -137,7 +139,10 @@ export function NamebaseHistoryImport() {
             </Button>
           </Tooltip>
           <Button size="sm" onClick={handleUpload} disabled={importFile.isPending}>
-            {importFile.isPending ? "Importing…" : "Upload CSV"}
+            <span className="inline-flex items-center gap-1.5">
+              <Icon icon={Upload} size={13} />
+              {importFile.isPending ? "Importing…" : "Upload CSV"}
+            </span>
           </Button>
         </div>
       </div>

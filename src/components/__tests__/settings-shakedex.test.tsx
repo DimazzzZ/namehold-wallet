@@ -35,12 +35,12 @@ beforeEach(() => {
 
 describe("Settings — Shakedex experimental toggle", () => {
   it("is off by default", async () => {
-    renderSettings();
+    renderSettings("advanced");
     expect(await screen.findByTestId("shakedex-experimental-checkbox")).not.toBeChecked();
   });
 
   it("names buying and selling, and what it does not gate", async () => {
-    renderSettings();
+    renderSettings("advanced");
     await screen.findByTestId("shakedex-experimental-checkbox");
     expect(
       screen.getByText("Allow buying and selling names on mainnet through Shakedex (experimental)"),
@@ -54,12 +54,12 @@ describe("Settings — Shakedex experimental toggle", () => {
 
   it("reflects a stored 'true'", async () => {
     loadSettings({ shakedex_experimental: "true" });
-    renderSettings();
+    renderSettings("advanced");
     expect(await screen.findByTestId("shakedex-experimental-checkbox")).toBeChecked();
   });
 
   it("toggles shakedex_experimental and saves it", async () => {
-    renderSettings();
+    renderSettings("advanced");
     const box = await screen.findByTestId("shakedex-experimental-checkbox");
     fireEvent.click(box);
     expect(box).toBeChecked();

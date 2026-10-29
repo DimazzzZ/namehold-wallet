@@ -11,6 +11,7 @@ import {
   importProblem,
   lockupLeftText,
   waitStep,
+  nextPriceDrops,
   nextPriceText,
   priceDropText,
   registeredUntilMonth,
@@ -129,14 +130,17 @@ describe("hiddenReasonText", () => {
 
 describe("the detail panel's texts", () => {
   it("reads a reverse auction's way down to its floor", () => {
-    expect(nextPriceText(makeAuctionRow())).toBe("↓ 1,100 HNS in ~6 h");
+    expect(nextPriceText(makeAuctionRow())).toBe("1,100 HNS in ~6 h");
+    expect(nextPriceDrops(makeAuctionRow())).toBe(true);
     expect(priceDropText(makeAuctionRow())).toBe(
       "Drops to 1,100 HNS in ~6 h, down to a floor of 400 HNS in ~3 d.",
     );
     const atFloor = makeAuctionRow({ nextPrice: null, nextValidInSecs: null });
     expect(nextPriceText(atFloor)).toBe("At its floor");
+    expect(nextPriceDrops(atFloor)).toBe(false);
     expect(priceDropText(atFloor)).toBe("At its floor of 400 HNS; the price drops no further.");
     expect(nextPriceText(makeMarketRow())).toBe("Fixed price");
+    expect(nextPriceDrops(makeMarketRow())).toBe(false);
   });
 
   it("dates a fixed price's listing and still says the date does not end it (R2)", () => {

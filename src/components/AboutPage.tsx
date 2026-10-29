@@ -1,3 +1,5 @@
+import { MessageSquareWarning } from "lucide-react";
+import { Icon } from "./ui/Icon";
 import { Card } from "./ui/Card";
 import { Button } from "./ui/Button";
 import { openExternal } from "../lib/openExternal";
@@ -31,7 +33,12 @@ export function AboutPage() {
           </p>
 
           {/* GitHub link */}
-          <Button variant="primary" onClick={handleGitHubClick} className="w-full">
+          <Button
+            variant="primary"
+            onClick={handleGitHubClick}
+            className="w-full inline-flex items-center justify-center gap-2"
+          >
+            <Icon icon={MessageSquareWarning} size={16} />
             Report Issues or Request Features
           </Button>
 

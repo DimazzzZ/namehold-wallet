@@ -1,3 +1,5 @@
+import { CircleCheck, RefreshCw } from "lucide-react";
+import { Icon } from "./ui/Icon";
 import { useState } from "react";
 import { useCurrentVersion } from "../queries/updates";
 import { useAppUpdate, relaunchApp } from "../hooks/useAppUpdate";
@@ -37,12 +39,22 @@ export function UpdatesSettings() {
           disabled={phase === "checking" || phase === "installing"}
           data-testid="check-for-updates"
         >
-          {phase === "checking" ? "Checking…" : "Check for updates"}
+          {phase === "checking" ? (
+            "Checking…"
+          ) : (
+            <span className="inline-flex items-center gap-1.5">
+              <Icon icon={RefreshCw} size={13} /> Check for updates
+            </span>
+          )}
         </Button>
       </div>
 
       {phase === "upToDate" && (
-        <div className="text-xs text-green-700" data-testid="update-uptodate">
+        <div
+          className="text-xs text-green-700 flex items-center gap-1.5"
+          data-testid="update-uptodate"
+        >
+          <Icon icon={CircleCheck} size={13} />
           You are on the latest version.
         </div>
       )}

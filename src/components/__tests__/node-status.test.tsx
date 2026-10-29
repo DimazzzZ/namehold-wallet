@@ -1,9 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
-import type { ReactNode } from "react";
 import settingsSource from "../Settings.tsx?raw";
 
 const invokeMock = vi.fn();
@@ -21,6 +18,7 @@ vi.mock("@tauri-apps/plugin-autostart", () => ({
 
 import { Settings } from "../Settings";
 import { loadSettings } from "../../test/fixtures/settings";
+import { settingsWrapper } from "../../test/fixtures/renderSettings";
 
 const profile = {
   id: "p1",
@@ -97,17 +95,6 @@ function route(node: ReturnType<typeof nodeStatus>) {
   };
 }
 
-function wrapper() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return (
-      <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
-      </QueryClientProvider>
-    );
-  };
-}
-
 beforeEach(() => {
   invokeMock.mockReset();
   loadSettings();
@@ -118,7 +105,7 @@ describe("Node status (truthful, RPC-based)", () => {
     invokeMock.mockImplementation(
       route(nodeStatus({ connected: true, process_alive: true, height: 218456, synced: true })),
     );
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
 
     expect(await screen.findByText(/Connected.*block 218456/i)).toBeInTheDocument();
     // When connected, the control offers Stop (not a Start that could lie green).
@@ -138,7 +125,7 @@ describe("Node status (truthful, RPC-based)", () => {
         }),
       ),
     );
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
 
     // pct is blocks/headers (40000/100000 = 40%), shown with the H/headers detail.
     expect(await screen.findByText(/Syncing · 40%/i)).toBeInTheDocument();
@@ -162,7 +149,7 @@ describe("Node status (truthful, RPC-based)", () => {
         }),
       ),
     );
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
 
     expect(await screen.findByText(/Syncing · 19%/i)).toBeInTheDocument();
     // Check that we show the block height without a false denominator.
@@ -189,7 +176,7 @@ describe("Node status (truthful, RPC-based)", () => {
         }),
       ),
     );
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
 
     expect(await screen.findByText(/^Connected · block 317$/i)).toBeInTheDocument();
     expect(screen.queryByText(/Syncing/i)).toBeNull();
@@ -211,7 +198,7 @@ describe("Node status (truthful, RPC-based)", () => {
         }),
       ),
     );
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
 
     expect((await screen.findAllByText(/Syncing/i)).length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText(/^Connected · block 317$/i)).toBeNull();
@@ -230,7 +217,7 @@ describe("Node status (truthful, RPC-based)", () => {
         }),
       ),
     );
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
 
     const bar = await screen.findByTestId("node-sync-progress");
     expect(bar).toHaveTextContent(/Synced — 100% · block 317 \/ 317/i);
@@ -248,13 +235,13 @@ describe("Node status (truthful, RPC-based)", () => {
         }),
       ),
     );
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
     expect(await screen.findByTestId("node-sync-progress")).toHaveTextContent(/40%/);
   });
 
   it("Start is enabled when the binary is found and nothing is running", async () => {
     invokeMock.mockImplementation(route(nodeStatus({ binary_found: true })));
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
     const btn = await screen.findByRole("button", { name: /Start mainnet node/i });
     await waitFor(() => expect(btn).toBeEnabled());
   });
@@ -262,14 +249,14 @@ describe("Node status (truthful, RPC-based)", () => {
   it("Start is enabled when the binary isn't auto-found but an hsd path is set", async () => {
     loadSettings({ hsd_path: "/Users/me/.nvm/versions/node/v20/bin/hsd" });
     invokeMock.mockImplementation(route(nodeStatus({ binary_found: false })));
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
     const btn = await screen.findByRole("button", { name: /Start mainnet node/i });
     await waitFor(() => expect(btn).toBeEnabled());
   });
 
   it("Start is disabled when no binary is found and no path is set", async () => {
     invokeMock.mockImplementation(route(nodeStatus({ binary_found: false })));
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
     expect(await screen.findByRole("button", { name: /Start mainnet node/i })).toBeDisabled();
   });
 
@@ -284,7 +271,7 @@ describe("Node status (truthful, RPC-based)", () => {
         }),
       ),
     );
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
     const err = await screen.findByTestId("node-last-error");
     expect(err).toHaveTextContent(/indexes don't match|address index|re-sync/i);
     // A plain error (not an index mismatch) offers no re-sync button.
@@ -304,7 +291,7 @@ describe("Node status (truthful, RPC-based)", () => {
         }),
       ),
     );
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
 
     const btn = await screen.findByTestId("node-resync");
     fireEvent.click(btn);
@@ -316,7 +303,7 @@ describe("Node status (truthful, RPC-based)", () => {
 
   it("Settings no longer shows the redundant Wallet block", async () => {
     invokeMock.mockImplementation(route(nodeStatus({ binary_found: true })));
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
     // Connections section still renders…
     expect(await screen.findByText(/Connections/i)).toBeInTheDocument();
     // …but the removed Wallet block's "Manage wallets" link is gone.
@@ -331,7 +318,7 @@ describe("Node status (truthful, RPC-based)", () => {
         nodeStatus({ connected: true, process_alive: false, ownership: "outside", height: 500 }),
       ),
     );
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
     expect(await screen.findByRole("button", { name: /Stop mainnet node/i })).toBeDisabled();
     expect(screen.queryByRole("button", { name: /Start mainnet node/i })).toBeNull();
   });
@@ -342,7 +329,7 @@ describe("Node status (truthful, RPC-based)", () => {
         nodeStatus({ connected: false, process_alive: true, ownership: "own", starting: true }),
       ),
     );
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
 
     expect(await screen.findByText("Starting mainnet node…")).toBeInTheDocument();
   });
@@ -353,13 +340,13 @@ describe("Node status (truthful, RPC-based)", () => {
         nodeStatus({ process_alive: false, connected: false, ownership: "own", starting: true }),
       ),
     );
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
     expect(await screen.findByRole("button", { name: /Stop mainnet node/i })).toBeEnabled();
   });
 
   it("Settings shows Stopped when nothing is running", async () => {
     invokeMock.mockImplementation(route(nodeStatus()));
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
 
     expect(await screen.findByText(/^Stopped$/i)).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: /Start mainnet node/i })).toBeInTheDocument();
@@ -367,7 +354,7 @@ describe("Node status (truthful, RPC-based)", () => {
 
   it("Settings shows Read source: Explorer when node is not synced", async () => {
     invokeMock.mockImplementation(route(nodeStatus({ connected: false, read_source: "explorer" })));
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
 
     expect(await screen.findByText(/Read source:/)).toBeInTheDocument();
     expect(await screen.findByText("Explorer")).toBeInTheDocument();
@@ -385,7 +372,7 @@ describe("Node status (truthful, RPC-based)", () => {
         }),
       ),
     );
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("node") });
 
     expect(await screen.findByText(/Read source:/)).toBeInTheDocument();
     expect(await screen.findByText("Local node cache")).toBeInTheDocument();
@@ -393,7 +380,7 @@ describe("Node status (truthful, RPC-based)", () => {
 
   it("Settings shows updated explorer description about fallback behavior", async () => {
     invokeMock.mockImplementation(route(nodeStatus()));
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("connections") });
 
     expect(
       await screen.findByText(
@@ -433,7 +420,7 @@ describe("Settings — bid backup export (Task 2 / C2)", () => {
           return Promise.resolve(null);
       }
     });
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("import") });
 
     // Warning copy about backing up alongside the seed.
     expect(await screen.findByText(/store it alongside your seed phrase/i)).toBeInTheDocument();
@@ -486,7 +473,7 @@ describe("Settings — bid backup export (Task 2 / C2)", () => {
           return Promise.resolve(null);
       }
     });
-    render(<Settings />, { wrapper: wrapper() });
+    render(<Settings />, { wrapper: settingsWrapper("import") });
 
     const button = await screen.findByTestId("export-bid-backup");
     await waitFor(() => expect(button).not.toBeDisabled());

@@ -1,4 +1,4 @@
-import { Check } from "lucide-react";
+import { CircleCheck } from "lucide-react";
 import { Icon } from "./Icon";
 import type { NodeConnectionCheck } from "../../types";
 
@@ -12,12 +12,13 @@ export function ConnectionCheckStatus({ result, error }: Props) {
   if (result?.reachable) {
     return (
       <span className="text-xs text-green-600" data-testid="connection-success">
-        <span className="inline-flex items-center gap-1">
-          <Icon icon={Check} size={14} />
-          Connected
-        </span>{" "}
-        · height {result.height} · {result.synced ? "synced" : "syncing"}
-        {result.network ? ` · ${result.network}` : ""}
+        <span className="inline-flex items-start gap-1">
+          <Icon icon={CircleCheck} size={13} className="mt-px" />
+          <span>
+            Connected · height {result.height} · {result.synced ? "synced" : "syncing"}
+            {result.network ? ` · ${result.network}` : ""}
+          </span>
+        </span>
         {result.networkMatches === false && (
           <span className="block text-amber-600" data-testid="connection-network-mismatch">
             Network mismatch — this wallet expects a different chain. The app will not read from

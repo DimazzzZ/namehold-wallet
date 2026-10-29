@@ -70,6 +70,7 @@ describe("Settings — the active wallet's network node", () => {
 
     const select = (await screen.findByTestId("chain-source-select")) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe("local_spv"));
+    fireEvent.click(screen.getByTestId("settings-section-node"));
     const box = await screen.findByTestId("autostart-hsd-checkbox");
     expect(box).toBeChecked(); // mainnet has no key of its own: the app-wide value
     expect(screen.getByText(/Start the mainnet node automatically/i)).toBeInTheDocument();
@@ -90,17 +91,17 @@ describe("Settings — the active wallet's network node", () => {
 
   it("names the network on Start and Stop", async () => {
     route("regtest");
-    renderSettings();
+    renderSettings("node");
     expect(await screen.findByRole("button", { name: "Start regtest node" })).toBeInTheDocument();
 
     route("mainnet", { connected: true, process_alive: true, ownership: "own" });
-    renderSettings();
+    renderSettings("node");
     expect(await screen.findByRole("button", { name: "Stop mainnet node" })).toBeEnabled();
   });
 
   it("disables Stop for a node Namehold did not start, and says why", async () => {
     route("mainnet", { connected: true, ownership: "outside" });
-    renderSettings();
+    renderSettings("node");
     const stop = await screen.findByTestId("node-stop-button");
     expect(stop).toBeDisabled();
     fireEvent.mouseEnter(stop.parentElement as HTMLElement);
@@ -113,7 +114,7 @@ describe("Settings — the active wallet's network node", () => {
 
   it("says the node is starting", async () => {
     route("regtest", { process_alive: true, ownership: "own", starting: true });
-    renderSettings();
+    renderSettings("node");
     expect(await screen.findByText("Starting regtest node…")).toBeInTheDocument();
   });
 });

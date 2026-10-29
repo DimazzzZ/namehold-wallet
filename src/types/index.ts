@@ -635,8 +635,6 @@ export interface WatchlistStatus {
 /** The five primary nav sections (shell v2). */
 export type NavKey = "wallet" | "names" | "market" | "activity" | "settings";
 
-export type MigrationSectionKey = "namebase" | "sync";
-
 export type StatusTone = "default" | "info" | "success" | "warning" | "error";
 
 export interface PageAction {

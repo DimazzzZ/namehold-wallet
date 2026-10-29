@@ -9,7 +9,7 @@ import { ActivityView } from "./components/ActivityView";
 import MarketPage from "./components/market/MarketPage";
 import { NamesView } from "./components/NamesView";
 import { NameRoute } from "./components/NamePage";
-import { SettingsInterim } from "./components/interim/SettingsInterim";
+import { Settings } from "./components/Settings";
 import { Onboarding } from "./components/Onboarding";
 import { useSettingsStore } from "./stores/settings";
 import { useWalletProfiles, useDraftConfirmationWatcher } from "./queries/wallet";
@@ -58,7 +58,7 @@ function AppRoutes() {
         <Route path="/names/:name" element={<NameRoute />} />
         <Route path="/market" element={<MarketPage />} />
         <Route path="/activity" element={<ActivityView />} />
-        <Route path="/settings" element={<SettingsInterim />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="/about" element={<AboutPage />} />
         {ROUTE_ALIASES.map((a) => (
           <Route key={a.from} path={a.from} element={<Navigate to={a.to} replace />} />
