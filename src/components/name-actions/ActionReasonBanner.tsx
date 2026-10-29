@@ -22,7 +22,7 @@ export function ActionReasonBanner({ reason }: Props) {
       data-testid="action-reason"
     >
       <span>{reason}</span>
-      <UnlockButton size="sm" variant="primary" />
+      <UnlockButton size="sm" variant="secondary" />
     </div>
   );
 }

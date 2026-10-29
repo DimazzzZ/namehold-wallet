@@ -48,6 +48,27 @@ describe("UnlockButton", () => {
     expect(container.firstChild).toBeNull();
   });
 
+  it("is secondary with a LockOpen icon by default (DESIGN_SYSTEM §1.1)", () => {
+    (useActiveProfile as any).mockReturnValue({ data: { id: "profile-1" } });
+    (useSignerSession as any).mockReturnValue({ data: { unlocked: false } });
+    (useUnlockSigner as any).mockReturnValue({ isPending: false, mutateAsync: vi.fn() });
+
+    render(<UnlockButton />);
+    const button = screen.getByTestId("unlock-now");
+    expect(button).not.toHaveClass("bg-blue-600");
+    expect(button.querySelector("svg")).not.toBeNull();
+    expect(button).toHaveTextContent("Unlock");
+  });
+
+  it("drops the icon when icon={null}", () => {
+    (useActiveProfile as any).mockReturnValue({ data: { id: "profile-1" } });
+    (useSignerSession as any).mockReturnValue({ data: { unlocked: false } });
+    (useUnlockSigner as any).mockReturnValue({ isPending: false, mutateAsync: vi.fn() });
+
+    render(<UnlockButton icon={null} />);
+    expect(screen.getByTestId("unlock-now").querySelector("svg")).toBeNull();
+  });
+
   it("renders nothing when the wallet is already unlocked", () => {
     (useActiveProfile as any).mockReturnValue({ data: { id: "profile-1" } });
     (useSignerSession as any).mockReturnValue({

@@ -639,6 +639,8 @@ export type StatusTone = "default" | "info" | "success" | "warning" | "error";
 
 export interface PageAction {
   label: string;
+  /** Hover hint (the app's Tooltip). */
+  tooltip?: string;
   /** A Lucide icon before the label. */
   icon?: import("lucide-react").LucideIcon;
   testId?: string;

@@ -358,6 +358,7 @@ export function WalletView() {
                 {
                   label: "Sync",
                   icon: RefreshCw,
+                  tooltip: "Scan the chain for this wallet's coins and names",
                   onClick: handleSync,
                 },
               ]
@@ -730,7 +731,7 @@ export function WalletView() {
             {!unlocked && !sendError && (
               <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800 flex items-center justify-between gap-2">
                 <span>You'll be asked for your passphrase in a secure window to sign.</span>
-                <UnlockButton size="sm" variant="primary" />
+                <UnlockButton size="sm" variant="secondary" />
               </div>
             )}
             <div className="flex gap-2 justify-end">
