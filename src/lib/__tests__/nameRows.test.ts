@@ -340,6 +340,8 @@ describe("needs-you items without a row", () => {
       selectable: false,
     });
     expect(ghost.expires?.text).toBe(`in ${formatSpanDays(3)}`);
+    // Sortable by Expires like any other row.
+    expect(ghost).toMatchObject({ expiresDays: 3, expiresBlocks: 432, valueDoos: null });
     expect(chipCounts(rows)).toMatchObject({ needs: 1, owned: 2 });
   });
 

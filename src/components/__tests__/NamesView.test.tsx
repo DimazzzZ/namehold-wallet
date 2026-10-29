@@ -126,3 +126,128 @@ describe("NamesView", () => {
     assertCanonicalTable(document.querySelector("table")!, { name: "Names" });
   });
 });
+
+describe("NamesView — sort and filters", () => {
+  const owned2 = (name: string, days: number, blocks: number, value: number) => ({
+    ...owned(name),
+    value,
+    stats: { daysUntilExpire: days, blocksUntilExpire: blocks },
+  });
+  function world() {
+    return (cmd: string) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile()]);
+        case "read_names":
+          return Promise.resolve([
+            owned2("charlie", 300, 43200, 1_000_000),
+            owned2("ab", 10, 1440, 9_000_000),
+            owned2("bravo", 60, 8640, 5_000_000),
+          ]);
+        case "get_names_action_capabilities":
+          return Promise.resolve(
+            ["charlie", "ab", "bravo"].map((n) =>
+              makeCapabilities({ name: n, taskState: "ownedNoUrgentAction" }),
+            ),
+          );
+        case "list_watchlist":
+          return Promise.resolve([{ name: "ab", addedAt: "", notes: "", tags: "design, short" }]);
+        case "list_tx_drafts":
+        case "read_auction_position_names":
+          return Promise.resolve([]);
+        default:
+          return Promise.resolve(null);
+      }
+    };
+  }
+  const order = () =>
+    screen.getAllByTestId("names-row").map((r) => r.querySelector(".font-mono")?.textContent);
+
+  it("sorts by a header click and reverses on the second", async () => {
+    invokeMock.mockImplementation(world());
+    render(<NamesView />, { wrapper: wrap() });
+    await waitFor(() => expect(screen.getAllByTestId("names-row")).toHaveLength(3));
+    fireEvent.click(screen.getByTestId("names-sort-expires"));
+    expect(order()).toEqual([".ab", ".bravo", ".charlie"]);
+    expect(screen.getByTestId("where")).toHaveTextContent("?sort=expires");
+    expect(screen.getByTestId("names-sort-expires").closest("th")).toHaveAttribute(
+      "aria-sort",
+      "ascending",
+    );
+    fireEvent.click(screen.getByTestId("names-sort-expires"));
+    expect(order()).toEqual([".charlie", ".bravo", ".ab"]);
+    fireEvent.click(screen.getByTestId("names-sort-value"));
+    expect(order()).toEqual([".ab", ".bravo", ".charlie"]); // high → low
+  });
+
+  it("filters from the popover, shows pills, and Clear filters resets them", async () => {
+    invokeMock.mockImplementation(world());
+    render(<NamesView />, { wrapper: wrap() });
+    await waitFor(() => expect(screen.getAllByTestId("names-row")).toHaveLength(3));
+    fireEvent.click(screen.getByTestId("names-filters-button"));
+    fireEvent.click(screen.getByTestId("names-filter-expires-90"));
+    expect(order()).toEqual([".ab", ".bravo"]);
+    fireEvent.click(screen.getByTestId("names-filter-tag-design"));
+    expect(order()).toEqual([".ab"]);
+    expect(screen.getByTestId("names-filters-button")).toHaveTextContent("Filters2");
+    expect(screen.getByTestId("names-active-filters")).toHaveTextContent("Expires within 90 days");
+    expect(screen.getByTestId("names-count")).toHaveTextContent("1 of 3");
+    fireEvent.click(screen.getAllByTestId("names-active-filter-remove")[1]!); // the tag
+    expect(order()).toEqual([".ab", ".bravo"]);
+    fireEvent.click(screen.getByTestId("names-filter-len-1-3"));
+    expect(order()).toEqual([".ab"]);
+    fireEvent.click(screen.getByText("Clear filters"));
+    expect(screen.getAllByTestId("names-row")).toHaveLength(3);
+    expect(screen.queryByTestId("names-active-filters")).toBeNull();
+  });
+
+  it("text filter matches tags; an empty result offers Clear filters", async () => {
+    invokeMock.mockImplementation(world());
+    render(<NamesView />, { wrapper: wrap("/names?chars=hyphen") });
+    expect(await screen.findByText("No names match these filters.")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("names-filters-empty-clear"));
+    await waitFor(() => expect(screen.getAllByTestId("names-row")).toHaveLength(3));
+    fireEvent.change(screen.getByTestId("names-filter"), { target: { value: "desig" } });
+    expect(order()).toEqual([".ab"]);
+  });
+
+  it("a chip keeps the sort and filters in the URL", async () => {
+    invokeMock.mockImplementation(world());
+    render(<NamesView />, { wrapper: wrap("/names?sort=value&len=4-5") });
+    await waitFor(() => expect(screen.getAllByTestId("names-row").length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByTestId("names-chip-owned"));
+    const search = screen.getByTestId("where").textContent!;
+    expect(search).toContain("filter=owned");
+    expect(search).toContain("sort=value");
+    expect(search).toContain("len=4-5");
+  });
+
+  it("regtest: Expires options and filter use blocks", async () => {
+    const base = world();
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "list_wallet_profiles"
+        ? Promise.resolve([profile({ network: "regtest" })])
+        : base(cmd),
+    );
+    render(<NamesView />, { wrapper: wrap() });
+    await waitFor(() => expect(screen.getAllByTestId("names-row")).toHaveLength(3));
+    fireEvent.click(screen.getByTestId("names-filters-button"));
+    expect(screen.getByTestId("names-filter-expires-30")).toHaveTextContent("Within 100 blocks");
+    fireEvent.click(screen.getByTestId("names-filter-expires-365"));
+    // ≤ 10,000 blocks: ab (1,440) and bravo (8,640), not charlie (43,200)
+    expect(order()).toEqual([".ab", ".bravo"]);
+  });
+
+  it("drops selected rows the filters hide", async () => {
+    invokeMock.mockImplementation(world());
+    render(<NamesView />, { wrapper: wrap() });
+    await waitFor(() => expect(screen.getAllByTestId("names-row")).toHaveLength(3));
+    fireEvent.click(screen.getByLabelText("Select all names"));
+    expect(screen.getByTestId("batch-action-bar")).toHaveTextContent("3 selected");
+    fireEvent.click(screen.getByTestId("names-filters-button"));
+    fireEvent.click(screen.getByTestId("names-filter-expires-90"));
+    await waitFor(() =>
+      expect(screen.getByTestId("batch-action-bar")).toHaveTextContent("2 selected"),
+    );
+  });
+});
