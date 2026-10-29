@@ -1,3 +1,5 @@
+import { X } from "lucide-react";
+import { Icon } from "./Icon";
 import { useEffect, useRef } from "react";
 
 interface DialogProps {
@@ -71,9 +73,10 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
           <h2 className="text-lg font-semibold">{title}</h2>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 text-xl leading-none cursor-pointer"
+            aria-label="Close"
+            className="text-gray-400 hover:text-gray-600 cursor-pointer"
           >
-            &times;
+            <Icon icon={X} size={18} />
           </button>
         </div>
         <div className="p-4">{children}</div>

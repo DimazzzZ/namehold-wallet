@@ -1,3 +1,5 @@
+import { RefreshCw, Search } from "lucide-react";
+import { Icon } from "./ui/Icon";
 import { explorerCoversNetwork } from "../lib/openExternal";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -167,6 +169,7 @@ export function ActivityView() {
         actions={[
           {
             label: isFetching ? "Working..." : "Refresh",
+            icon: RefreshCw,
             variant: "secondary",
             disabled: isFetching,
             onClick: () => {
@@ -229,15 +232,22 @@ export function ActivityView() {
               resetKey={`${rawQuery}|${filterAction}|${filterStatus}`}
               toolbar={
                 <>
-                  <Input
-                    ref={searchInputRef}
-                    inputSize="sm"
-                    className="w-52 border-gray-200"
-                    placeholder="Search by name..."
-                    value={rawQuery}
-                    onChange={(e) => setFilter("q", e.target.value)}
-                    data-testid="activity-search-input"
-                  />
+                  <span className="relative inline-flex items-center">
+                    <Icon
+                      icon={Search}
+                      size={14}
+                      className="pointer-events-none absolute left-2 text-gray-400"
+                    />
+                    <Input
+                      ref={searchInputRef}
+                      inputSize="sm"
+                      className="w-52 border-gray-200 pl-7"
+                      placeholder="Search by name..."
+                      value={rawQuery}
+                      onChange={(e) => setFilter("q", e.target.value)}
+                      data-testid="activity-search-input"
+                    />
+                  </span>
                   <Select
                     inputSize="sm"
                     className="border-gray-200"

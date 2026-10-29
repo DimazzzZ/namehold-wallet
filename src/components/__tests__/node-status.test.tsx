@@ -20,7 +20,6 @@ vi.mock("@tauri-apps/plugin-autostart", () => ({
 }));
 
 import { Settings } from "../Settings";
-import { StatusStrip } from "../ui/StatusStrip";
 import { loadSettings } from "../../test/fixtures/settings";
 
 const profile = {
@@ -366,50 +365,6 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(await screen.findByRole("button", { name: /Start mainnet node/i })).toBeInTheDocument();
   });
 
-  it("StatusStrip says Node: Connected when the RPC answers", async () => {
-    invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: true, height: 9 })),
-    );
-    render(<StatusStrip />, { wrapper: wrapper() });
-
-    expect(await screen.findByText("Node:")).toBeInTheDocument();
-    expect(await screen.findByText("Connected")).toBeInTheDocument();
-  });
-
-  it("StatusStrip says Node: Offline when no node is connected", async () => {
-    invokeMock.mockImplementation(route(nodeStatus()));
-    render(<StatusStrip />, { wrapper: wrapper() });
-
-    expect(await screen.findByText("Node:")).toBeInTheDocument();
-    expect(await screen.findByText("Offline")).toBeInTheDocument();
-  });
-
-  it("StatusStrip shows Source: Explorer when node is not synced", async () => {
-    invokeMock.mockImplementation(route(nodeStatus({ connected: false, read_source: "explorer" })));
-    render(<StatusStrip />, { wrapper: wrapper() });
-
-    expect(await screen.findByText("Source:")).toBeInTheDocument();
-    expect(await screen.findByText("Explorer")).toBeInTheDocument();
-  });
-
-  it("StatusStrip shows Source: Local when node is connected and synced", async () => {
-    invokeMock.mockImplementation(
-      route(
-        nodeStatus({
-          connected: true,
-          process_alive: true,
-          height: 100,
-          headers: 100,
-          read_source: "local",
-        }),
-      ),
-    );
-    render(<StatusStrip />, { wrapper: wrapper() });
-
-    expect(await screen.findByText("Source:")).toBeInTheDocument();
-    expect(await screen.findByText("Local")).toBeInTheDocument();
-  });
-
   it("Settings shows Read source: Explorer when node is not synced", async () => {
     invokeMock.mockImplementation(route(nodeStatus({ connected: false, read_source: "explorer" })));
     render(<Settings />, { wrapper: wrapper() });
@@ -539,114 +494,5 @@ describe("Settings — bid backup export (Task 2 / C2)", () => {
 
     await waitFor(() => expect(save).toHaveBeenCalled());
     expect(invokeMock.mock.calls.map((c) => c[0])).not.toContain("save_bid_backup");
-  });
-});
-
-describe("StatusStrip Node pill menu", () => {
-  it("shows Start node when offline", async () => {
-    invokeMock.mockImplementation(route(nodeStatus()));
-    render(<StatusStrip />, { wrapper: wrapper() });
-
-    const pill = await screen.findByTestId("status-strip-node");
-    fireEvent.click(pill);
-
-    expect(await screen.findByTestId("status-strip-node-start")).toBeInTheDocument();
-    expect(screen.queryByTestId("status-strip-node-stop")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("status-strip-node-resync")).not.toBeInTheDocument();
-  });
-
-  it("shows Stop and Re-sync when connected", async () => {
-    invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: true, height: 100 })),
-    );
-    render(<StatusStrip />, { wrapper: wrapper() });
-
-    const pill = await screen.findByTestId("status-strip-node");
-    fireEvent.click(pill);
-
-    expect(await screen.findByTestId("status-strip-node-stop")).toBeInTheDocument();
-    expect(screen.getByTestId("status-strip-node-resync")).toBeInTheDocument();
-    expect(screen.queryByTestId("status-strip-node-start")).not.toBeInTheDocument();
-  });
-
-  it("Start node calls start_hsd", async () => {
-    invokeMock.mockImplementation(route(nodeStatus()));
-    render(<StatusStrip />, { wrapper: wrapper() });
-
-    const pill = await screen.findByTestId("status-strip-node");
-    fireEvent.click(pill);
-
-    const startBtn = await screen.findByTestId("status-strip-node-start");
-    fireEvent.click(startBtn);
-
-    await waitFor(() => {
-      expect(invokeMock.mock.calls.map((c) => c[0])).toContain("start_hsd");
-    });
-  });
-
-  it("says when the active network's node is starting (spec 2026-10-24 R11)", async () => {
-    invokeMock.mockImplementation(
-      route(nodeStatus({ process_alive: true, ownership: "own", starting: true })),
-    );
-    render(<StatusStrip />, { wrapper: wrapper() });
-    expect(await screen.findByText("Starting mainnet node…")).toBeInTheDocument();
-  });
-
-  it("names the active network on Start (spec 2026-10-24 R8)", async () => {
-    invokeMock.mockImplementation(route(nodeStatus()));
-    render(<StatusStrip />, { wrapper: wrapper() });
-    fireEvent.click(await screen.findByTestId("status-strip-node"));
-    expect(await screen.findByTestId("status-strip-node-start")).toHaveTextContent(
-      "Start mainnet node",
-    );
-  });
-
-  it("names no network when no wallet is active (spec 2026-10-24 R8)", async () => {
-    invokeMock.mockImplementation(route(nodeStatus({ network: null })));
-    render(<StatusStrip />, { wrapper: wrapper() });
-    fireEvent.click(await screen.findByTestId("status-strip-node"));
-    expect(await screen.findByTestId("status-strip-node-start")).toHaveTextContent(/^Start node$/);
-  });
-
-  it("disables Re-sync for a node Namehold did not start (spec 2026-10-24 R7)", async () => {
-    invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, ownership: "outside", height: 100 })),
-    );
-    render(<StatusStrip />, { wrapper: wrapper() });
-    fireEvent.click(await screen.findByTestId("status-strip-node"));
-    expect(await screen.findByTestId("status-strip-node-resync")).toBeDisabled();
-  });
-
-  it("disables Stop for a node Namehold did not start (spec 2026-10-24 R7)", async () => {
-    invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, ownership: "outside", height: 100 })),
-    );
-    render(<StatusStrip />, { wrapper: wrapper() });
-    fireEvent.click(await screen.findByTestId("status-strip-node"));
-    expect(await screen.findByTestId("status-strip-node-stop")).toBeDisabled();
-  });
-
-  it("always shows Open Settings as a secondary action", async () => {
-    invokeMock.mockImplementation(route(nodeStatus()));
-    render(<StatusStrip />, { wrapper: wrapper() });
-
-    const pill = await screen.findByTestId("status-strip-node");
-    fireEvent.click(pill);
-
-    expect(await screen.findByTestId("status-strip-node-settings")).toBeInTheDocument();
-  });
-
-  it("Sending pill still navigates to /settings (no menu)", async () => {
-    invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: true, height: 100 })),
-    );
-    render(<StatusStrip />, { wrapper: wrapper() });
-
-    // Sending pill should be a plain button, not a popover trigger.
-    const sendingPill = await screen.findByText("Sending:");
-    const sendingBtn = sendingPill.closest("button")!;
-    // Clicking it should NOT open a menu (no role=menu appears).
-    fireEvent.click(sendingBtn);
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 });

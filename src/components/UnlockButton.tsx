@@ -1,8 +1,7 @@
 import { isSignerUnlockedFor } from "../lib/signer";
 import { Button } from "./ui/Button";
-import { useActiveProfile, useSignerSession, useUnlockSigner } from "../queries/wallet";
-import { useUiStore } from "../stores/ui";
-import { mapError } from "../lib/errors";
+import { useActiveProfile, useSignerSession } from "../queries/wallet";
+import { useSignerToggle } from "../hooks/useSignerToggle";
 
 type Props = {
   size?: "sm" | "md";
@@ -27,32 +26,23 @@ export function UnlockButton({
 }: Props) {
   const { data: profile } = useActiveProfile();
   const { data: signer } = useSignerSession();
-  const unlock = useUnlockSigner();
-  const showToast = useUiStore((s) => s.showToast);
+  const { unlock, busy } = useSignerToggle();
 
   // Nothing to unlock, or already unlocked → render nothing.
   if (!profile || isSignerUnlockedFor(signer, profile.id)) return null;
-
-  const handleUnlock = async () => {
-    try {
-      await unlock.mutateAsync(profile.id);
-      showToast("Wallet unlocked", "success");
-      onUnlocked?.();
-    } catch (e) {
-      showToast(mapError(e), "error");
-    }
-  };
 
   return (
     <Button
       size={size}
       variant={variant}
       className={className}
-      onClick={handleUnlock}
-      disabled={unlock.isPending}
+      onClick={async () => {
+        if (await unlock()) onUnlocked?.();
+      }}
+      disabled={busy === "unlocking"}
       data-testid="unlock-now"
     >
-      {unlock.isPending ? "Unlocking…" : label}
+      {busy === "unlocking" ? "Unlocking…" : label}
     </Button>
   );
 }

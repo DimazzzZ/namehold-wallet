@@ -1,3 +1,5 @@
+import { ArrowUpRight } from "lucide-react";
+import { Icon } from "./ui/Icon";
 import { useState } from "react";
 import { useReceiveAddresses, useRevealNextReceiveAddress } from "../queries/read";
 import { useActiveProfile } from "../queries/wallet";
@@ -84,7 +86,7 @@ export function ReceiveAddressList() {
                       className="text-blue-500 hover:underline"
                       aria-label="View on explorer"
                     >
-                      ↗
+                      <Icon icon={ArrowUpRight} size={13} />
                     </a>
                   </Tooltip>
                 )}

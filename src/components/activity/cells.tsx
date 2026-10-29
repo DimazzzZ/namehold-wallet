@@ -1,3 +1,5 @@
+import { CornerDownRight } from "lucide-react";
+import { Icon } from "../ui/Icon";
 /** Cell renderers shared by Activity's lists and the Wallet's Recent activity card. */
 import { useState } from "react";
 import type { MergedRow } from "../../lib/activity";
@@ -144,8 +146,12 @@ export function AmountCell({ row }: { row: MergedRow }) {
         }
         className="inline-flex"
       >
-        <span className="text-gray-500 tabular-nums">
-          ⤷&nbsp;{formatHnsShort(row.nameValueDoos!)}
+        <span
+          className="text-gray-500 tabular-nums inline-flex items-center gap-0.5"
+          data-testid="activity-locked-value"
+        >
+          <Icon icon={CornerDownRight} size={12} />
+          {formatHnsShort(row.nameValueDoos!)}
         </span>
       </Tooltip>
     );

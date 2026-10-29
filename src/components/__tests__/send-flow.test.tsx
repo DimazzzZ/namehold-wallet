@@ -135,7 +135,7 @@ function wrapper() {
 }
 
 async function openReview() {
-  await screen.findByText("Primary");
+  await screen.findByTestId("receive-open");
   fireEvent.click(screen.getByTestId("wallet-send"));
   fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
   fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "1" } });
@@ -216,7 +216,7 @@ describe("WalletView send flow (asset safety)", () => {
   it("does not build a draft for an empty address", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     fireEvent.click(screen.getByTestId("wallet-send"));
     // Leave address empty, set an amount.
     fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "1" } });
@@ -231,7 +231,7 @@ describe("WalletView send flow (asset safety)", () => {
   it("does not build a draft for a non-positive amount", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     fireEvent.click(screen.getByTestId("wallet-send"));
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
     fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "0" } });
@@ -245,7 +245,7 @@ describe("WalletView send flow (asset safety)", () => {
   it("shows an inline error for a wrong-network address and disables Review", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     fireEvent.click(screen.getByTestId("wallet-send"));
     // A mainnet hs1… address on a regtest wallet.
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), {
@@ -262,7 +262,7 @@ describe("WalletView send flow (asset safety)", () => {
   it("shows an inline error when the amount exceeds the spendable balance", async () => {
     invokeMock.mockImplementation(routeInvoke()); // spendable = 5,000,000 doos (5 HNS)
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     fireEvent.click(screen.getByTestId("wallet-send"));
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
     fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "10" } }); // > 5 HNS
@@ -276,7 +276,7 @@ describe("WalletView send flow (asset safety)", () => {
   it("Max builds a sweep draft (max:true)", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     fireEvent.click(screen.getByTestId("wallet-send"));
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
     fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));

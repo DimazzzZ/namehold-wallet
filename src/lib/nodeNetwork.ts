@@ -37,3 +37,16 @@ export function networkNodeSettingKey(
 /** Why Stop is disabled for a node Namehold did not start (R7); the backend's refusal says the same. */
 export const OUTSIDE_NODE_NOT_STOPPED =
   "This node was not started by Namehold, so Namehold does not stop it.";
+
+/**
+ * What re-syncing the node does, asked before it runs: Settings › Node and the
+ * readiness popover share this one confirm. True when the user agreed.
+ */
+export function confirmResync(): boolean {
+  return window.confirm(
+    "Re-sync node data?\n\nYour current chain will be moved to a timestamped " +
+      "backup folder in the data directory, and hsd will re-sync from scratch " +
+      "with the indexes the wallet needs. This can take a while. Your wallet " +
+      "keys are NOT affected.",
+  );
+}

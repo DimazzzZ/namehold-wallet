@@ -1,3 +1,5 @@
+import { ChevronRight } from "lucide-react";
+import { Icon } from "./Icon";
 import { useState, type ReactNode } from "react";
 import { cn } from "../../lib/utils";
 
@@ -37,9 +39,9 @@ export function Disclosure({
       >
         <span
           aria-hidden="true"
-          className={cn("inline-block transition-transform", open && "rotate-90")}
+          className={cn("inline-flex transition-transform", open && "rotate-90")}
         >
-          ›
+          <Icon icon={ChevronRight} size={14} />
         </span>
         {summary}
       </button>

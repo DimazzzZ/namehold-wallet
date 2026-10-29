@@ -160,8 +160,10 @@ describe("NameActionsModal — node-readiness gating", () => {
     // No meaningful "Bid" action either, for a name whose auction is over.
     expect(screen.queryByRole("button", { name: /^Bid$/i })).toBeNull();
     expect(screen.queryByLabelText("Bid (HNS)")).not.toBeInTheDocument();
-    // Close stays available.
-    expect(screen.getByRole("button", { name: /^Close$/i })).not.toBeDisabled();
+    // Close stays available (the footer's and the dialog's own ×).
+    for (const close of screen.getAllByRole("button", { name: /^Close$/i })) {
+      expect(close).not.toBeDisabled();
+    }
   });
 
   it("states the locked-wallet reason once, with an Unlock button", async () => {

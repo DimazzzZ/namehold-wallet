@@ -214,7 +214,7 @@ pub fn run() {
                 // Disabled status label — informational only.
                 let status = MenuItem::with_id(app, "status", "Node: …", false, None::<&str>)?;
                 let toggle =
-                    MenuItem::with_id(app, "toggle_node", "Start Node", true, None::<&str>)?;
+                    MenuItem::with_id(app, "toggle_node", "Start node", true, None::<&str>)?;
                 let bgsync = CheckMenuItem::with_id(
                     app,
                     "bgsync",

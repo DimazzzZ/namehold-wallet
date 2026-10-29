@@ -1,3 +1,4 @@
+import { Icon } from "./Icon";
 import { Link } from "react-router-dom";
 import { Button } from "./Button";
 import type { PageAction } from "../../types";
@@ -24,7 +25,15 @@ export function PageHeader({ title, subtitle, badges, actions, children }: PageH
       {actions && actions.length > 0 && (
         <div className="flex items-center gap-2 shrink-0">
           {actions.map((action) => {
-            const content = action.loading ? "Working..." : action.label;
+            const label = action.loading ? "Working..." : action.label;
+            const content = action.icon ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Icon icon={action.icon} size={14} />
+                {label}
+              </span>
+            ) : (
+              label
+            );
             if (action.to && !action.disabled && !action.loading) {
               return (
                 <Link key={action.label} to={action.to}>
@@ -43,7 +52,14 @@ export function PageHeader({ title, subtitle, badges, actions, children }: PageH
                 loading={action.loading}
                 onClick={action.onClick}
               >
-                {action.label}
+                {action.icon ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Icon icon={action.icon} size={14} />
+                    {action.label}
+                  </span>
+                ) : (
+                  action.label
+                )}
               </Button>
             );
           })}

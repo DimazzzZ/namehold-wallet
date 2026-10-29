@@ -88,16 +88,7 @@ describe("HOTKEY_BINDINGS table", () => {
   });
 
   it("every binding uses an allowed scope", () => {
-    const allowed = new Set([
-      "/",
-      "/activity",
-      "/auctions",
-      "/market",
-      "/watchlist",
-      "/migration",
-      "/settings",
-      "*",
-    ]);
+    const allowed = new Set(["/", "/names", "/market", "/activity", "/settings", "*"]);
     for (const b of HOTKEY_BINDINGS) {
       const scopes = Array.isArray(b.scope) ? b.scope : [b.scope];
       for (const s of scopes) {
@@ -116,13 +107,13 @@ describe("HOTKEY_BINDINGS table", () => {
     }
   });
 
-  it("nav bindings use exactly keys '1' through '7' (drift guard)", () => {
+  it("nav bindings use exactly keys '1' through '5' (drift guard)", () => {
     const navBindings = HOTKEY_BINDINGS.filter((b) => b.category === "nav");
-    const expectedKeys = ["1", "2", "3", "4", "5", "6", "7"];
+    const expectedKeys = ["1", "2", "3", "4", "5"];
     expect(navBindings.map((b) => b.keys)).toEqual(expectedKeys);
-    // Also confirms the hook's hard-coded useHotkeys("1"..."7") calls in
+    // Also confirms the hook's hard-coded useHotkeys("1"..."5") calls in
     // useAppHotkeys.ts remain consistent with PRIMARY_ROUTES.length.
-    expect(PRIMARY_ROUTES.length).toBe(7);
+    expect(PRIMARY_ROUTES.length).toBe(5);
   });
 });
 
@@ -133,10 +124,17 @@ describe("useAppHotkeys — behavior via real keydown events", () => {
     expect(screen.getByTestId("route").textContent).toBe(PRIMARY_ROUTES[0]?.to);
   });
 
-  it("pressing 7 navigates to the seventh primary route", () => {
+  it("pressing 3 goes to /market", () => {
     renderHarness("/");
+    dispatchKey("3", "Digit3");
+    expect(screen.getByTestId("route").textContent).toBe("/market");
+  });
+
+  it("pressing 6 or 7 does nothing", () => {
+    renderHarness("/activity");
+    dispatchKey("6", "Digit6");
     dispatchKey("7", "Digit7");
-    expect(screen.getByTestId("route").textContent).toBe(PRIMARY_ROUTES[6]?.to);
+    expect(screen.getByTestId("route").textContent).toBe("/activity");
   });
 
   it("pressing Shift+? opens the cheatsheet", () => {
@@ -180,8 +178,8 @@ describe("route-scoped action keys", () => {
     spy.stop();
   });
 
-  it("pressing 's' at /auctions does NOT dispatch", () => {
-    renderHarness("/auctions");
+  it("pressing 's' at /names does NOT dispatch", () => {
+    renderHarness("/names");
     const spy = spyOnActionBus();
     dispatchKey("s", "KeyS");
     expect(spy.events).toEqual([]);
@@ -196,7 +194,7 @@ describe("route-scoped action keys", () => {
     spy.stop();
     harness.unmount();
 
-    harness = renderHarness("/auctions");
+    harness = renderHarness("/names");
     spy = spyOnActionBus();
     dispatchKey("/", "Slash");
     expect(spy.events).toEqual([{ actionId: "auctions:focusLookup" }]);

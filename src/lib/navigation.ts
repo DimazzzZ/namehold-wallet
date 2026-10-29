@@ -1,54 +1,66 @@
-import type { AppRouteKey, MigrationSectionKey, WorkspaceTab } from "../types";
+import type { LucideIcon } from "lucide-react";
+import { Globe, History, Settings, Store, Wallet } from "lucide-react";
+import type { MigrationSectionKey, NavKey, WorkspaceTab } from "../types";
+
+export type { NavKey };
 
 export interface PrimaryRoute {
-  key: AppRouteKey;
+  key: NavKey;
   to: string;
   label: string;
   description: string;
   /** A short tag beside the label, such as "New" for a recently added section. */
   badge?: string;
+  icon: LucideIcon;
 }
 
-/**
- * Wallet-first primary navigation.
- *
- * Order intentionally leads with the wallet (the default landing screen),
- * followed by the urgent Namebase migration flow, then secondary tools.
- */
+/** Wallet-first primary navigation; digits 1–5 follow this order. */
 export const PRIMARY_ROUTES: PrimaryRoute[] = [
-  { key: "wallet", to: "/", label: "Wallet", description: "Balance, send, receive, and history" },
   {
-    key: "activity",
-    to: "/activity",
-    label: "Activity",
-    description: "Full transaction and name-action history",
+    key: "wallet",
+    to: "/",
+    label: "Wallet",
+    icon: Wallet,
+    description: "Balance, send, receive, and what needs you",
   },
   {
-    key: "auctions",
-    to: "/auctions",
-    label: "Auctions",
-    description: "Acquire new Handshake TLDs",
+    key: "names",
+    to: "/names",
+    label: "Names",
+    icon: Globe,
+    description: "Names you own, bid on or watch — and finding new ones",
   },
   {
     key: "market",
     to: "/market",
     label: "Market",
-    description: "Buy names listed through Shakedex",
+    icon: Store,
+    description: "Buy and sell names through Shakedex",
     badge: "New",
   },
   {
-    key: "watchlist",
-    to: "/watchlist",
-    label: "Watchlist",
-    description: "Track names you don't own",
+    key: "activity",
+    to: "/activity",
+    label: "Activity",
+    icon: History,
+    description: "Every transaction and name action",
   },
   {
-    key: "migration",
-    to: "/migration",
-    label: "Move from Namebase",
-    description: "Guided transfer of your domains from Namebase",
+    key: "settings",
+    to: "/settings",
+    label: "Settings",
+    icon: Settings,
+    description: "Connections, node, notifications, import and safety",
   },
-  { key: "settings", to: "/settings", label: "Settings", description: "Configuration and safety" },
+];
+
+/** Old v1 URLs. Each keeps working forever as a redirect. */
+export const ROUTE_ALIASES: { from: string; to: string }[] = [
+  { from: "/auctions", to: "/names?filter=auction" },
+  { from: "/watchlist", to: "/names?filter=watching" },
+  { from: "/migration", to: "/settings?section=import" },
+  // v1 StatusStrip pushed "/wallet", which only worked through the "*" fallback.
+  { from: "/wallet", to: "/" },
 ];
 
 export const MIGRATION_TABS: WorkspaceTab<MigrationSectionKey>[] = [

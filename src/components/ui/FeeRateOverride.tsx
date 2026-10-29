@@ -1,3 +1,5 @@
+import { ChevronDown, ChevronRight } from "lucide-react";
+import { Icon } from "./Icon";
 import { useState } from "react";
 import { Input } from "./Input";
 import { MIN_FEE_RATE_DOOS_PER_KVB, parseDoosPerKvb } from "../../lib/feeRate";
@@ -51,8 +53,8 @@ export function FeeRateOverride({
         onClick={() => setOpen((prev) => !prev)}
         data-testid="fee-rate-override-toggle"
       >
-        <span className="font-medium text-gray-700">
-          {open ? "\u25BC" : "\u25B6"} {label}
+        <span className="font-medium text-gray-700 inline-flex items-center gap-1">
+          <Icon icon={open ? ChevronDown : ChevronRight} size={14} /> {label}
         </span>
         {trimmed && !open ? (
           <span className="text-gray-500">fee rate: {trimmed} doos/kvB</span>

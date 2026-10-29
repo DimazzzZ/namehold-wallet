@@ -615,24 +615,17 @@ export interface WalletReadModel {
 // Frontend UI-facing types (routing, shell status, workspace tabs, view models)
 // ---------------------------------------------------------------------------
 
-export type AppRouteKey =
-  "migration" | "wallet" | "auctions" | "activity" | "settings" | "watchlist" | "market";
+/** The five primary nav sections (shell v2). */
+export type NavKey = "wallet" | "names" | "market" | "activity" | "settings";
 
 export type MigrationSectionKey = "namebase" | "sync";
 
 export type StatusTone = "default" | "info" | "success" | "warning" | "error";
 
-export interface ShellStatusItem {
-  key: string;
-  label: string;
-  value: string;
-  tone: StatusTone;
-  detail?: string;
-  route?: string;
-}
-
 export interface PageAction {
   label: string;
+  /** A Lucide icon before the label. */
+  icon?: import("lucide-react").LucideIcon;
   testId?: string;
   variant?: "primary" | "secondary" | "danger" | "ghost";
   disabled?: boolean;

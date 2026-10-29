@@ -1,3 +1,5 @@
+import { ArrowRight, ChevronDown, ChevronRight, Copy } from "lucide-react";
+import { Icon } from "../ui/Icon";
 import { useEffect, useState, type ReactNode } from "react";
 import type { MergedRow } from "../../lib/activity";
 import { writeText } from "../../lib/clipboard";
@@ -137,7 +139,7 @@ export function HistoryTable({
                         onClick={() => toggle(row.key)}
                         data-testid="activity-row-toggle"
                       >
-                        {isOpen ? "⌄" : "›"}
+                        <Icon icon={isOpen ? ChevronDown : ChevronRight} size={14} />
                       </button>
                     </Tooltip>
                   </td>
@@ -228,7 +230,10 @@ function RowDetail({
                 onClick={() => void copy()}
                 data-testid="activity-copy-txid"
               >
-                {copied ? "Copied" : "Copy"}
+                <span className="inline-flex items-center gap-1">
+                  <Icon icon={Copy} size={12} />
+                  {copied ? "Copied" : "Copy"}
+                </span>
               </Button>
             </>
           ) : (
@@ -284,7 +289,9 @@ function Pager({ page, totalPages, startRow, endRow, totalRows, onGoTo }: Histor
             disabled={page >= totalPages}
             onClick={() => onGoTo(page + 1)}
           >
-            Show older →
+            <span className="inline-flex items-center gap-1">
+              Show older <Icon icon={ArrowRight} size={12} />
+            </span>
           </button>
         </div>
       )}

@@ -1,3 +1,5 @@
+import { ArrowRight } from "lucide-react";
+import { Icon } from "../ui/Icon";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { isToFinish, isWaiting } from "../../lib/activity";
@@ -26,10 +28,10 @@ export function RecentActivityCard({ onNameClick }: { onNameClick: (name: string
         <h3 className="text-sm font-semibold text-gray-700">Recent activity</h3>
         <button
           type="button"
-          className="text-xs text-blue-600 hover:underline"
+          className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"
           onClick={() => navigate("/activity")}
         >
-          All activity →
+          All activity <Icon icon={ArrowRight} size={12} />
         </button>
       </div>
       {recent.length === 0 ? (

@@ -71,7 +71,7 @@ pub struct TrayState {
     pub tray: TrayIcon<Wry>,
     /// Disabled status label ("Node: Running", "Node: Stopped", "Node: Syncing").
     pub status: MenuItem<Wry>,
-    /// Toggle button ("Start Node" / "Stop Node"). Its text and enabled state
+    /// Toggle button ("Start mainnet node" / "Stop mainnet node", "Start node" with no wallet). Its text and enabled state
     /// are updated by `refresh_tray`.
     pub toggle: MenuItem<Wry>,
     /// Background-sync checkbox. Reflects `background_sync_enabled` setting.
@@ -224,7 +224,7 @@ fn node_menu_texts(snap: &TraySnapshot) -> (String, String, bool) {
     let verb = if snap.node_running { "Stop" } else { "Start" };
     let toggle = match snap.network {
         Some(n) => format!("{verb} {} node", n.display_name()),
-        None => format!("{verb} Node"),
+        None => format!("{verb} node"),
     };
     (status.to_string(), toggle, true)
 }
@@ -508,7 +508,7 @@ mod tests {
         );
         assert_eq!(
             node_menu_texts(&snap(false, false, None, false)).1,
-            "Start Node",
+            "Start node",
             "no wallet, no network to name"
         );
     }

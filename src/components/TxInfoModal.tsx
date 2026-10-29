@@ -1,3 +1,5 @@
+import { ArrowUpRight } from "lucide-react";
+import { Icon } from "./ui/Icon";
 import { useReadTxInfo } from "../queries/read";
 import { useNodeLive } from "../queries/node";
 import { Dialog } from "./ui/Dialog";
@@ -57,7 +59,7 @@ export function TxInfoModal({ txid, open, onClose, isMainnet }: TxInfoModalProps
             onClick={() => openExternal(explorerTxUrl(txid))}
             data-testid="tx-explorer-link"
           >
-            View on explorer ↗
+            View on explorer <Icon icon={ArrowUpRight} size={14} />
           </button>
         )}
 

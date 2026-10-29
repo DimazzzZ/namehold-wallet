@@ -49,7 +49,7 @@ export function Cheatsheet({ open, onClose }: CheatsheetProps) {
             <table className="w-full text-sm">
               <tbody>
                 {group.bindings.map((b) => (
-                  <tr key={b.keys}>
+                  <tr key={`${b.keys}:${[b.scope].flat().join(",")}`}>
                     <td className="py-1 pr-4 text-gray-700">{b.description}</td>
                     <td className="py-1 text-right">
                       <kbd className="px-2 py-0.5 rounded border border-gray-300 bg-gray-50 text-xs font-mono text-gray-800">

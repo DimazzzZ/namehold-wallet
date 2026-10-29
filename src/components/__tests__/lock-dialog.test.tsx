@@ -380,7 +380,7 @@ describe("LockDialog", () => {
     const lock = await lockButton();
     fireEvent.click(lock);
     await screen.findByTestId("lock-send");
-    fireEvent.click(screen.getByText("×"));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(calls("delete_tx_draft")).toEqual([["delete_tx_draft", { draftId: "lock-1" }]]);
   });

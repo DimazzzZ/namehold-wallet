@@ -229,7 +229,7 @@ describe("WalletView — batch reveal/redeem/finalize", () => {
     async (_action, testid, command) => {
       invokeMock.mockImplementation(routeInvoke());
       render(<WalletView />, { wrapper: wrapper() });
-      await screen.findByText("Primary");
+      await screen.findByTestId("receive-open");
       await selectBothNames();
 
       fireEvent.click(screen.getByTestId(testid));
@@ -257,7 +257,7 @@ describe("WalletView — batch reveal/redeem/finalize", () => {
         }),
       );
       render(<WalletView />, { wrapper: wrapper() });
-      await screen.findByText("Primary");
+      await screen.findByTestId("receive-open");
       await selectBothNames();
 
       expect(screen.getByTestId(testid)).toBeDisabled();
@@ -267,7 +267,7 @@ describe("WalletView — batch reveal/redeem/finalize", () => {
   it("after building a reveal draft, confirming signs then broadcasts", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByText("Primary");
+    await screen.findByTestId("receive-open");
     await selectBothNames();
 
     fireEvent.click(screen.getByTestId("batch-reveal-btn"));
