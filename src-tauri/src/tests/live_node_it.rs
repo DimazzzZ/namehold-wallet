@@ -2148,7 +2148,7 @@ async fn live_send_estimate_fee_smoke() {
     fund(&cl, &addr, 103).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
 
-    let est = estimate_tx_draft_fee(app.state(), 500_000, Some(1))
+    let est = estimate_tx_draft_fee(app.state(), 500_000, Some(1), None)
         .await
         .expect("estimate");
     let est_fee = est.get("feeDoos").and_then(|v| v.as_i64()).unwrap();

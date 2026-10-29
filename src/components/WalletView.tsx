@@ -11,6 +11,7 @@ import {
   useWriteCapability,
   useWalletBalances,
   useBuildSendDraft,
+  useEstimateMaxSend,
 } from "../queries/wallet";
 import { useDraftRunner } from "../queries/useDraftRunner";
 import { usePurchaseFinalize } from "./market/usePurchase";
@@ -82,6 +83,10 @@ export function WalletView() {
   const setManualSync = useSyncTriggerStore((s) => s.setManualSync);
   const signerToggle = useSignerToggle();
   const buildDraft = useBuildSendDraft();
+  const estimateMax = useEstimateMaxSend();
+  // The amount Max put in the field: Review sends a sweep (no change left)
+  // while the field still holds it, and that amount otherwise.
+  const [maxFill, setMaxFill] = useState<number | null>(null);
   // The draft Review or Max builds reserves its coins: leaving the review
   // unsent abandons it, a failed send keeps it for Retry (useDraftRunner).
   const runner = useDraftRunner();
@@ -180,6 +185,7 @@ export function WalletView() {
     setSendAmount("");
     setSendFeeRate("");
     setDraft(null);
+    setMaxFill(null);
     setSubmitting(false);
     setSendError(null);
   };
@@ -236,8 +242,19 @@ export function WalletView() {
   const openNamePage = useOpenName();
   const openName = (name: string) => openNamePage(name, { seedCaps: capsByName.get(name) });
 
-  const handleBuildDraft = async (opts?: { max?: boolean }) => {
-    const max = opts?.max ?? false;
+  // Max fills the amount and stays on the form: the user may lower it first.
+  const handleMax = async () => {
+    try {
+      const est = await estimateMax.mutateAsync(parseFeeRateArg(sendFeeRate) ?? undefined);
+      setSendAmount(dollarydoosToHns(est.maxSendDoos));
+      setMaxFill(est.maxSendDoos);
+    } catch (e) {
+      showToast(mapError(e), "error");
+    }
+  };
+
+  const handleBuildDraft = async () => {
+    const max = maxFill != null && hnsToDollarydoos(sendAmount) === maxFill;
     if (!sendAddress.trim()) {
       showToast("Enter a destination address", "error");
       return;
@@ -256,10 +273,6 @@ export function WalletView() {
         feeRate: parseFeeRateArg(sendFeeRate) ?? undefined,
       });
       setDraft(d);
-      // Reflect the swept amount in the field so "Max" is transparent.
-      if (max && d.summary?.sendTotalDoos != null) {
-        setSendAmount(dollarydoosToHns(d.summary.sendTotalDoos));
-      }
     } catch (e) {
       showToast(mapError(e), "error");
     }
@@ -640,12 +653,12 @@ export function WalletView() {
                     step="0.000001"
                   />
                 </div>
-                <Tooltip content="Send your entire spendable balance (minus the network fee)">
+                <Tooltip content="Fill in your whole spendable balance minus the network fee; you can lower it before Review">
                   <Button
                     size="sm"
                     variant="secondary"
-                    disabled={!canMax || buildDraft.isPending}
-                    onClick={() => handleBuildDraft({ max: true })}
+                    disabled={!canMax || buildDraft.isPending || estimateMax.isPending}
+                    onClick={() => void handleMax()}
                   >
                     Max
                   </Button>

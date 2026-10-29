@@ -287,6 +287,22 @@ export function useBroadcastTxDraft() {
 }
 
 /**
+ * Send's Max: the most this wallet can send (`maxSendDoos`, every spendable
+ * coin minus the fee) at `feeRate`, without building a draft. A draft would
+ * reserve the coins while the user is still adjusting the amount.
+ */
+export function useEstimateMaxSend() {
+  return useMutation({
+    mutationFn: (feeRate: number | undefined) =>
+      invoke<{ maxSendDoos: number; feeDoos: number }>("estimate_tx_draft_fee", {
+        valueDoos: 0,
+        feeRate,
+        max: true,
+      }),
+  });
+}
+
+/**
  * Discard a pending draft, freeing any coins it reserved. The backend
  * (`delete_tx_draft`) refuses drafts already in a `broadcasted` /
  * `confirmed` / `broadcast_pending` state — callers should only offer this

@@ -97,6 +97,14 @@ function routeInvoke(opts: { broadcast: "ok" | "fail" } = { broadcast: "ok" }) {
           txid: null,
           createdAt: "2026-01-01",
         });
+      case "estimate_tx_draft_fee":
+        return Promise.resolve({
+          feeDoos: 1410,
+          changeDoos: 0,
+          inputTotalDoos: 5_000_000,
+          numInputs: 1,
+          maxSendDoos: 4_998_590,
+        });
       case "sign_tx_draft":
         return Promise.resolve({
           id: "d1",
@@ -273,7 +281,7 @@ describe("WalletView send flow (asset safety)", () => {
     expect(screen.getByRole("button", { name: /Review/i })).toBeDisabled();
   });
 
-  it("Max builds a sweep draft (max:true)", async () => {
+  it("Max fills the amount with everything but the fee and stays on the form", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByTestId("receive-open");
@@ -281,9 +289,42 @@ describe("WalletView send flow (asset safety)", () => {
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
     fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
 
+    await waitFor(() => expect(screen.getByLabelText(/Amount \(HNS\)/i)).toHaveValue(4.99859));
+    const est = invokeMock.mock.calls.find((c) => c[0] === "estimate_tx_draft_fee");
+    expect(est?.[1]).toMatchObject({ max: true });
+    // Nothing is built (a draft would reserve the coins) and the form stays.
+    expect(invokeMock.mock.calls.some((c) => c[0] === "build_send_hns_draft")).toBe(false);
+    expect(screen.queryByTestId("send-recipient")).toBeNull();
+  });
+
+  it("Max, then Review with the amount untouched, builds the sweep", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByTestId("receive-open");
+    fireEvent.click(screen.getByTestId("wallet-send"));
+    fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
+    fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
+    await waitFor(() => expect(screen.getByLabelText(/Amount \(HNS\)/i)).toHaveValue(4.99859));
+    fireEvent.click(screen.getByRole("button", { name: /^Review$/i }));
     await waitFor(() => {
       const call = invokeMock.mock.calls.find((c) => c[0] === "build_send_hns_draft");
       expect(call?.[1]).toMatchObject({ toAddress: RECIPIENT, max: true });
+    });
+  });
+
+  it("Max, then a lower amount, sends that amount with change", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByTestId("receive-open");
+    fireEvent.click(screen.getByTestId("wallet-send"));
+    fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
+    fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
+    await waitFor(() => expect(screen.getByLabelText(/Amount \(HNS\)/i)).toHaveValue(4.99859));
+    fireEvent.change(screen.getByLabelText(/Amount \(HNS\)/i), { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Review$/i }));
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find((c) => c[0] === "build_send_hns_draft");
+      expect(call?.[1]).toMatchObject({ toAddress: RECIPIENT, valueDoos: 3_000_000, max: false });
     });
   });
 
@@ -296,21 +337,25 @@ describe("WalletView send flow (asset safety)", () => {
       fireEvent.click(screen.getByTestId("wallet-send"));
       fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
       fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /^Review$/i })).not.toBeDisabled(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: /^Review$/i }));
       await screen.findByTestId("send-recipient");
     };
 
-    it("Max, then Escape, discards the draft", async () => {
+    it("Review, then Escape, discards the draft", async () => {
       await toReview();
       fireEvent.keyDown(document, { key: "Escape" });
       await waitFor(() => expect(deletes()).toHaveLength(1));
       expect(deletes()[0]![1]).toEqual({ draftId: "d1" });
     });
 
-    it("Max, then Back, discards the draft and a second Max builds a fresh one", async () => {
+    it("Review, then Back, discards the draft and a second Review builds a fresh one", async () => {
       await toReview();
       fireEvent.click(screen.getByRole("button", { name: /^Back$/i }));
       await waitFor(() => expect(deletes()).toHaveLength(1));
-      fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
+      fireEvent.click(screen.getByRole("button", { name: /^Review$/i }));
       await screen.findByTestId("send-recipient");
       expect(invokeMock.mock.calls.filter((c) => c[0] === "build_send_hns_draft")).toHaveLength(2);
     });
@@ -322,6 +367,10 @@ describe("WalletView send flow (asset safety)", () => {
       fireEvent.click(screen.getByTestId("wallet-send"));
       fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
       fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /^Review$/i })).not.toBeDisabled(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: /^Review$/i }));
       await screen.findByTestId("send-recipient");
       fireEvent.click(screen.getByRole("button", { name: /Sign & Broadcast/i }));
       await screen.findByTestId("send-error");
