@@ -21,20 +21,20 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 
 <table>
   <tr>
-    <td width="50%"><a href="docs/assets/auctions.png"><img src="docs/assets/auctions.png" alt="Auctions: every name you are bidding on, with its next step and countdown" /></a></td>
+    <td width="50%"><a href="docs/assets/names.png"><img src="docs/assets/names.png" alt="Names: every name you own, bid on or watch, with its next step, countdown and filters" /></a></td>
+    <td width="50%"><a href="docs/assets/name.png"><img src="docs/assets/name.png" alt="A name's page: its timeline, details and actions, with the ICANN badge on a name someone also applied for as a gTLD" /></a></td>
+  </tr>
+  <tr>
+    <td align="center">Names</td>
+    <td align="center">A name, with the ICANN 2026 round flag</td>
+  </tr>
+  <tr>
     <td width="50%"><a href="docs/assets/market.png"><img src="docs/assets/market.png" alt="Market: Shakedex listings checked by your node, and your purchases on their way" /></a></td>
-  </tr>
-  <tr>
-    <td align="center">Auctions</td>
-    <td align="center">Market (Shakedex)</td>
-  </tr>
-  <tr>
     <td width="50%"><a href="docs/assets/market-listings.png"><img src="docs/assets/market-listings.png" alt="My listings: your names for sale, Buy Now and reverse auction, and one still in its transfer lockup" /></a></td>
-    <td width="50%"><a href="docs/assets/namebase-migration.png"><img src="docs/assets/namebase-migration.png" alt="Move from Namebase: the history you exported, imported" /></a></td>
   </tr>
   <tr>
+    <td align="center">Market (Shakedex)</td>
     <td align="center">Selling your names</td>
-    <td align="center">Namebase history</td>
   </tr>
 </table>
 

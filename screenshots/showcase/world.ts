@@ -14,6 +14,7 @@
 import type {
   AuctionTaskState,
   HsdName,
+  NameResource,
   NameActionCapabilities,
   NameActionCapability,
   ReceiveAddressRow,
@@ -619,5 +620,18 @@ export function namebaseSummary(): NamebaseHistorySummary {
     totalUsdCents: rows.reduce((s, r) => s + (r.usdCents ?? 0), 0),
     earliest: rows[rows.length - 1]!.createdAt,
     latest: rows[0]!.createdAt,
+  };
+}
+
+/** The DNS records of an owned name, as the Records preview on its page reads them. */
+export function records(name: string): NameResource {
+  if (!OWNED.some(([n]) => n === name)) return { records: [] };
+  return {
+    records: [
+      { type: "NS", ns: `ns1.${name}.` },
+      { type: "GLUE4", ns: `ns1.${name}.`, address: "203.0.113.10" },
+      { type: "TXT", txt: ["v=spf1 -all"] },
+    ],
+    ttl: 3600,
   };
 }

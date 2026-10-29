@@ -19,6 +19,11 @@ globalThis.__webqa_overrides = {
   get_wallet_balances: world.balances(),
   read_balance: world.legacyBalance(),
   read_names: world.names(),
+  // The name page reads one name; the showcase's owned names answer it, so
+  // Details shows their heights and values instead of "Nothing on-chain yet."
+  read_name_info: (args?: Record<string, unknown>) =>
+    world.names().find((n) => n.name === String(args?.name)) ?? null,
+  read_name_records: (args?: Record<string, unknown>) => world.records(String(args?.name)),
   read_renewals: world.renewals(),
   read_auction_position_names: world.auctionPositionNames(),
   get_name_action_capabilities: (args?: Record<string, unknown>) =>
