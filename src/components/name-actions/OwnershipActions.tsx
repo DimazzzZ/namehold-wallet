@@ -189,15 +189,16 @@ export function OwnershipActions({
             expires. Use it only if your key was stolen.
           </p>
           <ActionHint reason={actionReason(caps?.canRevoke)}>
-            <button
-              type="button"
-              className="inline-flex items-center rounded border border-red-200 bg-white px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:pointer-events-none"
+            <Button
+              size="sm"
+              variant="secondary"
+              className="text-red-700 hover:bg-red-50"
               disabled={revokeDisabled}
               onClick={() => onRevokeOpenChange(true)}
               data-testid="revoke-open"
             >
               Revoke…
-            </button>
+            </Button>
           </ActionHint>
         </div>
         {revokeOpen && (

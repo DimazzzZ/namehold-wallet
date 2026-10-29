@@ -380,6 +380,7 @@ export function GuidedAction({
                 </Button>
               </div>
             )}
+            {/* Only Reveal here: Redeem is a later phase's action (DESIGN_SYSTEM §1.2). */}
             <div className="flex gap-2">
               <Button
                 variant="secondary"
@@ -388,13 +389,6 @@ export function GuidedAction({
                 data-testid="reveal-primary"
               >
                 {guide.action}
-              </Button>
-              <Button
-                variant="secondary"
-                disabled={actionDisabled("REDEEM", caps?.canRedeem)}
-                onClick={onRedeem}
-              >
-                {busy === "REDEEM" ? "…" : "Redeem (lost bid)"}
               </Button>
             </div>
             {summary?.urgency && (

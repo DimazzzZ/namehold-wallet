@@ -613,20 +613,20 @@ describe("Name page — local bid shown before reveal", () => {
     });
 
     const yourBid = await screen.findByTestId("name-your-bid");
-    // The Details card's row: label, then the full-precision amount.
-    expect(yourBid).toHaveTextContent(/^Your bid\s*100\.000000 HNS/);
+    // The Details card's row: label, then the short amount (exact on hover).
+    expect(yourBid).toHaveTextContent(/^Your bid\s*100 HNS/);
     // Both numbers are shown, so the "hidden until reveal" hint is gone.
     expect(yourBid).not.toHaveTextContent(/hidden until reveal/i);
     // HSD term: the on-chain concealing amount is the "lockup" (OUR value).
     const lockup = await screen.findByTestId("name-your-lockup");
-    expect(lockup).toHaveTextContent("lockup 500.000000");
+    expect(lockup).toHaveTextContent("lockup 500 HNS");
     // The old non-canonical "blind (on-chain)" wording must be gone.
     expect(yourBid).not.toHaveTextContent(/blind/i);
     // The misleading on-chain "High bid 0 · value 0" must NOT be rendered.
     expect(screen.queryByText("High bid")).not.toBeInTheDocument();
   });
 
-  it("falls back to on-chain high-bid/value when the wallet has no bid commitment", async () => {
+  it("without a bid of ours, says the high bid is hidden until reveal while bidding", async () => {
     invokeMock.mockImplementation(
       routeBidding({
         hasBidCommitment: false,
@@ -639,9 +639,11 @@ describe("Name page — local bid shown before reveal", () => {
       wrapper: pageWrapper(),
     });
 
-    // No local bid → no "Your bid" line; the on-chain summary is shown instead.
-    expect(await screen.findByText("High bid")).toBeInTheDocument();
-    expect(screen.getByText("7.000000 HNS")).toBeInTheDocument();
+    // No local bid → no "Your bid" line; bids are sealed, so no figure either.
+    expect(await screen.findByTestId("name-high-bid")).toHaveTextContent(
+      /High bid\s*hidden until reveal/,
+    );
+    expect(screen.queryByText(/7(\.0+)? HNS/)).not.toBeInTheDocument();
     expect(screen.queryByTestId("name-your-bid")).not.toBeInTheDocument();
   });
 });
@@ -735,6 +737,9 @@ describe("Name page — recover bid commitment (Task 2 / C2)", () => {
 
     const recoverBox = await screen.findByTestId("recover-bid");
     expect(recoverBox).toBeInTheDocument();
+    // The reveal phase offers Reveal only; Redeem is a later phase's action.
+    expect(screen.getByTestId("reveal-primary")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Redeem/ })).toBeNull();
 
     fireEvent.change(screen.getByLabelText("Your bid amount (HNS)"), {
       target: { value: "10" },
@@ -756,5 +761,49 @@ describe("Name page — recover bid commitment (Task 2 / C2)", () => {
 
     await screen.findByTestId("name-phase");
     expect(screen.queryByTestId("recover-bid")).toBeNull();
+  });
+});
+
+describe("Name page — High bid from the reveal on", () => {
+  function route(state: string, highest: number) {
+    return (cmd: string) => {
+      switch (cmd) {
+        case "get_name_action_capabilities":
+          return Promise.resolve(
+            makeCapabilities({ name: "seen", phase: state, taskState: "unavailableOther" }),
+          );
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "read_name_info":
+          return Promise.resolve({
+            name: "seen",
+            state,
+            height: 100,
+            renewal: 200,
+            owner: null,
+            value: 0,
+            highest,
+            registered: false,
+            stats: { blocksUntilClose: 4 },
+          });
+        default:
+          return Promise.resolve(null);
+      }
+    };
+  }
+
+  it("shows a revealed high bid short, the exact value on hover", async () => {
+    invokeMock.mockImplementation(route("REVEAL", 7_123_456));
+    render(<NamePageAt path="/names/seen" />, { wrapper: pageWrapper() });
+    expect(await screen.findByTestId("name-high-bid")).toHaveTextContent(/High bid\s*7\.12 HNS/);
+  });
+
+  it("hides the row when nothing is revealed: never 0 HNS", async () => {
+    invokeMock.mockImplementation(route("REVEAL", 0));
+    render(<NamePageAt path="/names/seen" />, { wrapper: pageWrapper() });
+    // The card is up (its Opened row), and no High bid row in it.
+    expect(await screen.findByTestId("name-details")).toHaveTextContent("Opened");
+    expect(screen.queryByTestId("name-high-bid")).toBeNull();
+    expect(screen.queryByText(/^0 HNS$/)).toBeNull();
   });
 });
