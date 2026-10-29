@@ -276,6 +276,36 @@ describe("NamesView purchases", () => {
     });
   });
 
+  it("a purchase row's click does what View does: Market, not the name page", async () => {
+    invokeMock.mockImplementation(
+      route([
+        purchaseRow({
+          state: "awaitingFinalize",
+          blocksRemaining: 3,
+          purchaseId: "p1",
+          purchaseDraftId: "draft-p1",
+          priceDoos: 5_000_000,
+          lockupBlocks: 10,
+          wallClockTiming: false,
+        }),
+      ]),
+    );
+    function Where() {
+      return <div data-testid="where">{useLocation().pathname}</div>;
+    }
+    render(
+      <>
+        <NamesView />
+        <Where />
+      </>,
+      { wrapper: wrapper() },
+    );
+    const row = await screen.findByTestId("names-row");
+    expect(row).toHaveClass("cursor-pointer");
+    fireEvent.click(row);
+    expect(screen.getByTestId("where")).toHaveTextContent("/market");
+  });
+
   it("watch-only profiles get no Finalize", async () => {
     invokeMock.mockImplementation(
       route(

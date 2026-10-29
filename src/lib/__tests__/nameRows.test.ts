@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { buildNameRows, chipCounts, wallClock, type NameRowsInput } from "../nameRows";
 import { formatSpanDays } from "../auction";
 import { allowed, makeCapabilities } from "../../test/fixtures/capabilities";
+import type { NeedsYouItem } from "../needsYou";
 import type { HsdName, NameActionCapabilities } from "../../types";
 
 const name = (n: string, over: Partial<HsdName> = {}): HsdName => ({
@@ -12,6 +13,17 @@ const name = (n: string, over: Partial<HsdName> = {}): HsdName => ({
   owner: { hash: "t", index: 0 },
   stats: { daysUntilExpire: 300, blocksUntilExpire: 43200 },
   value: 5_000_000,
+  ...over,
+});
+
+const need = (n: string, over: Partial<NeedsYouItem> = {}): NeedsYouItem => ({
+  kind: "renew",
+  name: n,
+  text: "Renew before it expires — an expired name is lost for good",
+  when: "~3 days · 432 blocks",
+  tone: "bad",
+  actionLabel: "Renew",
+  blocks: 432,
   ...over,
 });
 
@@ -122,7 +134,13 @@ describe("buildNameRows — status per task state", () => {
       "Finalize",
     ],
     ["bidding, no bid", { taskState: "readyToBid", phase: "BIDDING" }, "Bidding", null, "Bid"],
-    ["opening", { taskState: "waitingForBidding", phase: "OPENING" }, "Opening", null, null],
+    [
+      "opening",
+      { taskState: "waitingForBidding", phase: "OPENING" },
+      "Opening",
+      "bidding opens soon",
+      null,
+    ],
   ];
   it.each(cases)("%s", (_, c, status, detail, action) => {
     const r = one({
@@ -250,7 +268,7 @@ describe("categories, counts and sort", () => {
           makeCapabilities({ name: "c", taskState: "readyToBid", phase: "BIDDING" }),
         ]),
         watched: [{ name: "z", addedAt: "", notes: "", tags: "" }],
-        needs: ["b"],
+        needs: [need("b")],
       }),
     );
     expect(rows.map((r) => r.name)).toEqual(["b", "c", "a", "z"]);
@@ -285,5 +303,81 @@ describe("expiry", () => {
     expect(formatSpanDays(250)).toBe("8mo");
     expect(formatSpanDays(365)).toBe("1y");
     expect(formatSpanDays(610)).toBe("1y 8mo");
+  });
+});
+
+describe("needs-you items without a row", () => {
+  it("get a minimal row so the Needs chip equals the nav count", () => {
+    const rows = buildNameRows(
+      input({
+        owned: [name("a")],
+        capsByName: caps([makeCapabilities({ name: "a", taskState: "ownedNoUrgentAction" })]),
+        // A chain renewal for a name read_names doesn't list.
+        needs: [need("ghost")],
+        renewals: [
+          {
+            name: "ghost",
+            state: "CLOSED",
+            renewalHeight: 1,
+            expiresAtHeight: 2,
+            blocksUntilExpire: 432,
+            daysUntilExpire: 3,
+            source: "chain",
+            expiringSoon: true,
+          },
+        ],
+      }),
+    );
+    const ghost = rows.find((r) => r.name === "ghost")!;
+    expect(rows[0]).toBe(ghost);
+    expect(ghost).toMatchObject({
+      kind: "owned",
+      cats: ["needs", "owned"],
+      status: "Renew before it expires — an expired name is lost for good",
+      detail: "~3 days · 432 blocks",
+      tone: "bad",
+      action: { label: "Renew", kind: "open", signs: true },
+      selectable: false,
+    });
+    expect(ghost.expires?.text).toBe(`in ${formatSpanDays(3)}`);
+    expect(chipCounts(rows)).toMatchObject({ needs: 1, owned: 2 });
+  });
+
+  it("stay out of Owned unless the task is a renew", () => {
+    const rows = buildNameRows(
+      input({ needs: [need("x", { kind: "reveal", actionLabel: "Reveal", tone: "warn" })] }),
+    );
+    expect(rows[0]!.cats).toEqual(["needs"]);
+    expect(rows[0]!.expires).toBeNull();
+  });
+
+  it("don't duplicate a name that already has a row", () => {
+    const rows = buildNameRows(
+      input({
+        owned: [name("b")],
+        capsByName: caps([makeCapabilities({ name: "b", taskState: "expiringSoon" })]),
+        needs: [need("b")],
+      }),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe("Renew it or lose it");
+  });
+});
+
+describe("Owned chip", () => {
+  it("keeps a name we own with our own outbid reveals to reclaim; a lost one is In auction", () => {
+    const rows = buildNameRows(
+      input({
+        owned: [name("mine"), name("lost", { state: "CLOSED" })],
+        capsByName: caps([
+          makeCapabilities({ name: "mine", taskState: "lostNeedsRedeem", ownsName: true }),
+          makeCapabilities({ name: "lost", taskState: "lostNeedsRedeem", ownsName: false }),
+        ]),
+      }),
+    );
+    const by = (n: string) => rows.find((r) => r.name === n)!;
+    expect(by("mine").cats).toContain("owned");
+    expect(by("mine").expires).not.toBeNull();
+    expect(by("lost").cats).not.toContain("owned");
   });
 });

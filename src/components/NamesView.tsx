@@ -19,7 +19,12 @@ import {
   useTxDrafts,
   useWriteCapability,
 } from "../queries/wallet";
-import { useAuctionPositions, useNameActionCapabilities, useReadNames } from "../queries/read";
+import {
+  useAuctionPositions,
+  useNameActionCapabilities,
+  useReadNames,
+  useReadRenewals,
+} from "../queries/read";
 import { useNeedsYou } from "../queries/needsYou";
 import {
   exportWatchlistCsv,
@@ -99,6 +104,7 @@ export function NamesView() {
   // the Wallet page does; this page reuses it.
   const needsYou = useNeedsYou();
   const { capsByName } = needsYou;
+  const { data: renewals } = useReadRenewals();
   const { data: drafts = [] } = useTxDrafts();
   const finalizeSent = useMemo(() => finalizeSentIds(drafts), [drafts]);
   const { data: watched = [] } = useWatchlist();
@@ -120,7 +126,8 @@ export function NamesView() {
         watched,
         watchInfo,
         watchStatus,
-        needs: [...new Set(needsYou.items.map((i) => i.name))],
+        needs: needsYou.items,
+        renewals: renewals?.names,
         finalizeSent,
         wallClock: wallClock(profile?.network),
         isWatchOnly,
@@ -133,6 +140,7 @@ export function NamesView() {
       watchInfo,
       watchStatus,
       needsYou.items,
+      renewals,
       finalizeSent,
       profile?.network,
       isWatchOnly,
@@ -193,6 +201,9 @@ export function NamesView() {
   useEffect(() => {
     selectedRowRef.current?.scrollIntoView({ block: "nearest" });
   }, [selectedIndex]);
+  // A purchase on its way is not ours yet: its row does what View does
+  // (Market, where Your purchases lists it) instead of opening the name.
+  const openRow = (r: NameRow) => (r.kind === "purchase" ? navigate("/market") : openName(r.name));
   const actionHandlerRef = useRef<(id: string) => void>(() => {});
   actionHandlerRef.current = (id: string) => {
     switch (id) {
@@ -209,8 +220,7 @@ export function NamesView() {
         setSelectedIndex((i) => Math.max(i - 1, 0));
         break;
       case "names:list:open":
-        if (shown[selectedIndex] && shown[selectedIndex]!.kind !== "purchase")
-          openName(shown[selectedIndex]!.name);
+        if (shown[selectedIndex]) openRow(shown[selectedIndex]!);
         break;
     }
   };
@@ -547,7 +557,7 @@ export function NamesView() {
                       key={r.name}
                       ref={i === selectedIndex ? selectedRowRef : undefined}
                       aria-selected={i === selectedIndex}
-                      className={`border-t border-gray-100 hover:bg-gray-50 ${r.kind === "purchase" ? "" : "cursor-pointer"} ${
+                      className={`border-t border-gray-100 hover:bg-gray-50 cursor-pointer ${
                         i === selectedIndex
                           ? "bg-blue-50 ring-1 ring-blue-300"
                           : picked
@@ -555,10 +565,7 @@ export function NamesView() {
                             : ""
                       }`}
                       onClick={(e) => {
-                        // A purchase on its way is not ours yet: nothing to open
-                        // (its Finalize / View act on the purchase).
-                        if (fromInteractiveChild(e) || r.kind === "purchase") return;
-                        openName(r.name);
+                        if (!fromInteractiveChild(e)) openRow(r);
                       }}
                       data-testid="names-row"
                     >

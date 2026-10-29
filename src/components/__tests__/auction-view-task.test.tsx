@@ -138,7 +138,7 @@ const CAPS_BY_NAME: Record<string, Record<string, unknown>> = {
     nextActionReason: "Your bid lost. Redeem your reveal coin.",
   }),
   // Pre-bid opening period: on-chain phase is OPENING (raw label "Opening"),
-  // but the task state is waitingForBidding (label "Waiting for Bidding").
+  // but the task state is waitingForBidding (label "Opening").
   // The modal must open on that task-state label, not flash the raw phase.
   openingname: baseCaps("openingname", {
     phase: "OPENING",
@@ -524,7 +524,7 @@ describe("NamesView — batch-bid button", () => {
 
 describe("NamesView ↔ name page — task-state label consistency", () => {
   // Regression: the row showed the capability-derived task-state label
-  // ("Waiting for Bidding") while the modal, on open, briefly showed the raw
+  // ("Opening") while the modal, on open, briefly showed the raw
   // on-chain phase ("Opening") until its own single-name capability fetch
   // resolved. That flash is a state divergence the user can see: the row and
   // the modal for the SAME name disagree about the phase.
@@ -611,14 +611,14 @@ describe("NamesView ↔ name page — task-state label consistency", () => {
     });
 
     // The page's status line (data-testid="name-phase") must tell the same
-    // task state — never the raw "Opening" phase label, never the transient
-    // "Checking…" placeholder (the cache bridge seeds caps on open).
+    // task state, in the row's words — never the transient "Checking…"
+    // placeholder (the cache bridge seeds caps on open).
     await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent(/^\/names\//));
     const phase = await screen.findByTestId("name-phase");
     await waitFor(() => {
-      expect(phase).toHaveTextContent(/^Auction opening/);
+      // The task line ("Opening · bidding opens …"), not the bare phase badge.
+      expect(phase).toHaveTextContent(/^Opening · bidding opens/);
     });
-    expect(phase).not.toHaveTextContent(/Opening/);
     expect(phase).not.toHaveTextContent(/Checking/);
     expect(invokeMock.mock.calls.some((c) => c[0] === "get_name_action_capabilities")).toBe(false);
   });

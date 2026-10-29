@@ -27,7 +27,7 @@ const status = (taskState: AuctionTaskState, network = "mainnet", over = {}) =>
 describe("nameStatusLine", () => {
   it.each([
     ["availableToOpen", "Available"],
-    ["waitingForBidding", "Auction opening"],
+    ["waitingForBidding", "Opening"],
     ["readyToBid", "Bidding is open"],
     ["readyToReveal", "Reveal your bid"],
     ["revealBroadcastPending", "Reveal sent"],

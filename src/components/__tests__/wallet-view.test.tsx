@@ -1443,12 +1443,9 @@ describe("WalletView — Your names Status column", () => {
     countdownHours: null,
   };
 
-  // Reported from a live wallet: the table said "Closed" while the modal it
-  // opens said "Won — Register Now". Both were reading real data — the raw
-  // auction phase and the task state — but a user sees one name described two
-  // ways. The auction phase is also nearly constant down this column: every
-  // name you own has a closed auction, so it spends a column to say nothing.
-  it("the Your names card says what the name needs, not which auction phase it is in", async () => {
+  // Your names lists the Owned chip's rows, so "All N names" opens N rows on
+  // /names?filter=owned; a won name sits in In auction until it's registered.
+  it("leaves a won name to Needs you: it is not owned until registered", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "get_names_action_capabilities") {
         return Promise.resolve([
@@ -1506,9 +1503,13 @@ describe("WalletView — Your names Status column", () => {
 
     render(<WalletView />, { wrapper: wrapper() });
 
-    const row = await screen.findByTestId("your-names-row");
-    await waitFor(() => expect(row).toHaveTextContent("Won · register it"));
-    expect(row).not.toHaveTextContent("Closed");
+    // A won name isn't owned yet (DESIGN_SYSTEM §4 Counts: Your names = the
+    // Owned chip); Needs you carries its Register instead.
+    await waitFor(() =>
+      expect(screen.getByTestId("needs-you")).toHaveTextContent("register it to make it yours"),
+    );
+    expect(screen.queryByTestId("your-names-row")).toBeNull();
+    expect(screen.getByTestId("your-names-all")).toHaveTextContent("All 0 names");
   });
 
   // Reported live: the row read "Owned" while the modal it opens was headed
