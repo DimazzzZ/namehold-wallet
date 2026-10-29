@@ -7,7 +7,7 @@ import { AboutPage } from "./components/AboutPage";
 import { WalletView } from "./components/WalletView";
 import { ActivityView } from "./components/ActivityView";
 import MarketPage from "./components/market/MarketPage";
-import { NamesInterim } from "./components/interim/NamesInterim";
+import { NamesView } from "./components/NamesView";
 import { SettingsInterim } from "./components/interim/SettingsInterim";
 import { Onboarding } from "./components/Onboarding";
 import { useSettingsStore } from "./stores/settings";
@@ -53,7 +53,7 @@ function AppRoutes() {
       <Route element={<Layout />}>
         {/* Wallet-first: the wallet is the default landing screen. */}
         <Route path="/" element={<WalletView />} />
-        <Route path="/names" element={<NamesInterim />} />
+        <Route path="/names" element={<NamesView />} />
         <Route path="/market" element={<MarketPage />} />
         <Route path="/activity" element={<ActivityView />} />
         <Route path="/settings" element={<SettingsInterim />} />

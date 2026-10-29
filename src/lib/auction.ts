@@ -564,3 +564,17 @@ export function shakedexStatusLabel(
   }
   return { label: "Ready to finalize", variant: "success" };
 }
+
+/**
+ * A span of days as a list cell reads it: "<1d", "45d", "8mo", "1y 8mo".
+ * Days come from the backend; this only formats them.
+ */
+export function formatSpanDays(days: number): string {
+  if (days < 1) return "<1d";
+  if (days < 60) return `${Math.floor(days)}d`;
+  const months = Math.round(days / 30.44);
+  const y = Math.floor(months / 12);
+  const m = months % 12;
+  if (y === 0) return `${m}mo`;
+  return m === 0 ? `${y}y` : `${y}y ${m}mo`;
+}

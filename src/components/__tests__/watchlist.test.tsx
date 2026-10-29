@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -15,16 +15,16 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   readText: vi.fn(),
 }));
 
-import { Watchlist } from "../Watchlist";
+import { NamesView } from "../NamesView";
 
-function wrapper() {
+function wrapper(at = "/names?filter=watching") {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={["/watchlist"]}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={[at]}>{children}</MemoryRouter>
       </QueryClientProvider>
     );
   };
@@ -48,6 +48,9 @@ function route(overrides: Record<string, unknown> = {}) {
         return Promise.resolve(watchedNames);
       case "get_watchlist_status":
         return Promise.resolve(statuses);
+      case "list_tx_drafts":
+      case "get_names_action_capabilities":
+        return Promise.resolve([]);
       case "list_wallet_profiles":
         return Promise.resolve([{ id: "p1", network: "mainnet", active: true, watchOnly: false }]);
       case "read_name_info":
@@ -81,34 +84,44 @@ beforeEach(() => {
   invokeMock.mockReset();
 });
 
-describe("Watchlist", () => {
+// The watchlist lives on the Names page now (chip Watching).
+describe("NamesView — watchlist", () => {
   it("renders empty state when no watched names", async () => {
     invokeMock.mockImplementation(route({ list_watchlist: [] }));
-    render(<Watchlist />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    expect(await screen.findByText(/No names on your watchlist yet/)).toBeInTheDocument();
+    expect(await screen.findByTestId("names-empty")).toHaveTextContent(
+      "No names on your watchlist yet. Look up a name above and choose Watch.",
+    );
   });
 
   it("renders table with watched names", async () => {
     invokeMock.mockImplementation(route());
-    render(<Watchlist />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     // Wait for names to appear
     expect(await screen.findByText(/\.example/)).toBeInTheDocument();
     expect(screen.getByText(/\.testname/)).toBeInTheDocument();
-    // Watching count
-    expect(screen.getByText(/Watching 2 names/)).toBeInTheDocument();
+    // Watching count, on its chip
+    expect(screen.getByTestId("names-chip-watching")).toHaveTextContent("Watching 2");
   });
 
-  it("shows 'Owned' badge for names in the owned set", async () => {
+  it("a watched name we own is one owned row, not a second watch row", async () => {
     invokeMock.mockImplementation(route());
-    render(<Watchlist />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    // "example" is in the owned set (read_names returns it)
-    expect(await screen.findByText("Owned")).toBeInTheDocument();
+    // "example" is in the owned set (read_names returns it as CLOSED)
+    await screen.findByText(/\.example/);
+    expect(screen.getAllByTestId("names-row")).toHaveLength(2);
+    expect(screen.getByTestId("names-chip-owned")).toHaveTextContent("Owned 1");
+    const row = screen.getAllByTestId("names-row")[0]!;
+    expect(row).toHaveTextContent(".example");
+    // The owned row's phase, not the watchlist's cached BIDDING.
+    expect(within(row).getByText("Closed")).toBeInTheDocument();
+    expect(within(row).getByText("auction")).toBeInTheDocument();
   });
 
-  it("a name still being bought through Shakedex is not 'Owned'", async () => {
+  it("a watched name still being bought through Shakedex shows as Bought", async () => {
     invokeMock.mockImplementation(
       route({
         // The row `read_shakedex_purchase_names` adds to `read_names`.
@@ -136,35 +149,38 @@ describe("Watchlist", () => {
         ],
       }),
     );
-    render(<Watchlist />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
     await screen.findByText(/\.example/);
     await waitFor(() =>
       expect(invokeMock.mock.calls.some((c) => c[0] === "read_names")).toBe(true),
     );
-    expect(screen.queryByText("Owned")).toBeNull();
+    const row = (await screen.findByText(/\.example/)).closest("tr")!;
+    await waitFor(() => expect(within(row).getByText("Bought")).toBeInTheDocument());
+    expect(within(row).queryByText("Closed")).toBeNull();
   });
 
-  it("add button adds a name", async () => {
+  it("Watch on the lookup result adds a name", async () => {
     invokeMock.mockImplementation(route({ add_to_watchlist: null }));
-    render(<Watchlist />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    const input = await screen.findByTestId("watchlist-add-input");
+    const input = await screen.findByTestId("names-lookup-input");
     fireEvent.change(input, { target: { value: "newname" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.click(await screen.findByTestId("names-lookup-watch"));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("add_to_watchlist", { name: "newname" });
     });
   });
 
-  it("remove button removes a name", async () => {
+  it("Remove from watchlist in the row's More menu removes a name", async () => {
     invokeMock.mockImplementation(route({ remove_from_watchlist: null }));
-    render(<Watchlist />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     // Wait for table to render
     await screen.findByText(/\.example/);
-    const removeButtons = screen.getAllByRole("button", { name: "Remove" });
-    fireEvent.click(removeButtons[0]!);
+    fireEvent.click(screen.getAllByRole("button", { name: "More" })[0]!);
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Remove from watchlist/ }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("remove_from_watchlist", { name: "example" });
@@ -173,7 +189,7 @@ describe("Watchlist", () => {
 
   it("tag cell editable: click opens input, blur saves", async () => {
     invokeMock.mockImplementation(route({ update_watchlist_tags: null }));
-    render(<Watchlist />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     // Wait for tags to render
     await screen.findByText("auction");
@@ -198,12 +214,12 @@ describe("Watchlist", () => {
     });
   });
 
-  it("name cell click opens the unified name modal", async () => {
+  it("row click opens the unified name modal", async () => {
     invokeMock.mockImplementation(route());
-    render(<Watchlist />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    const nameButton = await screen.findByText(/\.example/);
-    fireEvent.click(nameButton);
+    const name = await screen.findByText(/\.example/);
+    fireEvent.click(name.closest("tr")!);
 
     // NameActionsModal renders — it typically shows the name prominently
     await waitFor(() => {
@@ -216,7 +232,7 @@ describe("Watchlist", () => {
     const { save } = await import("@tauri-apps/plugin-dialog");
     vi.mocked(save).mockResolvedValue("/tmp/export.csv");
     invokeMock.mockImplementation(route({ export_watchlist_csv: 2 }));
-    render(<Watchlist />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
     await screen.findByText(/\.example/);
     const exportBtn = screen.getByRole("button", { name: /Export CSV/ });
@@ -229,9 +245,9 @@ describe("Watchlist", () => {
 
   it("export CSV button disabled when watchlist is empty", async () => {
     invokeMock.mockImplementation(route({ list_watchlist: [] }));
-    render(<Watchlist />, { wrapper: wrapper() });
+    render(<NamesView />, { wrapper: wrapper() });
 
-    await screen.findByText(/No names on your watchlist yet/);
+    await screen.findByTestId("names-empty");
     const exportBtn = screen.getByRole("button", { name: /Export CSV/ });
     expect(exportBtn).toBeDisabled();
   });

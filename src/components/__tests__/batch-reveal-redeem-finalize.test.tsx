@@ -19,7 +19,7 @@ vi.mock("../../lib/clipboard", () => ({
   readText: vi.fn().mockResolvedValue(""),
 }));
 
-import { WalletView } from "../WalletView";
+import { NamesView } from "../NamesView";
 
 const profile = {
   id: "p1",
@@ -163,6 +163,8 @@ function routeInvoke(o: Overrides = {}) {
           expiringSoonThresholdDays: 30,
           names: [],
         });
+      case "list_watchlist":
+        return Promise.resolve([]);
       case "read_names":
         return Promise.resolve(names);
       case "get_names_action_capabilities":
@@ -197,7 +199,7 @@ function wrapper() {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={["/wallet"]}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={["/names"]}>{children}</MemoryRouter>
       </QueryClientProvider>
     );
   };
@@ -206,10 +208,8 @@ function wrapper() {
 async function selectBothNames() {
   await screen.findByText(/\.alpha/);
   await screen.findByText(/\.bravo/);
-  const boxes = document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
-  // boxes[0] is the header select-all checkbox; one click selects every
-  // filtered name (alpha + bravo).
-  fireEvent.click(boxes[0]!);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select alpha" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select bravo" }));
   await screen.findByTestId("batch-reveal-btn");
 }
 
@@ -218,7 +218,7 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
 });
 
-describe("WalletView — batch reveal/redeem/finalize", () => {
+describe("NamesView — batch reveal/redeem/finalize", () => {
   it.each([
     ["reveal", "batch-reveal-btn", "build_batch_reveal_draft"],
     ["redeem", "batch-redeem-btn", "build_batch_redeem_draft"],
@@ -228,8 +228,7 @@ describe("WalletView — batch reveal/redeem/finalize", () => {
     "clicking %s invokes %s with { names, feeRate: undefined }",
     async (_action, testid, command) => {
       invokeMock.mockImplementation(routeInvoke());
-      render(<WalletView />, { wrapper: wrapper() });
-      await screen.findByTestId("receive-open");
+      render(<NamesView />, { wrapper: wrapper() });
       await selectBothNames();
 
       fireEvent.click(screen.getByTestId(testid));
@@ -256,8 +255,7 @@ describe("WalletView — batch reveal/redeem/finalize", () => {
           caps: [cap("alpha", { reveal: true, redeem: true, finalize: true }), cap("bravo", flags)],
         }),
       );
-      render(<WalletView />, { wrapper: wrapper() });
-      await screen.findByTestId("receive-open");
+      render(<NamesView />, { wrapper: wrapper() });
       await selectBothNames();
 
       expect(screen.getByTestId(testid)).toBeDisabled();
@@ -266,8 +264,7 @@ describe("WalletView — batch reveal/redeem/finalize", () => {
 
   it("after building a reveal draft, confirming signs then broadcasts", async () => {
     invokeMock.mockImplementation(routeInvoke());
-    render(<WalletView />, { wrapper: wrapper() });
-    await screen.findByTestId("receive-open");
+    render(<NamesView />, { wrapper: wrapper() });
     await selectBothNames();
 
     fireEvent.click(screen.getByTestId("batch-reveal-btn"));

@@ -8,10 +8,12 @@ interface PageHeaderProps {
   subtitle?: React.ReactNode;
   badges?: React.ReactNode;
   actions?: PageAction[];
+  /** Free-form controls on the right, for actions that need more than a label (tooltips, dividers). */
+  aside?: React.ReactNode;
   children?: React.ReactNode;
 }
 
-export function PageHeader({ title, subtitle, badges, actions, children }: PageHeaderProps) {
+export function PageHeader({ title, subtitle, badges, actions, aside, children }: PageHeaderProps) {
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between mb-5">
       <div className="min-w-0">
@@ -22,6 +24,7 @@ export function PageHeader({ title, subtitle, badges, actions, children }: PageH
         {subtitle && <p className="text-sm text-gray-500 mt-1">{subtitle}</p>}
         {children}
       </div>
+      {aside && <div className="flex items-center gap-2 shrink-0">{aside}</div>}
       {actions && actions.length > 0 && (
         <div className="flex items-center gap-2 shrink-0">
           {actions.map((action) => {

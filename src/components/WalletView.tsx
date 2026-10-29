@@ -1,7 +1,7 @@
-import { QrCode, RefreshCw, Send, TriangleAlert } from "lucide-react";
+import { ArrowRight, QrCode, RefreshCw, Send, TriangleAlert } from "lucide-react";
 import { Icon } from "./ui/Icon";
 import { isSignerUnlockedFor } from "../lib/signer";
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -9,15 +9,13 @@ import {
   useSignerSession,
   useWriteCapability,
   useWalletBalances,
-  useTxDrafts,
   useUnlockSigner,
   useBuildSendDraft,
   useSignTxDraft,
   useBroadcastTxDraft,
-  useNameAction,
 } from "../queries/wallet";
-import { finalizeSentIds, usePurchaseFinalize } from "./market/usePurchase";
-import { useReadNames, useReadBalance, nameCapabilitiesQueryKey } from "../queries/read";
+import { usePurchaseFinalize } from "./market/usePurchase";
+import { useReadBalance, nameCapabilitiesQueryKey } from "../queries/read";
 import { useNeedsYou } from "../queries/needsYou";
 import {
   useStartFullSync,
@@ -27,12 +25,6 @@ import {
 } from "../queries/sync";
 import { useStartHsd } from "../queries/node";
 import { useSyncTriggerStore } from "../stores/syncTrigger";
-import {
-  auctionPhase,
-  pendingBroadcastBadge,
-  shakedexStatusLabel,
-  taskSummaryFromCapabilities,
-} from "../lib/auction";
 import { displayName } from "../lib/idn";
 import { NameActionsModal } from "./NameActionsModal";
 import { BlockInfoModal } from "./BlockInfoModal";
@@ -42,7 +34,7 @@ import { NeedsYouCard } from "./NeedsYouCard";
 import { ReceiveDialog } from "./ReceiveDialog";
 import { AddWalletForm } from "./AddWalletForm";
 import { UnlockButton } from "./UnlockButton";
-import { BatchConfirmModal } from "./BatchConfirmModal";
+import { YourNamesCard } from "./YourNamesCard";
 import { Button } from "./ui/Button";
 import { FeeRateOverride } from "./ui/FeeRateOverride";
 import { parseFeeRateArg } from "../lib/feeRate";
@@ -64,14 +56,7 @@ import { useUiStore } from "../stores/ui";
 import type { TxDraftSummary } from "../types";
 import { subscribeAction } from "../lib/actionBus";
 import { Tooltip } from "./ui/Tooltip";
-import {
-  MY_LISTINGS_TAB,
-  canUseShakedex,
-  listingStateLabel,
-  shakedexRefusal,
-} from "./market/marketText";
-
-type BatchAction = "renew" | "reveal" | "redeem" | "finalize" | "transfer";
+import { shakedexRefusal } from "./market/marketText";
 
 export function WalletView() {
   const qc = useQueryClient();
@@ -82,39 +67,13 @@ export function WalletView() {
   const { data: writeCap } = useWriteCapability();
   const { data: balances } = useWalletBalances();
   const { data: readBalance } = useReadBalance();
-  const { data: drafts = [] } = useTxDrafts();
-  const { data: names = [] } = useReadNames();
-  const [nameQuery, setNameQuery] = useState("");
-  // Batch selection: names the user has checked for bulk operations.
-  const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
-  // Batch renew mutation: calls build_batch_renew_draft, then signs + broadcasts.
-  const batchRenewMutation = useNameAction("build_batch_renew_draft");
-  // Batch reveal / redeem / finalize mutations (same generic pattern).
-  const batchRevealMutation = useNameAction("build_batch_reveal_draft");
-  const batchRedeemMutation = useNameAction("build_batch_redeem_draft");
-  const batchFinalizeMutation = useNameAction("build_batch_finalize_draft");
-  // Batch transfer mutation: transfers N selected names to one shared recipient.
-  const batchTransferMutation = useNameAction("build_batch_transfer_draft");
-  // Substring filter for the Owned Names list. Matches on BOTH the raw ACE
-  // name (as stored on-chain) and its decoded displayName, so a unicode
-  // substring (e.g. from a `.козёл`-style label) still finds the underlying
-  // `xn--` row. Never run the query through normalizeNameInput — that strips
-  // non-ASCII characters and would break unicode search entirely.
-  const q = nameQuery.trim().toLowerCase();
-  const filteredNames = q
-    ? names.filter(
-        (n) => n.name.toLowerCase().includes(q) || displayName(n.name).toLowerCase().includes(q),
-      )
-    : names;
   // Needs you and its ONE batch capability fetch (pinned to the active
-  // wallet, empty for watch-only). The same index drives the batch-action
-  // eligibility and the Owned Names State column, so a name is described the
-  // same way everywhere on the page.
+  // wallet, empty for watch-only); Your names reads the same index, so a name
+  // is described the same way everywhere on the page.
   const needsYou = useNeedsYou();
   const { capsByName } = needsYou;
 
   const { finalize: finalizePurchaseDraft, finalizingId } = usePurchaseFinalize();
-  const finalizeSent = useMemo(() => finalizeSentIds(drafts), [drafts]);
 
   const startSync = useStartFullSync();
   const startHsd = useStartHsd();
@@ -132,11 +91,8 @@ export function WalletView() {
   const [sendAddress, setSendAddress] = useState("");
   const [sendAmount, setSendAmount] = useState("");
   // Per-transaction fee-rate override (doos/kvB, raw text). Empty = use the
-  // global setting default. Shared by the Send dialog and every batch action.
+  // global setting default.
   const [sendFeeRate, setSendFeeRate] = useState("");
-  const [batchFeeRate, setBatchFeeRate] = useState("");
-  // Shared recipient for a batch transfer (one address for the whole batch).
-  const [batchRecipient, setBatchRecipient] = useState("");
   const [draft, setDraft] = useState<TxDraftSummary | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
@@ -151,19 +107,6 @@ export function WalletView() {
   const navigate = useNavigate();
   const [manageName, setManageName] = useState<string | null>(null);
   const [infoBlock, setInfoBlock] = useState<number | null>(null);
-  // Batch confirmation modal state.
-  const [batchModal, setBatchModal] = useState<{
-    open: boolean;
-    action: BatchAction;
-    names: string[];
-    feeDoos: number;
-    amountDoos: number;
-    draftId: string;
-    recipient?: string;
-  } | null>(null);
-  // Wallets manager modal (add / switch / delete). `addMode` opens it straight
-  // to the add-wallet form.
-
   // Ledger wallets don't use the local signer session — the device signs on
   // demand. Treat them as "unlocked" so the send/action flow doesn't try to
   // prompt for a passphrase that doesn't exist.
@@ -171,7 +114,6 @@ export function WalletView() {
   const unlocked = isLedger ? true : isSignerUnlockedFor(signer, profile?.id);
   const canWrite = writeCap?.canWrite ?? false;
   const isWatchOnly = profile?.watchOnly ?? false;
-  const canFinalizePurchase = canUseShakedex(profile?.kind, writeCap);
   const finalizeRefusal = shakedexRefusal(profile?.kind, writeCap);
   // Spending uses node-synced coins (tracked_utxos), NOT the explorer balance.
   // If the explorer shows funds but nothing is synced yet, the user must connect
@@ -205,20 +147,6 @@ export function WalletView() {
   }, [isRunning, manualSync, setManualSync]);
 
   // --- Keyboard shortcut subscriptions (action bus) ---
-  const filterInputRef = useRef<HTMLInputElement>(null);
-  const [selectedNameIndex, setSelectedNameIndex] = useState<number>(-1);
-  const selectedRowRef = useRef<HTMLTableRowElement>(null);
-
-  // Reset list selection when the filter changes (list content shifts).
-  useEffect(() => {
-    setSelectedNameIndex(-1);
-  }, [nameQuery]);
-
-  // Scroll the selected row into view.
-  useEffect(() => {
-    selectedRowRef.current?.scrollIntoView({ block: "nearest" });
-  }, [selectedNameIndex]);
-
   // Ref-indirection for the action handler — avoids re-subscribing on every
   // render while still capturing fresh closures.
   const actionHandlerRef = useRef<(id: string) => void>(() => {});
@@ -243,28 +171,6 @@ export function WalletView() {
       case "wallet:openReceive":
         setReceiveOpen(true);
         break;
-      case "wallet:focusFilter":
-        filterInputRef.current?.focus();
-        break;
-      case "wallet:list:next":
-        setSelectedNameIndex((i) => Math.min(i + 1, filteredNames.length - 1));
-        break;
-      case "wallet:list:prev":
-        setSelectedNameIndex((i) => Math.max(i - 1, 0));
-        break;
-      case "wallet:list:open":
-        // A purchase is not ours yet: there is nothing to manage.
-        if (
-          selectedNameIndex >= 0 &&
-          filteredNames[selectedNameIndex] &&
-          !filteredNames[selectedNameIndex]!.shakedex
-        ) {
-          setManageName(filteredNames[selectedNameIndex]!.name);
-        }
-        break;
-      case "wallet:list:clear":
-        setSelectedNameIndex(-1);
-        break;
     }
   };
   useEffect(() => subscribeAction((id) => actionHandlerRef.current(id)), []);
@@ -277,157 +183,6 @@ export function WalletView() {
     setDraft(null);
     setSubmitting(false);
     setSendError(null);
-  };
-
-  // Batch selection helpers.
-  // Purchase rows are not ours yet: no batch action applies to them.
-  const selectableNames = filteredNames.filter((n) => !n.shakedex);
-  const toggleName = (name: string) =>
-    setSelectedNames((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
-  const clearSelection = () => setSelectedNames(new Set());
-
-  const finalizePurchase = (purchaseId: string) =>
-    finalizePurchaseDraft(purchaseId, (txid) => `Finalize broadcast — ${txid.slice(0, 12)}…`);
-
-  // Per-selection eligibility for batch actions. `nameCaps` is pinned to the
-  // active profile via useNamesActionCapabilities and updates when phases move.
-  // A batch action is "eligible" only when *every* selected name currently
-  // supports it (canX.allowed = true). Empty selection ⇒ false.
-  const batchEligibility = useMemo(() => {
-    if (selectedNames.size === 0 || capsByName.size === 0) {
-      return {
-        canReveal: false,
-        canRedeem: false,
-        canFinalize: false,
-        canTransfer: false,
-        canRenew: false,
-      };
-    }
-    let canReveal = true;
-    let canRedeem = true;
-    let canFinalize = true;
-    let canTransfer = true;
-    // R27: a name locked for sale (or not renewable yet) refuses a renewal;
-    // the batch is refused by the backend too, but is not offered here.
-    let canRenew = true;
-    for (const n of selectedNames) {
-      const c = capsByName.get(n);
-      if (!c) {
-        canReveal = false;
-        canRedeem = false;
-        canFinalize = false;
-        canTransfer = false;
-        canRenew = false;
-        break;
-      }
-      if (!c.canReveal.allowed) canReveal = false;
-      if (!c.canRedeem.allowed) canRedeem = false;
-      if (!c.canFinalize.allowed) canFinalize = false;
-      if (!c.canTransfer.allowed) canTransfer = false;
-      if (!c.canRenew.allowed) canRenew = false;
-    }
-    return { canReveal, canRedeem, canFinalize, canTransfer, canRenew };
-  }, [selectedNames, capsByName]);
-
-  // Compute the fee-rate arg once for all batch handlers (null = use setting default).
-  const batchFeeRateArg = parseFeeRateArg(batchFeeRate) ?? undefined;
-
-  // Every batch action is the same three steps — build one draft for the
-  // selection, then hand its fee and amount to the confirm modal — and every
-  // failure is reported the same way.
-  const runBatch = async (
-    action: BatchAction,
-    build: () => Promise<TxDraftSummary>,
-    extra: { recipient?: string } = {},
-  ) => {
-    const names = Array.from(selectedNames);
-    if (names.length === 0) return;
-    try {
-      showToast(`Building batch ${action} draft…`, "info");
-      const draft = await build();
-      setBatchModal({
-        open: true,
-        action,
-        names,
-        feeDoos: draft.summary?.feeDoos ?? 0,
-        amountDoos: draft.summary?.sendTotalDoos ?? 0,
-        draftId: draft.id,
-        ...extra,
-      });
-    } catch (e) {
-      showToast(`Batch ${action} failed: ${mapError(e)}`, "error");
-    }
-  };
-  const batchNames = () => Array.from(selectedNames);
-
-  const handleBatchRenew = () =>
-    runBatch("renew", () =>
-      batchRenewMutation.mutateAsync({ names: batchNames(), feeRate: batchFeeRateArg }),
-    );
-  const handleBatchReveal = () =>
-    runBatch("reveal", () =>
-      batchRevealMutation.mutateAsync({ names: batchNames(), feeRate: batchFeeRateArg }),
-    );
-  const handleBatchRedeem = () =>
-    runBatch("redeem", () =>
-      batchRedeemMutation.mutateAsync({ names: batchNames(), feeRate: batchFeeRateArg }),
-    );
-  const handleBatchFinalize = () =>
-    runBatch("finalize", () =>
-      batchFinalizeMutation.mutateAsync({ names: batchNames(), feeRate: batchFeeRateArg }),
-    );
-  const handleBatchTransfer = () => {
-    const recipient = batchRecipient.trim();
-    if (!recipient) return;
-    return runBatch(
-      "transfer",
-      () =>
-        batchTransferMutation.mutateAsync({
-          names: batchNames(),
-          recipient,
-          feeRate: batchFeeRateArg,
-        }),
-      { recipient },
-    );
-  };
-
-  // Confirm a pending batch draft: unlock (if needed) → sign → broadcast.
-  const handleBatchConfirm = async () => {
-    if (!batchModal || !profile) return;
-    const { draftId, names, action } = batchModal;
-    try {
-      if (!unlocked) {
-        await unlock.mutateAsync(profile.id);
-      }
-      await signDraft.mutateAsync(draftId);
-      const result = await broadcast.mutateAsync(draftId);
-      showToast(
-        `Batch ${action} broadcast ${result.txid.slice(0, 12)}… (${names.length} name(s))`,
-        "success",
-      );
-      setBatchModal(null);
-      clearSelection();
-      setBatchRecipient("");
-      qc.invalidateQueries({ queryKey: ["wallet"] });
-    } catch (e) {
-      showToast(`Batch ${action} failed: ${mapError(e)}`, "error");
-      // Keep the modal open so the user can retry or cancel.
-      throw e;
-    }
-  };
-
-  // Cancel a pending batch draft: discard the draft (frees reserved coins).
-  const handleBatchCancel = () => {
-    // Just close the modal. The draft row remains in the DB but its coin
-    // reservations don't block anything — they'll be freed when the draft is
-    // eventually replaced or the user builds another draft that supersedes
-    // this one. Keeping the draft also lets the user replay it from Drafts.
-    setBatchModal(null);
   };
 
   // Sync runs all reconciliation in a background thread.
@@ -825,393 +580,27 @@ export function WalletView() {
           }
           finalizingId={finalizingId}
           finalizeRefusal={finalizeRefusal}
+          allNamesLink={
+            <button
+              type="button"
+              className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"
+              onClick={() => navigate("/names?filter=needs")}
+              data-testid="needs-you-all-names"
+            >
+              All names <Icon icon={ArrowRight} size={12} />
+            </button>
+          }
         />
       )}
 
-      {/* Owned Names (from local name-state cache) */}
-      <div className="bg-white rounded p-4 border border-gray-200">
-        <div className="flex items-center justify-between mb-2 gap-2">
-          <div className="text-sm text-gray-500">
-            Owned Names ({filteredNames.length}
-            {filteredNames.length !== names.length ? ` of ${names.length}` : ""})
-          </div>
-          <div className="flex items-center gap-2">
-            <Input
-              ref={filterInputRef}
-              inputSize="md"
-              className="w-48"
-              value={nameQuery}
-              onChange={(e) => setNameQuery(e.target.value)}
-              placeholder="Filter…"
-              data-testid="wallet-name-filter"
-            />
-          </div>
-        </div>
-        {names.length > 0 ? (
-          filteredNames.length > 0 ? (
-            <>
-              <div className="max-h-60 overflow-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-gray-500 border-b">
-                      <th className="py-1 pr-4 w-8">
-                        <input
-                          type="checkbox"
-                          checked={
-                            selectedNames.size > 0 && selectedNames.size === selectableNames.length
-                          }
-                          ref={(el) => {
-                            if (el)
-                              el.indeterminate =
-                                selectedNames.size > 0 &&
-                                selectedNames.size < selectableNames.length;
-                          }}
-                          onChange={(e) => {
-                            if (e.target.checked)
-                              setSelectedNames(new Set(selectableNames.map((n) => n.name)));
-                            else setSelectedNames(new Set());
-                          }}
-                          aria-label="Select all names"
-                        />
-                      </th>
-                      <th className="py-1 pr-4">Name</th>
-                      <th className="py-1 pr-4">State</th>
-                      <th className="py-1 pr-4">Height</th>
-                      <th className="py-1 pr-4">Renewal</th>
-                      <th className="py-1"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredNames.map((n) => (
-                      <tr
-                        key={n.name}
-                        ref={
-                          filteredNames.indexOf(n) === selectedNameIndex
-                            ? selectedRowRef
-                            : undefined
-                        }
-                        aria-selected={filteredNames.indexOf(n) === selectedNameIndex}
-                        tabIndex={filteredNames.indexOf(n) === selectedNameIndex ? 0 : -1}
-                        // Not clickable: the row's actions are its own
-                        // controls — the name, the block heights, Manage. A
-                        // whole-row handler only duplicated them, and stacked a
-                        // second dialog on top of whichever one was pressed.
-                        // Keyboard selection is unaffected: `wallet:list:open`
-                        // opens the selected row directly. `hover` stays for
-                        // tracking a row across a wide table; `cursor-pointer`
-                        // goes, since nothing here is clicking.
-                        className={`border-t border-gray-100 hover:bg-gray-50 ${
-                          filteredNames.indexOf(n) === selectedNameIndex
-                            ? "bg-blue-50 ring-1 ring-blue-300"
-                            : ""
-                        }`}
-                      >
-                        <td className="py-1 pr-4">
-                          {!n.shakedex && (
-                            <input
-                              type="checkbox"
-                              checked={selectedNames.has(n.name)}
-                              onChange={() => toggleName(n.name)}
-                              aria-label={`Select ${displayName(n.name)}`}
-                            />
-                          )}
-                        </td>
-                        <td className="py-1 pr-4 text-xs font-mono">
-                          {n.shakedex ? (
-                            <span data-testid="owned-name-purchase-label">
-                              .{displayName(n.name)}
-                            </span>
-                          ) : (
-                            <Tooltip content="View name info">
-                              <button
-                                type="button"
-                                className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                                onClick={() => setManageName(n.name)}
-                                data-testid="owned-name-info-link"
-                              >
-                                .{displayName(n.name)}
-                              </button>
-                            </Tooltip>
-                          )}
-                        </td>
-                        <td className="py-1 pr-4">
-                          {/* What the name needs, not which auction phase it
-                              is in. The same summary the Auctions list and the
-                              name modal show, so one name is never described
-                              two ways — a row reading "Closed" opened a modal
-                              headed "Won — Register Now". The raw phase is
-                              also nearly constant here: every name you own has
-                              a closed auction. It stays as the fallback for
-                              the window before capabilities load, and for a
-                              watch-only profile that never fetches them. */}
-                          {(() => {
-                            // A purchase in flight comes first: it is not
-                            // ours yet, so there are no capabilities for it.
-                            if (n.shakedex) {
-                              const s = shakedexStatusLabel(
-                                n.shakedex,
-                                finalizeSent.has(n.shakedex.purchaseId),
-                              );
-                              return <Badge variant={s.variant}>{s.label}</Badge>;
-                            }
-                            // R19: a name we listed shows the listing's
-                            // state; its owner actions are the lock's now.
-                            if (n.listing) {
-                              return (
-                                <Badge variant="info">
-                                  {listingStateLabel(
-                                    n.listing.state,
-                                    n.listing.blocksUntilFinalize,
-                                  )}
-                                </Badge>
-                              );
-                            }
-                            const task = taskSummaryFromCapabilities(capsByName.get(n.name));
-                            // A transaction of ours for this name is in flight:
-                            // the task is a verdict the chain has not reached
-                            // and an instruction already followed. The modal
-                            // and the auctions list both say so; this column
-                            // was the last one still printing the task.
-                            if (task?.pendingBroadcastAction) {
-                              return (
-                                <Badge variant="default">
-                                  {pendingBroadcastBadge(task.pendingBroadcastAction)}
-                                </Badge>
-                              );
-                            }
-                            if (task) {
-                              return <Badge variant={task.variant}>{task.label}</Badge>;
-                            }
-                            return n.state ? (
-                              <Badge variant={auctionPhase(n.state).variant}>
-                                {auctionPhase(n.state).label}
-                              </Badge>
-                            ) : (
-                              "—"
-                            );
-                          })()}
-                        </td>
-                        <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
-                          {n.height ? (
-                            <Tooltip content="View block info">
-                              <button
-                                type="button"
-                                className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                                onClick={() => setInfoBlock(n.height!)}
-                                data-testid="owned-name-height-info-link"
-                              >
-                                #{n.height}
-                              </button>
-                            </Tooltip>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                        <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
-                          {n.renewal ? (
-                            <Tooltip content="View block info">
-                              <button
-                                type="button"
-                                className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                                onClick={() => setInfoBlock(n.renewal!)}
-                                data-testid="owned-name-renewal-info-link"
-                              >
-                                #{n.renewal}
-                              </button>
-                            </Tooltip>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                        <td className="py-1 text-right">
-                          {!isWatchOnly &&
-                            (n.shakedex ? (
-                              n.shakedex.state === "awaitingFinalize" &&
-                              n.shakedex.blocksRemaining === 0 &&
-                              !finalizeSent.has(n.shakedex.purchaseId) && (
-                                <Tooltip content={finalizeRefusal}>
-                                  <Button
-                                    size="sm"
-                                    variant="primary"
-                                    data-testid="owned-name-finalize"
-                                    disabled={finalizingId !== null || !canFinalizePurchase}
-                                    onClick={() => finalizePurchase(n.shakedex!.purchaseId)}
-                                  >
-                                    Finalize
-                                  </Button>
-                                </Tooltip>
-                              )
-                            ) : (
-                              <>
-                                {n.listing && (
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    data-testid="owned-name-my-listings"
-                                    onClick={() => navigate("/market?tab=mine")}
-                                  >
-                                    {MY_LISTINGS_TAB}
-                                  </Button>
-                                )}
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  data-testid="owned-name-manage"
-                                  onClick={() => setManageName(n.name)}
-                                >
-                                  Manage
-                                </Button>
-                              </>
-                            ))}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {selectedNames.size > 0 && !isWatchOnly && (
-                <>
-                  <div
-                    className="flex items-center gap-3 mt-3 p-2 bg-blue-50 border border-blue-200 rounded text-sm"
-                    data-testid="batch-action-bar"
-                  >
-                    <span className="text-blue-800 font-medium">{selectedNames.size} selected</span>
-                    <Tooltip
-                      content={
-                        batchEligibility.canRenew
-                          ? undefined
-                          : "All selected names must be renewable now"
-                      }
-                    >
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        onClick={handleBatchRenew}
-                        disabled={!batchEligibility.canRenew}
-                        data-testid="batch-renew-btn"
-                      >
-                        Renew Selected
-                      </Button>
-                    </Tooltip>
-                    <Tooltip
-                      content={
-                        batchEligibility.canReveal
-                          ? undefined
-                          : "All selected names must be in the REVEAL phase"
-                      }
-                    >
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        onClick={handleBatchReveal}
-                        disabled={!batchEligibility.canReveal}
-                        data-testid="batch-reveal-btn"
-                      >
-                        Reveal Selected
-                      </Button>
-                    </Tooltip>
-                    <Tooltip
-                      content={
-                        batchEligibility.canRedeem
-                          ? undefined
-                          : "All selected names must have redeemable losing bids"
-                      }
-                    >
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        onClick={handleBatchRedeem}
-                        disabled={!batchEligibility.canRedeem}
-                        data-testid="batch-redeem-btn"
-                      >
-                        Redeem Selected
-                      </Button>
-                    </Tooltip>
-                    <Tooltip
-                      content={
-                        batchEligibility.canFinalize
-                          ? undefined
-                          : "All selected names must have a transfer ready to finalize"
-                      }
-                    >
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        onClick={handleBatchFinalize}
-                        disabled={!batchEligibility.canFinalize}
-                        data-testid="batch-finalize-btn"
-                      >
-                        Finalize Selected
-                      </Button>
-                    </Tooltip>
-                    <Input
-                      className="w-56"
-                      placeholder="Transfer to hs1q… / rs1q…"
-                      value={batchRecipient}
-                      onChange={(e) => setBatchRecipient(e.target.value)}
-                      data-testid="batch-transfer-recipient-input"
-                    />
-                    <Tooltip
-                      content={
-                        !batchEligibility.canTransfer
-                          ? "All selected names must be transferable (owned, not mid-transfer)"
-                          : !batchRecipient.trim()
-                            ? "Enter a recipient address"
-                            : undefined
-                      }
-                    >
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        onClick={handleBatchTransfer}
-                        disabled={!batchEligibility.canTransfer || !batchRecipient.trim()}
-                        data-testid="batch-transfer-btn"
-                      >
-                        Transfer Selected
-                      </Button>
-                    </Tooltip>
-                    <Button size="sm" variant="ghost" onClick={clearSelection}>
-                      Clear
-                    </Button>
-                  </div>
-                  <div className="mt-2">
-                    <FeeRateOverride
-                      value={batchFeeRate}
-                      onChange={setBatchFeeRate}
-                      label="Fee rate override"
-                    />
-                  </div>
-                </>
-              )}
-            </>
-          ) : (
-            <div className="text-gray-400 text-sm py-4 text-center">
-              No names match &quot;{nameQuery.trim()}&quot;
-            </div>
-          )
-        ) : (
-          <div className="text-gray-400 text-sm py-4 text-center">
-            {false
-              ? "Scanning the explorer for names this wallet owns…"
-              : "No owned names found yet. Click Sync to scan for names this wallet owns."}
-          </div>
-        )}
-      </div>
+      <YourNamesCard
+        capsByName={capsByName}
+        needs={needsYou.items}
+        onOpenName={openName}
+        network={profile.network}
+      />
 
       <RecentActivityCard onNameClick={setManageName} />
-
-      {batchModal && (
-        <BatchConfirmModal
-          open={batchModal.open}
-          action={batchModal.action}
-          names={batchModal.names}
-          estimatedFeeDoos={batchModal.feeDoos}
-          amountDoos={batchModal.amountDoos}
-          recipient={batchModal.recipient}
-          onConfirm={handleBatchConfirm}
-          onCancel={handleBatchCancel}
-        />
-      )}
 
       {manageName && (
         <NameActionsModal

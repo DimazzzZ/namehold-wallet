@@ -1,3 +1,5 @@
+import { ChevronDown, ChevronRight } from "lucide-react";
+import { Icon } from "./ui/Icon";
 import { useState } from "react";
 import { Dialog } from "./ui/Dialog";
 import { Button } from "./ui/Button";
@@ -101,8 +103,8 @@ export function BatchConfirmModal({
             className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center justify-between text-sm"
             onClick={() => setExpanded((prev) => !prev)}
           >
-            <span className="font-medium text-gray-700">
-              {expanded ? "\u25BC" : "\u25B6"} Names ({names.length})
+            <span className="font-medium text-gray-700 inline-flex items-center gap-1">
+              <Icon icon={expanded ? ChevronDown : ChevronRight} size={14} /> Names ({names.length})
             </span>
           </button>
           {expanded && (
