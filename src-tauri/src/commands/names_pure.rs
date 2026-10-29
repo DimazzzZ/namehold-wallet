@@ -58,6 +58,17 @@ pub fn extract_countdown(
             (blocks.map(|_| "Auction closes in".into()), blocks, hours)
         }
         "CLOSED" => {
+            // hsd adds the transfer lockup stats only while a TRANSFER is
+            // pending; then the next thing that happens is Finalize, not expiry.
+            if let Some(blocks) = stats
+                .get("blocksUntilValidFinalize")
+                .and_then(|b| b.as_i64())
+            {
+                let hours = stats
+                    .get("hoursUntilValidFinalize")
+                    .and_then(|h| h.as_f64());
+                return (Some("Finalize opens in".into()), Some(blocks), hours);
+            }
             let blocks = stats.get("blocksUntilExpire").and_then(|b| b.as_i64());
             (blocks.map(|_| "Expires in".into()), blocks, None)
         }
@@ -70,6 +81,25 @@ mod tests {
     use super::*;
     use crate::noncustodial::network::Network;
     use serde_json::json;
+
+    #[test]
+    fn a_name_in_transfer_counts_down_to_finalize_not_to_expiry() {
+        // hsd adds the transfer lockup stats only while a transfer is pending.
+        let stats = json!({
+            "blocksUntilExpire": 87_512,
+            "blocksUntilValidFinalize": 282,
+            "hoursUntilValidFinalize": 47.0,
+        });
+        assert_eq!(
+            extract_countdown("CLOSED", Some(&stats)),
+            (Some("Finalize opens in".into()), Some(282), Some(47.0))
+        );
+        let owned = json!({ "blocksUntilExpire": 87_512 });
+        assert_eq!(
+            extract_countdown("CLOSED", Some(&owned)),
+            (Some("Expires in".into()), Some(87_512), None)
+        );
+    }
 
     #[test]
     fn reveal_end_height_mainnet() {

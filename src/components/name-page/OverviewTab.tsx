@@ -10,7 +10,7 @@ import { NameDetails } from "../name-actions/NameDetails";
 import { UpcomingSection } from "../name-actions/UpcomingSection";
 import { useNameBids } from "../../queries/read";
 import { countdownForNetwork } from "../../lib/nameStatus";
-import { redeemExplainer } from "../../lib/auction";
+import { formatCountdown, redeemExplainer } from "../../lib/auction";
 import { explorerCoversNetwork } from "../../lib/openExternal";
 import { formatHns, formatHnsShort } from "../../lib/utils";
 import type { NameTab } from "../../lib/nameRoute";
@@ -34,9 +34,13 @@ export function OverviewTab({ a, onTab }: { a: NameActions; onTab: (tab: NameTab
         ? "Renew before it expires"
         : (summary?.nextActionLabel ?? guide?.title);
 
+  // A pending transfer has its own card below; the guided card would only
+  // repeat it (and fell back to the owned-name hint).
+  const transferring = !!caps?.transferPending;
   const showGuided =
     loaded &&
     guide &&
+    !transferring &&
     (badge.phase !== "CLOSED" ||
       caps?.ownsName ||
       caps?.taskState === "wonNeedsRegister" ||
@@ -51,12 +55,20 @@ export function OverviewTab({ a, onTab }: { a: NameActions; onTab: (tab: NameTab
   return (
     <div className={TAB_GRID}>
       <div className="flex flex-col gap-4 min-w-0">
-        {caps?.transferPending && (
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex flex-col gap-2">
+        {transferring && (
+          <div
+            className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex flex-col gap-2"
+            data-testid="transfer-card"
+          >
             <div className="font-medium text-blue-900">Transfer in progress</div>
             <div className="text-gray-700">
-              Started at height {info?.transfer}. Once the transfer lockup is over, finalize it and
-              the name leaves this wallet. Until then you can cancel.
+              Sent at block {info?.transfer?.toLocaleString("en-US")}.{" "}
+              {caps.canFinalize.allowed
+                ? "The transfer lockup is over: finalize it with the button above and the name leaves this wallet."
+                : countdown
+                  ? `${countdown.label} ${formatCountdown(countdown)}; then the name leaves this wallet.`
+                  : "Finalize opens once the transfer lockup ends; then the name leaves this wallet."}{" "}
+              Until then you can cancel.
             </div>
             <div className="flex items-center gap-3">
               <ActionHint reason={a.actionReason(caps.canCancelTransfer)}>
@@ -227,44 +239,55 @@ export function OverviewTab({ a, onTab }: { a: NameActions; onTab: (tab: NameTab
           </section>
         )}
 
-        <NameBidsPanel
-          name={name}
-          profileId={profile?.id ?? null}
-          phase={badge.phase}
-          suppressEmptyHint={a.biddingNotOpenYet}
-          meta={auctionMeta}
-        >
-          {/* A bid of ours from an auction of this name that is over, whose
+        {/* An auction long over, of a name this wallet holds: the price paid is
+            in Details; the card would only repeat it. Kept when it has
+            something of ours to say (stranded or unchecked bids). */}
+        {!(
+          caps?.ownsName &&
+          caps.nameIsRegistered &&
+          badge.phase === "CLOSED" &&
+          !(caps.strandedBidCount ?? 0) &&
+          !(caps.strandedUncheckedCount ?? 0)
+        ) && (
+          <NameBidsPanel
+            name={name}
+            profileId={profile?.id ?? null}
+            phase={badge.phase}
+            suppressEmptyHint={a.biddingNotOpenYet}
+            meta={auctionMeta}
+          >
+            {/* A bid of ours from an auction of this name that is over, whose
               lockup is stranded. The list above is scoped to the current
               auction, so without this the coin is simply missing. */}
-          {(caps?.strandedBidCount ?? 0) > 0 && (
-            <div
-              className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
-              data-testid="stranded-bids"
-            >
-              <span className="font-semibold">
-                {caps!.strandedBidCount === 1
-                  ? "1 bid of yours from an auction that is over"
-                  : `${caps!.strandedBidCount} bids of yours from auctions that are over`}
-              </span>{" "}
-              {formatHnsShort(caps!.strandedLockupDoos ?? 0)} HNS is still locked in{" "}
-              {caps!.strandedBidCount === 1 ? "it" : "them"}. A bid can be revealed, and a reveal
-              redeemed or registered, only while its own auction is the name&apos;s current one.
-              That auction has ended, so the lockup cannot be recovered.
-            </div>
-          )}
-          {/* Our coins of an ended auction no node could be asked about: not
+            {(caps?.strandedBidCount ?? 0) > 0 && (
+              <div
+                className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
+                data-testid="stranded-bids"
+              >
+                <span className="font-semibold">
+                  {caps!.strandedBidCount === 1
+                    ? "1 bid of yours from an auction that is over"
+                    : `${caps!.strandedBidCount} bids of yours from auctions that are over`}
+                </span>{" "}
+                {formatHnsShort(caps!.strandedLockupDoos ?? 0)} HNS is still locked in{" "}
+                {caps!.strandedBidCount === 1 ? "it" : "them"}. A bid can be revealed, and a reveal
+                redeemed or registered, only while its own auction is the name&apos;s current one.
+                That auction has ended, so the lockup cannot be recovered.
+              </div>
+            )}
+            {/* Our coins of an ended auction no node could be asked about: not
               known, which is not the same as nothing stranded. */}
-          {(caps?.strandedUncheckedCount ?? 0) > 0 && (
-            <div
-              className="text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded p-2"
-              data-testid="stranded-unchecked"
-            >
-              Some of your bids on this name could not be checked — sync with your node to see
-              whether a lockup was lost.
-            </div>
-          )}
-        </NameBidsPanel>
+            {(caps?.strandedUncheckedCount ?? 0) > 0 && (
+              <div
+                className="text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded p-2"
+                data-testid="stranded-unchecked"
+              >
+                Some of your bids on this name could not be checked — sync with your node to see
+                whether a lockup was lost.
+              </div>
+            )}
+          </NameBidsPanel>
+        )}
       </div>
 
       {loaded && (

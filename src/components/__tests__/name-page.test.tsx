@@ -502,3 +502,57 @@ describe("Name page — ICANN collision (spec R5)", () => {
     expect(screen.queryByTestId("icann-badge")).toBeNull();
   });
 });
+
+describe("Name page — a transfer in progress says it once", () => {
+  const transferring: Partial<NameActionCapabilities> = {
+    ...owned,
+    taskState: "transferPendingFinalize",
+    transferPending: true,
+    canFinalize: refused("the transfer lockup is still running"),
+    canCancelTransfer: allowed,
+    countdownLabel: "Finalize opens in",
+    countdownBlocks: 282,
+    countdownHours: 47,
+  };
+
+  it("one card with when Finalize opens, no owned-name hint, no auction card", async () => {
+    invokeMock.mockImplementation(
+      route({ name: "ownedname", caps: transferring, info: { transfer: 353_498 } }),
+    );
+    renderAt("/names/ownedname");
+    const card = await screen.findByTestId("transfer-card");
+    expect(card).toHaveTextContent("block 353,498");
+    expect(card).toHaveTextContent(/Finalize opens in/);
+    expect(screen.getByTestId("name-phase")).toHaveTextContent(/Transferring.*finalize opens in/);
+    expect(screen.queryByText(/Renew is the blue button/)).toBeNull();
+    expect(screen.queryByText("Finalize Transfer")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Auction" })).toBeNull();
+  });
+
+  it("says Finalize is ready once the lockup is over", async () => {
+    invokeMock.mockImplementation(
+      route({
+        name: "ownedname",
+        caps: { ...transferring, canFinalize: allowed, countdownBlocks: 0, countdownHours: 0 },
+        info: { transfer: 353_498 },
+      }),
+    );
+    renderAt("/names/ownedname");
+    expect(await screen.findByTestId("transfer-card")).toHaveTextContent(/lockup is over/);
+    expect(screen.getByTestId("name-phase")).toHaveTextContent(/Transferring.*ready to finalize/);
+  });
+
+  it("a locked wallet is a warning, not an error", async () => {
+    invokeMock.mockImplementation(
+      route({
+        caps: owned,
+        canWrite: false,
+        writeReason: "Unlock your wallet to sign transactions.",
+      }),
+    );
+    renderAt("/names/ownedname");
+    const banner = await screen.findByTestId("name-actions-blocked");
+    expect(banner.className).toMatch(/amber/);
+    expect(banner.className).not.toMatch(/red/);
+  });
+});

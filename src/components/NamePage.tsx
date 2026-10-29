@@ -150,8 +150,8 @@ export function NamePage({ name }: { name: string }) {
 
       {a.writeGateVisible && (
         <div
-          className="bg-red-50 border border-red-300 rounded p-2 text-xs text-red-800"
-          role="alert"
+          className="bg-amber-50 border border-amber-200 rounded p-2 text-xs text-amber-800"
+          role="status"
           data-testid="name-actions-blocked"
         >
           <div className="flex items-center justify-between gap-2">

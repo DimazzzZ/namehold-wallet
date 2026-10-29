@@ -165,7 +165,9 @@ export function nameStatusLine(input: StatusInput): StatusLine {
     case "closedResultUnknown":
       return line("muted", "Auction closed", "sync your node to see the result");
     case "transferPendingFinalize":
-      return line("info", "Transfer in progress", "finalize it after the lockup");
+      return caps.canFinalize.allowed
+        ? line("info", "Transferring", "ready to finalize")
+        : line("info", "Transferring", cd ?? "finalize once the transfer lockup ends");
     case "ownedNoUrgentAction":
       return line(
         "ok",
