@@ -205,8 +205,9 @@ export function useNameBatchActions({
     reveal: () => runBatch("reveal", builders.reveal),
     redeem: () => runBatch("redeem", builders.redeem),
     finalize: () => runBatch("finalize", builders.finalize),
-    transfer: () => {
-      const to = recipient.trim();
+    /** `address` is the recipient just entered (state set in the same click is not read yet). */
+    transfer: (address: string = recipient) => {
+      const to = address.trim();
       if (!to) return;
       return runBatch(
         "transfer",

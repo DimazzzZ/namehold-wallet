@@ -212,7 +212,7 @@ describe("Names — the row menu", () => {
     expect(screen.queryByTestId("batch-action-bar")).toBeNull();
     expect(screen.queryByText("0 selected")).toBeNull();
     expect(screen.queryByTestId("batch-renew-btn")).toBeNull();
-    expect(screen.queryByTestId("batch-transfer-recipient-input")).toBeNull();
+    expect(screen.queryByTestId("batch-transfer-btn")).toBeNull();
 
     fireEvent.click(screen.getByLabelText("Select alpha"));
     expect(screen.getByTestId("batch-action-bar")).toHaveTextContent("1 selected");

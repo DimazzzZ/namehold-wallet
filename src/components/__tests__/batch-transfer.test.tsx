@@ -201,24 +201,43 @@ async function selectBothNames() {
   await screen.findByTestId("batch-transfer-btn");
 }
 
+/** Transfer Selected, then the recipient, then Review. */
+async function transferTo(address: string) {
+  const btn = screen.getByTestId("batch-transfer-btn");
+  await waitFor(() => expect(btn).not.toBeDisabled());
+  fireEvent.click(btn);
+  fireEvent.change(await screen.findByTestId("batch-transfer-recipient-input"), {
+    target: { value: address },
+  });
+  fireEvent.click(screen.getByTestId("batch-transfer-review"));
+}
+
 beforeEach(() => {
   invokeMock.mockReset();
   Element.prototype.scrollIntoView = vi.fn();
 });
 
 describe("NamesView — batch transfer", () => {
-  it("Transfer Selected is disabled when the recipient input is empty", async () => {
+  it("Transfer Selected is enabled as soon as the selected names can move; the recipient comes next", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<NamesView />, { wrapper: wrapper() });
     await selectBothNames();
 
     const btn = screen.getByTestId("batch-transfer-btn");
-    expect(btn).toBeDisabled();
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    expect(screen.queryByTestId("batch-transfer-recipient-input")).toBeNull();
 
-    fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
-      target: { value: RECIPIENT },
-    });
-    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    const input = await screen.findByTestId("batch-transfer-recipient-input");
+    const review = screen.getByTestId("batch-transfer-review");
+    expect(review).toBeDisabled();
+    fireEvent.change(input, { target: { value: "hs1qnotthisnetwork" } });
+    expect(screen.getByTestId("batch-transfer-recipient-error")).toHaveTextContent(/rs1/);
+    expect(review).toBeDisabled();
+    fireEvent.change(input, { target: { value: RECIPIENT } });
+    expect(screen.queryByTestId("batch-transfer-recipient-error")).toBeNull();
+    expect(review).not.toBeDisabled();
+    expect(invokeMock.mock.calls.some((c) => c[0] === "build_batch_transfer_draft")).toBe(false);
   });
 
   it("Transfer Selected is disabled when any selected name isn't transferable", async () => {
@@ -228,9 +247,6 @@ describe("NamesView — batch transfer", () => {
     render(<NamesView />, { wrapper: wrapper() });
     await selectBothNames();
 
-    fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
-      target: { value: RECIPIENT },
-    });
     expect(screen.getByTestId("batch-transfer-btn")).toBeDisabled();
   });
 
@@ -239,10 +255,7 @@ describe("NamesView — batch transfer", () => {
     render(<NamesView />, { wrapper: wrapper() });
     await selectBothNames();
 
-    fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
-      target: { value: RECIPIENT },
-    });
-    fireEvent.click(screen.getByTestId("batch-transfer-btn"));
+    await transferTo(RECIPIENT);
 
     await waitFor(() => {
       const call = invokeMock.mock.calls.find((c) => c[0] === "build_batch_transfer_draft");
@@ -260,10 +273,7 @@ describe("NamesView — batch transfer", () => {
     render(<NamesView />, { wrapper: wrapper() });
     await selectBothNames();
 
-    fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
-      target: { value: RECIPIENT },
-    });
-    fireEvent.click(screen.getByTestId("batch-transfer-btn"));
+    await transferTo(RECIPIENT);
 
     await waitFor(() => expect(screen.getByText(/Confirm batch transfer/i)).toBeInTheDocument());
     const recipientRow = screen.getByTestId("batch-transfer-recipient");
@@ -289,10 +299,7 @@ describe("NamesView — batch transfer", () => {
     render(<NamesView />, { wrapper: wrapper() });
     await selectBothNames();
 
-    fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
-      target: { value: RECIPIENT },
-    });
-    fireEvent.click(screen.getByTestId("batch-transfer-btn"));
+    await transferTo(RECIPIENT);
 
     await waitFor(() => {
       const queue = uiStore.useUiStore.getState().toastQueue;

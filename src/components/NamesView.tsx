@@ -680,6 +680,7 @@ export function NamesView() {
           onSelectTransferable={selectTransferable}
           onDropBlockers={dropBlockers}
           transferableLeft={transferableLeft}
+          network={profile?.network ?? "mainnet"}
         />
       )}
 

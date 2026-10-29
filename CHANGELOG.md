@@ -31,6 +31,7 @@
 
 ### Changed
 - **The Names batch bar shows its actions only once a name is selected.** With nothing selected it keeps just "Select all N transferable" and the progress of a running action.
+- **Transfer Selected asks for the recipient after it is pressed.** It is enabled as soon as the selected names can move and opens a dialog for the address (checked against the wallet's network) with Review, instead of waiting, greyed out, for an address typed in a field before it.
 - **README screenshots show the redesigned app.** Wallet, Names, a name's page (with the ICANN flag) and the Market replace the Auctions and Namebase-history images, whose screens are gone; `just screenshots` regenerates them.
 
 ## [0.6.1] - 2026-10-25
