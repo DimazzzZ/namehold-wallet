@@ -286,3 +286,65 @@ const STATUS_ORDER: Record<string, number> = {
 function statusRank(s: string): number {
   return STATUS_ORDER[s] ?? -1;
 }
+
+/**
+ * Which inline actions a draft row offers, keyed by its lifecycle status.
+ * Returns an empty array for non-actionable statuses (onchain / broadcasted /
+ * broadcast_pending / confirmed) — the backend `delete_tx_draft` also refuses
+ * broadcasted/confirmed/broadcast_pending, so we never offer Discard there.
+ *
+ * - "execute" runs unlock → sign → broadcast (labelled per status).
+ * - "discard" deletes the draft, freeing reserved coins.
+ */
+export function draftActionsForStatus(status: MergedRow["status"]): {
+  execute: "Sign & broadcast" | "Broadcast" | "Retry" | null;
+  discard: boolean;
+} {
+  switch (status) {
+    case "draft":
+      return { execute: "Sign & broadcast", discard: true };
+    case "signed":
+      return { execute: "Broadcast", discard: true };
+    case "failed":
+    case "dropped":
+      return { execute: "Retry", discard: true };
+    default:
+      // onchain / broadcasted / broadcast_pending / confirmed
+      return { execute: null, discard: false };
+  }
+}
+
+/**
+ * A row the user still has to act on: an unsent / failed / dropped draft.
+ * Reads draft fields only, so it holds while the chain history is loading or
+ * failed. A purchase lost after it paid stays `confirmed`: nothing to retry.
+ */
+export function isToFinish(r: MergedRow): boolean {
+  return r.draftId != null && draftActionsForStatus(r.status).execute != null;
+}
+
+/** Sent (or seen by the node) but not in a block yet. */
+export function isWaiting(r: MergedRow): boolean {
+  return (
+    !r.confirmed &&
+    !isToFinish(r) &&
+    (r.status === "broadcasted" || r.status === "broadcast_pending" || r.status === "onchain")
+  );
+}
+
+/** Split rows into Activity's three lists; history keeps the input order. */
+export function partitionActivity(rows: MergedRow[]): {
+  toFinish: MergedRow[];
+  waiting: MergedRow[];
+  history: MergedRow[];
+} {
+  const toFinish: MergedRow[] = [];
+  const waiting: MergedRow[] = [];
+  const history: MergedRow[] = [];
+  for (const r of rows) {
+    if (isToFinish(r)) toFinish.push(r);
+    else if (isWaiting(r)) waiting.push(r);
+    else history.push(r);
+  }
+  return { toFinish, waiting, history };
+}

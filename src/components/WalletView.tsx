@@ -18,12 +18,7 @@ import {
   useNameAction,
 } from "../queries/wallet";
 import { finalizeSentIds, usePurchaseFinalize } from "./market/usePurchase";
-import {
-  useReadNames,
-  useReadBalance,
-  useActionHistory,
-  nameCapabilitiesQueryKey,
-} from "../queries/read";
+import { useReadNames, useReadBalance, nameCapabilitiesQueryKey } from "../queries/read";
 import { useNeedsYou } from "../queries/needsYou";
 import {
   useStartFullSync,
@@ -42,8 +37,7 @@ import {
 import { displayName } from "../lib/idn";
 import { NameActionsModal } from "./NameActionsModal";
 import { BlockInfoModal } from "./BlockInfoModal";
-import { TxInfoModal } from "./TxInfoModal";
-import { ActivityRow } from "./ActivityView";
+import { RecentActivityCard } from "./activity/RecentActivityCard";
 import { WalletManager } from "./WalletManager";
 import { NeedsYouCard } from "./NeedsYouCard";
 import { ReceiveDialog } from "./ReceiveDialog";
@@ -69,7 +63,6 @@ import {
   hnsAddressPrefix,
   truncateMiddle,
 } from "../lib/utils";
-import { mergeActivity } from "../lib/activity";
 import { mapError } from "../lib/errors";
 import { explorerCoversNetwork } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
@@ -97,7 +90,6 @@ export function WalletView() {
   const { data: readBalance } = useReadBalance();
   const { data: drafts = [] } = useTxDrafts();
   const { data: names = [] } = useReadNames();
-  const { data: history = [] } = useActionHistory();
   const [nameQuery, setNameQuery] = useState("");
   // Batch selection: names the user has checked for bulk operations.
   const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
@@ -166,7 +158,6 @@ export function WalletView() {
   const navigate = useNavigate();
   const [manageName, setManageName] = useState<string | null>(null);
   const [infoBlock, setInfoBlock] = useState<number | null>(null);
-  const [infoTx, setInfoTx] = useState<string | null>(null);
   // Batch confirmation modal state.
   const [batchModal, setBatchModal] = useState<{
     open: boolean;
@@ -1325,56 +1316,7 @@ export function WalletView() {
         )}
       </div>
 
-      {/* slot: activity-split RecentActivityCard */}
-      {/* Recent activity — real on-chain history from the node (node-indexed). */}
-      {/* Merged activity: on-chain history + local drafts, deduped by txid. */}
-      <div className="bg-white rounded p-4 border border-gray-200">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-sm text-gray-500">Recent activity</div>
-          <button
-            className="text-xs text-blue-600 hover:underline"
-            onClick={() => navigate("/activity")}
-          >
-            See all →
-          </button>
-        </div>
-        {mergeActivity(history, drafts).length > 0 ? (
-          <div className="max-h-72 overflow-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 border-b">
-                  <th className="py-1 pr-4">Date</th>
-                  <th className="py-1 pr-4">Action</th>
-                  <th className="py-1 pr-4">Name</th>
-                  <th className="py-1 pr-4 text-right">Amount</th>
-                  <th className="py-1 pr-4 text-right">Fee</th>
-                  <th className="py-1 pr-4">Status</th>
-                  <th className="py-1 pr-4">Block</th>
-                  <th className="py-1 pr-4">Txid</th>
-                  <th className="py-1">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {mergeActivity(history, drafts)
-                  .slice(0, 10)
-                  .map((row) => (
-                    <ActivityRow
-                      key={row.key}
-                      row={row}
-                      onNameClick={setManageName}
-                      onBlockClick={setInfoBlock}
-                      onTxClick={setInfoTx}
-                      enableDraftActions
-                      profileId={profile?.id ?? null}
-                    />
-                  ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="text-gray-400 text-sm py-4 text-center">No activity yet.</div>
-        )}
-      </div>
+      <RecentActivityCard onNameClick={setManageName} />
 
       {/* Diagnostics — collapsed by default; debug-only info that shouldn't
           compete for attention on the main screen. */}
@@ -1413,15 +1355,6 @@ export function WalletView() {
           height={infoBlock}
           open={infoBlock != null}
           onClose={() => setInfoBlock(null)}
-          isMainnet={explorerCoversNetwork(profile.network)}
-        />
-      )}
-
-      {infoTx != null && (
-        <TxInfoModal
-          txid={infoTx}
-          open={infoTx != null}
-          onClose={() => setInfoTx(null)}
           isMainnet={explorerCoversNetwork(profile.network)}
         />
       )}

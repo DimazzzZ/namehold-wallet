@@ -178,21 +178,14 @@ describe("ActivityView", () => {
     expect(badges.some((el) => el.tagName === "SPAN")).toBe(true);
     const rec = screen.getAllByText("Receive");
     expect(rec.some((el) => el.tagName === "SPAN")).toBe(true);
-    // Alignment: BID amount cell shows "0.000000", byte-identical to the
-    // drafts card's `formatHns(netSpendDoos(...))` for a self-homed action.
-    expect(screen.getByText("0.000000")).toBeInTheDocument();
-    // Color tone: zero-value BID (self-homed) must NOT be red. Receive
-    // (positive net inflow) MUST be green.
-    const zeroSpans = screen.getAllByText("0.000000").filter((el) => el.tagName === "SPAN");
-    expect(zeroSpans.length).toBeGreaterThan(0);
-    expect(zeroSpans.some((el) => el.className.includes("text-gray-700"))).toBe(true);
-    expect(zeroSpans.some((el) => el.className.includes("text-red-600"))).toBe(false);
-    const receiveSpan = screen
-      .getAllByText(
-        (_, el) => el?.tagName === "SPAN" && /^\+100\.000000$/.test(el.textContent ?? ""),
-      )
-      .find((el) => el.className.includes("text-green-600"));
-    expect(receiveSpan).toBeTruthy();
+    // Amounts are short in the list (exact on hover). A zero-value BID
+    // (self-homed) is neutral, never red; a Receive (net inflow) is green.
+    const amounts = screen.getAllByTestId("activity-amount");
+    const zero = amounts.find((el) => el.textContent === "0")!;
+    expect(zero.className).toContain("text-gray-500");
+    expect(zero.className).not.toContain("text-red-600");
+    const receive = amounts.find((el) => el.textContent === "+100")!;
+    expect(receive.className).toContain("text-green-600");
   });
 
   it("filters by action via the action select", async () => {
@@ -321,12 +314,14 @@ describe("ActivityView", () => {
     );
   });
 
-  it("renders dates in long form with time (e.g. 'July 24, 2026 - 12:00:00')", async () => {
+  it("renders dates short in History and long in the expanded row", async () => {
     // Unix seconds for 2026-07-24 12:00:00 UTC.
     const unix = Math.floor(Date.UTC(2026, 6, 24, 12) / 1000);
     invokeMock.mockImplementation(routes([row({ txid: "cc", time: unix, height: 500 })]));
     render(<ActivityView />, { wrapper: wrapper() });
-    await waitFor(() => expect(screen.getByText("July 24, 2026 - 12:00:00")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Jul 24, 2026 · 12:00")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("activity-row-toggle"));
+    expect(screen.getByTestId("activity-row-detail")).toHaveTextContent("July 24, 2026 - 12:00:00");
     // And the compact "24/07/2026, 12:00:00" locale-string form is absent.
     expect(screen.queryByText(/^\d{1,2}\/\d{1,2}\/\d{4}/)).not.toBeInTheDocument();
   });
@@ -350,9 +345,9 @@ describe("ActivityView", () => {
     // First page: 50 rows in <tbody>.
     const tbodyRowsPage1 = document.querySelectorAll("tbody tr");
     expect(tbodyRowsPage1.length).toBe(50);
-    // Prev disabled on page 1; Next enabled.
-    const prev = screen.getByRole("button", { name: /Prev/ });
-    const next = screen.getByRole("button", { name: /Next/ });
+    // Newer disabled on page 1; Show older enabled.
+    const prev = screen.getByRole("button", { name: /Newer/ });
+    const next = screen.getByRole("button", { name: /Show older/ });
     expect(prev).toBeDisabled();
     expect(next).not.toBeDisabled();
 
@@ -361,9 +356,9 @@ describe("ActivityView", () => {
     // Second page: only 25 rows remain.
     const tbodyRowsPage2 = document.querySelectorAll("tbody tr");
     expect(tbodyRowsPage2.length).toBe(25);
-    // Prev now enabled; Next now disabled.
-    expect(screen.getByRole("button", { name: /Prev/ })).not.toBeDisabled();
-    expect(screen.getByRole("button", { name: /Next/ })).toBeDisabled();
+    // Newer now enabled; Show older now disabled.
+    expect(screen.getByRole("button", { name: /Newer/ })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: /Show older/ })).toBeDisabled();
   });
 
   it("resets to page 1 when filters shrink the list past the current page", async () => {
@@ -395,7 +390,7 @@ describe("ActivityView", () => {
     // Land on page 1 first.
     await waitFor(() => expect(screen.getByText(/Rows 1–50 of 60/)).toBeInTheDocument());
     // Click Next → page 2 (rows 51–60).
-    fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Show older/ }));
     await waitFor(() => expect(screen.getByText(/Rows 51–60 of 60/)).toBeInTheDocument());
 
     // Filter to "bid" → only 5 rows total. Should snap back to page 1 and
@@ -403,9 +398,10 @@ describe("ActivityView", () => {
     const [actionSelect] = screen.getAllByRole("combobox");
     fireEvent.change(actionSelect!, { target: { value: "bid" } });
     await waitFor(() => {
-      // Pager hidden when the filtered list fits on one page.
-      expect(screen.queryByText(/Rows \d+–\d+ of \d+/)).not.toBeInTheDocument();
+      // Back on page 1; the page buttons hide when the list fits on one page.
+      expect(screen.getByText("Rows 1–5 of 5")).toBeInTheDocument();
     });
+    expect(screen.queryByText(/Page \d+ of \d+/)).not.toBeInTheDocument();
     // And 5 bid rows render.
     const rows5 = document.querySelectorAll("tbody tr");
     expect(rows5.length).toBe(5);
@@ -461,7 +457,8 @@ describe("ActivityView — canonical table design", () => {
               id: "draft-batch-1",
               walletProfileId: "p1",
               action: "batch-bid",
-              status: "draft",
+              // Finished, so it lands in History, where batches unfold.
+              status: "confirmed",
               summary: {
                 action: "batch-bid",
                 sendTotalDoos: 0,
@@ -800,7 +797,12 @@ describe("ActivityView: paid swap offers recorded before the withdrawal", () => 
     expect(rows[0]).toHaveTextContent("2.5 HNS");
     expect(rows[0]).toHaveTextContent("Claimed");
     expect(rows[1]).toHaveTextContent("Not claimed");
-    expect(within(card).queryByRole("button")).toBeNull();
+    // Read-only: the names open the name, and nothing else is a control.
+    expect(
+      within(card)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual([".newer", ".older"]);
   });
 
   it("shows nothing when no offer was recorded", async () => {
@@ -813,5 +815,138 @@ describe("ActivityView: paid swap offers recorded before the withdrawal", () => 
       expect(invokeMock.mock.calls.some((c) => c[0] === "list_paid_swap_offers")).toBe(true),
     );
     expect(screen.queryByTestId("paid-swap-offers")).toBeNull();
+  });
+});
+
+describe("ActivityView — To finish / Waiting / History (v2)", () => {
+  const draft = (id: string, status: string, over: Record<string, unknown> = {}) => ({
+    id,
+    walletProfileId: "p1",
+    action: "send_hns",
+    status,
+    summary: {
+      action: "send_hns",
+      sendTotalDoos: 1_000_000,
+      feeDoos: 5_000,
+      changeDoos: 0,
+      inputTotalDoos: 1_005_000,
+      numInputs: 1,
+      recipientAddress: "rs1qrecipient",
+      txid: null,
+      warnings: [],
+      name: null,
+      nameList: null,
+    },
+    errorMessage: null,
+    txid: null,
+    confirmationHeight: null,
+    purchaseLostReason: null,
+    createdAt: "2026-08-14 12:00:00",
+    ...over,
+  });
+  const world =
+    (history: unknown, drafts: unknown[], extra: Record<string, unknown> = {}) =>
+    (cmd: string) =>
+      cmd in extra ? Promise.resolve(extra[cmd]) : routes(history, drafts)(cmd);
+
+  it("splits rows into To finish → Waiting → History, in that order", async () => {
+    invokeMock.mockImplementation(
+      world(
+        [row({ txid: "aa" }), row({ txid: "bb", action: "bid", name: "foo", confirmed: false })],
+        [draft("d1", "draft"), draft("d2", "failed"), draft("d3", "broadcasted", { txid: "cc" })],
+      ),
+    );
+    render(<ActivityView />, { wrapper: wrapper() });
+    const finish = await screen.findByTestId("activity-to-finish");
+    const waiting = screen.getByTestId("activity-waiting");
+    const history = screen.getByTestId("activity-history");
+    expect(within(finish).getAllByTestId("activity-to-finish-row")).toHaveLength(2);
+    expect(within(waiting).getAllByTestId("activity-waiting-row")).toHaveLength(2);
+    expect(within(history).getAllByTestId("activity-history-row")).toHaveLength(1);
+    expect(finish.compareDocumentPosition(waiting) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      waiting.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(within(finish).getByText(/To finish/)).toHaveTextContent("To finish · 2");
+  });
+
+  it("keeps To finish when the history read fails, and hides History", async () => {
+    invokeMock.mockImplementation(world(new Error("boom"), [draft("d1", "draft")]));
+    render(<ActivityView />, { wrapper: wrapper() });
+    expect(await screen.findByText(/Failed to load activity: boom/)).toBeInTheDocument();
+    expect(await screen.findByTestId("activity-to-finish")).toBeInTheDocument();
+    expect(screen.queryByTestId("activity-history")).not.toBeInTheDocument();
+  });
+
+  it("filters apply to all lists, with a note, and Clear resets them in one go", async () => {
+    invokeMock.mockImplementation(
+      world(
+        [row({ txid: "aa" }), row({ txid: "bb", action: "bid", name: "foo" })],
+        [draft("d1", "draft")],
+      ),
+    );
+    render(<ActivityView />, { wrapper: wrapper() });
+    await screen.findByTestId("activity-to-finish");
+    fireEvent.change(screen.getByTestId("activity-search-input"), { target: { value: "foo" } });
+    await waitFor(() => expect(screen.queryByTestId("activity-to-finish")).not.toBeInTheDocument());
+    expect(screen.getAllByTestId("activity-history-row")).toHaveLength(1);
+
+    fireEvent.change(screen.getByTestId("activity-search-input"), { target: { value: "" } });
+    const [actionSelect] = screen.getAllByRole("combobox");
+    fireEvent.change(actionSelect!, { target: { value: "other" } });
+    // The action filter matches the raw action: no row is "other" here.
+    await waitFor(() =>
+      expect(screen.getByText("No transactions match the current filters.")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId("activity-clear-filters"));
+    await waitFor(() => expect(screen.getByTestId("activity-to-finish")).toBeInTheDocument());
+    expect(screen.getAllByTestId("activity-history-row")).toHaveLength(2);
+    expect(screen.queryByTestId("activity-clear-filters")).not.toBeInTheDocument();
+  });
+
+  it("shows the filter note when a filtered list still has unfinished rows", async () => {
+    invokeMock.mockImplementation(world([row({ txid: "aa" })], [draft("d1", "draft")]));
+    render(<ActivityView />, { wrapper: wrapper() });
+    await screen.findByTestId("activity-to-finish");
+    const [, statusSelect] = screen.getAllByRole("combobox");
+    fireEvent.change(statusSelect!, { target: { value: "pending" } });
+    expect(
+      await screen.findByText("Filters apply to To finish and Waiting for a block too."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("No finished transactions match the current filters."),
+    ).toBeInTheDocument();
+  });
+
+  it("a row click expands fee, block and txid; Copy copies the txid", async () => {
+    const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
+    invokeMock.mockImplementation(world([row({ txid: "abcdef0123456789", height: 437 })], []));
+    render(<ActivityView />, { wrapper: wrapper() });
+    const tr = await screen.findByTestId("activity-history-row");
+    fireEvent.click(tr);
+    const detail = screen.getByTestId("activity-row-detail");
+    expect(within(detail).getByTestId("activity-block-info-link")).toHaveTextContent("#437");
+    fireEvent.click(within(detail).getByTestId("activity-copy-txid"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("abcdef0123456789"));
+    expect(await within(detail).findByText("Copied")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("activity-row-toggle"));
+    expect(screen.queryByTestId("activity-row-detail")).not.toBeInTheDocument();
+  });
+
+  it("History passes the canonical table contract", async () => {
+    invokeMock.mockImplementation(world([row({ txid: "aa" })], []));
+    render(<ActivityView />, { wrapper: wrapper() });
+    await screen.findByTestId("activity-history-row");
+    const { assertCanonicalTable } = await import("../../test/canonicalTable");
+    assertCanonicalTable(document.querySelector("table")!, { name: "History" });
+  });
+
+  it("ignores drafts of another wallet", async () => {
+    invokeMock.mockImplementation(
+      world([], [draft("d1", "draft"), draft("d2", "draft", { walletProfileId: "other" })]),
+    );
+    render(<ActivityView />, { wrapper: wrapper() });
+    const finish = await screen.findByTestId("activity-to-finish");
+    expect(within(finish).getAllByTestId("activity-to-finish-row")).toHaveLength(1);
   });
 });

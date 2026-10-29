@@ -471,14 +471,11 @@ describe("WalletView (non-custodial)", () => {
     // ...instead, the Amount cell surfaces the carried name value as an
     // informational "⤷ 222.000000" (net flow is still 0 — not shown as a cost),
     // in the neutral gray tone with a dotted-underline tooltip trigger.
-    const carried = within(updateRow).getByText(/⤷\s*222\.000000/);
+    const carried = within(updateRow).getByText(/⤷\s*222$/);
     expect(carried).toBeInTheDocument();
     expect(carried.className).toContain("text-gray-500");
-    // A real send still shows its outgoing amount. `send_hns` isn't in
-    // ACTION_META so it renders as the FALLBACK_META "Other" badge; find the
-    // send row by its unique amount instead.
-    const sendRow = screen.getByText("-1.000000").closest("tr")!;
-    expect(within(sendRow).getByText("-1.000000")).toBeInTheDocument();
+    // A real send still shows its outgoing amount (short, with U+2212).
+    expect(screen.getByText("\u22121")).toBeInTheDocument();
   });
 
   const multiNames = [
@@ -1045,12 +1042,9 @@ describe("WalletView — Recent transactions shows the name (Task 2)", () => {
     // the "Other" badge. Find the row by its unique txid fragment. The Name
     // cell should be an em-dash (—) since summary.name is absent — the row
     // must contain NO ".<something>" name fragment anywhere.
-    const txidBtn = await screen.findByText("def456txid".slice(0, 10) + "…");
-    const row = txidBtn.closest("tr")!;
+    const row = await screen.findByTestId("recent-activity-row");
     // No ".foo" style name link anywhere in the row.
     expect(row.textContent).not.toMatch(/\.[a-z]/i);
-    // The Name cell renders the em-dash placeholder.
-    expect(within(row).getByText("—")).toBeInTheDocument();
   });
 });
 
@@ -1193,32 +1187,22 @@ describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () =
     // "Recent activity" header should appear, and the classified rows.
     await waitFor(() => expect(screen.getByText("Recent activity")).toBeInTheDocument());
     // A row with the decoded name shows up as `.foo` inside a table cell.
+    const card = screen.getByTestId("recent-activity");
     await waitFor(() =>
       expect(
-        screen.getByText((_, el) => el?.tagName === "TD" && el.textContent === ".foo"),
+        within(card).getByText((_, el) => el?.tagName === "BUTTON" && el.textContent === ".foo"),
       ).toBeInTheDocument(),
     );
-    // The See all → link routes to /activity.
-    const seeAll = screen.getByRole("button", { name: /See all/ });
-    expect(seeAll).toBeInTheDocument();
-    // Alignment with the drafts card: the BID row (with self-homed
-    // valueDoos=0) shows "0.000000" byte-identical to the drafts card, and
-    // is colored NEUTRAL (gray) — a self-homed name action is not a loss.
-    const zeroSpans = screen.getAllByText("0.000000").filter((el) => el.tagName === "SPAN");
-    expect(zeroSpans.some((el) => el.className.includes("text-gray-700"))).toBe(true);
-    expect(zeroSpans.some((el) => el.className.includes("text-red-600"))).toBe(false);
-    // The receive row (positive inflow) is green with a leading "+".
-    const incomeSpan = screen
-      .getAllByText(
-        (_, el) => el?.tagName === "SPAN" && /^\+100\.000000$/.test(el.textContent ?? ""),
-      )
-      .find((el) => el.className.includes("text-green-600"));
-    expect(incomeSpan).toBeTruthy();
-    // Long-form date with time: the row's Date cell reads
-    // "July 24, 2026 - 12:00:00", not the locale-dependent "24/07/2026" or
-    // "7/24/2026" that `formatDate` would produce. formatDate is the
-    // shared helper.
-    expect(screen.getAllByText("July 24, 2026 - 12:00:00").length).toBeGreaterThan(0);
+    // "All activity →" routes to /activity.
+    expect(within(card).getByRole("button", { name: /All activity/ })).toBeInTheDocument();
+    // A self-homed BID (net 0) is neutral gray, never red; a receive is green "+".
+    const amounts = within(card).getAllByTestId("activity-amount");
+    const zero = amounts.find((el) => el.textContent === "0")!;
+    expect(zero.className).toContain("text-gray-500");
+    expect(zero.className).not.toContain("text-red-600");
+    expect(amounts.find((el) => el.textContent === "+100")!.className).toContain("text-green-600");
+    // Compact UTC date + time, never the locale-dependent "24/07/2026".
+    expect(within(card).getAllByText("Jul 24, 2026 · 12:00").length).toBeGreaterThan(0);
   });
 });
 
@@ -1275,7 +1259,7 @@ describe("WalletView — canonical table design", () => {
     // Recent transactions, "Receive" badge (SPAN, not filter option) =
     // Recent activity.
     await screen.findAllByText(".example");
-    await screen.findByText("abc123txid…");
+    await waitFor(() => expect(screen.getAllByTestId("recent-activity-row")).toHaveLength(2));
 
     const { assertCanonicalTable } = await import("../../test/canonicalTable");
     const tables = Array.from(document.querySelectorAll("table"));
@@ -1288,7 +1272,7 @@ describe("WalletView — canonical table design", () => {
 });
 
 describe("WalletView — Recent transactions amount tone", () => {
-  it("outgoing sends render red (-1.000000), self-homed updates render neutral (0.000000)", async () => {
+  it("outgoing sends render gray-900 (−1), self-homed updates render neutral (⤷ 222)", async () => {
     const drafts = [
       {
         id: "d-update",
@@ -1342,15 +1326,14 @@ describe("WalletView — Recent transactions amount tone", () => {
     // Self-homed UPDATE: amount cell shows the carried name value as
     // "⤷ 222.000000" in neutral gray — not a red spend.
     const updateRow = (await screen.findByText(".ecology")).closest("tr")!;
-    const carriedCell = within(updateRow).getByText(/⤷\s*222\.000000/);
+    const carriedCell = within(updateRow).getByText(/⤷\s*222$/);
     expect(carriedCell.className).toContain("text-gray-500");
     expect(carriedCell.className).not.toContain("text-red-600");
 
-    // Outgoing SEND: amount cell shows "-1.000000" in red tone (spend).
-    const sendRow = screen.getByText("-1.000000").closest("tr")!;
-    const sendAmountCell = within(sendRow).getByText("-1.000000");
-    expect(sendAmountCell.className).toContain("text-red-600");
-    expect(sendAmountCell.className).not.toContain("text-gray-700");
+    // Outgoing SEND: "−1" in gray-900 — red is only for errors (DESIGN_SYSTEM).
+    const sendAmountCell = screen.getByText("\u22121");
+    expect(sendAmountCell.className).toContain("text-gray-900");
+    expect(sendAmountCell.className).not.toContain("text-red-600");
   });
 });
 
