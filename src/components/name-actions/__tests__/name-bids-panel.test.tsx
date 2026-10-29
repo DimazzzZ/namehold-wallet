@@ -233,11 +233,13 @@ describe("NameBidsPanel — phase-aware honest bid display (Task 2)", () => {
     const call = invokeMock.mock.calls.find((c) => c[0] === "read_name_bids");
     expect(call?.[1]).toMatchObject({ name: "xn--e1adigm" });
 
-    // The panel's heading used to read "Bids for козел". The modal's own title
-    // already names the domain, so the heading is bare now and this component
-    // renders the name nowhere — the RAW-name call above is what it owes.
-    expect(screen.getByTestId("name-bids")).toHaveTextContent("Bids");
+    // The panel's heading used to read "Bids for козел". The name page's H1
+    // already names the domain, so the card title is a bare "Auction" and this
+    // component renders the name nowhere — the RAW-name call above is what it
+    // owes.
+    expect(screen.getByRole("heading", { name: "Auction" })).toBeInTheDocument();
     expect(screen.queryByText(/Bids for/i)).toBeNull();
+    expect(screen.queryByText(/козел/)).toBeNull();
   });
 
   it("lists a bid of ours still waiting for a block, and counts it apart", async () => {

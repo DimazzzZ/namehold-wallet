@@ -656,6 +656,8 @@ export interface WorkspaceTab<T extends string> {
   label: string;
   description?: string;
   badge?: string | number;
+  /** A muted dot after the label, explaining why the tab is mostly empty. */
+  hint?: string;
 }
 
 export interface WalletTransactionRow {

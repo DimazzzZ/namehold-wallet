@@ -24,7 +24,7 @@ function wrap(ui: ReactNode): ReactNode {
  * M8: end-to-end sign flow tests focused on the Ledger UX contract.
  *
  * `useExecuteDraft` is the shared unlock→sign→broadcast pipeline that both
- * `NameActionsModal` and `WalletView` drive. For Ledger profiles the caller
+ * the name page and `WalletView` drive. For Ledger profiles the caller
  * passes `unlocked = true` (no passphrase to prompt for), so the pipeline must:
  *   1. Skip `unlock_local_signer` entirely.
  *   2. Call `sign_tx_draft` (which the backend routes to the device).

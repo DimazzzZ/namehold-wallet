@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 
 // F4 fix: client-side bid validation (0 < bid ≤ lockup, NaN guard) plus an
@@ -18,7 +17,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   readText: vi.fn().mockResolvedValue(""),
 }));
 
-import { NameActionsModal } from "../NameActionsModal";
+import { NamePageAt } from "../../test/namePage";
 
 const profile = {
   id: "p1",
@@ -68,7 +67,7 @@ function route() {
       case "list_wallet_profiles":
         return Promise.resolve([profile]);
       // Submitting a bid runs build → sign → broadcast (see `run()` in
-      // NameActionsModal / useExecuteDraft). The default `null` fall-through
+      // the name page / useExecuteDraft). The default `null` fall-through
       // used to make `run()` dereference `draft.id` on null and leak an
       // unhandled rejection into the suite. Stub the whole pipeline so the
       // happy path resolves cleanly; the tests still only assert on the
@@ -117,7 +116,7 @@ function wrapper() {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
+        <>{children}</>
       </QueryClientProvider>
     );
   };
@@ -125,10 +124,10 @@ function wrapper() {
 
 beforeEach(() => invokeMock.mockReset());
 
-describe("NameActionsModal — guided bid form validation (F4)", () => {
+describe("Name page — guided bid form validation (F4)", () => {
   it("shows the forfeit warning as soon as the bid form is active, before any input", async () => {
     invokeMock.mockImplementation(route());
-    render(<NameActionsModal name="bidname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
 
     const warning = await screen.findByTestId("bid-forfeit-warning");
     expect(warning).toHaveTextContent(/forfeited/i);
@@ -137,7 +136,7 @@ describe("NameActionsModal — guided bid form validation (F4)", () => {
 
   it("updates the forfeit warning's lockup figure as the user types", async () => {
     invokeMock.mockImplementation(route());
-    render(<NameActionsModal name="bidname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
 
     await screen.findByText("Place a Bid");
     const lockupInput = screen.getByLabelText(/Lockup \(HNS\)/i);
@@ -150,7 +149,7 @@ describe("NameActionsModal — guided bid form validation (F4)", () => {
 
   it("blocks submit and shows an error when bid exceeds lockup", async () => {
     invokeMock.mockImplementation(route());
-    render(<NameActionsModal name="bidname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
 
     await screen.findByText("Place a Bid");
     fireEvent.change(screen.getByLabelText(/^Bid \(HNS\)/i), { target: { value: "20" } });
@@ -172,7 +171,7 @@ describe("NameActionsModal — guided bid form validation (F4)", () => {
 
   it("blocks submit and shows an error when the bid is zero", async () => {
     invokeMock.mockImplementation(route());
-    render(<NameActionsModal name="bidname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
 
     await screen.findByText("Place a Bid");
     fireEvent.change(screen.getByLabelText(/^Bid \(HNS\)/i), { target: { value: "0" } });
@@ -187,7 +186,7 @@ describe("NameActionsModal — guided bid form validation (F4)", () => {
 
   it("enables submit once bid and lockup are both valid and bid <= lockup", async () => {
     invokeMock.mockImplementation(route());
-    render(<NameActionsModal name="bidname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
 
     await screen.findByText("Place a Bid");
     fireEvent.change(screen.getByLabelText(/^Bid \(HNS\)/i), { target: { value: "10" } });
@@ -203,7 +202,7 @@ describe("NameActionsModal — guided bid form validation (F4)", () => {
 
   it("placing a valid bid sends the exact numeric doos values to the backend", async () => {
     invokeMock.mockImplementation(route());
-    render(<NameActionsModal name="bidname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
 
     await screen.findByText("Place a Bid");
     fireEvent.change(screen.getByLabelText(/^Bid \(HNS\)/i), { target: { value: "10" } });

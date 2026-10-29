@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { ReactNode } from "react";
 
 const invokeMock = vi.fn();
@@ -12,6 +12,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
 import { NamesView } from "../NamesView";
+import { NameRoute } from "../NamePage";
+import { LocationProbe } from "../../test/namePage";
 
 const profile = {
   id: "p1",
@@ -520,7 +522,7 @@ describe("NamesView — batch-bid button", () => {
   });
 });
 
-describe("NamesView ↔ NameActionsModal — task-state label consistency", () => {
+describe("NamesView ↔ name page — task-state label consistency", () => {
   // Regression: the row showed the capability-derived task-state label
   // ("Waiting for Bidding") while the modal, on open, briefly showed the raw
   // on-chain phase ("Opening") until its own single-name capability fetch
@@ -584,29 +586,40 @@ describe("NamesView ↔ NameActionsModal — task-state label consistency", () =
     }
   }
 
-  it("modal opens on the row's task state, never the raw phase", async () => {
+  it("the name page opens on the row's task state, never the raw phase", async () => {
     invokeMock.mockImplementation(routeOpening);
-    render(<NamesView />, { wrapper: wrapper() });
+    render(
+      <>
+        <Routes>
+          <Route path="/names" element={<NamesView />} />
+          <Route path="/names/:name" element={<NameRoute />} />
+        </Routes>
+        <LocationProbe />
+      </>,
+      { wrapper: wrapper() },
+    );
 
     // The row shows the capability-derived status (nameRows wording for
     // waitingForBidding: "Opening · bidding opens in …").
     const row = await screen.findByTestId("names-row");
     await waitFor(() => expect(row).toHaveTextContent("bidding opens in 20 blocks (~3h)"));
 
-    // Open the modal by clicking the row (a waitingForBidding row has no
+    // Open the name page by clicking the row (a waitingForBidding row has no
     // button of its own).
     await act(async () => {
       fireEvent.click(row);
     });
 
-    // The modal's phase badge (data-testid="name-phase") must show the same
-    // task-state label — never the raw "Opening" phase, never the transient
+    // The page's status line (data-testid="name-phase") must tell the same
+    // task state — never the raw "Opening" phase label, never the transient
     // "Checking…" placeholder (the cache bridge seeds caps on open).
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent(/^\/names\//));
     const phase = await screen.findByTestId("name-phase");
     await waitFor(() => {
-      expect(phase).toHaveTextContent(/Waiting for Bidding/);
+      expect(phase).toHaveTextContent(/^Auction opening/);
     });
     expect(phase).not.toHaveTextContent(/Opening/);
     expect(phase).not.toHaveTextContent(/Checking/);
+    expect(invokeMock.mock.calls.some((c) => c[0] === "get_name_action_capabilities")).toBe(false);
   });
 });

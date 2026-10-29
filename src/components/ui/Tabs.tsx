@@ -45,6 +45,15 @@ export function Tabs<T extends string>({ tabs, active, onChange, className }: Ta
                   {tab.badge}
                 </span>
               )}
+              {tab.hint && (
+                <Tooltip content={tab.hint}>
+                  <span
+                    className="h-1.5 w-1.5 rounded-full bg-gray-300"
+                    aria-label={tab.hint}
+                    data-testid={`tab-hint-${tab.key}`}
+                  />
+                </Tooltip>
+              )}
             </button>
           </Tooltip>
         );

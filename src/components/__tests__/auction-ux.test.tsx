@@ -25,7 +25,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 
 import { WalletView } from "../WalletView";
 import { ActivityView } from "../ActivityView";
-import { NameActionsModal } from "../NameActionsModal";
+import { NamePageAt } from "../../test/namePage";
 
 const profile = {
   id: "p1",
@@ -58,6 +58,16 @@ function wrapper() {
 }
 
 beforeEach(() => invokeMock.mockReset());
+
+/** For the name page, which brings its own router (`NamePageAt`). */
+function pageWrapper() {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+  };
+}
 
 describe("WalletView — auction UX", () => {
   /** Minimal capability object — override per test via `opts.caps[name]`. */
@@ -423,7 +433,7 @@ describe("WalletView — auction UX", () => {
   });
 });
 
-describe("NameActionsModal — phase header + DNS editor", () => {
+describe("Name page — phase header + DNS editor", () => {
   function routeModal(captured: { records?: unknown }) {
     return (cmd: string, args?: Record<string, unknown>) => {
       if (cmd === "get_name_action_capabilities") {
@@ -501,18 +511,19 @@ describe("NameActionsModal — phase header + DNS editor", () => {
 
   it("shows the live phase badge and the recommended action", async () => {
     invokeMock.mockImplementation(routeModal({}));
-    render(<NameActionsModal name="cuatesttld" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/cuatesttld" />, { wrapper: pageWrapper() });
 
     // With capabilities/task-state for wonNeedsRegister, the badge shows "Won!".
     expect(await screen.findByTestId("name-phase")).toBeInTheDocument();
-    // The guided action should show Register.
-    expect(await screen.findByRole("button", { name: /^Register$/i })).toBeInTheDocument();
+    // Register is the header primary (and the guided panel's secondary).
+    expect(await screen.findByTestId("name-primary")).toHaveTextContent("Register");
+    expect(screen.getAllByRole("button", { name: /^Register$/i })).toHaveLength(2);
   });
 
   it("serializes the DNS row editor into the records array on Register", async () => {
     const captured: { records?: unknown } = {};
     invokeMock.mockImplementation(routeModal(captured));
-    render(<NameActionsModal name="cuatesttld" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/cuatesttld" />, { wrapper: pageWrapper() });
 
     // Records are optional on the Register step, so the editor sits behind a
     // disclosure — whoever does want records up front opens it.
@@ -522,7 +533,8 @@ describe("NameActionsModal — phase header + DNS editor", () => {
     fireEvent.change(screen.getByLabelText("record value"), {
       target: { value: "cua-agent-verified" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /^Register$/i }));
+    // The guided panel's Register (the header primary comes first).
+    fireEvent.click(screen.getAllByRole("button", { name: /^Register$/i }).slice(-1)[0]!);
 
     await waitFor(() => {
       expect(invokeMock.mock.calls.map((c) => c[0])).toContain("build_register_draft");
@@ -531,7 +543,7 @@ describe("NameActionsModal — phase header + DNS editor", () => {
   });
 });
 
-describe("NameActionsModal — local bid shown before reveal", () => {
+describe("Name page — local bid shown before reveal", () => {
   // In BIDDING/OPENING every bid is blinded, so hsd reports value/highest as 0.
   // But our own bid is not a secret to us: the backend surfaces its plaintext
   // via caps.bidValueDoos. The header must show OUR bid, never the misleading
@@ -596,22 +608,22 @@ describe("NameActionsModal — local bid shown before reveal", () => {
         lockupValueDoos: 500_000_000,
       }),
     );
-    render(<NameActionsModal name="biddingtld" open onClose={() => {}} />, {
-      wrapper: wrapper(),
+    render(<NamePageAt path="/names/biddingtld" />, {
+      wrapper: pageWrapper(),
     });
 
     const yourBid = await screen.findByTestId("name-your-bid");
-    // Compact display (≤2 decimals); full precision lives in the hover tooltip.
-    expect(yourBid).toHaveTextContent("Your bid 100 HNS");
+    // The Details card's row: label, then the full-precision amount.
+    expect(yourBid).toHaveTextContent(/^Your bid\s*100\.000000 HNS/);
     // Both numbers are shown, so the "hidden until reveal" hint is gone.
     expect(yourBid).not.toHaveTextContent(/hidden until reveal/i);
     // HSD term: the on-chain concealing amount is the "lockup" (OUR value).
     const lockup = await screen.findByTestId("name-your-lockup");
-    expect(lockup).toHaveTextContent("lockup 500 HNS");
+    expect(lockup).toHaveTextContent("lockup 500.000000");
     // The old non-canonical "blind (on-chain)" wording must be gone.
     expect(yourBid).not.toHaveTextContent(/blind/i);
     // The misleading on-chain "High bid 0 · value 0" must NOT be rendered.
-    expect(screen.queryByText(/High bid 0\.000000 HNS/)).not.toBeInTheDocument();
+    expect(screen.queryByText("High bid")).not.toBeInTheDocument();
   });
 
   it("falls back to on-chain high-bid/value when the wallet has no bid commitment", async () => {
@@ -623,17 +635,18 @@ describe("NameActionsModal — local bid shown before reveal", () => {
         onChainHighest: 7_000_000,
       }),
     );
-    render(<NameActionsModal name="biddingtld" open onClose={() => {}} />, {
-      wrapper: wrapper(),
+    render(<NamePageAt path="/names/biddingtld" />, {
+      wrapper: pageWrapper(),
     });
 
     // No local bid → no "Your bid" line; the on-chain summary is shown instead.
-    expect(await screen.findByText(/High bid 7\.000000 HNS/)).toBeInTheDocument();
+    expect(await screen.findByText("High bid")).toBeInTheDocument();
+    expect(screen.getByText("7.000000 HNS")).toBeInTheDocument();
     expect(screen.queryByTestId("name-your-bid")).not.toBeInTheDocument();
   });
 });
 
-describe("NameActionsModal — recover bid commitment (Task 2 / C2)", () => {
+describe("Name page — recover bid commitment (Task 2 / C2)", () => {
   function routeReveal(captured: { recover?: Record<string, unknown> }, hasBidCommitment: boolean) {
     return (cmd: string, args?: Record<string, unknown>) => {
       if (cmd === "get_name_action_capabilities") {
@@ -718,7 +731,7 @@ describe("NameActionsModal — recover bid commitment (Task 2 / C2)", () => {
   it("renders the recover-bid input in the no-commitment REVEAL state and calls recover_bid_commitment with the raw name + doos value", async () => {
     const captured: { recover?: Record<string, unknown> } = {};
     invokeMock.mockImplementation(routeReveal(captured, false));
-    render(<NameActionsModal name="lostbidname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/lostbidname" />, { wrapper: pageWrapper() });
 
     const recoverBox = await screen.findByTestId("recover-bid");
     expect(recoverBox).toBeInTheDocument();
@@ -739,7 +752,7 @@ describe("NameActionsModal — recover bid commitment (Task 2 / C2)", () => {
 
   it("does not render the recover-bid input once a commitment already exists", async () => {
     invokeMock.mockImplementation(routeReveal({}, true));
-    render(<NameActionsModal name="lostbidname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/lostbidname" />, { wrapper: pageWrapper() });
 
     await screen.findByTestId("name-phase");
     expect(screen.queryByTestId("recover-bid")).toBeNull();

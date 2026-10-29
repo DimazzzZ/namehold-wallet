@@ -578,3 +578,10 @@ export function formatSpanDays(days: number): string {
   if (y === 0) return `${m}mo`;
   return m === 0 ? `${y}y` : `${y}y ${m}mo`;
 }
+
+/**
+ * Ten minutes a block: how long a count of blocks takes, roughly, where
+ * miners keep the pace. The backend's `network::TARGET_SPACING_SECS`, pinned
+ * by `refusal_sentences_match_the_uis_word_for_word`.
+ */
+export const SECS_PER_BLOCK = 600;

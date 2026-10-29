@@ -7,8 +7,8 @@ import type { ReactNode } from "react";
 
 // Tests for the simplified name-acquisition flow:
 //   * the Names page lookup renders input and opens the modal
-//   * NameActionsModal shows guided phase-based UI for AVAILABLE names
-//   * NameActionsModal shows guided UI for BIDDING/REVEAL/CLOSED names
+//   * the name page shows guided phase-based UI for AVAILABLE names
+//   * the name page shows guided UI for BIDDING/REVEAL/CLOSED names
 //   * Write-capability gating is preserved
 
 const invokeMock = vi.fn();
@@ -22,7 +22,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 }));
 
 import { NamesView } from "../NamesView";
-import { NameActionsModal } from "../NameActionsModal";
+import { LocationProbe, NamePageAt } from "../../test/namePage";
 import { makeCapabilities, refused } from "../../test/fixtures/capabilities";
 
 const profile = {
@@ -55,11 +55,21 @@ function wrapper(initialEntries = ["/wallet"]) {
   };
 }
 
+/** For the name page, which brings its own router (`NamePageAt`). */
+function pageWrapper() {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+  };
+}
+
 beforeEach(() => invokeMock.mockReset());
 
 // The Auctions page's "Get a TLD" lookup is the Names page's lookup card now:
-// a name you don't have yet shows a result card, which opens the modal.
-describe("NamesView — name lookup and modal", () => {
+// a name you don't have yet shows a result card, which opens the name page.
+describe("NamesView — name lookup and the name page", () => {
   /** Routes the page needs; `nameInfo` is what `read_name_info` returns. */
   function routeNames(nameInfo: unknown = null) {
     return (cmd: string, args?: { name?: string }) => {
@@ -100,7 +110,13 @@ describe("NamesView — name lookup and modal", () => {
   }
 
   const renderNames = async () => {
-    render(<NamesView />, { wrapper: wrapper(["/names"]) });
+    render(
+      <>
+        <NamesView />
+        <LocationProbe />
+      </>,
+      { wrapper: wrapper(["/names"]) },
+    );
     await screen.findByRole("heading", { name: "Names" });
     return screen.getByTestId("names-lookup-input") as HTMLInputElement;
   };
@@ -121,7 +137,7 @@ describe("NamesView — name lookup and modal", () => {
     expect(btn).toBeDisabled();
   });
 
-  it("enables Look up after typing a name, shows its result card, and opens the modal from it", async () => {
+  it("enables Look up after typing a name, shows its result card, and opens the name page from it", async () => {
     invokeMock.mockImplementation(routeNames());
     const input = await renderNames();
 
@@ -139,12 +155,8 @@ describe("NamesView — name lookup and modal", () => {
 
     fireEvent.click(within(card).getByRole("button", { name: "Open auction…" }));
 
-    // Modal should open — it fetches the name and shows it in the header
-    await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "myname" });
-    });
-    expect(await screen.findByRole("dialog")).toHaveTextContent(".myname");
-    expect(screen.queryByTestId("names-lookup-result")).toBeNull();
+    // The name's page opens.
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/names/myname"));
   });
 
   it("Enter key in the input looks the name up", async () => {
@@ -180,7 +192,7 @@ describe("NamesView — name lookup and modal", () => {
     );
     fireEvent.click(await within(card).findByRole("button", { name: "Open auction…" }));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "helloworld123" }),
+      expect(screen.getByTestId("location")).toHaveTextContent("/names/helloworld123"),
     );
   });
 
@@ -203,9 +215,8 @@ describe("NamesView — name lookup and modal", () => {
     expect(within(card).getByText(".сбер")).toBeInTheDocument();
     fireEvent.click(await within(card).findByRole("button", { name: "Open auction…" }));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "xn--90ai7ab" }),
+      expect(screen.getByTestId("location")).toHaveTextContent("/names/xn--90ai7ab"),
     );
-    expect(await screen.findByText("(.xn--90ai7ab)")).toBeInTheDocument();
   });
 
   it("allows typing a Cyrillic word character-by-character without re-encoding mid-type", async () => {
@@ -245,7 +256,7 @@ describe("NamesView — name lookup and modal", () => {
   });
 });
 
-describe("NameActionsModal — guided acquisition flow", () => {
+describe("Name page — guided acquisition flow", () => {
   function routeModal(
     nameInfo: Record<string, unknown> | null,
     overrides: Record<string, unknown> = {},
@@ -291,11 +302,11 @@ describe("NameActionsModal — guided acquisition flow", () => {
         stats: null,
       }),
     );
-    render(<NameActionsModal name="newname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/newname" />, { wrapper: pageWrapper() });
 
     // Should show the guided phase header
     expect(await screen.findByText("Open Auction")).toBeInTheDocument();
-    expect(screen.getByText("Open")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
   });
 
   /// Regression: while our own OPEN sits in the mempool the chain still calls
@@ -357,8 +368,8 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="pendingopen" open onClose={() => {}} />, {
-      wrapper: wrapper(),
+    render(<NamePageAt path="/names/pendingopen" />, {
+      wrapper: pageWrapper(),
     });
 
     const panel = await screen.findByTestId("action-pending-block");
@@ -426,7 +437,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="reopened" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/reopened" />, { wrapper: pageWrapper() });
 
     const notice = await screen.findByTestId("stranded-bids");
     expect(notice).toHaveTextContent("1 bid of yours from an auction that is over");
@@ -455,8 +466,8 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="lapsedname" open onClose={() => {}} />, {
-      wrapper: wrapper(),
+    render(<NamePageAt path="/names/lapsedname" />, {
+      wrapper: pageWrapper(),
     });
 
     const notice = await screen.findByTestId("stranded-bids");
@@ -487,8 +498,8 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="offlinelapsed" open onClose={() => {}} />, {
-      wrapper: wrapper(),
+    render(<NamePageAt path="/names/offlinelapsed" />, {
+      wrapper: pageWrapper(),
     });
 
     const line = await screen.findByTestId("stranded-unchecked");
@@ -515,7 +526,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="checked" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/checked" />, { wrapper: pageWrapper() });
 
     expect(await screen.findByText("Open Auction")).toBeInTheDocument();
     expect(screen.queryByTestId("stranded-unchecked")).toBeNull();
@@ -552,7 +563,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="lastblock" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/lastblock" />, { wrapper: pageWrapper() });
 
     expect(await screen.findByTestId("no-task-reason")).toHaveTextContent(reason);
     expect(screen.queryByText(/No auction actions are needed/)).toBeNull();
@@ -575,7 +586,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="fallback" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/fallback" />, { wrapper: pageWrapper() });
 
     expect(await screen.findByText(/No auction actions are needed/)).toBeInTheDocument();
     expect(screen.queryByTestId("no-task-reason")).toBeNull();
@@ -595,7 +606,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
         stats: { blocksUntilReveal: 50, hoursUntilReveal: 8 },
       }),
     );
-    render(<NameActionsModal name="bidname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/bidname" />, { wrapper: pageWrapper() });
 
     expect(await screen.findByText("Place a Bid")).toBeInTheDocument();
     expect(screen.getByText("Bid")).toBeInTheDocument();
@@ -655,7 +666,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="bidname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/bidname" />, { wrapper: pageWrapper() });
 
     // The badge matches the on-chain phase.
     expect(await screen.findByText("Bidding")).toBeInTheDocument();
@@ -678,7 +689,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
         stats: { blocksUntilClose: 20, hoursUntilClose: 4 },
       }),
     );
-    render(<NameActionsModal name="revealname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/revealname" />, { wrapper: pageWrapper() });
 
     expect(await screen.findByText("Reveal Your Bid")).toBeInTheDocument();
     expect(screen.getAllByText("Reveal").length).toBeGreaterThanOrEqual(1);
@@ -731,10 +742,13 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="closedname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/closedname" />, { wrapper: pageWrapper() });
 
     expect(await screen.findByText("Register Name")).toBeInTheDocument();
-    expect(screen.getByText("Register")).toBeInTheDocument();
+    // The header primary and the guided panel's secondary.
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "Register" })).toHaveLength(2),
+    );
   });
 
   it("shows owner-manage for CLOSED name when wallet owns it and it is already registered", async () => {
@@ -785,16 +799,16 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="ownedname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/ownedname" />, { wrapper: pageWrapper() });
 
     // Should show the guided "You own this name" messaging
-    expect(await screen.findByText(/You own this name/i)).toBeInTheDocument();
-    // Management is auto-expanded for owned names with no urgent task — the
-    // toggle already reads "Hide advanced actions" and Transfer/Renew are visible
-    // without any click.
-    expect(screen.getByText("Hide advanced actions")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Transfer$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Renew$/i })).toBeInTheDocument();
+    expect(await screen.findByText("You own this name")).toBeInTheDocument();
+    expect(screen.getByText(/Renew is the blue button/)).toBeInTheDocument();
+    // Renew is the header primary; the rest sits one tab away.
+    await waitFor(() => expect(screen.getByTestId("name-primary")).toHaveTextContent("Renew"));
+    fireEvent.click(screen.getByRole("tab", { name: /^Transfer & sell/ }));
+    expect(screen.getByRole("button", { name: /^Start transfer$/i })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Renew$/i })).toHaveLength(2);
   });
 
   it("shows a not-synced-locally banner for an owned CLOSED name with no local owner coin", async () => {
@@ -846,8 +860,8 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="unsyncedname" open onClose={() => {}} />, {
-      wrapper: wrapper(),
+    render(<NamePageAt path="/names/unsyncedname" />, {
+      wrapper: pageWrapper(),
     });
 
     // Still gets the "you own this name" owned-manage framing…
@@ -895,8 +909,8 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="unrevealedname" open onClose={() => {}} />, {
-      wrapper: wrapper(),
+    render(<NamePageAt path="/names/unrevealedname" />, {
+      wrapper: pageWrapper(),
     });
 
     expect(await screen.findByTestId("lost-unrevealed")).toHaveTextContent(reason);
@@ -938,12 +952,14 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="unsettledname" open onClose={() => {}} />, {
-      wrapper: wrapper(),
+    render(<NamePageAt path="/names/unsettledname" />, {
+      wrapper: pageWrapper(),
     });
 
     expect(await screen.findByTestId("closed-result-unknown")).toHaveTextContent(reason);
-    expect(screen.getByTestId("name-phase")).toHaveTextContent("Closed — Sync to See Result");
+    expect(screen.getByTestId("name-phase")).toHaveTextContent(
+      "Auction closed · sync your node to see the result",
+    );
     expect(screen.queryByText(/^Owned$/)).not.toBeInTheDocument();
     expect(screen.queryByText(/already registered/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Redeem$/i })).not.toBeInTheDocument();
@@ -983,8 +999,8 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="revokedname" open onClose={() => {}} />, {
-      wrapper: wrapper(),
+    render(<NamePageAt path="/names/revokedname" />, {
+      wrapper: pageWrapper(),
     });
 
     const panel = await screen.findByTestId("guided-redeem");
@@ -992,7 +1008,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
     expect(within(panel).getByRole("button", { name: /^Redeem$/i })).toBeEnabled();
   });
 
-  it("auto-expands the management section for an owned name without clicking the toggle", async () => {
+  it("deep-links to the owner controls of a registered name with no synced owner coin", async () => {
     invokeMock.mockImplementation(
       routeModal(
         {
@@ -1043,15 +1059,17 @@ describe("NameActionsModal — guided acquisition flow", () => {
         },
       ),
     );
-    render(<NameActionsModal name="autoexpandname" open onClose={() => {}} />, {
-      wrapper: wrapper(),
+    render(<NamePageAt path="/names/autoexpandname?tab=transfer" />, {
+      wrapper: pageWrapper(),
     });
 
-    // No click on the "Manage actions" toggle — management controls should already be visible.
-    const transferBtn = await screen.findByRole("button", { name: /^Transfer$/i });
+    // Deep-linked to Transfer & sell: the owner controls are there, each
+    // disabled with its own reason.
+    const transferBtn = await screen.findByRole("button", { name: /^Start transfer$/i });
     expect(transferBtn).toBeDisabled();
-    const renewBtn = screen.getByRole("button", { name: /^Renew$/i });
-    expect(renewBtn).toBeDisabled();
+    for (const renewBtn of screen.getAllByRole("button", { name: /^Renew$/i })) {
+      expect(renewBtn).toBeDisabled();
+    }
 
     // Owned names must never hit the stale "already registered" auction-block copy.
     expect(
@@ -1060,7 +1078,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
   });
 });
 
-describe("NameActionsModal — write-capability gating", () => {
+describe("Name page — write-capability gating", () => {
   it("disables the primary action when canWrite is false", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "get_name_action_capabilities") {
@@ -1098,7 +1116,7 @@ describe("NameActionsModal — write-capability gating", () => {
       }
     });
 
-    render(<NameActionsModal name="gatedname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NamePageAt path="/names/gatedname" />, { wrapper: pageWrapper() });
 
     // Wait until the blocked banner appears, then assert the guided action is disabled.
     expect(await screen.findByTestId("name-actions-blocked")).toHaveTextContent(

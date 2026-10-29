@@ -3,6 +3,7 @@ import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
+import { LocationProbe } from "../../test/namePage";
 import type { ReactNode } from "react";
 
 const invokeMock = vi.fn();
@@ -443,8 +444,7 @@ describe("ActivityView — canonical table design", () => {
     // A batch-bid draft with 2 names. Backend persists the synthetic label
     // "js + 1 more" as `name`, and the true list as `nameList`. The activity
     // row shows the composite as a collapsed toggle; clicking expands into
-    // clickable individual names, and clicking one opens NameActionsModal
-    // (the unified name modal).
+    // clickable individual names, and clicking one opens that name's page.
     invokeMock.mockImplementation((cmd: string) => {
       switch (cmd) {
         case "list_wallet_profiles":
@@ -483,7 +483,13 @@ describe("ActivityView — canonical table design", () => {
           return Promise.resolve(null);
       }
     });
-    render(<ActivityView />, { wrapper: wrapper() });
+    render(
+      <>
+        <ActivityView />
+        <LocationProbe />
+      </>,
+      { wrapper: wrapper() },
+    );
 
     // Composite label renders as a toggle button (not a name-info link).
     const summaryToggle = await screen.findByTestId("activity-batch-summary-toggle");
@@ -515,6 +521,9 @@ describe("ActivityView — canonical table design", () => {
     // per-name buttons do.
     const infoLinks = screen.getAllByTestId("activity-name-info-link");
     expect(infoLinks).toHaveLength(2);
+
+    fireEvent.click(infoLinks[1]!);
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/names/c"));
   });
 });
 

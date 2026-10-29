@@ -15,7 +15,7 @@ import {
   useBroadcastTxDraft,
 } from "../queries/wallet";
 import { usePurchaseFinalize } from "./market/usePurchase";
-import { useReadBalance, nameCapabilitiesQueryKey } from "../queries/read";
+import { useReadBalance } from "../queries/read";
 import { useNeedsYou } from "../queries/needsYou";
 import {
   useStartFullSync,
@@ -26,7 +26,7 @@ import {
 import { useStartHsd } from "../queries/node";
 import { useSyncTriggerStore } from "../stores/syncTrigger";
 import { displayName } from "../lib/idn";
-import { NameActionsModal } from "./NameActionsModal";
+import { useOpenName } from "../hooks/useOpenName";
 import { BlockInfoModal } from "./BlockInfoModal";
 import { RecentActivityCard } from "./activity/RecentActivityCard";
 import { useSignerToggle } from "../hooks/useSignerToggle";
@@ -105,7 +105,6 @@ export function WalletView() {
   // path never navigates). Reset whenever the callout is re-attempted.
   const [startNodeFailed, setStartNodeFailed] = useState(false);
   const navigate = useNavigate();
-  const [manageName, setManageName] = useState<string | null>(null);
   const [infoBlock, setInfoBlock] = useState<number | null>(null);
   // Ledger wallets don't use the local signer session — the device signs on
   // demand. Treat them as "unlocked" so the send/action flow doesn't try to
@@ -233,11 +232,9 @@ export function WalletView() {
   };
 
   // Opening a name from Needs you: seed its single-name cache from the batch
-  // so the modal's badge doesn't flash a loading state.
-  const openName = (name: string) => {
-    qc.setQueryData(nameCapabilitiesQueryKey(profile?.id ?? null, name), capsByName.get(name));
-    setManageName(name);
-  };
+  // so the page's status line doesn't flash a loading state.
+  const openNamePage = useOpenName();
+  const openName = (name: string) => openNamePage(name, { seedCaps: capsByName.get(name) });
 
   const handleBuildDraft = async (opts?: { max?: boolean }) => {
     const max = opts?.max ?? false;
@@ -600,15 +597,7 @@ export function WalletView() {
         network={profile.network}
       />
 
-      <RecentActivityCard onNameClick={setManageName} />
-
-      {manageName && (
-        <NameActionsModal
-          name={manageName}
-          open={!!manageName}
-          onClose={() => setManageName(null)}
-        />
-      )}
+      <RecentActivityCard onNameClick={(name) => openNamePage(name)} />
 
       {infoBlock != null && (
         <BlockInfoModal

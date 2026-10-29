@@ -3,7 +3,6 @@ import { makeCapabilities } from "../../test/fixtures/capabilities";
 import "@testing-library/jest-dom";
 import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 
 const invokeMock = vi.fn();
@@ -15,7 +14,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   readText: vi.fn().mockResolvedValue(""),
 }));
 
-import { NameActionsModal } from "../NameActionsModal";
+import { NamePageAt } from "../../test/namePage";
 
 /**
  * Regression (bid de-duplication): the bid + lockup inputs live in exactly
@@ -105,7 +104,7 @@ function wrapper() {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
+        <>{children}</>
       </QueryClientProvider>
     );
   };
@@ -116,12 +115,12 @@ beforeEach(() => invokeMock.mockReset());
 // `BidGate` is gone: it existed to decide whether the advanced section should
 // draw the Bid/Lockup inputs, and `resolveSections` now decides whether that
 // section exists at all. These tests keep the behaviour it was written for —
-// no phase outside BIDDING may invite a bid — pinned on the modal itself,
+// no phase outside BIDDING may invite a bid — pinned on the name page itself,
 // which is where a regression would actually show.
-describe("NameActionsModal — no phase outside BIDDING invites a bid", () => {
-  it("offers no advanced section at all during OPENING, so no bid can be invited", async () => {
+describe("Name page — no phase outside BIDDING invites a bid", () => {
+  it("offers no manual auction card at all during OPENING, so no bid can be invited", async () => {
     invokeMock.mockImplementation(route("OPENING", false));
-    render(<NameActionsModal name="examplename" open onClose={() => {}} />, {
+    render(<NamePageAt path="/names/examplename" />, {
       wrapper: wrapper(),
     });
     await screen.findByTestId("name-phase");
@@ -130,14 +129,14 @@ describe("NameActionsModal — no phase outside BIDDING invites a bid", () => {
     // nothing else applies to a name this wallet does not own. A toggle onto a
     // disabled "Open" is the dead control the section states exist to remove —
     // which makes "no Bid / Lockup input here" unconditional.
-    expect(screen.queryByTestId("all-actions-toggle")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("manual-auction-toggle")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Bid (HNS)")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Lockup (HNS)")).not.toBeInTheDocument();
   });
 
   it("shows the Bid/Lockup inputs during BIDDING when canBid is allowed", async () => {
     invokeMock.mockImplementation(route("BIDDING", true));
-    render(<NameActionsModal name="examplename" open onClose={() => {}} />, {
+    render(<NamePageAt path="/names/examplename" />, {
       wrapper: wrapper(),
     });
 
@@ -147,11 +146,11 @@ describe("NameActionsModal — no phase outside BIDDING invites a bid", () => {
     });
   });
 
-  it("hides the Show-all-actions toggle in BIDDING when every advanced action is disabled", async () => {
+  it("hides the Manual auction actions card in BIDDING when every manual action is disabled", async () => {
     // Already bid: canBid + Open/Reveal/Redeem are all caps-disabled, so the
     // advanced section would only reveal an all-disabled menu — suppress it.
     invokeMock.mockImplementation(route("BIDDING", false));
-    render(<NameActionsModal name="examplename" open onClose={() => {}} />, {
+    render(<NamePageAt path="/names/examplename" />, {
       wrapper: wrapper(),
     });
 
@@ -161,7 +160,7 @@ describe("NameActionsModal — no phase outside BIDDING invites a bid", () => {
       expect(invokeMock).toHaveBeenCalledWith("get_name_action_capabilities", expect.anything());
     });
     await waitFor(() => {
-      expect(screen.queryByTestId("all-actions-toggle")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("manual-auction-toggle")).not.toBeInTheDocument();
     });
   });
 });

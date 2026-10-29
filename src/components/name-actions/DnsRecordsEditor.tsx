@@ -8,8 +8,8 @@ import { inputSizes } from "../ui/Input";
 
 /**
  * The typed DNS rows editor (type dropdown + per-type field inputs + add/remove)
- * — used by both the guided REGISTER panel and the advanced "DNS records"
- * section (Task 13 / F6: this used to be duplicated JSX in `NameActionsModal`).
+ * — used by both the guided REGISTER panel and the name page's DNS records tab
+ * (Task 13 / F6: this used to be duplicated JSX in the old name modal).
  * Rows state lives in the orchestrator; the two call sites only differ in their
  * data-testids, switched by `variant`.
  *

@@ -1,14 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent } from "@testing-library/react";
 import { NameDetails } from "../name-actions/NameDetails";
+import { ReadOnlyDnsRecords } from "../name-actions/ReadOnlyDnsRecords";
 import { makeNodeStatus } from "../../test/fixtures/nodeStatus";
 import type { HsdName, NameResource } from "../../types";
 
-// NameDetails is the read-only body extracted from the former NameInfoModal
-// when the two name modals were unified into NameActionsModal. These tests
-// preserve the read-only rendering coverage (heights, transfer, owner UTXO,
-// closed-auction values, DNS records) that used to live on NameInfoModal.
+// NameDetails is the name page's Details card; ReadOnlyDnsRecords is the DNS
+// tab's view for a name this wallet can't edit. Together they keep the
+// read-only coverage (heights, owner UTXO, closed-auction values, DNS records)
+// that used to live on NameInfoModal.
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -72,13 +74,25 @@ describe("NameDetails", () => {
     render(<NameDetails name="example" profileId="p1" info={baseInfo()} />, {
       wrapper: wrapper(),
     });
-    expect(screen.getByText("Opened:")).toBeInTheDocument();
-    expect(screen.getByText("Block 100")).toBeInTheDocument();
-    expect(screen.getByText("Renewed:")).toBeInTheDocument();
-    expect(screen.getByText("Block 200")).toBeInTheDocument();
+    expect(screen.getByText("Opened")).toBeInTheDocument();
+    expect(screen.getByText("block 100")).toBeInTheDocument();
+    expect(screen.getByText("Renewed")).toBeInTheDocument();
+    expect(screen.getByText("block 200")).toBeInTheDocument();
   });
 
-  it("renders Paid price + Top bid for a CLOSED name with values", () => {
+  it("says nothing is on-chain yet for an unopened name", () => {
+    render(
+      <NameDetails
+        name="example"
+        profileId="p1"
+        info={baseInfo({ state: "AVAILABLE", height: null, renewal: null, owner: null })}
+      />,
+      { wrapper: wrapper() },
+    );
+    expect(screen.getByText("Nothing on-chain yet.")).toBeInTheDocument();
+  });
+
+  it("renders Paid price + High bid for a CLOSED name with values", () => {
     render(
       <NameDetails
         name="example"
@@ -88,31 +102,42 @@ describe("NameDetails", () => {
       { wrapper: wrapper() },
     );
     expect(screen.getByText(/Paid price/)).toBeInTheDocument();
-    expect(screen.getByText(/Top bid/)).toBeInTheDocument();
+    expect(screen.getByText("High bid")).toBeInTheDocument();
   });
 
-  it("hides owner UTXO row when owner is null", () => {
+  it("shows expiry in blocks only on regtest, and as a date on mainnet", () => {
+    const info = baseInfo({ stats: { blocksUntilExpire: 1000 } });
+    const { unmount } = render(
+      <NameDetails name="example" profileId="p1" info={info} network="regtest" />,
+      { wrapper: wrapper() },
+    );
+    expect(screen.getByText("in 1,000 blocks")).toBeInTheDocument();
+    unmount();
+    render(<NameDetails name="example" profileId="p1" info={info} network="mainnet" />, {
+      wrapper: wrapper(),
+    });
+    expect(screen.getByText(/· in 1,000 blocks/)).toBeInTheDocument();
+  });
+
+  it("hides owner UTXO when owner is null", () => {
     render(<NameDetails name="example" profileId="p1" info={baseInfo({ owner: null })} />, {
       wrapper: wrapper(),
     });
-    expect(screen.queryByText("Owner UTXO:")).not.toBeInTheDocument();
+    expect(screen.queryByText("Technical")).not.toBeInTheDocument();
   });
 
-  it("shows owner UTXO row when owner is present", () => {
+  it("shows owner UTXO behind the collapsed Technical disclosure", () => {
     render(<NameDetails name="example" profileId="p1" info={baseInfo()} />, {
       wrapper: wrapper(),
     });
-    expect(screen.getByText("Owner UTXO:")).toBeInTheDocument();
+    expect(screen.queryByText("abc:0")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Technical"));
+    expect(screen.getByText("Owner UTXO")).toBeInTheDocument();
     expect(screen.getByText("abc:0")).toBeInTheDocument();
   });
+});
 
-  it("shows transfer status when transfer is non-zero", () => {
-    render(<NameDetails name="example" profileId="p1" info={baseInfo({ transfer: 500 })} />, {
-      wrapper: wrapper(),
-    });
-    expect(screen.getByText(/Transfer in progress/)).toBeInTheDocument();
-  });
-
+describe("ReadOnlyDnsRecords", () => {
   it("renders DNS records with TTL when node is live", async () => {
     route({
       records: {
@@ -123,30 +148,17 @@ describe("NameDetails", () => {
         ttl: 3600,
       },
     });
-    render(<NameDetails name="example" profileId="p1" info={baseInfo()} />, {
-      wrapper: wrapper(),
-    });
+    render(<ReadOnlyDnsRecords name="example" profileId="p1" />, { wrapper: wrapper() });
     expect(await screen.findByText(/TTL:/)).toBeInTheDocument();
-    expect(screen.getByText("DNS Records")).toBeInTheDocument();
+    expect(screen.getByText("DNS records")).toBeInTheDocument();
     expect(screen.getByText("3600s")).toBeInTheDocument();
     expect(screen.getByTestId("name-info-dns-table")).toBeInTheDocument();
   });
 
   it("shows 'Requires a synced node' when node is not live", async () => {
     route({ nodeLive: false });
-    render(<NameDetails name="example" profileId="p1" info={baseInfo()} />, {
-      wrapper: wrapper(),
-    });
+    render(<ReadOnlyDnsRecords name="example" profileId="p1" />, { wrapper: wrapper() });
     expect(await screen.findByTestId("name-info-dns-no-node")).toBeInTheDocument();
     expect(screen.getByText(/Requires a synced local node/)).toBeInTheDocument();
-  });
-
-  it("suppresses its own DNS block when hideDnsRecords is set", () => {
-    // Owned names: NameActionsModal's editable DnsRecordsEditor owns the
-    // records, so NameDetails must not render a second (read-only) copy.
-    render(<NameDetails name="example" profileId="p1" info={baseInfo()} hideDnsRecords />, {
-      wrapper: wrapper(),
-    });
-    expect(screen.queryByText("DNS Records")).not.toBeInTheDocument();
   });
 });

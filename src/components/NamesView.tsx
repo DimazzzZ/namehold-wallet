@@ -19,12 +19,7 @@ import {
   useTxDrafts,
   useWriteCapability,
 } from "../queries/wallet";
-import {
-  nameCapabilitiesQueryKey,
-  useAuctionPositions,
-  useNameActionCapabilities,
-  useReadNames,
-} from "../queries/read";
+import { useAuctionPositions, useNameActionCapabilities, useReadNames } from "../queries/read";
 import { useNeedsYou } from "../queries/needsYou";
 import {
   exportWatchlistCsv,
@@ -47,7 +42,7 @@ import { useNameBatchActions } from "../hooks/useNameBatchActions";
 import { useUiStore } from "../stores/ui";
 import { finalizeSentIds, usePurchaseFinalize } from "./market/usePurchase";
 import { NAME_TONE_DOT, canUseShakedex, shakedexRefusal } from "./market/marketText";
-import { NameActionsModal } from "./NameActionsModal";
+import { useOpenName } from "../hooks/useOpenName";
 import { BatchBidModal } from "./BatchBidModal";
 import { BatchConfirmModal } from "./BatchConfirmModal";
 import { BlockInfoModal } from "./BlockInfoModal";
@@ -153,20 +148,15 @@ export function NamesView() {
 
   const batch = useNameBatchActions({ profile, capsByName, unlocked });
 
-  const [manageName, setManageName] = useState<string | null>(null);
   const [infoBlock, setInfoBlock] = useState<number | null>(null);
   const [batchBidOpen, setBatchBidOpen] = useState(false);
   const [editingTags, setEditingTags] = useState<string | null>(null);
   const [tagValue, setTagValue] = useState("");
 
-  // One way to open a name (the name page replaces the modal later). Seed
-  // the modal's single-name query from the batch so it opens on the row's
-  // status, with no flash of the raw phase.
-  const openName = (name: string) => {
-    const caps = capsByName.get(name);
-    if (caps) qc.setQueryData(nameCapabilitiesQueryKey(profileId, name), caps);
-    setManageName(name);
-  };
+  // Seed the name page's single-name query from the batch so it opens on the
+  // row's status, with no flash of the raw phase.
+  const openNamePage = useOpenName();
+  const openName = (name: string) => openNamePage(name, { seedCaps: capsByName.get(name) });
 
   // --- Lookup ---
   const [lookup, setLookup] = useState("");
@@ -770,9 +760,6 @@ export function NamesView() {
         </div>
       </section>
 
-      {manageName && (
-        <NameActionsModal name={manageName} open onClose={() => setManageName(null)} />
-      )}
       {infoBlock != null && (
         <BlockInfoModal
           height={infoBlock}

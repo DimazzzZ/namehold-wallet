@@ -1,3 +1,4 @@
+import { SECS_PER_BLOCK } from "../../lib/auction";
 import { settingToBool } from "../../lib/settingsBool";
 import { MIN_FEE_RATE_DOOS_PER_KVB, parseDoosPerKvb } from "../../lib/feeRate";
 import { formatDate, formatHns, formatHnsShort } from "../../lib/utils";
@@ -211,13 +212,6 @@ export function fixedPriceCaption(expiresAt: number | null): string {
   if (d == null || Number.isNaN(d.getTime())) return sentence(until);
   return `Listed until ${formatDate(d.toISOString().slice(0, 10))}, but it ${until}`;
 }
-
-/**
- * Ten minutes a block: how long a count of blocks takes, roughly, where
- * miners keep the pace. The backend's `network::TARGET_SPACING_SECS`, pinned
- * by `refusal_sentences_match_the_uis_word_for_word`.
- */
-const SECS_PER_BLOCK = 600;
 
 /**
  * "July 2027": the month the name's registration runs out, from its expiry

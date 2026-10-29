@@ -19,8 +19,7 @@ import type { DnsRow } from "../../lib/dnsRecords";
 import type { NameActionCapabilities, NameActionCapability } from "../../types";
 
 /**
- * The task-driven guided panel of `NameActionsModal` (Task 13 / F6
- * extraction): dispatches on the auction phase (+ capability taskState for
+ * The task-driven guided panel of the name page's Overview tab: dispatches on the auction phase (+ capability taskState for
  * CLOSED) and renders the single most relevant action for the name. All
  * state and the build→sign→broadcast runner stay in the orchestrator; this
  * component only receives values and callbacks.
@@ -134,7 +133,7 @@ export function GuidedAction({
             : "Your bid lost. Redeem your reveal coin to reclaim the funds.")}
       </div>
       <Button
-        variant="primary"
+        variant="secondary"
         disabled={actionDisabled("REDEEM", caps?.canRedeem)}
         onClick={onRedeem}
       >
@@ -177,7 +176,7 @@ export function GuidedAction({
             <ActionReasonBanner reason={actionReason(caps?.canOpen)} />
             <ActionHint reason={actionReason(caps?.canOpen)}>
               <Button
-                variant="primary"
+                variant="secondary"
                 disabled={actionDisabled("OPEN", caps?.canOpen)}
                 onClick={onOpen}
               >
@@ -207,11 +206,10 @@ export function GuidedAction({
         // placed, keyed on the backend reporting `waitingForBidding` during
         // BIDDING — which it no longer does, and the panel's copy still named
         // the one-bid-per-wallet rule that was removed with it. How many bids
-        // are yours is said by the modal header and the tinted rows in the bid
+        // are yours is said by the page's Details card and the tinted rows in the bid
         // list instead.
         return (
           <BidForm
-            variant="guided"
             bidHns={bidHns}
             onBidChange={onBidChange}
             lockupHns={lockupHns}
@@ -260,7 +258,7 @@ export function GuidedAction({
               <div className="text-xs text-gray-600">
                 {isConfirmed
                   ? "The auction stays open for other reveals until the window closes."
-                  : "Confirmation usually takes about ten minutes. It's safe to close this modal — you'll get a toast when it lands."}
+                  : "Confirmation usually takes about ten minutes. It's safe to leave this page — you'll get a toast when it lands."}
               </div>
               {txid && (
                 <div className="text-xs">
@@ -384,7 +382,7 @@ export function GuidedAction({
             )}
             <div className="flex gap-2">
               <Button
-                variant="primary"
+                variant="secondary"
                 disabled={actionDisabled("REVEAL", caps?.canReveal)}
                 onClick={onRevealConfirmStart}
                 data-testid="reveal-primary"
@@ -453,7 +451,7 @@ export function GuidedAction({
                 </div>
               )}
               <Button
-                variant="primary"
+                variant="secondary"
                 disabled={actionDisabled("REGISTER", caps?.canRegister)}
                 onClick={onRegister}
               >
@@ -500,7 +498,9 @@ export function GuidedAction({
           return (
             <div className="space-y-2">
               <div className="text-sm text-gray-700">
-                You own this name. Use the controls below to update DNS, transfer, or renew.
+                {caps.taskState === "expiringSoon"
+                  ? "An expired Handshake name is lost for good. Renew it now — Renew is the blue button above."
+                  : "Records, transfer, selling and signing are in the tabs above; Renew is the blue button."}
               </div>
               {ownerCoinNotSynced && (
                 <div

@@ -1,5 +1,5 @@
 /**
- * A section of the name-actions modal that belongs to a later stage.
+ * A section of the name page that belongs to a later stage.
  *
  * One muted line, no controls. The heading stays so the order of the
  * lifecycle is still visible — that was the whole argument for leaving these

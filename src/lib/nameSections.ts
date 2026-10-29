@@ -1,7 +1,7 @@
-// Which sections of the name-actions modal exist right now, and which are
+// Which sections of the name page exist right now, and which are
 // still ahead.
 //
-// The modal used to render a flat catalogue of everything the wallet can do,
+// The old name modal used to render a flat catalogue of everything the wallet can do,
 // filtered by one flag (`ownsName`). That flag is true during REVEAL for a
 // wallet leading its own auction, so a name that had not been won showed DNS
 // records, Ownership and Sign message — and auto-expanded them. The reverse
@@ -10,7 +10,7 @@
 //
 // So a section is one of three things, and this module is the only place that
 // decides which. It is pure, so the whole stage matrix is testable without
-// rendering a 1000-line modal.
+// rendering the name page.
 
 import type { NameActionCapabilities } from "../types";
 

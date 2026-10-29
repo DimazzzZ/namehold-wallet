@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { ReactNode } from "react";
 
 const invokeMock = vi.fn();
@@ -24,6 +24,8 @@ vi.mock("../../lib/clipboard", () => ({
 
 import { WalletView } from "../WalletView";
 import { NamesView } from "../NamesView";
+import { NameRoute } from "../NamePage";
+import { LocationProbe } from "../../test/namePage";
 import { WalletSwitcher } from "../shell/WalletSwitcher";
 import { ReadinessPill } from "../shell/ReadinessPill";
 import { WalletManager } from "../WalletManager";
@@ -799,17 +801,29 @@ describe("WalletView — expiring-soon renewal in Needs you (Task 3 / C3)", () =
     ],
   });
 
-  it("lists a chain-sourced expiring name and Renew opens the modal with the raw name", async () => {
+  it("lists a chain-sourced expiring name and Renew opens its page with the raw name", async () => {
     invokeMock.mockImplementation(
       routeInvoke({ unlocked: true, canWrite: true, renewals: expiringRenewals("chain") }),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(
+      <>
+        <Routes>
+          <Route path="/wallet" element={<WalletView />} />
+          <Route path="/names/:name" element={<NameRoute />} />
+        </Routes>
+        <LocationProbe />
+      </>,
+      { wrapper: wrapper() },
+    );
 
     const alert = await screen.findByTestId("needs-you-row");
     expect(alert.textContent).toMatch(/renew/i);
     expect(alert.textContent).toContain(".urgentname");
 
     fireEvent.click(within(alert).getByRole("button", { name: /^Renew$/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent("/names/urgentname"),
+    );
     await waitFor(() => {
       const call = invokeMock.mock.calls.find((c) => c[0] === "get_name_action_capabilities");
       expect(call?.[1]).toMatchObject({ name: "urgentname" });
@@ -1781,7 +1795,17 @@ const threeNames = (names: string[]) =>
 
 // The Wallet page's Owned Names table moved to the Names page.
 describe("NamesView — the owned names table (moved from Wallet)", () => {
-  const renderNames = () => render(<NamesView />, { wrapper: wrapper("/names") });
+  const renderNames = () =>
+    render(
+      <>
+        <Routes>
+          <Route path="/names" element={<NamesView />} />
+          <Route path="/names/:name" element={<NameRoute />} />
+        </Routes>
+        <LocationProbe />
+      </>,
+      { wrapper: wrapper("/names") },
+    );
 
   const multiNames = [
     {
@@ -1812,7 +1836,7 @@ describe("NamesView — the owned names table (moved from Wallet)", () => {
   ];
 
   // A row opens its name, and its inner controls act on their own: pressing
-  // one must never also open the name as the click bubbles (two dialogs).
+  // one must never also open the name as the click bubbles.
   it("clicking a block link in a row opens only the block dialog", async () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
     renderNames();
@@ -1835,11 +1859,12 @@ describe("NamesView — the owned names table (moved from Wallet)", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("clicking the row itself opens the name, in one dialog", async () => {
+  it("clicking the row itself opens the name's page, and no dialog", async () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
     renderNames();
     fireEvent.click(await screen.findByTestId("names-row"));
-    expect(await screen.findAllByRole("dialog")).toHaveLength(1);
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/names/example"));
+    expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "example" }),
     );
@@ -1899,7 +1924,7 @@ describe("NamesView — the owned names table (moved from Wallet)", () => {
 
     fireEvent.click(screen.getByTestId("names-row"));
 
-    // Opening NameActionsModal must query the backend with the RAW on-chain
+    // Opening the name page must query the backend with the RAW on-chain
     // name — punycode decoding is display-only and must never leak into an
     // invoke() call.
     await waitFor(() => {
@@ -1908,7 +1933,8 @@ describe("NamesView — the owned names table (moved from Wallet)", () => {
     });
     const capsCall = invokeMock.mock.calls.find((c) => c[0] === "get_name_action_capabilities");
     expect(capsCall?.[1]).toMatchObject({ name: "xn--e1adigm" });
-    expect(screen.getByText("(.xn--e1adigm)")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(".козел.xn--e1adigm");
+    expect(screen.getByTestId("location")).toHaveTextContent("/names/xn--e1adigm");
   });
 
   it("names:focusLookup focuses the lookup input", async () => {
