@@ -4089,3 +4089,46 @@ async fn repair_owned_names_via_node_needs_the_owner_address_string() {
     assert_eq!(val["repaired"], 0);
     assert_eq!(val["errors"], json!([]));
 }
+
+// ---------------------------------------------------------------------------
+// The read gate probes the node the reads go to (ADR-001)
+// ---------------------------------------------------------------------------
+
+/// Reported live: with a mainnet wallet active, the app-wide `node_rpc_url`
+/// still named another network's node that was not running, while the wallet
+/// read its own synced node. `is_node_ready_for_local_reads` probed the
+/// app-wide URL, called the node "not ready", and every name page fell back to
+/// the explorer and sat on "Loading name info...". The gate must probe the
+/// node the active profile's reads actually use.
+#[tokio::test]
+async fn read_gate_probes_the_active_profiles_node_not_the_global_url() {
+    // The profile's own node: synced and serving the name.
+    let mut own = mockito::Server::new_async().await;
+    let _ready = mock_synced_node(&mut own).await;
+    let name = own
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(
+            r#"{"result":{"info":{"name":"foo","state":"CLOSED","height":100}},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    // App-wide URL: a node that isn't there.
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:9").unwrap();
+    conn.execute(
+        "INSERT INTO profile_settings (profile_id, key, value) VALUES ('W1', 'node_rpc_url', ?1)",
+        rusqlite::params![own.url()],
+    )
+    .unwrap();
+
+    let app = app_with(conn);
+    assert!(is_node_ready_for_local_reads(&app.state()).await);
+    let val = read_name_info(app.state(), "foo".into()).await.unwrap();
+    assert_eq!(val["state"], "CLOSED");
+    name.assert_async().await;
+}

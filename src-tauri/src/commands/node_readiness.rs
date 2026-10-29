@@ -73,11 +73,21 @@ pub(crate) async fn node_tip_height_if_synced_for_network(
     state: &State<'_, AppState>,
     expected_network: Option<&str>,
 ) -> Option<i64> {
-    let settings = {
+    // Probe the node the reads go to: the active profile's effective node
+    // (ADR-001), which can differ from the app-wide URL (e.g. a profile on its
+    // own network's port while the global URL names another network's node).
+    let client = {
         let db = state.db.lock().ok()?;
-        crate::db::queries::get_settings(&db).ok()?
+        match queries::get_active_profile_id(&db) {
+            Ok(id) if id.is_empty() => {
+                let settings = queries::get_settings(&db).ok()?;
+                crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings)
+            }
+            Ok(id) => crate::noncustodial::rpc::NodeRpcClient::for_profile(&db, &id).ok()?,
+            Err(_) => return None,
+        }
     };
-    node_tip_height_if_synced_from_settings_with_network(&settings, expected_network).await
+    node_tip_height_if_synced_with_client(&client, expected_network).await
 }
 
 /// The live node tip height, but ONLY when the node is connected, fully synced,
