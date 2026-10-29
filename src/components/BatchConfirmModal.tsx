@@ -73,7 +73,11 @@ export function BatchConfirmModal({
   };
 
   return (
-    <Dialog open={open} onClose={onCancel} title={`Confirm batch ${actionLabel}`}>
+    <Dialog
+      open={open}
+      onClose={onCancel}
+      title={`Confirm ${names.length > 1 ? "batch " : ""}${actionLabel}`}
+    >
       <div className="space-y-4">
         <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm space-y-2">
           <div>

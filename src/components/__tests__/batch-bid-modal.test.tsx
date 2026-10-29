@@ -159,7 +159,7 @@ describe("BatchBidModal", () => {
     fireEvent.click(screen.getByTestId("batch-bid-build-draft-btn"));
 
     // Confirm modal appears.
-    await waitFor(() => expect(screen.getByText(/Confirm batch bid/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Confirm bid/i)).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /Confirm/i }));
 
     await waitFor(() => {
@@ -188,7 +188,7 @@ describe("BatchBidModal", () => {
       expect(screen.getByTestId("batch-bid-build-draft-btn")).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByTestId("batch-bid-build-draft-btn"));
-    await waitFor(() => expect(screen.getByText(/Confirm batch bid/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Confirm bid/i)).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
     expect(runnerAbandon).toHaveBeenCalledWith("draft1");
     expect(runnerSend).not.toHaveBeenCalled();

@@ -39,6 +39,10 @@ export interface BatchProgress {
   total: number;
 }
 
+// "Batch renew" for several names, "Renew" for one (a row menu's action).
+const what = (action: BatchAction, count: number) =>
+  count > 1 ? `Batch ${action}` : action[0]!.toUpperCase() + action.slice(1);
+
 const chunk = (list: string[]): string[][] => {
   const out: string[][] = [];
   for (let i = 0; i < list.length; i += MAX_BATCH) out.push(list.slice(i, i + MAX_BATCH));
@@ -83,9 +87,12 @@ export function useNameBatchActions({
   const [progress, setProgress] = useState<BatchProgress | null>(null);
   // The series behind an open modal: the chunks still to build after the
   // first, and the builder that makes a draft for one chunk.
+  // `fromSelection` is false for a single name run from its row menu, which
+  // must leave the user's selection as it is.
   const series = useRef<{
     rest: string[][];
     build: (names: string[]) => Promise<TxDraftSummary>;
+    fromSelection: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -153,15 +160,16 @@ export function useNameBatchActions({
     action: BatchAction,
     build: (names: string[]) => Promise<TxDraftSummary>,
     extra: { recipient?: string } = {},
+    only?: string[],
   ) => {
-    const list = names();
+    const list = only ?? names();
     if (list.length === 0) return;
     const [first, ...rest] = chunk(list);
     try {
       setProgress({ action, step: "building", index: 1, total: rest.length + 1 });
       const draft = await build(first!);
       setProgress(null);
-      series.current = { rest, build };
+      series.current = { rest, build, fromSelection: !only };
       setModal({
         open: true,
         action,
@@ -174,18 +182,29 @@ export function useNameBatchActions({
       });
     } catch (e) {
       setProgress(null);
-      showToast(`Batch ${action} failed: ${mapError(e)}`, "error");
+      showToast(`${what(action, list.length)} failed: ${mapError(e)}`, "error");
     }
   };
 
+  const builders = {
+    renew: (n: string[]) => renewM.mutateAsync({ names: n, feeRate: feeRateArg() }),
+    reveal: (n: string[]) => revealM.mutateAsync({ names: n, feeRate: feeRateArg() }),
+    redeem: (n: string[]) => redeemM.mutateAsync({ names: n, feeRate: feeRateArg() }),
+    finalize: (n: string[]) => finalizeM.mutateAsync({ names: n, feeRate: feeRateArg() }),
+  };
+
+  /**
+   * Run one action for the given names instead of the selection (a row's
+   * menu): the same build, confirm and send, and the selection stays as it is.
+   */
+  const runFor = (action: keyof typeof builders, only: string[]) =>
+    runBatch(action, builders[action], {}, only);
+
   const run = {
-    renew: () => runBatch("renew", (n) => renewM.mutateAsync({ names: n, feeRate: feeRateArg() })),
-    reveal: () =>
-      runBatch("reveal", (n) => revealM.mutateAsync({ names: n, feeRate: feeRateArg() })),
-    redeem: () =>
-      runBatch("redeem", (n) => redeemM.mutateAsync({ names: n, feeRate: feeRateArg() })),
-    finalize: () =>
-      runBatch("finalize", (n) => finalizeM.mutateAsync({ names: n, feeRate: feeRateArg() })),
+    renew: () => runBatch("renew", builders.renew),
+    reveal: () => runBatch("reveal", builders.reveal),
+    redeem: () => runBatch("redeem", builders.redeem),
+    finalize: () => runBatch("finalize", builders.finalize),
     transfer: () => {
       const to = recipient.trim();
       if (!to) return;
@@ -215,7 +234,7 @@ export function useNameBatchActions({
       });
       sent.push(...chunkNames);
       showToast(
-        `Batch ${action} ${batches > 1 ? `${index} of ${batches} ` : ""}broadcast ${result.txid.slice(0, 12)}… (${chunkNames.length} name(s))`,
+        `${what(action, list.length)} ${batches > 1 ? `${index} of ${batches} ` : ""}broadcast ${result.txid.slice(0, 12)}… (${chunkNames.length} name(s))`,
         "success",
       );
     };
@@ -230,21 +249,23 @@ export function useNameBatchActions({
       }
       series.current = null;
       setProgress(null);
-      clear();
-      setRecipient("");
+      if (s?.fromSelection !== false) {
+        clear();
+        setRecipient("");
+      }
       qc.invalidateQueries({ queryKey: ["wallet"] });
     } catch (e) {
       setProgress(null);
       const left = list.filter((n) => !sent.includes(n));
       showToast(
-        `Batch ${action} failed after ${sent.length} of ${list.length} name(s): ${mapError(unwrapStaged(e))}`,
+        `${what(action, list.length)} failed after ${sent.length} of ${list.length} name(s): ${mapError(unwrapStaged(e))}`,
         "error",
       );
       if (sent.length > 0) {
         // The modal's draft is spent; keep what is left selected for a retry.
         series.current = null;
         setModal(null);
-        setSelected(new Set(left));
+        if (s?.fromSelection !== false) setSelected(new Set(left));
         qc.invalidateQueries({ queryKey: ["wallet"] });
         return;
       }
@@ -274,6 +295,7 @@ export function useNameBatchActions({
     feeRate,
     setFeeRate,
     run,
+    runFor,
     modal,
     confirm,
     cancel,

@@ -6,10 +6,15 @@ import {
   ArrowUp,
   ArrowUpDown,
   ArrowUpRight,
+  CircleCheck,
   Download,
   Ellipsis,
   Gavel,
+  RefreshCw,
   Search,
+  Send,
+  Settings2,
+  Signature,
   Star,
   StarOff,
   Tag,
@@ -40,6 +45,7 @@ import {
   useWatchlistStatuses,
 } from "../queries/watchlist";
 import { buildNameRows, chipCounts, wallClock, type NameCat, type NameRow } from "../lib/nameRows";
+import { nameRowMenu, type RowMenuItem } from "../lib/nameRowMenu";
 import {
   activeFilterCount,
   NATURAL_DIR,
@@ -924,58 +930,57 @@ export function NamesView() {
                       <td className="py-1 text-right whitespace-nowrap">
                         <span className="inline-flex items-center gap-1">
                           {rowAction(r)}
-                          {r.watch && (
-                            <Popover
-                              align="right"
-                              panelClassName="w-[200px]"
-                              trigger={({ toggle }) => (
-                                <Tooltip content="More">
-                                  <button
-                                    type="button"
-                                    aria-label="More"
-                                    className="p-1 rounded text-gray-500 hover:bg-gray-100"
-                                    onClick={toggle}
-                                  >
-                                    <Icon icon={Ellipsis} size={16} />
-                                  </button>
-                                </Tooltip>
-                              )}
-                            >
-                              {({ close }) => (
-                                <>
-                                  <MenuItem
-                                    icon={ArrowUpRight}
-                                    onClick={() => {
-                                      close();
-                                      openName(r.name);
-                                    }}
-                                  >
-                                    Open name
-                                  </MenuItem>
-                                  <MenuItem
-                                    icon={Tag}
-                                    onClick={() => {
-                                      close();
+                          <Popover
+                            align="right"
+                            panelClassName="w-[200px]"
+                            trigger={({ toggle }) => (
+                              <Tooltip content="More">
+                                <button
+                                  type="button"
+                                  aria-label="More"
+                                  className="p-1 rounded text-gray-500 hover:bg-gray-100"
+                                  onClick={toggle}
+                                >
+                                  <Icon icon={Ellipsis} size={16} />
+                                </button>
+                              </Tooltip>
+                            )}
+                          >
+                            {({ close }) =>
+                              nameRowMenu({
+                                caps: capsByName.get(r.name),
+                                watched: !!r.watch,
+                                watchOnly: isWatchOnly,
+                              }).map((item) => (
+                                <MenuItem
+                                  key={item.label}
+                                  icon={menuIcon(item)}
+                                  className={
+                                    item.do.kind === "unwatch" ? "text-red-700" : undefined
+                                  }
+                                  onClick={() => {
+                                    close();
+                                    const d = item.do;
+                                    if (d.kind === "open")
+                                      openNamePage(r.name, {
+                                        tab: d.tab,
+                                        seedCaps: capsByName.get(r.name),
+                                      });
+                                    else if (d.kind === "run")
+                                      void batch.runFor(d.action, [r.name]);
+                                    else if (d.kind === "watch") addWatch.mutate(r.name);
+                                    else if (d.kind === "unwatch") removeWatch.mutate(r.name);
+                                    else {
                                       setEditingTags(r.name);
-                                      setTagValue(r.watch!.tags);
-                                    }}
-                                  >
-                                    Edit tags
-                                  </MenuItem>
-                                  <MenuItem
-                                    icon={StarOff}
-                                    className="text-red-700"
-                                    onClick={() => {
-                                      close();
-                                      removeWatch.mutate(r.name);
-                                    }}
-                                  >
-                                    Remove from watchlist
-                                  </MenuItem>
-                                </>
-                              )}
-                            </Popover>
-                          )}
+                                      setTagValue(r.watch?.tags ?? "");
+                                    }
+                                  }}
+                                >
+                                  {item.label}
+                                </MenuItem>
+                              ))
+                            }
+                          </Popover>
                         </span>
                       </td>
                     </tr>
@@ -1033,6 +1038,25 @@ function BlockLink({ height, onClick }: { height: number; onClick: (h: number) =
       </button>
     </Tooltip>
   );
+}
+
+const RUN_ICONS = {
+  renew: RefreshCw,
+  reveal: CircleCheck,
+  redeem: CircleCheck,
+  finalize: CircleCheck,
+};
+
+function menuIcon(item: RowMenuItem): Parameters<typeof Icon>[0]["icon"] {
+  const d = item.do;
+  if (d.kind === "run") return RUN_ICONS[d.action];
+  if (d.kind === "watch") return Star;
+  if (d.kind === "editTags") return Tag;
+  if (d.kind === "unwatch") return StarOff;
+  if (d.tab === "transfer") return Send;
+  if (d.tab === "dns") return Settings2;
+  if (d.tab === "sign") return Signature;
+  return item.label.startsWith("Cancel") ? X : ArrowUpRight;
 }
 
 function MenuItem({

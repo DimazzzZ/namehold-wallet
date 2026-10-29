@@ -316,8 +316,13 @@ describe("NamesView — auction positions merged with live caps (Task 2)", () =>
     const row = screen.getByTestId("names-row");
     expect(within(row).getByText("Opening the auction")).toBeInTheDocument();
     expect(within(row).getByText("· waiting for the open to be mined")).toBeInTheDocument();
-    // The row itself opens the name; it carries no button of its own.
-    expect(within(row).queryAllByRole("button")).toHaveLength(0);
+    // The row itself opens the name; its only button is the ⋯ menu, which
+    // offers no auction action either.
+    expect(
+      within(row)
+        .getAllByRole("button")
+        .map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["More"]);
     expect(screen.queryByRole("button", { name: /Open auction/i })).not.toBeInTheDocument();
   });
 
@@ -341,7 +346,11 @@ describe("NamesView — auction positions merged with live caps (Task 2)", () =>
     expect(await screen.findByText(".waitingname")).toBeInTheDocument();
     const row = screen.getByTestId("names-row");
     expect(within(row).getByText("Opening")).toBeInTheDocument();
-    expect(within(row).queryAllByRole("button")).toHaveLength(0);
+    expect(
+      within(row)
+        .getAllByRole("button")
+        .map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["More"]);
     // Folded into the count, not the empty state.
     expect(screen.getByTestId("names-chip-auction")).toHaveTextContent("In auction 1");
     expect(screen.queryByTestId("names-empty")).not.toBeInTheDocument();

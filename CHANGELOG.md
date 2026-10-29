@@ -14,6 +14,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Every row on the Names page has a ⋯ menu**, not only watched names. It holds what the name allows right now: Renew, Reveal, Redeem and Finalize run for that name alone, with the same confirmation as a batch and without touching your selection; Transfer or sell…, Edit DNS records, Sign message and Cancel transfer… open the name's page where they live; Watch, Edit tags and Remove from watchlist manage the watchlist. Revoke stays on the name's page only.
+
 ### Fixed
 - **A wallet with more than 200 names had no name actions at all.** The capability check was asked for every name in one call, which the backend refuses above 200; names showed their bare phase and every batch button stayed grey. It is now asked in chunks of 100, and polled every five minutes instead of every thirty seconds on wallets with more than 100 names.
 - **Batch actions take any number of names.** A selection over 100 names is sent as a series of transactions of up to 100 after one confirmation, with a progress line while each is built and sent; if one fails, the names not yet sent stay selected. Transfer no longer waits for the capability check: the chain's own facts decide, and the batch bar names every selected name that blocks a transfer, with the reason, and drops them in one click. "Select all transferable" picks every name that can move.
