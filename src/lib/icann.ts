@@ -61,3 +61,7 @@ export function icannBadgeTitle(c: IcannCollision): string {
   const base = `Applied for as a gTLD in ICANN's 2026 round by ${n} applicant${n === 1 ? "" : "s"}`;
   return c.applications.some((a) => a.contention) ? `${base} · in contention` : base;
 }
+
+/** The one sentence that names a consequence, conditional on delegation (R6, R8). */
+export const ICANN_HINT =
+  "Someone applied for this string as a new gTLD. If ICANN delegates it, resolvers that use the ICANN root answer for that TLD, not for this Handshake name.";

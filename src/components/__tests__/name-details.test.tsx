@@ -16,6 +16,12 @@ const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
+vi.mock("../../lib/openExternal", async (orig) => ({
+  ...(await orig<typeof import("../../lib/openExternal")>()),
+  openExternal: vi.fn(),
+}));
+import { openExternal } from "../../lib/openExternal";
+import { ICANN_LIST_FETCHED_AT, icannCollision } from "../../lib/icann";
 
 /** Route the two commands the component reads: DNS records and node status. */
 function route(o: { records?: NameResource | null; nodeLive?: boolean } = {}) {
@@ -218,5 +224,76 @@ describe("NameDetails — a name with no auction", () => {
     const card = await screen.findByTestId("name-details");
     expect(card).not.toHaveTextContent(/2nd-price/);
     expect(card).not.toHaveTextContent(/no second bid/);
+  });
+});
+
+describe("NameDetails — ICANN 2026 round row (spec R6)", () => {
+  const agent = icannCollision("agent")!;
+  const date = new Date(ICANN_LIST_FETCHED_AT).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+
+  it("names the count, three applicants and the rest, with the list date", () => {
+    render(<NameDetails name="agent" profileId="p1" info={baseInfo({ name: "agent" })} />, {
+      wrapper: wrapper(),
+    });
+    const row = screen.getByTestId("name-icann");
+    expect(row).toHaveTextContent("ICANN 2026 round");
+    expect(row).toHaveTextContent(`${agent.applications.length} applications`);
+    for (const a of agent.applications.slice(0, 3)) expect(row).toHaveTextContent(a.applicant);
+    expect(row).toHaveTextContent(`and ${agent.applications.length - 3} more`);
+    expect(row).not.toHaveTextContent(agent.applications[3]!.applicant);
+    expect(row).toHaveTextContent(`ICANN list as of ${date}`);
+  });
+
+  it("opens an applicant's application on ICANN's site", () => {
+    render(<NameDetails name="agent" profileId="p1" info={baseInfo({ name: "agent" })} />, {
+      wrapper: wrapper(),
+    });
+    const first = agent.applications[0]!;
+    fireEvent.click(screen.getByRole("button", { name: first.applicant }));
+    expect(openExternal).toHaveBeenCalledWith(
+      `https://newgtldprogram-aps.icann.org/applications/${first.id}/summary`,
+    );
+  });
+
+  it("comes before the market purchase row", () => {
+    render(
+      <NameDetails
+        name="agent"
+        profileId="p1"
+        info={baseInfo({ name: "agent", purchase: { priceDoos: 250_000_000, height: 352_642 } })}
+      />,
+      { wrapper: wrapper() },
+    );
+    const rows = screen.getByTestId("name-details").querySelectorAll("[data-testid]");
+    const ids = [...rows].map((r) => r.getAttribute("data-testid"));
+    expect(ids).toContain("name-icann");
+    expect(ids).toContain("name-market-purchase");
+    expect(ids.indexOf("name-icann")).toBeLessThan(ids.indexOf("name-market-purchase"));
+  });
+
+  it("renders the card with only this row for a colliding name without on-chain info", () => {
+    render(<NameDetails name="agent" profileId="p1" info={null} />, { wrapper: wrapper() });
+    expect(screen.getByTestId("name-details")).toBeInTheDocument();
+    expect(screen.getByTestId("name-icann")).toBeInTheDocument();
+    expect(screen.queryByText("Nothing on-chain yet.")).toBeNull();
+  });
+
+  it("has no row for a name nobody applied for, and no card without info", () => {
+    const { container, unmount } = render(
+      <NameDetails name="zzzz-not-applied" profileId="p1" info={baseInfo()} />,
+      { wrapper: wrapper() },
+    );
+    expect(screen.queryByTestId("name-icann")).toBeNull();
+    unmount();
+    const r2 = render(<NameDetails name="zzzz-not-applied" profileId="p1" info={null} />, {
+      wrapper: wrapper(),
+    });
+    expect(r2.container.firstChild).toBeNull();
+    expect(container.firstChild).toBeNull();
   });
 });

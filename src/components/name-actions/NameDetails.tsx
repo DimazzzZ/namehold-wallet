@@ -1,10 +1,18 @@
-import { useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useNameRecords } from "../../queries/read";
 import { Badge } from "../ui/Badge";
 import { Icon } from "../ui/Icon";
 import { Tooltip } from "../ui/Tooltip";
 import { formatHns, formatHnsShort } from "../../lib/utils";
+import {
+  ICANN_HINT,
+  ICANN_LIST_FETCHED_AT,
+  icannApplicationUrl,
+  icannCollision,
+  type IcannCollision,
+} from "../../lib/icann";
+import { openExternal } from "../../lib/openExternal";
 import { auctionPhase, formatCountdown, type PhaseCountdown } from "../../lib/auction";
 import { approxBlocksDate, countdownForNetwork } from "../../lib/nameStatus";
 import { renderRecord } from "./ReadOnlyDnsRecords";
@@ -50,6 +58,60 @@ function Row({
   );
 }
 
+/** How many applicants the ICANN row names before "and N more". */
+const ICANN_NAMED = 3;
+
+function IcannRow({ c }: { c: IcannCollision }) {
+  const n = c.applications.length;
+  const named = c.applications.slice(0, ICANN_NAMED);
+  const rest = c.applications.slice(ICANN_NAMED);
+  const date = new Date(ICANN_LIST_FETCHED_AT).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  return (
+    <Row
+      testId="name-icann"
+      label={
+        <Tooltip hint content={ICANN_HINT}>
+          ICANN 2026 round
+        </Tooltip>
+      }
+      value={
+        <>
+          {n} application{n === 1 ? "" : "s"} ·{" "}
+          {named.map((a, i) => (
+            <Fragment key={a.id}>
+              {i > 0 && ", "}
+              <button
+                type="button"
+                className="underline decoration-dotted underline-offset-2 hover:text-blue-600"
+                onClick={() => void openExternal(icannApplicationUrl(a.id))}
+              >
+                {a.applicant}
+              </button>
+            </Fragment>
+          ))}
+          {rest.length > 0 && (
+            <>
+              {" "}
+              and{" "}
+              <Tooltip content={rest.map((a) => a.applicant).join(", ")} className="inline">
+                <span className="cursor-help underline decoration-dotted underline-offset-2">
+                  {rest.length} more
+                </span>
+              </Tooltip>
+            </>
+          )}
+        </>
+      }
+      sub={` · ICANN list as of ${date}`}
+    />
+  );
+}
+
 /** A display amount: short, the exact value on hover (DESIGN_SYSTEM §2). */
 function Hns({ doos, testId }: { doos: number; testId?: string }) {
   return (
@@ -79,132 +141,139 @@ export function NameDetails({
   const owned = !!caps?.ownsName && (caps.nameIsRegistered || caps.transferPending);
   const { data: resource } = useNameRecords(owned ? name : null, profileId);
 
-  if (!info) return null;
-
-  const { phase } = auctionPhase(info.state);
-  const closed = phase === "CLOSED";
-  const blocksLeft = info.stats?.blocksUntilExpire ?? null;
-  const exp = blocksLeft != null ? approxBlocksDate(blocksLeft, network) : null;
-  const blocks = (n: number) => `${n.toLocaleString("en-US")} blocks`;
-  const multi = (caps?.myBidCount ?? 0) > 1;
+  const icann = icannCollision(name);
+  if (!info && !icann) return null;
 
   const rows: ReactNode[] = [];
-  // Bought on the market: that price is what this wallet paid. The auction
-  // figures below are the name's original auction, so they say so.
-  const bought = info.purchase ?? null;
-  if (bought) {
-    rows.push(
-      <Row
-        key="bought"
-        testId="name-market-purchase"
-        label="Bought on the market"
-        value={<Hns doos={bought.priceDoos} />}
-        sub={
-          bought.height != null ? ` · block ${bought.height.toLocaleString("en-US")}` : undefined
-        }
-      />,
-    );
-  }
-  if (showLocalBid && caps?.bidValueDoos != null) {
-    rows.push(
-      <Row
-        key="bid"
-        testId="name-your-bid"
-        label={
-          <Tooltip
-            hint
-            content="Your bid is sealed until reveal; the lockup is the most anyone can see."
-          >
-            {multi ? "Latest bid" : "Your bid"}
-          </Tooltip>
-        }
-        value={<Hns doos={caps.bidValueDoos} />}
-        sub={
-          <>
-            {caps.lockupValueDoos != null && (
-              <span data-testid="name-your-lockup">
-                {" · lockup "}
-                <Hns doos={caps.lockupValueDoos} />
-              </span>
-            )}
-            {multi && (
-              <span data-testid="name-your-bid-count">{` · ${caps.myBidCount} of yours`}</span>
-            )}
-          </>
-        }
-      />,
-    );
-  }
-  // Our own bid, when known, says more than the on-chain figure. Bids are
-  // sealed while bidding, and a 0 means none revealed: never "0 HNS".
-  if (!showLocalBid && phase === "BIDDING") {
-    rows.push(
-      <Row
-        key="high"
-        testId="name-high-bid"
-        label="High bid"
-        value={<span className="text-gray-500">hidden until reveal</span>}
-      />,
-    );
-  } else if (!showLocalBid && (info.highest ?? 0) > 0) {
-    rows.push(
-      <Row
-        key="high"
-        testId="name-high-bid"
-        label={bought ? "Auction winner's bid" : "High bid"}
-        value={<Hns doos={info.highest!} />}
-      />,
-    );
-  }
-  // A claimed (reserved) name never had an auction: no bid, no price to show.
-  if (closed && info.value != null && (info.value > 0 || (info.highest ?? 0) > 0)) {
-    rows.push(
-      <Row
-        key="paid"
-        label={
-          <Tooltip
-            hint
-            content="Handshake uses a Vickrey second-price auction: the winner pays the second-highest bid, not their own bid."
-          >
-            {bought ? "Auction price (2nd-price)" : "Paid price (2nd-price)"}
-          </Tooltip>
-        }
-        value={
-          info.value > 0 ? (
-            <Hns doos={info.value} />
-          ) : (
-            // One bid, so no second price: the winner paid nothing, never "0 HNS".
-            <span className="text-gray-500">nothing — no second bid</span>
-          )
-        }
-      />,
-    );
-  }
-  if (closed && blocksLeft != null) {
-    rows.push(
-      exp ? (
-        <Row key="exp" label="Expires" value={exp.short} sub={` · in ${blocks(blocksLeft)}`} />
-      ) : (
-        <Row key="exp" label="Expires" value={`in ${blocks(blocksLeft)}`} />
-      ),
-    );
-  } else if (countdown) {
-    rows.push(
-      <Row
-        key="next"
-        testId="name-countdown"
-        label="Next step"
-        value={`${countdown.label} ${formatCountdown(countdownForNetwork(countdown, network))}`}
-      />,
-    );
-  }
-  if (info.renewal != null) {
-    rows.push(<Row key="renewed" label="Renewed" value={`block ${info.renewal}`} />);
-  }
-  if (info.height != null) {
-    rows.push(
-      <Row key="opened" label="Opened" value={`block ${info.height.toLocaleString("en-US")}`} />,
-    );
+  // The ICANN 2026 round row comes first: it is about the string, not about
+  // this chain's record of it, and it is the only row a name nobody has
+  // opened on-chain can have (spec R6).
+  if (icann) rows.push(<IcannRow key="icann" c={icann} />);
+  if (info) {
+    const { phase } = auctionPhase(info.state);
+    const closed = phase === "CLOSED";
+    const blocksLeft = info.stats?.blocksUntilExpire ?? null;
+    const exp = blocksLeft != null ? approxBlocksDate(blocksLeft, network) : null;
+    const blocks = (n: number) => `${n.toLocaleString("en-US")} blocks`;
+    const multi = (caps?.myBidCount ?? 0) > 1;
+
+    // Bought on the market: that price is what this wallet paid. The auction
+    // figures below are the name's original auction, so they say so.
+    const bought = info.purchase ?? null;
+    if (bought) {
+      rows.push(
+        <Row
+          key="bought"
+          testId="name-market-purchase"
+          label="Bought on the market"
+          value={<Hns doos={bought.priceDoos} />}
+          sub={
+            bought.height != null ? ` · block ${bought.height.toLocaleString("en-US")}` : undefined
+          }
+        />,
+      );
+    }
+    if (showLocalBid && caps?.bidValueDoos != null) {
+      rows.push(
+        <Row
+          key="bid"
+          testId="name-your-bid"
+          label={
+            <Tooltip
+              hint
+              content="Your bid is sealed until reveal; the lockup is the most anyone can see."
+            >
+              {multi ? "Latest bid" : "Your bid"}
+            </Tooltip>
+          }
+          value={<Hns doos={caps.bidValueDoos} />}
+          sub={
+            <>
+              {caps.lockupValueDoos != null && (
+                <span data-testid="name-your-lockup">
+                  {" · lockup "}
+                  <Hns doos={caps.lockupValueDoos} />
+                </span>
+              )}
+              {multi && (
+                <span data-testid="name-your-bid-count">{` · ${caps.myBidCount} of yours`}</span>
+              )}
+            </>
+          }
+        />,
+      );
+    }
+    // Our own bid, when known, says more than the on-chain figure. Bids are
+    // sealed while bidding, and a 0 means none revealed: never "0 HNS".
+    if (!showLocalBid && phase === "BIDDING") {
+      rows.push(
+        <Row
+          key="high"
+          testId="name-high-bid"
+          label="High bid"
+          value={<span className="text-gray-500">hidden until reveal</span>}
+        />,
+      );
+    } else if (!showLocalBid && (info.highest ?? 0) > 0) {
+      rows.push(
+        <Row
+          key="high"
+          testId="name-high-bid"
+          label={bought ? "Auction winner's bid" : "High bid"}
+          value={<Hns doos={info.highest!} />}
+        />,
+      );
+    }
+    // A claimed (reserved) name never had an auction: no bid, no price to show.
+    if (closed && info.value != null && (info.value > 0 || (info.highest ?? 0) > 0)) {
+      rows.push(
+        <Row
+          key="paid"
+          label={
+            <Tooltip
+              hint
+              content="Handshake uses a Vickrey second-price auction: the winner pays the second-highest bid, not their own bid."
+            >
+              {bought ? "Auction price (2nd-price)" : "Paid price (2nd-price)"}
+            </Tooltip>
+          }
+          value={
+            info.value > 0 ? (
+              <Hns doos={info.value} />
+            ) : (
+              // One bid, so no second price: the winner paid nothing, never "0 HNS".
+              <span className="text-gray-500">nothing — no second bid</span>
+            )
+          }
+        />,
+      );
+    }
+    if (closed && blocksLeft != null) {
+      rows.push(
+        exp ? (
+          <Row key="exp" label="Expires" value={exp.short} sub={` · in ${blocks(blocksLeft)}`} />
+        ) : (
+          <Row key="exp" label="Expires" value={`in ${blocks(blocksLeft)}`} />
+        ),
+      );
+    } else if (countdown) {
+      rows.push(
+        <Row
+          key="next"
+          testId="name-countdown"
+          label="Next step"
+          value={`${countdown.label} ${formatCountdown(countdownForNetwork(countdown, network))}`}
+        />,
+      );
+    }
+    if (info.renewal != null) {
+      rows.push(<Row key="renewed" label="Renewed" value={`block ${info.renewal}`} />);
+    }
+    if (info.height != null) {
+      rows.push(
+        <Row key="opened" label="Opened" value={`block ${info.height.toLocaleString("en-US")}`} />,
+      );
+    }
   }
 
   const records = resource?.records ?? [];
@@ -247,7 +316,7 @@ export function NameDetails({
         </div>
       )}
 
-      {info.owner && (
+      {info?.owner && (
         <div className="border-t border-gray-100 pt-3 text-xs">
           <button
             type="button"

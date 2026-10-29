@@ -482,3 +482,20 @@ describe("Name page — network timing", () => {
     );
   });
 });
+
+describe("Name page — ICANN collision (spec R5)", () => {
+  it("shows the ICANN badge in the H1 for an applied-for string", async () => {
+    invokeMock.mockImplementation(route({ name: "agent", caps: owned }));
+    renderAt("/names/agent");
+    const badge = await screen.findByTestId("icann-badge");
+    expect(badge.closest("h1")).not.toBeNull();
+    expect(badge).toHaveTextContent("ICANN");
+  });
+
+  it("shows no badge for a name nobody applied for", async () => {
+    invokeMock.mockImplementation(route({ name: "zzzz-not-applied", caps: owned }));
+    renderAt("/names/zzzz-not-applied");
+    await screen.findByTestId("name-details");
+    expect(screen.queryByTestId("icann-badge")).toBeNull();
+  });
+});
