@@ -12,6 +12,7 @@ import {
   useWalletBalances,
   useUnlockSigner,
   useBuildSendDraft,
+  useDeleteTxDraft,
   useSignTxDraft,
   useBroadcastTxDraft,
 } from "../queries/wallet";
@@ -87,6 +88,16 @@ export function WalletView() {
   const buildDraft = useBuildSendDraft();
   const signDraft = useSignTxDraft();
   const broadcast = useBroadcastTxDraft();
+  const deleteDraft = useDeleteTxDraft();
+  // A draft reserves its coins from the moment Review or Max builds it. Leaving
+  // the review without sending (Back, Cancel, Escape, a new build) must free
+  // them, or the next Max reads "not enough funds". Once a broadcast was tried
+  // the draft is the node's to settle (Activity keeps it), never discarded here.
+  const broadcastTried = useRef(false);
+  const discardUnsent = (d: TxDraftSummary | null) => {
+    if (!d || broadcastTried.current) return;
+    deleteDraft.mutate(d.id);
+  };
 
   const [sendOpen, setSendOpen] = useState(false);
   const [sendAddress, setSendAddress] = useState("");
@@ -176,6 +187,8 @@ export function WalletView() {
   useEffect(() => subscribeAction((id) => actionHandlerRef.current(id)), []);
 
   const resetSend = () => {
+    discardUnsent(draft);
+    broadcastTried.current = false;
     setSendOpen(false);
     setSendAddress("");
     setSendAmount("");
@@ -278,9 +291,11 @@ export function WalletView() {
         await unlock.mutateAsync(profile.id);
       }
       await signDraft.mutateAsync(draft.id);
+      broadcastTried.current = true;
       const result = await broadcast.mutateAsync(draft.id);
       // Only here — after the node accepted the tx — is the send complete.
       showToast(`Broadcast ${result.txid.slice(0, 12)}…`, "success");
+      setDraft(null);
       resetSend();
       qc.invalidateQueries({ queryKey: ["wallet"] });
     } catch (e) {
@@ -738,6 +753,8 @@ export function WalletView() {
               <Button
                 variant="ghost"
                 onClick={() => {
+                  discardUnsent(draft);
+                  broadcastTried.current = false;
                   setDraft(null);
                   setSendError(null);
                 }}

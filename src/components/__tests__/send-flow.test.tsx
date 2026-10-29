@@ -286,4 +286,49 @@ describe("WalletView send flow (asset safety)", () => {
       expect(call?.[1]).toMatchObject({ toAddress: RECIPIENT, max: true });
     });
   });
+
+  describe("a draft built for review never outlives the dialog (its coins stay free)", () => {
+    const deletes = () => invokeMock.mock.calls.filter((c) => c[0] === "delete_tx_draft");
+    const toReview = async () => {
+      invokeMock.mockImplementation(routeInvoke());
+      render(<WalletView />, { wrapper: wrapper() });
+      await screen.findByTestId("receive-open");
+      fireEvent.click(screen.getByTestId("wallet-send"));
+      fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
+      fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
+      await screen.findByTestId("send-recipient");
+    };
+
+    it("Max, then Escape, discards the draft", async () => {
+      await toReview();
+      fireEvent.keyDown(document, { key: "Escape" });
+      await waitFor(() => expect(deletes()).toHaveLength(1));
+      expect(deletes()[0]![1]).toEqual({ draftId: "d1" });
+    });
+
+    it("Max, then Back, discards the draft and a second Max builds a fresh one", async () => {
+      await toReview();
+      fireEvent.click(screen.getByRole("button", { name: /^Back$/i }));
+      await waitFor(() => expect(deletes()).toHaveLength(1));
+      fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
+      await screen.findByTestId("send-recipient");
+      expect(invokeMock.mock.calls.filter((c) => c[0] === "build_send_hns_draft")).toHaveLength(2);
+    });
+
+    it("a draft whose broadcast was tried is kept (its fate is the node's), and says so", async () => {
+      invokeMock.mockImplementation(routeInvoke({ broadcast: "fail" }));
+      render(<WalletView />, { wrapper: wrapper() });
+      await screen.findByTestId("receive-open");
+      fireEvent.click(screen.getByTestId("wallet-send"));
+      fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
+      fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
+      await screen.findByTestId("send-recipient");
+      fireEvent.click(screen.getByRole("button", { name: /Sign & Broadcast/i }));
+      await screen.findByTestId("send-error");
+      fireEvent.click(screen.getByRole("button", { name: /^Back$/i }));
+      fireEvent.keyDown(document, { key: "Escape" });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(deletes()).toHaveLength(0);
+    });
+  });
 });

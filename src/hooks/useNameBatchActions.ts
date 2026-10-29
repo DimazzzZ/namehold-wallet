@@ -4,6 +4,7 @@ import { parseFeeRateArg } from "../lib/feeRate";
 import { mapError } from "../lib/errors";
 import {
   useBroadcastTxDraft,
+  useDeleteTxDraft,
   useNameAction,
   useSignTxDraft,
   useUnlockSigner,
@@ -103,6 +104,7 @@ export function useNameBatchActions({
   // Transfers N selected names to one shared recipient.
   const transferM = useNameAction("build_batch_transfer_draft");
   const unlock = useUnlockSigner();
+  const deleteDraft = useDeleteTxDraft();
   const signDraft = useSignTxDraft();
   const broadcast = useBroadcastTxDraft();
 
@@ -256,9 +258,11 @@ export function useNameBatchActions({
     }
   };
 
-  // Cancel: just close. The draft row stays and its coin reservations block
-  // nothing; it can be replayed or discarded from Activity.
+  // Cancel discards the draft built for the confirmation: it reserves the
+  // coins that pay its fee, and a draft nobody sends would keep them from every
+  // later send ("not enough funds") until discarded by hand in Activity.
   const cancel = () => {
+    if (modal) deleteDraft.mutate(modal.draftId);
     series.current = null;
     setModal(null);
   };

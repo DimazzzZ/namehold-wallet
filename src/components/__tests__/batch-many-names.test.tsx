@@ -377,6 +377,10 @@ describe("Names — a wallet with hundreds of names", () => {
       startTransfer();
       await screen.findByText(/Confirm batch transfer/i);
       fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
+      // The cancelled draft is discarded: it held the coins of its fee.
+      await waitFor(() =>
+        expect(calls("delete_tx_draft").map((c) => c[1])).toEqual([{ draftId: "draft-1" }]),
+      );
       fireEvent.click(screen.getByTestId("batch-transfer-btn"));
       await screen.findByText(/Confirm batch transfer/i);
       confirm();
