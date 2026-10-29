@@ -28,3 +28,4 @@ Each spec has these sections, in this order:
 | [2026-10-07 Honest broadcast result](./2026-10-07-honest-broadcast-result.md) | Implemented |
 | [2026-10-21 Speed up an unconfirmed send](./2026-10-21-speed-up-unconfirmed-sends.md) | Implemented |
 | [2026-10-24 Local node per network](./2026-10-24-local-node-per-network.md) | Implemented |
+| [2026-10-29 ICANN collision flag](./2026-10-29-icann-collision-flag.md) | Implemented |
