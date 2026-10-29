@@ -391,6 +391,8 @@ describe("Name page — Revoke needs the name typed", () => {
     renderAt("/names/ownedname?tab=transfer");
     const open = await screen.findByTestId("revoke-open");
     await waitFor(() => expect(open).toBeEnabled());
+    // A secondary Button in red text, so focus, disabled and busy match the rest.
+    expect(open).toHaveClass("border-gray-300", "text-red-700", "hover:bg-red-50");
     fireEvent.click(open);
     return screen.getByTestId("revoke-confirm-input");
   }

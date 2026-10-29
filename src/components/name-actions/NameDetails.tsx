@@ -4,7 +4,7 @@ import { useNameRecords } from "../../queries/read";
 import { Badge } from "../ui/Badge";
 import { Icon } from "../ui/Icon";
 import { Tooltip } from "../ui/Tooltip";
-import { formatHns } from "../../lib/utils";
+import { formatHns, formatHnsShort } from "../../lib/utils";
 import { auctionPhase, formatCountdown, type PhaseCountdown } from "../../lib/auction";
 import { approxBlocksDate, countdownForNetwork } from "../../lib/nameStatus";
 import { renderRecord } from "./ReadOnlyDnsRecords";
@@ -47,6 +47,15 @@ function Row({
         {sub && <span className="text-gray-400">{sub}</span>}
       </span>
     </div>
+  );
+}
+
+/** A display amount: short, the exact value on hover (DESIGN_SYSTEM §2). */
+function Hns({ doos, testId }: { doos: number; testId?: string }) {
+  return (
+    <Tooltip content={`${formatHns(doos)} HNS`} className="inline">
+      <span data-testid={testId}>{formatHnsShort(doos)} HNS</span>
+    </Tooltip>
   );
 }
 
@@ -93,12 +102,13 @@ export function NameDetails({
             {multi ? "Latest bid" : "Your bid"}
           </Tooltip>
         }
-        value={`${formatHns(caps.bidValueDoos)} HNS`}
+        value={<Hns doos={caps.bidValueDoos} />}
         sub={
           <>
             {caps.lockupValueDoos != null && (
               <span data-testid="name-your-lockup">
-                {` · lockup ${formatHns(caps.lockupValueDoos)}`}
+                {" · lockup "}
+                <Hns doos={caps.lockupValueDoos} />
               </span>
             )}
             {multi && (
@@ -109,9 +119,26 @@ export function NameDetails({
       />,
     );
   }
-  // Our own bid, when known, says more than the blinded on-chain figure.
-  if (!showLocalBid && info.highest != null) {
-    rows.push(<Row key="high" label="High bid" value={`${formatHns(info.highest)} HNS`} />);
+  // Our own bid, when known, says more than the on-chain figure. Bids are
+  // sealed while bidding, and a 0 means none revealed: never "0 HNS".
+  if (!showLocalBid && phase === "BIDDING") {
+    rows.push(
+      <Row
+        key="high"
+        testId="name-high-bid"
+        label="High bid"
+        value={<span className="text-gray-500">hidden until reveal</span>}
+      />,
+    );
+  } else if (!showLocalBid && (info.highest ?? 0) > 0) {
+    rows.push(
+      <Row
+        key="high"
+        testId="name-high-bid"
+        label="High bid"
+        value={<Hns doos={info.highest!} />}
+      />,
+    );
   }
   if (closed && info.value != null) {
     rows.push(
@@ -125,7 +152,7 @@ export function NameDetails({
             Paid price (2nd-price)
           </Tooltip>
         }
-        value={`${formatHns(info.value)} HNS`}
+        value={<Hns doos={info.value} />}
       />,
     );
   }

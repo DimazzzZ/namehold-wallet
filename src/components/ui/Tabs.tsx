@@ -10,8 +10,9 @@ interface TabsProps<T extends string> {
 }
 
 /**
- * Underlined tabs: the active one blue-600 text over a 2px blue line, never a
- * filled button, so the page's one primary action stays the only one.
+ * Underlined tabs (DESIGN_SYSTEM §4): the active one gray-900 semibold over a
+ * 2px gray-900 line, never a filled button or blue, which stays for actions
+ * and the selected sidebar item.
  */
 export function Tabs<T extends string>({ tabs, active, onChange, className }: TabsProps<T>) {
   return (
@@ -28,10 +29,10 @@ export function Tabs<T extends string>({ tabs, active, onChange, className }: Ta
               aria-selected={isActive}
               onClick={() => onChange(tab.key)}
               className={cn(
-                "-mb-px inline-flex items-center gap-1.5 border-b-2 px-0.5 pb-2 pt-1 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1",
+                "-mb-px inline-flex items-center gap-1.5 border-b-2 px-0.5 pb-2 pt-1 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1",
                 isActive
-                  ? "border-blue-600 text-blue-600"
-                  : "border-transparent text-gray-600 hover:border-gray-300 hover:text-gray-900",
+                  ? "border-gray-900 text-gray-900 font-semibold"
+                  : "border-transparent font-medium text-gray-600 hover:text-gray-900",
               )}
             >
               {tab.label}
@@ -39,7 +40,7 @@ export function Tabs<T extends string>({ tabs, active, onChange, className }: Ta
                 <span
                   className={cn(
                     "rounded-full px-1.5 text-[10px] font-semibold",
-                    isActive ? "bg-blue-50 text-blue-700" : "bg-gray-100 text-gray-600",
+                    isActive ? "bg-gray-200 text-gray-900" : "bg-gray-100 text-gray-600",
                   )}
                 >
                   {tab.badge}
