@@ -209,11 +209,13 @@ async function selectAllTransferable() {
   fireEvent.click(btn);
 }
 
+/** Transfer Selected, then the recipient, then Review. */
 function startTransfer() {
+  fireEvent.click(screen.getByTestId("batch-transfer-btn"));
   fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
     target: { value: RECIPIENT },
   });
-  fireEvent.click(screen.getByTestId("batch-transfer-btn"));
+  fireEvent.click(screen.getByTestId("batch-transfer-review"));
 }
 
 beforeEach(() => {
@@ -253,7 +255,8 @@ describe("Names — a wallet with hundreds of names", () => {
     const built = calls("build_batch_transfer_draft").map((c) => (c[1].names as string[]).length);
     expect(built).toEqual([100, 50]);
     expect(calls("sign_tx_draft").map((c) => c[1].draftId)).toEqual(["draft-1", "draft-2"]);
-    await waitFor(() => expect(screen.getByText("0 selected")).toBeInTheDocument());
+    // Every name sent: the selection is cleared and the batch actions hide.
+    await waitFor(() => expect(screen.queryByTestId("batch-action-bar")).toBeNull());
   });
 
   it("keeps the names not yet sent selected when a later transaction fails", async () => {
@@ -271,9 +274,6 @@ describe("Names — a wallet with hundreds of names", () => {
     invokeMock.mockImplementation(route({ capsPending: true }));
     render(<NamesView />, { wrapper: wrapper() });
     await selectAllTransferable();
-    fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
-      target: { value: RECIPIENT },
-    });
     expect(screen.getByTestId("batch-transfer-btn")).not.toBeDisabled();
   });
 
@@ -292,9 +292,6 @@ describe("Names — a wallet with hundreds of names", () => {
     expect(help).toHaveTextContent("gone (expired)");
     fireEvent.click(screen.getByTestId("batch-drop-blockers"));
     expect(screen.getByText("5 selected")).toBeInTheDocument();
-    fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
-      target: { value: RECIPIENT },
-    });
     expect(screen.getByTestId("batch-transfer-btn")).not.toBeDisabled();
   });
 
@@ -381,7 +378,10 @@ describe("Names — a wallet with hundreds of names", () => {
       await waitFor(() =>
         expect(calls("delete_tx_draft").map((c) => c[1])).toEqual([{ draftId: "draft-1" }]),
       );
+      // The recipient is kept: Transfer again opens it filled in.
       fireEvent.click(screen.getByTestId("batch-transfer-btn"));
+      expect(screen.getByTestId("batch-transfer-recipient-input")).toHaveValue(RECIPIENT);
+      fireEvent.click(screen.getByTestId("batch-transfer-review"));
       await screen.findByText(/Confirm batch transfer/i);
       confirm();
       await waitFor(() => expect(calls("broadcast_tx_draft")).toHaveLength(2));
@@ -449,9 +449,6 @@ describe("Names — a wallet with hundreds of names", () => {
       await waitFor(() => expect(help).toHaveTextContent("listed (this name is locked for sale)"));
       expect(help).toHaveTextContent(/moving \(a transfer is already pending\)/);
       expect(help).not.toHaveTextContent(/plain \(|nostats \(/);
-      fireEvent.change(screen.getByTestId("batch-transfer-recipient-input"), {
-        target: { value: RECIPIENT },
-      });
       expect(screen.getByTestId("batch-transfer-btn")).toBeDisabled();
       fireEvent.click(screen.getByTestId("batch-drop-blockers"));
       expect(screen.getByTestId("batch-transfer-btn")).not.toBeDisabled();
