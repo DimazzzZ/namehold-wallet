@@ -1,6 +1,7 @@
 import { Icon } from "./Icon";
 import { Link } from "react-router-dom";
 import { Button } from "./Button";
+import { Tooltip } from "./Tooltip";
 import type { PageAction } from "../../types";
 
 interface PageHeaderProps {
@@ -28,42 +29,39 @@ export function PageHeader({ title, subtitle, badges, actions, aside, children }
       {actions && actions.length > 0 && (
         <div className="flex items-center gap-2 shrink-0">
           {actions.map((action) => {
-            const label = action.loading ? "Working..." : action.label;
             const content = action.icon ? (
               <span className="inline-flex items-center gap-1.5">
                 <Icon icon={action.icon} size={14} />
-                {label}
+                {action.label}
               </span>
             ) : (
-              label
+              action.label
             );
-            if (action.to && !action.disabled && !action.loading) {
-              return (
+            const button =
+              action.to && !action.disabled && !action.loading ? (
                 <Link key={action.label} to={action.to}>
                   <Button variant={action.variant ?? "secondary"} data-testid={action.testId}>
                     {content}
                   </Button>
                 </Link>
+              ) : (
+                <Button
+                  key={action.label}
+                  variant={action.variant ?? "secondary"}
+                  data-testid={action.testId}
+                  disabled={action.disabled}
+                  loading={action.loading}
+                  onClick={action.onClick}
+                >
+                  {content}
+                </Button>
               );
-            }
-            return (
-              <Button
-                key={action.label}
-                variant={action.variant ?? "secondary"}
-                data-testid={action.testId}
-                disabled={action.disabled}
-                loading={action.loading}
-                onClick={action.onClick}
-              >
-                {action.icon ? (
-                  <span className="inline-flex items-center gap-1.5">
-                    <Icon icon={action.icon} size={14} />
-                    {action.label}
-                  </span>
-                ) : (
-                  action.label
-                )}
-              </Button>
+            return action.tooltip ? (
+              <Tooltip key={action.label} content={action.tooltip}>
+                {button}
+              </Tooltip>
+            ) : (
+              button
             );
           })}
         </div>

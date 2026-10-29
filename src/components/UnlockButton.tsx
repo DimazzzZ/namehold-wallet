@@ -1,3 +1,6 @@
+import { LockOpen, type LucideIcon } from "lucide-react";
+import { Icon } from "./ui/Icon";
+import { cn } from "../lib/utils";
 import { isSignerUnlockedFor } from "../lib/signer";
 import { Button } from "./ui/Button";
 import { useActiveProfile, useSignerSession } from "../queries/wallet";
@@ -8,6 +11,8 @@ type Props = {
   variant?: "primary" | "secondary" | "danger" | "ghost";
   className?: string;
   label?: string;
+  /** Icon before the label; null for none. */
+  icon?: LucideIcon | null;
   onUnlocked?: () => void;
 };
 
@@ -19,9 +24,12 @@ type Props = {
  */
 export function UnlockButton({
   size = "sm",
-  variant = "primary",
+  // Secondary: Unlock sits next to (or above) the page's or dialog's own
+  // primary, which it only unblocks (DESIGN_SYSTEM §1.1).
+  variant = "secondary",
   className,
   label = "Unlock",
+  icon = LockOpen,
   onUnlocked,
 }: Props) {
   const { data: profile } = useActiveProfile();
@@ -35,13 +43,14 @@ export function UnlockButton({
     <Button
       size={size}
       variant={variant}
-      className={className}
+      className={cn("inline-flex items-center gap-1.5", className)}
       onClick={async () => {
         if (await unlock()) onUnlocked?.();
       }}
       disabled={busy === "unlocking"}
       data-testid="unlock-now"
     >
+      {icon && <Icon icon={icon} size={14} />}
       {busy === "unlocking" ? "Unlocking…" : label}
     </Button>
   );
