@@ -24,6 +24,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 }));
 
 import { WalletView } from "../WalletView";
+import { ActivityView } from "../ActivityView";
 import { NameActionsModal } from "../NameActionsModal";
 
 const profile = {
@@ -183,13 +184,11 @@ describe("WalletView — auction UX", () => {
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
 
-    // The confirmed draft renders its status badge ("Confirmed") and its block
-    // height ("#437", now in its own Block column) in the same row.
-    const blockCell = await screen.findByText("#437");
-    const confirmedRow = blockCell.closest("tr")!;
-    expect(within(confirmedRow).getByText("Confirmed")).toBeInTheDocument();
-    expect(screen.getByText("Pending")).toBeInTheDocument();
-    expect(screen.getByText("Not confirmed")).toBeInTheDocument();
+    // The Recent activity card shows each row's status badge.
+    const card = await screen.findByTestId("recent-activity");
+    await waitFor(() => expect(within(card).getByText("Confirmed")).toBeInTheDocument());
+    expect(within(card).getByText("Pending")).toBeInTheDocument();
+    expect(within(card).getByText("Not confirmed")).toBeInTheDocument();
   });
 
   it("a dropped or failed draft's hint says why", async () => {
@@ -226,13 +225,15 @@ describe("WalletView — auction UX", () => {
         ],
       }),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    // Activity shows the reason; the Wallet card only its Lost badge.
+    render(<ActivityView />, { wrapper: wrapper() });
     const badge = await screen.findByText("Lost");
-    const tr = badge.closest("tr")!;
-    expect(within(tr).queryByText("Not confirmed")).not.toBeInTheDocument();
-    expect(within(tr).getByText("Buy")).toBeInTheDocument();
+    const row = badge.closest("li")!;
+    expect(within(row).queryByText("Not confirmed")).not.toBeInTheDocument();
+    // Dropped, so there is something to retry: it is in To finish.
+    expect(within(screen.getByTestId("activity-to-finish")).getByText("Lost")).toBe(badge);
     // Read without hovering: whether anything was paid is in the reason.
-    expect(within(tr).getByTestId("activity-lost-reason")).toHaveTextContent(lost);
+    expect(within(row).getByTestId("activity-lost-reason")).toHaveTextContent(lost);
   });
 
   it("a purchase lost after it paid reads Lost, with the reason, not Confirmed", async () => {
@@ -251,9 +252,11 @@ describe("WalletView — auction UX", () => {
         ],
       }),
     );
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<ActivityView />, { wrapper: wrapper() });
     const badge = await screen.findByText("Lost");
+    // Nothing to retry once paid: it is history, with the reason in sight.
     const tr = badge.closest("tr")!;
+    expect(tr).toHaveAttribute("data-testid", "activity-history-row");
     expect(within(tr).queryByText("Confirmed")).not.toBeInTheDocument();
     expect(within(tr).getByTestId("activity-lost-reason")).toHaveTextContent(lost);
   });
