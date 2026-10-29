@@ -220,7 +220,39 @@ export function NamesView() {
       col === sort ? { dir: dir === "asc" ? "desc" : "asc" } : { sort: col, dir: NATURAL_DIR[col] },
     );
 
-  const batch = useNameBatchActions({ profile, capsByName, unlocked });
+  // What the chain says about each owned name: enough to know whether a
+  // TRANSFER is possible without the capability query.
+  const chainFacts = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const n of namesQuery.data ?? []) {
+      // hsd's `expired` flag outlives a renewal (it was true on a name whose
+      // TRANSFER the node then accepted), so expiry is read from the countdown.
+      // A field the read did not fill in blocks nothing.
+      const blocksLeft = n.stats?.blocksUntilExpire;
+      const why =
+        n.state && n.state !== "CLOSED"
+          ? "still in its auction"
+          : n.registered === false
+            ? "not registered"
+            : blocksLeft != null && blocksLeft <= 0
+              ? "expired"
+              : n.transfer
+                ? "a transfer is already pending"
+                : null;
+      m.set(n.name, why);
+    }
+    return m;
+  }, [namesQuery.data]);
+  const transferableByChain = useMemo(
+    () => new Set([...chainFacts].filter(([, why]) => why === null).map(([n]) => n)),
+    [chainFacts],
+  );
+  const batch = useNameBatchActions({
+    profile,
+    capsByName,
+    unlocked,
+    transferable: transferableByChain,
+  });
   // A batch never includes a row the chip, text or filters hide.
   const { setSelected } = batch;
   useEffect(() => {
@@ -230,6 +262,41 @@ export function NamesView() {
       return next.size === prev.size ? prev : next;
     });
   }, [shown, setSelected]);
+
+  // Which selected names stop a batch transfer, with the backend's reason, and
+  // a one-click selection of the next MAX_BATCH transferable names in table
+  // order: a wallet with hundreds of names cannot pick 100 by hand.
+  const transferBlockers = useMemo(
+    () =>
+      [...batch.selected]
+        .map((n) => {
+          const c = capsByName.get(n);
+          const capWhy =
+            c && !c.canTransfer.allowed ? (c.canTransfer.reason ?? "not transferable") : null;
+          const chainWhy = chainFacts.has(n) ? chainFacts.get(n) : "not a name of this wallet";
+          return { name: n, reason: capWhy ?? chainWhy ?? null };
+        })
+        .filter((b): b is { name: string; reason: string } => b.reason != null),
+    [batch.selected, capsByName, chainFacts],
+  );
+  const transferableShown = useMemo(
+    () =>
+      shown
+        .filter((r) => r.selectable && transferableByChain.has(r.name))
+        .filter((r) => capsByName.get(r.name)?.canTransfer.allowed ?? true)
+        .map((r) => r.name),
+    [shown, capsByName, transferableByChain],
+  );
+  const transferableLeft = transferableShown.filter((n) => !batch.selected.has(n)).length;
+  const selectTransferable = () => {
+    setSelected(new Set(transferableShown));
+  };
+  // Keep the user's own selection, minus the names that would stop the batch
+  // (no capability, not transferable, or expired).
+  const dropBlockers = () => {
+    const blocked = new Set(transferBlockers.map((b) => b.name));
+    setSelected(new Set([...batch.selected].filter((n) => !blocked.has(n))));
+  };
 
   const [infoBlock, setInfoBlock] = useState<number | null>(null);
   const [batchBidOpen, setBatchBidOpen] = useState(false);
@@ -600,7 +667,15 @@ export function NamesView() {
         </div>
       )}
 
-      {batch.selected.size > 0 && !isWatchOnly && <NameBatchBar batch={batch} />}
+      {!isWatchOnly && (batch.selected.size > 0 || transferableLeft > 0) && (
+        <NameBatchBar
+          batch={batch}
+          transferBlockers={transferBlockers}
+          onSelectTransferable={selectTransferable}
+          onDropBlockers={dropBlockers}
+          transferableLeft={transferableLeft}
+        />
+      )}
 
       {needsYou.isDegraded && (
         <div
@@ -933,6 +1008,7 @@ export function NamesView() {
           open={batch.modal.open}
           action={batch.modal.action}
           names={batch.modal.names}
+          batches={batch.modal.batches}
           estimatedFeeDoos={batch.modal.feeDoos}
           amountDoos={batch.modal.amountDoos}
           recipient={batch.modal.recipient}

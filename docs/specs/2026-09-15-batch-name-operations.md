@@ -51,6 +51,18 @@ refused for carrying too many covenants.
 *Enforced:* `commands/names.rs::MAX_BATCH_SIZE` and the length check in each
 batch command.
 
+**B3a — A larger selection goes out as a series of transactions, after one confirm.** The Names page splits a selection into chunks of `MAX_BATCH` (100, the backend's `MAX_BATCH_SIZE`) in table order. The first chunk's draft is built before the confirmation opens; the confirmation says how many transactions the series takes, shows the fee of the first times their number, and labels the amount as the first transaction's. After Confirm each chunk is built, signed and broadcast in turn, and the bar shows which transaction is being built or sent. When one fails, the series stops, the error names how many names went out, and the names not yet sent stay selected so Transfer (or the action) can be pressed again. Each transaction is still all-or-nothing (B4).
+*Enforced:* `src/hooks/useNameBatchActions.ts::{MAX_BATCH, runBatch, confirm}`, `src/components/names/NameBatchBar.tsx`, `src/components/BatchConfirmModal.tsx`.
+*Pinned:* `batch-many-names.test.tsx` (150 names build as 100 + 50, both signed and broadcast after one confirm, the fee of both shown; a failed second broadcast leaves 50 selected; the progress line while a draft builds).
+
+**B3b — A transfer does not wait for the capability check, and names what blocks it.** On a wallet with hundreds of names the capability query reads the node a dozen times per name and takes minutes. A name is transferable from the chain's own facts (`read_names`: CLOSED, registered, expiry countdown above zero, no transfer pending); when its capability has arrived, that must allow the transfer too. The bar lists the selected names that block a transfer with the reason (the capability's own sentence, else the chain fact), offers to drop them from the selection in one click, and offers to select every shown transferable name. hsd's `expired` flag is not used: it stays set after a renewal.
+*Enforced:* `src/components/NamesView.tsx` (chain facts, blockers, select and drop), `src/hooks/useNameBatchActions.ts::eligibility`.
+*Pinned:* `batch-many-names.test.tsx` (transfer enabled while capabilities are pending; a not-registered and an expired name named and dropped in one click).
+
+**B3c — Capabilities are asked in chunks the backend accepts.** `get_names_action_capabilities` refuses more than `MAX_NAMES_ACTION_CAPABILITIES_BATCH` (200) names; the frontend asks in chunks of 100, concurrently, and merges them. Before this a wallet over 200 names got no capabilities at all. Above 100 names the query polls every five minutes, not every thirty seconds, and not on window focus.
+*Enforced:* `src/queries/read.ts::useNamesActionCapabilities`.
+*Pinned:* `batch-many-names.test.tsx` (250 names asked in chunks of at most 100 covering every name).
+
 **B4 — One bad name aborts the whole batch, before any write.** Every name's
 owner coin and on-chain state are resolved up front, and a shared destination
 is decoded up front, so a name in the wrong phase or an unparseable address
@@ -112,10 +124,8 @@ check strips that prefix — see R11d of the
 
 ## 4. Explicitly not enforced
 
-- **No chunking.** A selection over `MAX_BATCH_SIZE` is refused, not split.
-  The user reduces the selection.
-- **No per-name result.** A batch is one transaction, so there is no notion of
-  "eight succeeded, two failed" — the node accepts it or it does not.
+- **No chunking in the backend.** A batch command over `MAX_BATCH_SIZE` is refused; the split into a series (B3a) happens in the frontend.
+- **No per-name result inside a transaction.** Each transaction of a series is accepted or not as a whole; a series reports how many names went out before it stopped (B3a).
 - **No cross-covenant batching.** Renewing some names and revealing others in
   one transaction is possible on-chain but not offered; each button carries one
   covenant.
