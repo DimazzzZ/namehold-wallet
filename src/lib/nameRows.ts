@@ -6,6 +6,7 @@ import type {
   AuctionTaskState,
   HsdName,
   NameActionCapabilities,
+  RenewalRow,
   WatchedName,
   WatchlistStatus,
 } from "../types";
@@ -19,6 +20,7 @@ import {
   pendingBroadcastBadge,
   taskStateUrgencyRank,
 } from "./auction";
+import type { NeedsYouItem } from "./needsYou";
 import { formatHnsShort } from "./utils";
 
 export type NameCat = "needs" | "auction" | "owned" | "watching";
@@ -86,8 +88,10 @@ export interface NameRowsInput {
   watched: WatchedName[];
   watchInfo: Record<string, HsdName>;
   watchStatus: WatchlistStatus[];
-  /** Needs-you names, in their order (from useNeedsYou). */
-  needs: string[];
+  /** Needs-you items, in their order (from useNeedsYou); each name gets a row. */
+  needs: NeedsYouItem[];
+  /** Chain renewals: the Expires cell of a needs-you name no other list has. */
+  renewals?: RenewalRow[];
   finalizeSent: Set<string | undefined>;
   /** mainnet / testnet: blocks keep wall-clock time, so spans read in days. */
   wallClock: boolean;
@@ -295,7 +299,7 @@ function describeCaps(
     case "waitingForBidding":
       return {
         status: "Opening",
-        detail: cd ? `bidding opens in ${cd}` : null,
+        detail: cd ? `bidding opens in ${cd}` : "bidding opens soon",
         tone: "info",
         value: null,
         action: null,
@@ -344,6 +348,7 @@ const WATCH_PHASE: Record<string, string> = {
 export function buildNameRows(input: NameRowsInput): NameRow[] {
   const clock = input.wallClock;
   const watchedBy = new Map(input.watched.map((w) => [w.name, w]));
+  const needNames = [...new Set(input.needs.map((i) => i.name))];
   const rows: NameRow[] = [];
   const seen = new Set<string>();
 
@@ -351,7 +356,7 @@ export function buildNameRows(input: NameRowsInput): NameRow[] {
     const w = watchedBy.get(r.name);
     const cats = [...r.cats];
     if (w && !cats.includes("watching")) cats.push("watching");
-    if (input.needs.includes(r.name) && !cats.includes("needs")) cats.unshift("needs");
+    if (needNames.includes(r.name) && !cats.includes("needs")) cats.unshift("needs");
     return { ...r, cats, watch: w ? { tags: w.tags, addedAt: w.addedAt } : null };
   };
 
@@ -427,9 +432,11 @@ export function buildNameRows(input: NameRowsInput): NameRow[] {
     const pending = pendingBroadcastBadge(c?.pendingBroadcastAction);
     const { phase } = auctionPhase(c?.phase ?? n.state);
     const ownedNow = phase === "CLOSED" || phase === "TRANSFER" || phase === "REVOKED";
+    // Won / lost-pending names are in the auction, not owned; a name we own
+    // with our own outbid reveals to reclaim is still owned.
     const pendingTask =
       c?.taskState === "wonNeedsRegister" ||
-      (c?.taskState === "lostNeedsRedeem" && phase !== "REVOKED");
+      (c?.taskState === "lostNeedsRedeem" && phase !== "REVOKED" && !c.ownsName);
     const cats: NameCat[] = [];
     if (d.inAuction) cats.push("auction");
     if (ownedNow && !pendingTask) cats.push("owned");
@@ -471,6 +478,37 @@ export function buildNameRows(input: NameRowsInput): NameRow[] {
         value: d.value,
         expires: null,
         action: pending ? null : d.action,
+        selectable: false,
+        height: null,
+        renewal: null,
+      }),
+    );
+  }
+
+  // A task for a name no list above has (e.g. a chain renewal read_names
+  // missed) still gets a row, so the Needs you chip equals the nav count.
+  const renewalBy = new Map((input.renewals ?? []).map((r) => [r.name, r]));
+  for (const item of input.needs) {
+    if (seen.has(item.name)) continue;
+    seen.add(item.name);
+    const r = renewalBy.get(item.name);
+    const stats = r && {
+      blocksUntilExpire: r.blocksUntilExpire,
+      daysUntilExpire: r.daysUntilExpire,
+    };
+    rows.push(
+      withWatch({
+        name: item.name,
+        kind: "owned",
+        cats: item.kind === "renew" ? ["owned"] : [],
+        status: item.text,
+        detail: item.when,
+        tone: item.tone,
+        pending: null,
+        statusTitle: "",
+        value: null,
+        expires: stats ? expiresCell({ stats } as HsdName, clock, watchedBy.has(item.name)) : null,
+        action: open(item.actionLabel),
         selectable: false,
         height: null,
         renewal: null,
@@ -527,7 +565,8 @@ function group(r: NameRow): number {
 }
 
 function sortRows(rows: NameRow[], input: NameRowsInput): NameRow[] {
-  const needIndex = (n: string) => input.needs.indexOf(n);
+  const needNames = [...new Set(input.needs.map((i) => i.name))];
+  const needIndex = (n: string) => needNames.indexOf(n);
   return rows.sort((a, b) => {
     const ga = group(a);
     const gb = group(b);

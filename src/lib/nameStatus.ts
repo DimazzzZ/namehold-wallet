@@ -131,7 +131,7 @@ export function nameStatusLine(input: StatusInput): StatusLine {
     case "availableToOpen":
       return line("warn", "Available", "open the auction to start bidding");
     case "waitingForBidding":
-      return line("muted", "Auction opening", cd ?? "bidding starts soon");
+      return line("muted", "Opening", cd ?? "bidding opens soon");
     case "readyToBid":
       return line(
         "warn",

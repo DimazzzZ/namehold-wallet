@@ -233,7 +233,7 @@ export function taskStateLabel(state: AuctionTaskState): string {
     case "availableToOpen":
       return "Available to Open";
     case "waitingForBidding":
-      return "Waiting for Bidding";
+      return "Opening";
     case "readyToBid":
       return "Ready to Bid";
     case "readyToReveal":
@@ -363,7 +363,7 @@ export function taskSummaryFromCapabilities(
   // not the old `waitingForBidding`. The bare `readyToBid` without a
   // commitment (no bid yet) keeps its own "Ready to Bid" label. The
   // `waitingForBidding` cases (pending OPEN on an AVAILABLE name, the pre-bid
-  // OPENING period) must keep reading "Waiting for Bidding".
+  // OPENING period) must keep reading "Opening".
   const isReallyBidding =
     caps.phase === "BIDDING" &&
     caps.hasBidCommitment &&

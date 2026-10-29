@@ -349,18 +349,18 @@ describe("taskSummaryFromCapabilities — genuine-bidding label unification", ()
     expect(s?.taskState).toBe("waitingForBidding");
   });
 
-  it("keeps 'Waiting for Bidding' for the pre-bid OPENING period", () => {
+  it("keeps 'Opening' for the pre-bid OPENING period", () => {
     const s = taskSummaryFromCapabilities(
       caps({ phase: "OPENING", taskState: "waitingForBidding", hasBidCommitment: false }),
     );
-    expect(s?.label).toBe("Waiting for Bidding");
+    expect(s?.label).toBe("Opening");
   });
 
-  it("keeps 'Waiting for Bidding' for a pending OPEN on an AVAILABLE name", () => {
+  it("keeps 'Opening' for a pending OPEN on an AVAILABLE name", () => {
     const s = taskSummaryFromCapabilities(
       caps({ phase: "AVAILABLE", taskState: "waitingForBidding", hasBidCommitment: false }),
     );
-    expect(s?.label).toBe("Waiting for Bidding");
+    expect(s?.label).toBe("Opening");
   });
 
   it("does not relabel BIDDING without a bid commitment (readyToBid keeps its label)", () => {

@@ -670,7 +670,7 @@ describe("Name page — guided acquisition flow", () => {
 
     // The badge matches the on-chain phase.
     expect(await screen.findByText("Bidding")).toBeInTheDocument();
-    expect(screen.queryByText("Waiting for Bidding")).not.toBeInTheDocument();
+    expect(screen.queryByText("Opening")).not.toBeInTheDocument();
     // The bid form is still offered, holding an existing bid notwithstanding.
     expect(screen.getAllByLabelText("Bid (HNS)").length).toBeGreaterThan(0);
     expect(screen.getAllByLabelText("Lockup (HNS)").length).toBeGreaterThan(0);

@@ -7,10 +7,13 @@ import {
   taskSummaryFromCapabilities,
 } from "../lib/auction";
 import { displayName } from "../lib/idn";
+import { buildNameRows, chipCounts, wallClock, type NameRow } from "../lib/nameRows";
 import { needsYouWhen, type NeedsYouItem } from "../lib/needsYou";
 import { fromInteractiveChild } from "../lib/rowClick";
 import { formatHnsShort } from "../lib/utils";
 import { useReadNames, useReadRenewals } from "../queries/read";
+import { useTxDrafts } from "../queries/wallet";
+import { finalizeSentIds } from "./market/usePurchase";
 import type { HsdName, NameActionCapabilities, WalletNetwork } from "../types";
 import { listingStateLabel } from "./market/marketText";
 import { Icon } from "./ui/Icon";
@@ -62,7 +65,8 @@ function status(
 
 /**
  * Wallet's short list of the names most worth a look, and the way into the
- * Names page. Purchases on their way are left out: they are not ours yet.
+ * Names page. Its rows and count are the Names page's Owned chip (owned names,
+ * listings, purchases; DESIGN_SYSTEM §4 Counts), so "All N names" opens N rows.
  */
 export function YourNamesCard({
   capsByName,
@@ -76,8 +80,27 @@ export function YourNamesCard({
   onOpenName: (name: string) => void;
 }) {
   const navigate = useNavigate();
+  // A purchase is not ours yet: its row goes where its View goes (Market).
+  const openRow = (r: NameRow) =>
+    r.kind === "purchase" ? navigate("/market") : onOpenName(r.name);
   const { data: names = [] } = useReadNames();
   const { data: renewals } = useReadRenewals();
+  const { data: drafts = [] } = useTxDrafts();
+  const owned = buildNameRows({
+    owned: names,
+    // Bids and watched names never land in Owned.
+    positions: [],
+    capsByName,
+    watched: [],
+    watchInfo: {},
+    watchStatus: [],
+    needs,
+    renewals: renewals?.names,
+    finalizeSent: finalizeSentIds(drafts),
+    wallClock: wallClock(network),
+  }).filter((r) => r.cats.includes("owned"));
+  const total = chipCounts(owned).owned;
+  const nameBy = new Map(names.map((n) => [n.name, n]));
   const renewalBy = new Map((renewals?.names ?? []).map((r) => [r.name, r]));
   const needIndex = (name: string) => {
     const i = needs.findIndex((x) => x.name === name);
@@ -89,8 +112,7 @@ export function YourNamesCard({
     const next = NEXT_UP.indexOf(t);
     return next >= 0 ? 10 + next : taskStateUrgencyRank(t);
   };
-  const rows = names
-    .filter((n) => !n.shakedex)
+  const rows = owned
     .sort(
       (a, b) =>
         needIndex(a.name) - needIndex(b.name) ||
@@ -109,7 +131,7 @@ export function YourNamesCard({
           onClick={() => navigate("/names?filter=owned")}
           data-testid="your-names-all"
         >
-          All {names.length} names <Icon icon={ArrowRight} size={12} />
+          All {total} names <Icon icon={ArrowRight} size={12} />
         </button>
       </div>
       {rows.length === 0 ? (
@@ -127,12 +149,16 @@ export function YourNamesCard({
             </tr>
           </thead>
           <tbody>
-            {rows.map((n) => {
-              const c = capsByName.get(n.name);
-              const st = status(n, c, network);
-              const { phase } = auctionPhase(c?.phase ?? n.state);
+            {rows.map((row) => {
+              const n = nameBy.get(row.name);
+              const c = capsByName.get(row.name);
+              // Purchases and needs-only rows (no read_names entry) speak in the row's words.
+              const own = n && !n.shakedex ? n : null;
+              const st = own ? status(own, c, network) : { main: row.status, suffix: row.detail };
+              const { phase } = auctionPhase(c?.phase ?? n?.state);
               const bidding = phase === "OPENING" || phase === "BIDDING" || phase === "REVEAL";
-              const r = renewalBy.get(n.name);
+              const r = renewalBy.get(row.name);
+              const open = () => openRow(row);
               const expires =
                 r && (r.blocksUntilExpire != null || r.daysUntilExpire != null)
                   ? needsYouWhen(
@@ -143,21 +169,25 @@ export function YourNamesCard({
                   : null;
               return (
                 <tr
-                  key={n.name}
+                  key={row.name}
                   className="border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
                   onClick={(e) => {
-                    if (!fromInteractiveChild(e)) onOpenName(n.name);
+                    if (!fromInteractiveChild(e)) open();
                   }}
                   data-testid="your-names-row"
                 >
                   <td className="py-1 pr-4 pl-4">
-                    <Tooltip content="Open the name page">
+                    <Tooltip
+                      content={
+                        row.kind === "purchase" ? "Open Your purchases" : "Open the name page"
+                      }
+                    >
                       <button
                         type="button"
                         className="font-mono text-[13px] text-gray-900 hover:text-blue-700 hover:underline"
-                        onClick={() => onOpenName(n.name)}
+                        onClick={open}
                       >
-                        .{displayName(n.name)}
+                        .{displayName(row.name)}
                       </button>
                     </Tooltip>
                   </td>
@@ -170,8 +200,10 @@ export function YourNamesCard({
                       <>
                         {formatHnsShort(c.bidValueDoos)} <span className="text-gray-500">bid</span>
                       </>
-                    ) : n.value != null ? (
-                      formatHnsShort(n.value)
+                    ) : own?.value != null ? (
+                      formatHnsShort(own.value)
+                    ) : !own && row.value ? (
+                      row.value
                     ) : (
                       <span className="text-gray-500">—</span>
                     )}
