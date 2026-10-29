@@ -1,13 +1,8 @@
 import { isSignerUnlockedFor } from "../lib/signer";
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import {
-  useNameAction,
-  useSignerSession,
-  useUnlockSigner,
-  useSignTxDraft,
-  useBroadcastTxDraft,
-} from "../queries/wallet";
+import { useNameAction, useSignerSession } from "../queries/wallet";
+import { useDraftRunner } from "../queries/useDraftRunner";
 import { useNamesActionCapabilities } from "../queries/read";
 import { Dialog } from "./ui/Dialog";
 import { BatchConfirmModal } from "./BatchConfirmModal";
@@ -15,7 +10,7 @@ import { Button } from "./ui/Button";
 import { Input } from "./ui/Input";
 import { validateBidInputs } from "../lib/auction";
 import { hnsToDollarydoos } from "../lib/utils";
-import { mapError } from "../lib/errors";
+import { mapError, unwrapStaged } from "../lib/errors";
 import { useUiStore } from "../stores/ui";
 import { FeeRateOverride } from "./ui/FeeRateOverride";
 import { parseFeeRateArg } from "../lib/feeRate";
@@ -36,9 +31,9 @@ interface BatchBidModalProps {
  */
 export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalProps) {
   const batchBidMutation = useNameAction("build_batch_bid_draft");
-  const unlock = useUnlockSigner();
-  const signDraft = useSignTxDraft();
-  const broadcast = useBroadcastTxDraft();
+  // The built batch bid reserves its coins: Back or closing abandons it, a
+  // failed send keeps it for a retry (useDraftRunner).
+  const runner = useDraftRunner();
   const showToast = useUiStore((s) => s.showToast);
   const qc = useQueryClient();
   const { data: signer } = useSignerSession();
@@ -110,11 +105,9 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
   const handleBatchConfirm = async () => {
     if (!pendingDraft) return;
     try {
-      if (!unlocked) {
-        await unlock.mutateAsync(activeProfileId ?? "");
-      }
-      await signDraft.mutateAsync(pendingDraft.id);
-      const result = await broadcast.mutateAsync(pendingDraft.id);
+      const result = await runner.send(pendingDraft.id, activeProfileId ?? "", unlocked, {
+        keepOnFailure: true,
+      });
       showToast(
         `Batch bid broadcast ${result.txid.slice(0, 12)}… (${pendingDraft.names.length} name(s))`,
         "success",
@@ -124,13 +117,14 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
       qc.invalidateQueries({ queryKey: ["read"] });
       resetAndClose();
     } catch (e: unknown) {
-      showToast(mapError(e), "error");
+      showToast(mapError(unwrapStaged(e)), "error");
       // Keep the confirm modal open so the user can retry.
       throw e;
     }
   };
 
   const resetAndClose = () => {
+    void runner.abandon(pendingDraft?.id);
     setNamesText("");
     setBidHns("");
     setLockupHns("");
@@ -141,6 +135,7 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
   };
 
   const handleBack = () => {
+    void runner.abandon(pendingDraft?.id);
     setStep("input");
     setPendingDraft(null);
   };

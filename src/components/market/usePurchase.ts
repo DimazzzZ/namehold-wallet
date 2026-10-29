@@ -8,12 +8,8 @@ import {
   useBuildPurchaseFinalize,
   type BuildPurchaseArgs,
 } from "../../queries/shakedex";
-import {
-  useActiveProfile,
-  useDeleteTxDraft,
-  useExecuteDraft,
-  useSignerSession,
-} from "../../queries/wallet";
+import { useActiveProfile, useSignerSession } from "../../queries/wallet";
+import { useDraftRunner } from "../../queries/useDraftRunner";
 import { useUiStore } from "../../stores/ui";
 import type { TxDraftSummary } from "../../types";
 
@@ -27,8 +23,7 @@ export function usePurchase() {
   const { data: profile } = useActiveProfile();
   const { data: signer } = useSignerSession();
   const build = useBuildPurchase();
-  const exec = useExecuteDraft();
-  const deleteDraft = useDeleteTxDraft();
+  const runner = useDraftRunner();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // `busy` is state, so two calls in one tick (a click and Enter) both see it
@@ -52,22 +47,13 @@ export function usePurchase() {
       return false;
     }
     try {
-      await exec.run(draftId, profile.id, isSignerUnlockedFor(signer, profile.id));
+      // A failure before broadcast discards the draft (its coins and purchase
+      // record); a broadcast failure keeps it (useDraftRunner).
+      await runner.send(draftId, profile.id, isSignerUnlockedFor(signer, profile.id));
       return true;
     } catch (e) {
       setError(mapError(unwrapStaged(e), stageOf(e)));
-      // A failure before broadcast leaves an orphan draft holding coins (and
-      // its purchase record). A broadcast the backend refused before sending
-      // was discarded there; any other broadcast failure keeps its draft.
-      if (stageOf(e) !== "broadcast") {
-        try {
-          await deleteDraft.mutateAsync(draftId);
-        } catch {
-          // Best-effort: the Activity view can still discard it.
-        }
-      } else {
-        refreshPreview();
-      }
+      if (stageOf(e) === "broadcast") refreshPreview();
       return false;
     } finally {
       invalidatePurchaseViews(qc);
@@ -91,8 +77,7 @@ export function usePurchaseFinalize() {
   const { data: profile } = useActiveProfile();
   const { data: signer } = useSignerSession();
   const buildFinalize = useBuildPurchaseFinalize();
-  const executeDraft = useExecuteDraft();
-  const deleteDraft = useDeleteTxDraft();
+  const runner = useDraftRunner();
   // Purchase id of the Finalize in flight, to disable that row's button.
   const [finalizingId, setFinalizingId] = useState<string | null>(null);
 
@@ -111,7 +96,9 @@ export function usePurchaseFinalize() {
         return false;
       }
       try {
-        const result = await executeDraft.run(
+        // A cancelled confirm or an unlock/sign failure discards the draft (its
+        // coins); a broadcast-stage failure may have a tx in flight and keeps it.
+        const result = await runner.send(
           draft.id,
           profile.id,
           isSignerUnlockedFor(signer, profile.id),
@@ -123,15 +110,6 @@ export function usePurchaseFinalize() {
         return true;
       } catch (e) {
         showToast(mapError(unwrapStaged(e), stageOf(e)), "error");
-        // A cancelled confirm or an unlock/sign failure leaves an orphan draft
-        // holding coins; a broadcast-stage failure may have a tx in flight.
-        if (stageOf(e) === "sign") {
-          try {
-            await deleteDraft.mutateAsync(draft.id);
-          } catch {
-            // Best-effort; the Activity view can still discard it.
-          }
-        }
         return false;
       }
     } finally {

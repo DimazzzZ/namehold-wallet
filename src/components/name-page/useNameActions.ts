@@ -6,9 +6,8 @@ import {
   useSignerSession,
   useWriteCapability,
   useNameAction,
-  useExecuteDraft,
-  useDeleteTxDraft,
 } from "../../queries/wallet";
+import { useDraftRunner } from "../../queries/useDraftRunner";
 import {
   useReadNameInfo,
   useNameActionCapabilities,
@@ -51,8 +50,7 @@ export function useNameActions(name: string) {
     isLoading: capsLoading,
     isFetched: capsFetched,
   } = useNameActionCapabilities(name, profile?.id ?? null);
-  const exec = useExecuteDraft();
-  const deleteDraft = useDeleteTxDraft();
+  const runner = useDraftRunner();
   const recoverBid = useRecoverBidCommitment();
   const bruteForceRecover = useBruteForceRecoverBid();
 
@@ -92,13 +90,13 @@ export function useNameActions(name: string) {
   const [optimisticRevealTxid, setOptimisticRevealTxid] = useState<string | null>(null);
   const isLedger = profile?.kind === "ledger_hardware";
 
-  const revealSubstate: string | null = exec.unlock.isPending
+  const revealSubstate: string | null = runner.unlock.isPending
     ? "Unlocking…"
-    : exec.sign.isPending
+    : runner.sign.isPending
       ? isLedger
         ? "Confirm on your Ledger…"
         : "Signing…"
-      : exec.broadcast.isPending
+      : runner.broadcast.isPending
         ? "Broadcasting…"
         : null;
 
@@ -194,11 +192,7 @@ export function useNameActions(name: string) {
     const id = pendingDraftRef.current;
     if (!id) return;
     pendingDraftRef.current = null;
-    try {
-      await deleteDraft.mutateAsync(id);
-    } catch {
-      // Best-effort: leave the row for the Activity view's Discard.
-    }
+    await runner.abandon(id);
   };
   useEffect(() => {
     if (!recordsLive) return;
@@ -307,21 +301,17 @@ export function useNameActions(name: string) {
     // discards it instead of orphaning it.
     pendingDraftRef.current = draft.id;
     try {
-      const result = await exec.run(draft.id, profile.id, unlocked);
+      const result = await runner.run(draft.id, profile.id, unlocked);
       pendingDraftRef.current = null;
       qc.invalidateQueries({ queryKey: ["wallet"] });
       qc.invalidateQueries({ queryKey: ["read"] });
       afterBroadcast(result.txid);
     } catch (e) {
       showToast(mapError(unwrapStaged(e), stageOf(e)), "error");
-      // A sign-stage rejection (cancel on Confirm & Sign, unlock/sign failure)
-      // happens before broadcast — discard the orphan. A broadcast-stage one
-      // may have a tx in flight, so the row stays.
-      if (stageOf(e) !== "broadcast") {
-        await discardPendingDraft();
-      } else {
-        pendingDraftRef.current = null;
-      }
+      // Before broadcast the orphan is discarded; after it the row stays
+      // (useDraftRunner decides).
+      pendingDraftRef.current = null;
+      await runner.settleFailed(draft.id, e);
     } finally {
       setBusy(null);
       busyRef.current = null;

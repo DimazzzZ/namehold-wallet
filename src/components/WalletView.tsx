@@ -10,12 +10,9 @@ import {
   useSignerSession,
   useWriteCapability,
   useWalletBalances,
-  useUnlockSigner,
   useBuildSendDraft,
-  useDeleteTxDraft,
-  useSignTxDraft,
-  useBroadcastTxDraft,
 } from "../queries/wallet";
+import { useDraftRunner } from "../queries/useDraftRunner";
 import { usePurchaseFinalize } from "./market/usePurchase";
 import { useReadBalance } from "../queries/read";
 import { useNeedsYou } from "../queries/needsYou";
@@ -52,7 +49,7 @@ import {
   isLikelyHnsAddress,
   hnsAddressPrefix,
 } from "../lib/utils";
-import { mapError } from "../lib/errors";
+import { mapError, unwrapStaged } from "../lib/errors";
 import { explorerCoversNetwork } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import type { TxDraftSummary } from "../types";
@@ -83,21 +80,11 @@ export function WalletView() {
   const syncStatus = useSyncStatus();
   const manualSync = useSyncTriggerStore((s) => s.manualSync);
   const setManualSync = useSyncTriggerStore((s) => s.setManualSync);
-  const unlock = useUnlockSigner();
   const signerToggle = useSignerToggle();
   const buildDraft = useBuildSendDraft();
-  const signDraft = useSignTxDraft();
-  const broadcast = useBroadcastTxDraft();
-  const deleteDraft = useDeleteTxDraft();
-  // A draft reserves its coins from the moment Review or Max builds it. Leaving
-  // the review without sending (Back, Cancel, Escape, a new build) must free
-  // them, or the next Max reads "not enough funds". Once a broadcast was tried
-  // the draft is the node's to settle (Activity keeps it), never discarded here.
-  const broadcastTried = useRef(false);
-  const discardUnsent = (d: TxDraftSummary | null) => {
-    if (!d || broadcastTried.current) return;
-    deleteDraft.mutate(d.id);
-  };
+  // The draft Review or Max builds reserves its coins: leaving the review
+  // unsent abandons it, a failed send keeps it for Retry (useDraftRunner).
+  const runner = useDraftRunner();
 
   const [sendOpen, setSendOpen] = useState(false);
   const [sendAddress, setSendAddress] = useState("");
@@ -187,8 +174,7 @@ export function WalletView() {
   useEffect(() => subscribeAction((id) => actionHandlerRef.current(id)), []);
 
   const resetSend = () => {
-    discardUnsent(draft);
-    broadcastTried.current = false;
+    void runner.abandon(draft?.id);
     setSendOpen(false);
     setSendAddress("");
     setSendAmount("");
@@ -287,19 +273,14 @@ export function WalletView() {
     setSubmitting(true);
     setSendError(null);
     try {
-      if (!unlocked) {
-        await unlock.mutateAsync(profile.id);
-      }
-      await signDraft.mutateAsync(draft.id);
-      broadcastTried.current = true;
-      const result = await broadcast.mutateAsync(draft.id);
+      const result = await runner.send(draft.id, profile.id, unlocked, { keepOnFailure: true });
       // Only here — after the node accepted the tx — is the send complete.
       showToast(`Broadcast ${result.txid.slice(0, 12)}…`, "success");
       setDraft(null);
       resetSend();
       qc.invalidateQueries({ queryKey: ["wallet"] });
     } catch (e) {
-      const msg = mapError(e);
+      const msg = mapError(unwrapStaged(e));
       setSendError(msg);
       showToast(msg, "error");
       setSubmitting(false);
@@ -753,8 +734,7 @@ export function WalletView() {
               <Button
                 variant="ghost"
                 onClick={() => {
-                  discardUnsent(draft);
-                  broadcastTried.current = false;
+                  void runner.abandon(draft?.id);
                   setDraft(null);
                   setSendError(null);
                 }}

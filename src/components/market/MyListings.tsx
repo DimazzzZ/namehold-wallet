@@ -26,10 +26,10 @@ import {
   useActiveProfile,
   useBroadcastTxDraft,
   useDeleteTxDraft,
-  useExecuteDraft,
   useWithSigner,
   useWriteCapability,
 } from "../../queries/wallet";
+import { useDraftRunner } from "../../queries/useDraftRunner";
 import { useSettingsStore } from "../../stores/settings";
 import { useUiStore } from "../../stores/ui";
 import type { ShakedexMyListing } from "../../types";
@@ -138,7 +138,7 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
   const { data: writeCap } = useWriteCapability();
   const experimental = useSettingsStore((s) => s.settings?.shakedex_experimental);
   const withSigner = useWithSigner();
-  const exec = useExecuteDraft();
+  const runner = useDraftRunner();
   const broadcast = useBroadcastTxDraft();
   const deleteDraft = useDeleteTxDraft();
   const finalizeCancel = useFinalizeCancel();
@@ -220,7 +220,7 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
     setError(null);
     try {
       await withSigner.run(profile.id, async () => {
-        if (!pendingSend.signed) return exec.run(id, profile.id, true);
+        if (!pendingSend.signed) return runner.run(id, profile.id, true);
         try {
           return await broadcast.mutateAsync(id);
         } catch (e) {
@@ -263,18 +263,12 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
       return;
     }
     try {
-      await withSigner.run(profile.id, () => exec.run(draftId, profile.id, true));
+      await withSigner.run(profile.id, () => runner.run(draftId, profile.id, true));
       showToast("Sent. The name comes home once the finalize is mined.");
     } catch (e) {
       setError(await sendError(e, draftId));
       // Unsent, the listing awaits its finalize again (`delete_tx_draft`).
-      if (stageOf(e) !== "broadcast") {
-        try {
-          await deleteDraft.mutateAsync(draftId);
-        } catch {
-          // Best-effort: the row offers it to send or discard.
-        }
-      }
+      await runner.settleFailed(draftId, e);
     } finally {
       setBusy(false);
     }

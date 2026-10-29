@@ -18,12 +18,8 @@ import {
   useSpeedUpPreview,
 } from "../queries/speedUp";
 import { invalidatePurchaseViews } from "../queries/shakedex";
-import {
-  useActiveProfile,
-  useDeleteTxDraft,
-  useExecuteDraft,
-  useSignerSession,
-} from "../queries/wallet";
+import { useActiveProfile, useSignerSession } from "../queries/wallet";
+import { useDraftRunner } from "../queries/useDraftRunner";
 import { isSignerUnlockedFor } from "../lib/signer";
 import { mapError, StagedError } from "../lib/errors";
 import { formatHns } from "../lib/utils";
@@ -154,8 +150,7 @@ export function SpeedUpDialog({
   const rateValid = rate === null || !Number.isNaN(rate);
   const preview = useSpeedUpPreview(draftId, rateValid ? rate : null, rateValid);
   const build = useBuildSpeedUp();
-  const exec = useExecuteDraft();
-  const del = useDeleteTxDraft();
+  const runner = useDraftRunner();
   const { data: profile } = useActiveProfile();
   const { data: signer } = useSignerSession();
   const showToast = useUiStore((s) => s.showToast);
@@ -169,15 +164,12 @@ export function SpeedUpDialog({
     try {
       const child = await build.mutateAsync({ draftId, feeRate: preview.settledRate });
       childId = child.id;
-      const sent = await exec.run(child.id, profile.id, isSignerUnlockedFor(signer, profile.id));
+      // A child that fails before broadcast is discarded, so its parent is
+      // not held as "already being sped up".
+      const sent = await runner.send(child.id, profile.id, isSignerUnlockedFor(signer, profile.id));
       showToast(`Speed up sent ${sent.txid.slice(0, 12)}…`, "success");
       onClose();
     } catch (e) {
-      // Declined or failed before signing: discard the child so its parent
-      // is not held as "already being sped up".
-      if (childId && e instanceof StagedError && e.stage === "sign") {
-        void del.mutateAsync(childId).catch(() => {});
-      }
       const stage = e instanceof StagedError ? e.stage : undefined;
       const prefix =
         stage === "broadcast" ? "Speed up not sent" : childId ? "Not signed" : "Speed up refused";

@@ -1,14 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { parseFeeRateArg } from "../lib/feeRate";
-import { mapError } from "../lib/errors";
-import {
-  useBroadcastTxDraft,
-  useDeleteTxDraft,
-  useNameAction,
-  useSignTxDraft,
-  useUnlockSigner,
-} from "../queries/wallet";
+import { mapError, unwrapStaged } from "../lib/errors";
+import { useNameAction } from "../queries/wallet";
+import { useDraftRunner } from "../queries/useDraftRunner";
 import { useUiStore } from "../stores/ui";
 import type { NameActionCapabilities, TxDraftSummary, WalletProfileSummary } from "../types";
 
@@ -75,6 +70,7 @@ export function useNameBatchActions({
   transferable?: Set<string>;
 }) {
   const qc = useQueryClient();
+  const runner = useDraftRunner();
   const showToast = useUiStore((s) => s.showToast);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [recipient, setRecipient] = useState("");
@@ -103,10 +99,6 @@ export function useNameBatchActions({
   const finalizeM = useNameAction("build_batch_finalize_draft");
   // Transfers N selected names to one shared recipient.
   const transferM = useNameAction("build_batch_transfer_draft");
-  const unlock = useUnlockSigner();
-  const deleteDraft = useDeleteTxDraft();
-  const signDraft = useSignTxDraft();
-  const broadcast = useBroadcastTxDraft();
 
   const toggle = (name: string) =>
     setSelected((prev) => {
@@ -213,10 +205,14 @@ export function useNameBatchActions({
     const { draftId, names: list, action, batches } = modal;
     const s = series.current;
     const sent: string[] = [];
+    // The first draft is the confirmation's: a failure keeps it for a retry
+    // (Cancel abandons it). A later one was built here: a failure before its
+    // broadcast discards it (useDraftRunner).
     const sendOne = async (id: string, chunkNames: string[], index: number) => {
       setProgress({ action, step: "sending", index, total: batches });
-      await signDraft.mutateAsync(id);
-      const result = await broadcast.mutateAsync(id);
+      const result = await runner.send(id, profile.id, index > 1 || unlocked, {
+        keepOnFailure: index === 1,
+      });
       sent.push(...chunkNames);
       showToast(
         `Batch ${action} ${batches > 1 ? `${index} of ${batches} ` : ""}broadcast ${result.txid.slice(0, 12)}… (${chunkNames.length} name(s))`,
@@ -224,7 +220,6 @@ export function useNameBatchActions({
       );
     };
     try {
-      if (!unlocked) await unlock.mutateAsync(profile.id);
       const first = chunk(list)[0] ?? [];
       await sendOne(draftId, first, 1);
       setModal(null);
@@ -242,7 +237,7 @@ export function useNameBatchActions({
       setProgress(null);
       const left = list.filter((n) => !sent.includes(n));
       showToast(
-        `Batch ${action} failed after ${sent.length} of ${list.length} name(s): ${mapError(e)}`,
+        `Batch ${action} failed after ${sent.length} of ${list.length} name(s): ${mapError(unwrapStaged(e))}`,
         "error",
       );
       if (sent.length > 0) {
@@ -262,7 +257,7 @@ export function useNameBatchActions({
   // coins that pay its fee, and a draft nobody sends would keep them from every
   // later send ("not enough funds") until discarded by hand in Activity.
   const cancel = () => {
-    if (modal) deleteDraft.mutate(modal.draftId);
+    if (modal) void runner.abandon(modal.draftId);
     series.current = null;
     setModal(null);
   };
