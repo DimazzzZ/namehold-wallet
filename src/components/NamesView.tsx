@@ -61,6 +61,7 @@ import {
 } from "./names/NameFiltersPopover";
 import { auctionPhase, formatCountdown, taskStateLabel } from "../lib/auction";
 import { displayName, nameMatches } from "../lib/idn";
+import { icannBadgeTitle } from "../lib/icann";
 import { fromInteractiveChild } from "../lib/rowClick";
 import { isSignerUnlockedFor } from "../lib/signer";
 import { normalizeNameInputAce } from "../lib/utils";
@@ -208,6 +209,7 @@ export function NamesView() {
       filters.expires,
       filters.len,
       filters.chars,
+      filters.icann,
       liveFilters.tags.join("\u0000"),
     ],
   );
@@ -823,6 +825,18 @@ export function NamesView() {
                             {r.pending}
                           </Badge>
                         )}
+                        {/* One badge per row (DESIGN_SYSTEM "Badge / tag"): a pending
+                            broadcast of ours outranks the durable ICANN flag (spec R4). */}
+                        {!r.pending && r.icann && (
+                          <Badge
+                            variant="warning"
+                            className="ml-1.5"
+                            title={icannBadgeTitle(r.icann)}
+                            data-testid="icann-badge"
+                          >
+                            ICANN
+                          </Badge>
+                        )}
                       </td>
                       <td className="py-1 pr-4 text-right font-mono tabular-nums whitespace-nowrap">
                         {r.value ?? <span className="text-gray-500">—</span>}
@@ -1039,6 +1053,13 @@ function activePills(
       key: "chars",
       label: CHAR_LABELS[f.chars],
       remove: (x) => ({ ...x, chars: "any" }),
+    });
+  }
+  if (f.icann !== "any") {
+    pills.push({
+      key: "icann",
+      label: "ICANN collision",
+      remove: (x) => ({ ...x, icann: "any" }),
     });
   }
   for (const t of f.tags) {

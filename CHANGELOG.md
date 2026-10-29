@@ -14,6 +14,12 @@
 
 ## [Unreleased]
 
+### Added
+- **ICANN collision flag.** A name that someone has also applied for as a new gTLD in ICANN's 2026 round (1,614 applications on 1,203 strings as of 29 October 2026) carries a yellow ICANN badge on the Names page and in the header of its own page; the badge's tooltip gives the applicant count and whether the string is in contention. Details opens with an "ICANN 2026 round" row naming the applicants, each a link to the application on ICANN's site, and the date of the list; it shows even for a watched name nobody has opened on-chain. The Filters popover gets an "ICANN 2026 round" switch, kept in the URL as `icann=collision`. The list of strings ships with the app, refreshed by `just icann-strings`; the app never contacts ICANN. An applicant who switched to a replacement string counts only under the string they ended on.
+
+### Changed
+- **README screenshots show the redesigned app.** Wallet, Names, a name's page (with the ICANN flag) and the Market replace the Auctions and Namebase-history images, whose screens are gone; `just screenshots` regenerates them.
+
 ## [0.6.1] - 2026-10-25
 
 > **Highlights:** wallets on different networks each get their own node, started when you switch to them; the Linux AppImage runs background sync and starts for every user of the machine; and fixes to Speed up in Activity, finalize reminders and testnet nodes.

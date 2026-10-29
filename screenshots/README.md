@@ -4,7 +4,7 @@ Generates the screenshots in `docs/assets/` that the main README shows. The app 
 
 ```bash
 just screenshots                  # every scene
-just screenshots market auctions  # only these
+just screenshots market names     # only these
 ```
 
 The first run needs Playwright's browser: `cd screenshots && pnpm exec playwright install chromium`.

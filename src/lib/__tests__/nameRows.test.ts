@@ -1,9 +1,13 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+vi.mock("../../data/icann-gtld-2026.json", async () => ({
+  default: (await import("../../test/fixtures/icann-list")).ICANN_FIXTURE,
+}));
 import { buildNameRows, chipCounts, wallClock, type NameRowsInput } from "../nameRows";
 import { formatSpanDays } from "../auction";
 import { allowed, makeCapabilities } from "../../test/fixtures/capabilities";
 import type { NeedsYouItem } from "../needsYou";
 import type { HsdName, NameActionCapabilities } from "../../types";
+import { ICANN_FIXTURE } from "../../test/fixtures/icann-list";
 
 const name = (n: string, over: Partial<HsdName> = {}): HsdName => ({
   name: n,
@@ -381,5 +385,36 @@ describe("Owned chip", () => {
     expect(by("mine").cats).toContain("owned");
     expect(by("mine").expires).not.toBeNull();
     expect(by("lost").cats).not.toContain("owned");
+  });
+});
+
+describe("buildNameRows — ICANN collision (spec R3)", () => {
+  it("an owned name that is an applied-for string carries its collision", () => {
+    const r = one({ owned: [name("agent")] });
+    expect(r.icann?.applications).toEqual(ICANN_FIXTURE.strings.agent.applications);
+  });
+
+  it("an auction position carries it too", () => {
+    const r = one({
+      positions: ["agent"],
+      capsByName: caps([
+        makeCapabilities({ name: "agent", taskState: "readyToBid", phase: "BIDDING" }),
+      ]),
+    });
+    expect(r.kind).toBe("auction");
+    expect(r.icann?.string).toBe("agent");
+  });
+
+  it("a watch-only name carries it too", () => {
+    const r = one({
+      watched: [{ name: "agent", addedAt: "", notes: "", tags: "" }],
+      watchInfo: { agent: name("agent", { state: "BIDDING", highest: 3_000_000, stats: null }) },
+    });
+    expect(r.kind).toBe("watch");
+    expect(r.icann?.string).toBe("agent");
+  });
+
+  it("a name nobody applied for carries null", () => {
+    expect(one({ owned: [name("zzzz-not-applied")] }).icann).toBeNull();
   });
 });

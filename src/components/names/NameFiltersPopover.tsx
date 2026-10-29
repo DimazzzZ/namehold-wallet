@@ -4,6 +4,7 @@ import {
   activeFilterCount,
   NO_FILTERS,
   type CharKind,
+  type IcannFilter,
   type ExpiresWithin,
   type LengthBucket,
   type NameFilters,
@@ -30,6 +31,11 @@ export const LENGTH_LABELS: Record<LengthBucket, string> = {
   "4-5": "4–5",
   "6-10": "6–10",
   "11+": "11+",
+};
+
+export const ICANN_LABELS: Record<IcannFilter, string> = {
+  any: "Any",
+  collision: "Applied for as gTLD",
 };
 
 export const CHAR_LABELS: Record<CharKind, string> = {
@@ -156,6 +162,15 @@ export function NameFiltersPopover({
                 labels={CHAR_LABELS}
                 value={filters.chars}
                 onChange={(chars) => set({ chars })}
+              />
+            </section>
+            <section className="flex flex-col gap-1.5">
+              <div className="font-medium text-gray-900">ICANN 2026 round</div>
+              <Pills
+                name="icann"
+                labels={ICANN_LABELS}
+                value={filters.icann}
+                onChange={(icann) => set({ icann })}
               />
             </section>
             <section className="flex flex-col gap-1.5">

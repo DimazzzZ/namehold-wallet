@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { ArrowUpRight, Ellipsis } from "lucide-react";
+import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Icon } from "../ui/Icon";
 import { Popover } from "../ui/Popover";
@@ -7,6 +8,7 @@ import { Tooltip } from "../ui/Tooltip";
 import { ActionHint } from "../name-actions/ActionHint";
 import { WatchlistToggle } from "../WatchlistToggle";
 import { displayName } from "../../lib/idn";
+import { icannBadgeTitle, icannCollision } from "../../lib/icann";
 import { NAMES_ROUTE, type NameTab } from "../../lib/nameRoute";
 import { STATUS_DOT, type StatusLine } from "../../lib/nameStatus";
 import { explorerCoversNetwork, explorerNameUrl, openExternal } from "../../lib/openExternal";
@@ -125,6 +127,7 @@ export function NameHeader({
 }) {
   const { name, caps, profile, writeCap, canWrite, busy } = a;
   const decoded = displayName(name);
+  const icann = icannCollision(name);
 
   const primary =
     !caps?.pendingBroadcastAction &&
@@ -160,6 +163,16 @@ export function NameHeader({
             .{decoded}
             {decoded !== name && (
               <span className="ml-2.5 font-sans text-sm font-normal text-gray-400">.{name}</span>
+            )}
+            {icann && (
+              <Badge
+                variant="warning"
+                className="ml-2.5 align-middle font-sans tracking-normal"
+                title={icannBadgeTitle(icann)}
+                data-testid="icann-badge"
+              >
+                ICANN
+              </Badge>
             )}
           </h1>
           <div className="mt-1.5 flex items-center gap-2 text-sm" data-testid="name-phase">

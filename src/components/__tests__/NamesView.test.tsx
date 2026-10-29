@@ -8,6 +8,9 @@ import type { ReactNode } from "react";
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock("../../data/icann-gtld-2026.json", async () => ({
+  default: (await import("../../test/fixtures/icann-list")).ICANN_FIXTURE,
+}));
 
 import { NamesView } from "../NamesView";
 import { makeCapabilities } from "../../test/fixtures/capabilities";
@@ -249,5 +252,77 @@ describe("NamesView — sort and filters", () => {
     await waitFor(() =>
       expect(screen.getByTestId("batch-action-bar")).toHaveTextContent("2 selected"),
     );
+  });
+
+  describe("ICANN collision (spec R4, R7)", () => {
+    const icannWorld =
+      (pendingAgent = false) =>
+      (cmd: string) => {
+        switch (cmd) {
+          case "list_wallet_profiles":
+            return Promise.resolve([profile()]);
+          case "read_names":
+            return Promise.resolve([owned("agent"), owned("zzzz-not-applied")]);
+          case "get_names_action_capabilities":
+            return Promise.resolve([
+              makeCapabilities({
+                name: "agent",
+                taskState: "ownedNoUrgentAction",
+                pendingBroadcastAction: pendingAgent ? "RENEW" : null,
+              }),
+              makeCapabilities({ name: "zzzz-not-applied", taskState: "ownedNoUrgentAction" }),
+            ]);
+          case "list_watchlist":
+          case "list_tx_drafts":
+          case "read_auction_position_names":
+            return Promise.resolve([]);
+          default:
+            return Promise.resolve(null);
+        }
+      };
+    const rowOf = (name: string) =>
+      screen
+        .getAllByTestId("names-row")
+        .find((r) => r.querySelector(".font-mono")?.textContent === `.${name}`)!;
+
+    it("a colliding row shows the ICANN badge with the applicant count; a plain row does not", async () => {
+      invokeMock.mockImplementation(icannWorld());
+      render(<NamesView />, { wrapper: wrap() });
+      await waitFor(() => expect(screen.getAllByTestId("names-row")).toHaveLength(2));
+      const badge = rowOf("agent").querySelector('[data-testid="icann-badge"]');
+      expect(badge).toHaveTextContent("ICANN");
+      fireEvent.mouseEnter(badge!.parentElement!); // the Tooltip's reference span
+      await waitFor(() =>
+        expect(screen.getByRole("tooltip")).toHaveTextContent(
+          "Applied for as a gTLD in ICANN's 2026 round by 11 applicants · in contention",
+        ),
+      );
+      expect(rowOf("zzzz-not-applied").querySelector('[data-testid="icann-badge"]')).toBeNull();
+    });
+
+    it("the pending-broadcast badge wins over the ICANN badge (one badge per row)", async () => {
+      invokeMock.mockImplementation(icannWorld(true));
+      render(<NamesView />, { wrapper: wrap() });
+      await waitFor(() => expect(screen.getAllByTestId("names-row")).toHaveLength(2));
+      // Capabilities arrive after the rows: wait for the pending badge they carry.
+      await screen.findByTestId("auction-pending-block");
+      const agent = rowOf("agent");
+      expect(agent.querySelector('[data-testid="auction-pending-block"]')).not.toBeNull();
+      expect(agent.querySelector('[data-testid="icann-badge"]')).toBeNull();
+    });
+
+    it("the ICANN filter keeps colliding rows, shows a pill and lives in the URL", async () => {
+      invokeMock.mockImplementation(icannWorld());
+      render(<NamesView />, { wrapper: wrap() });
+      await waitFor(() => expect(screen.getAllByTestId("names-row")).toHaveLength(2));
+      fireEvent.click(screen.getByTestId("names-filters-button"));
+      fireEvent.click(screen.getByTestId("names-filter-icann-collision"));
+      expect(order()).toEqual([".agent"]);
+      expect(screen.getByTestId("names-active-filters")).toHaveTextContent("ICANN collision");
+      expect(screen.getByTestId("where")).toHaveTextContent("?icann=collision");
+      fireEvent.click(screen.getByTestId("names-active-filter-remove"));
+      expect(order()).toEqual([".agent", ".zzzz-not-applied"]);
+      expect(screen.getByTestId("where")).not.toHaveTextContent("icann");
+    });
   });
 });

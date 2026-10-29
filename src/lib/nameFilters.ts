@@ -10,16 +10,25 @@ export type SortDir = "asc" | "desc";
 export type ExpiresWithin = "any" | "30" | "90" | "365";
 export type LengthBucket = "any" | "1-3" | "4-5" | "6-10" | "11+";
 export type CharKind = "any" | "letters" | "digits" | "hyphen" | "idn";
+/** ICANN 2026 round: every name, or only names someone applied for as a gTLD (spec R7). */
+export type IcannFilter = "any" | "collision";
 export type NamesChip = "all" | "needs" | "auction" | "owned" | "watching";
 
 export interface NameFilters {
   expires: ExpiresWithin;
   len: LengthBucket;
   chars: CharKind;
+  icann: IcannFilter;
   tags: string[];
 }
 
-export const NO_FILTERS: NameFilters = { expires: "any", len: "any", chars: "any", tags: [] };
+export const NO_FILTERS: NameFilters = {
+  expires: "any",
+  len: "any",
+  chars: "any",
+  icann: "any",
+  tags: [],
+};
 
 export const NATURAL_DIR: Record<NameSort, SortDir> = {
   status: "asc",
@@ -32,6 +41,7 @@ const SORTS: NameSort[] = ["status", "name", "value", "expires"];
 const EXPIRES: ExpiresWithin[] = ["any", "30", "90", "365"];
 const LENGTHS: LengthBucket[] = ["any", "1-3", "4-5", "6-10", "11+"];
 const CHARS: CharKind[] = ["any", "letters", "digits", "hyphen", "idn"];
+const ICANNS: IcannFilter[] = ["any", "collision"];
 const CHIPS: NamesChip[] = ["all", "needs", "auction", "owned", "watching"];
 
 /** On regtest/simnet the Expires keys mean blocks: only blocks exist there. */
@@ -86,6 +96,7 @@ export function passesFilters(r: NameRow, f: NameFilters, clock: boolean): boole
   }
   if (!inLength(nameLength(r.name), f.len)) return false;
   if (f.chars !== "any" && charKind(r.name) !== f.chars) return false;
+  if (f.icann === "collision" && !r.icann) return false;
   if (f.tags.length > 0 && !f.tags.some((t) => r.tags.includes(t))) return false;
   return true;
 }
@@ -137,6 +148,7 @@ export function parseNamesParams(p: URLSearchParams): NamesViewState {
       expires: pick(p.get("expires"), EXPIRES, "any"),
       len: pick(p.get("len"), LENGTHS, "any"),
       chars: pick(p.get("chars"), CHARS, "any"),
+      icann: pick(p.get("icann"), ICANNS, "any"),
       tags: [...new Set(p.getAll("tag").filter(Boolean))],
     },
   };
@@ -151,6 +163,7 @@ export function namesParams(v: NamesViewState): URLSearchParams {
   if (v.filters.expires !== "any") p.set("expires", v.filters.expires);
   if (v.filters.len !== "any") p.set("len", v.filters.len);
   if (v.filters.chars !== "any") p.set("chars", v.filters.chars);
+  if (v.filters.icann !== "any") p.set("icann", v.filters.icann);
   for (const t of v.filters.tags) p.append("tag", t);
   return p;
 }
@@ -161,6 +174,7 @@ export function activeFilterCount(f: NameFilters): number {
     (f.expires !== "any" ? 1 : 0) +
     (f.len !== "any" ? 1 : 0) +
     (f.chars !== "any" ? 1 : 0) +
+    (f.icann !== "any" ? 1 : 0) +
     f.tags.length
   );
 }

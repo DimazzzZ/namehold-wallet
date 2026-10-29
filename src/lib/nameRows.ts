@@ -10,6 +10,7 @@ import type {
   WatchedName,
   WatchlistStatus,
 } from "../types";
+import { icannCollision, type IcannCollision } from "./icann";
 import type { StatusTone } from "../components/market/marketText";
 import { listingStateLabel, MY_LISTINGS_TAB } from "../components/market/marketText";
 import {
@@ -55,6 +56,8 @@ export interface NameRow {
   height: number | null;
   renewal: number | null;
   watch: { tags: string; addedAt: string } | null;
+  /** The ICANN 2026 round string this name collides with (spec R3); null for most names. */
+  icann: IcannCollision | null;
   /** finalizePurchase rows only. */
   purchaseId?: string;
 }
@@ -380,7 +383,7 @@ export function buildNameRows(input: NameRowsInput): NameRow[] {
   const seen = new Set<string>();
 
   const withWatch = (
-    r: Omit<NameRow, "watch" | "cats" | "tags" | "expiresBlocks" | "expiresDays"> & {
+    r: Omit<NameRow, "watch" | "cats" | "tags" | "expiresBlocks" | "expiresDays" | "icann"> & {
       cats: NameCat[];
     },
     /** The name's chain info, for the Expires sort / filter keys. */
@@ -403,6 +406,7 @@ export function buildNameRows(input: NameRowsInput): NameRow[] {
         : [],
       expiresBlocks: shown ? (info?.stats?.blocksUntilExpire ?? null) : null,
       expiresDays: shown ? (info?.stats?.daysUntilExpire ?? null) : null,
+      icann: icannCollision(r.name),
     };
   };
 

@@ -47,12 +47,17 @@ This creates:
    just screenshots
    ```
    Look over the changed images in `docs/assets/` (`git diff --stat docs/assets` lists them) and commit them with the version bump. A screen that changed shape may need its showcase data or scene updated; see [screenshots/README.md](../screenshots/README.md).
-3. Commit and tag:
+3. Refresh the list of strings applied for in ICANN's 2026 gTLD round (the ICANN badge on names), and commit it if it changed:
+   ```bash
+   just icann-strings
+   ```
+   The script prints the counts it wrote and refuses an export whose layout changed. ICANN confirms the final list on 17 November 2026 and applicants may still withdraw after that, so this step is not optional for a release after that date.
+4. Commit and tag:
    ```bash
    git tag v0.X.0
    git push origin main --tags
    ```
-4. The `release.yml` workflow:
+5. The `release.yml` workflow:
    - Creates a **draft** GitHub Release.
    - Builds on macOS (universal), Linux, Windows.
    - Runs `beforeBuildCommand` to build the `namehold-syncd` sidecar binary
@@ -63,7 +68,7 @@ This creates:
      configuration in `tauri.conf.json`.
    - Verifies `latest.json` is present on the release.
    - Un-drafts the release (makes it public + "latest").
-5. Existing installs auto-detect the new version within ~30 s of their next
+6. Existing installs auto-detect the new version within ~30 s of their next
    launch (or immediately when the user clicks "Check for updates" in Settings).
 
 ---

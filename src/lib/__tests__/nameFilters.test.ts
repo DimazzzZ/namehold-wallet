@@ -27,6 +27,7 @@ const row = (name: string, over: Partial<NameRow> = {}): NameRow => ({
   expiresBlocks: null,
   expiresDays: null,
   tags: [],
+  icann: null,
   action: null,
   selectable: true,
   height: null,
@@ -72,6 +73,15 @@ describe("passesFilters", () => {
     expect(passesFilters(tagged, f({ tags: ["premium", "design"] }), true)).toBe(true);
     expect(passesFilters(row("u"), f({ tags: ["design"] }), true)).toBe(false);
   });
+  it("icann: only colliding rows when on, every row when any (spec R7)", () => {
+    const hit = row("agent", {
+      icann: { string: "agent", uLabel: null, applications: [] },
+    });
+    const miss = row("zzzz-not-applied");
+    expect(passesFilters(hit, f({ icann: "collision" }), true)).toBe(true);
+    expect(passesFilters(miss, f({ icann: "collision" }), true)).toBe(false);
+    expect(passesFilters(miss, f({ icann: "any" }), true)).toBe(true);
+  });
 });
 
 describe("sortRows", () => {
@@ -105,20 +115,26 @@ describe("sortRows", () => {
 describe("parseNamesParams / namesParams", () => {
   it("round-trips and omits defaults", () => {
     const p = new URLSearchParams(
-      "filter=owned&sort=expires&expires=90&len=4-5&chars=letters&tag=design&tag=premium",
+      "filter=owned&sort=expires&expires=90&len=4-5&chars=letters&icann=collision&tag=design&tag=premium",
     );
     const v = parseNamesParams(p);
     expect(v).toEqual({
       filter: "owned",
       sort: "expires",
       dir: "asc",
-      filters: { expires: "90", len: "4-5", chars: "letters", tags: ["design", "premium"] },
+      filters: {
+        expires: "90",
+        len: "4-5",
+        chars: "letters",
+        icann: "collision",
+        tags: ["design", "premium"],
+      },
     });
     expect(namesParams(v).toString()).toBe(p.toString());
-    expect(activeFilterCount(v.filters)).toBe(5);
+    expect(activeFilterCount(v.filters)).toBe(6);
   });
   it("falls back on bad values", () => {
-    const v = parseNamesParams(new URLSearchParams("sort=x&len=9&dir=up&filter=nope"));
+    const v = parseNamesParams(new URLSearchParams("sort=x&len=9&dir=up&filter=nope&icann=bogus"));
     expect(v).toEqual({ filter: "all", sort: "status", dir: "asc", filters: NO_FILTERS });
     expect(namesParams(v).toString()).toBe("");
     expect(namesParams({ ...v, sort: "value", dir: "asc" }).toString()).toBe("sort=value&dir=asc");

@@ -29,3 +29,8 @@ lint:
 # Pass scene names to shoot only those: `just screenshots market auctions`
 screenshots *scenes:
     cd screenshots && pnpm install --frozen-lockfile --ignore-workspace && pnpm typecheck && pnpm shoot {{scenes}}
+
+# Refresh the ICANN 2026 applied-for strings the ICANN collision flag reads
+# (docs/specs/2026-10-29-icann-collision-flag.md R1). Commit the result.
+icann-strings:
+    node scripts/fetch-icann-strings.ts
