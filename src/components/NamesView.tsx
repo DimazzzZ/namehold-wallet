@@ -673,7 +673,7 @@ export function NamesView() {
         </div>
       )}
 
-      {!isWatchOnly && (batch.selected.size > 0 || transferableLeft > 0) && (
+      {!isWatchOnly && (batch.selected.size > 0 || transferableLeft > 0 || batch.progress) && (
         <NameBatchBar
           batch={batch}
           transferBlockers={transferBlockers}

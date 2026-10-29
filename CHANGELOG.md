@@ -14,9 +14,6 @@
 
 ## [Unreleased]
 
-### Added
-- **Every row on the Names page has a ⋯ menu**, not only watched names. It holds what the name allows right now: Renew, Reveal, Redeem and Finalize run for that name alone, with the same confirmation as a batch and without touching your selection; Transfer or sell…, Edit DNS records, Sign message and Cancel transfer… open the name's page where they live; Watch, Edit tags and Remove from watchlist manage the watchlist. Revoke stays on the name's page only.
-
 ### Fixed
 - **A wallet with more than 200 names had no name actions at all.** The capability check was asked for every name in one call, which the backend refuses above 200; names showed their bare phase and every batch button stayed grey. It is now asked in chunks of 100, and polled every five minutes instead of every thirty seconds on wallets with more than 100 names.
 - **Batch actions take any number of names.** A selection over 100 names is sent as a series of transactions of up to 100 after one confirmation, with a progress line while each is built and sent; if one fails, the names not yet sent stay selected. Transfer no longer waits for the capability check: the chain's own facts decide, and the batch bar names every selected name that blocks a transfer, with the reason, and drops them in one click. "Select all transferable" picks every name that can move.
@@ -29,9 +26,11 @@
 - **Wallet's Your names said "Transfer ready · finalize it" during the transfer lockup.** It now says "Transferring · finalize in ~2 days", and "ready to finalize" only once Finalize is possible, as the Names page and Needs you already did.
 
 ### Added
+- **Every row on the Names page has a ⋯ menu**, not only watched names. It holds what the name allows right now: Renew, Reveal, Redeem and Finalize run for that name alone, with the same confirmation as a batch and without touching your selection; Transfer or sell…, Edit DNS records, Sign message and Cancel transfer… open the name's page where they live; Watch, Edit tags and Remove from watchlist manage the watchlist. Revoke stays on the name's page only.
 - **ICANN collision flag.** A name that someone has also applied for as a new gTLD in ICANN's 2026 round (1,614 applications on 1,203 strings as of 29 October 2026) carries a yellow ICANN badge on the Names page and in the header of its own page; the badge's tooltip gives the applicant count and whether the string is in contention. Details opens with an "ICANN 2026 round" row naming the applicants, each a link to the application on ICANN's site, and the date of the list; it shows even for a watched name nobody has opened on-chain. The Filters popover gets an "ICANN 2026 round" switch, kept in the URL as `icann=collision`. The list of strings ships with the app, refreshed by `just icann-strings`; the app never contacts ICANN. An applicant who switched to a replacement string counts only under the string they ended on.
 
 ### Changed
+- **The Names batch bar shows its actions only once a name is selected.** With nothing selected it keeps just "Select all N transferable" and the progress of a running action.
 - **README screenshots show the redesigned app.** Wallet, Names, a name's page (with the ICANN flag) and the Market replace the Auctions and Namebase-history images, whose screens are gone; `just screenshots` regenerates them.
 
 ## [0.6.1] - 2026-10-25

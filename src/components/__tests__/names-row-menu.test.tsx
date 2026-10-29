@@ -205,6 +205,23 @@ describe("Names — the row menu", () => {
     expect(screen.getByText("1 selected")).toBeInTheDocument();
   });
 
+  it("with nothing selected the batch actions stay hidden; selecting a name shows them", async () => {
+    render(<NamesView />, { wrapper: wrapper() });
+    const select = await screen.findByTestId("batch-select-transferable");
+    await waitFor(() => expect(select).not.toBeDisabled());
+    expect(screen.queryByTestId("batch-action-bar")).toBeNull();
+    expect(screen.queryByText("0 selected")).toBeNull();
+    expect(screen.queryByTestId("batch-renew-btn")).toBeNull();
+    expect(screen.queryByTestId("batch-transfer-recipient-input")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("Select alpha"));
+    expect(screen.getByTestId("batch-action-bar")).toHaveTextContent("1 selected");
+    expect(screen.getByTestId("batch-renew-btn")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Select alpha"));
+    expect(screen.queryByTestId("batch-action-bar")).toBeNull();
+  });
+
   it("Watch from the menu adds the name to the watchlist", async () => {
     render(<NamesView />, { wrapper: wrapper() });
     await openMenu("gamma");

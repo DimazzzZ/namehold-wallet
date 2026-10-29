@@ -72,6 +72,33 @@ export function NameBatchBar({
     batches > 1
       ? `${selected.size} names go out as ${batches} transactions of up to ${MAX_BATCH}, one confirm for all`
       : null;
+  const progressLine = progress && (
+    <div className="text-sm font-medium text-blue-900" role="status" data-testid="batch-progress">
+      {progress.step === "building" ? "Building" : "Signing and sending"} {progress.action}{" "}
+      {progress.total > 1 ? `transaction ${progress.index} of ${progress.total}` : "transaction"}…
+    </div>
+  );
+
+  // Nothing selected: no actions to offer, only the way to select (and the
+  // progress of an action run from a row's menu, which selects nothing).
+  if (selected.size === 0) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="batch-idle">
+        {onSelectTransferable && transferableLeft > 0 && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onSelectTransferable}
+            data-testid="batch-select-transferable"
+          >
+            Select all {transferableLeft} transferable
+          </Button>
+        )}
+        {progressLine}
+      </div>
+    );
+  }
+
   return (
     <div
       className="bg-blue-50 border border-blue-200 rounded-md px-3 py-2.5 flex flex-col gap-2"
@@ -123,19 +150,7 @@ export function NameBatchBar({
           Clear
         </Button>
       </div>
-      {progress && (
-        <div
-          className="text-sm font-medium text-blue-900"
-          role="status"
-          data-testid="batch-progress"
-        >
-          {progress.step === "building" ? "Building" : "Signing and sending"} {progress.action}{" "}
-          {progress.total > 1
-            ? `transaction ${progress.index} of ${progress.total}`
-            : "transaction"}
-          …
-        </div>
-      )}
+      {progressLine}
       {(transferWhy || onSelectTransferable) && (
         <div
           className="flex flex-wrap items-center gap-2 text-xs text-blue-900"

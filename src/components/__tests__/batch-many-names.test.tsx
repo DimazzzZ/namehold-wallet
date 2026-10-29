@@ -253,7 +253,8 @@ describe("Names — a wallet with hundreds of names", () => {
     const built = calls("build_batch_transfer_draft").map((c) => (c[1].names as string[]).length);
     expect(built).toEqual([100, 50]);
     expect(calls("sign_tx_draft").map((c) => c[1].draftId)).toEqual(["draft-1", "draft-2"]);
-    await waitFor(() => expect(screen.getByText("0 selected")).toBeInTheDocument());
+    // Every name sent: the selection is cleared and the batch actions hide.
+    await waitFor(() => expect(screen.queryByTestId("batch-action-bar")).toBeNull());
   });
 
   it("keeps the names not yet sent selected when a later transaction fails", async () => {
