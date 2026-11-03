@@ -59,6 +59,9 @@ ignore = [
   "RUSTSEC-2026-0367",
   "RUSTSEC-2026-0368",
   "RUSTSEC-2026-0369",
+  # A symlink entry with a large declared size aborts the process. Same reach:
+  # a crafted archive needs our signing key, and the failure is a crash.
+  "RUSTSEC-2026-0429",
 
   # zvariant, zbus_names, zvariant_derive (4.x and 5.x) — unmaintained.
   # Pulled in by zbus (Linux D-Bus) via notify-rust,
