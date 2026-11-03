@@ -597,6 +597,8 @@ All node settings live under **Settings → Connections**.
 | **Start the mainnet node automatically** (names the active wallet's network) | **on** | Starts that network's hsd when one of its wallets becomes active, and at launch. Each network has its own setting; toggle off to keep that network's hsd manual. Local hsd only. |
 | **Sync in background** | **on** | When enabled, a background daemon syncs your wallet every 60 seconds, even when the app is closed. Local full node only. |
 
+An explorer other than `e.hnsfans.com`, `shakeshift.com` or one on this computer gets a warning in that window: it sees your addresses and names, and its answers are shown when your node cannot answer. You can still save it.
+
 Saving a change to the node URL or API key, chain source, node mode, "Allow sending via remote node", explorer URLs, hsd program path, hsd data directory or signer session timeout opens the secure window with one line per change. Cancel saves nothing. If a new node host would receive your stored API key, the window adds a warning naming that host; clear or replace the key in the same save to avoid that. URLs must be https, or http only for this computer, written plainly: no user name or password, no percent-encoding or numeric host spelling such as 127.1, and an international host name in its xn-- form. A node on your local network therefore needs https too. A URL saved earlier keeps working until you change it. A node on another machine needs Remote node and "Allow sending via remote node" selected; until then sending shows as unavailable. "Test connection" on a newly typed URL sends no stored key.
 
 ### Background sync
