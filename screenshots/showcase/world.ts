@@ -27,6 +27,7 @@ import type {
   WalletBalances,
   WalletProfileSummary,
 } from "../../src/types";
+import type { ActionRow } from "../../src/lib/zod";
 import type { NamebaseHistoryRow, NamebaseHistorySummary } from "../../src/queries/namebase";
 import LISTING_ACTIONS from "../../src/test/fixtures/listing-actions.json";
 
@@ -414,7 +415,7 @@ const LISTINGS: Listing[] = [
     published: true,
   },
   {
-    name: "atlas",
+    name: "lighthouse",
     state: "listed",
     mode: "reverseAuction",
     prices: [900, 825, 750, 675, 600],
@@ -633,4 +634,41 @@ export function records(name: string): NameResource {
     ],
     ttl: 3600,
   };
+}
+
+/** Activity's on-chain history: the newest first, a few of each kind. */
+export function history(): ActionRow[] {
+  const at = (blocksAgo: number) => HEIGHT - blocksAgo;
+  const row = (
+    txid: string,
+    action: string,
+    name: string | null,
+    value: number,
+    direction: string,
+    blocksAgo: number,
+    counterparty: string | null = null,
+  ): ActionRow => ({
+    txid: txid.repeat(64).slice(0, 64),
+    action,
+    name,
+    nameHash: null,
+    valueDoos: hns(value),
+    nameValueDoos: null,
+    direction,
+    height: at(blocksAgo),
+    // 2026-10-23 12:00 UTC, the page clock, less ten minutes a block.
+    time: 1_792_756_800 - blocksAgo * 600,
+    confirmed: true,
+    counterparty,
+  });
+  return [
+    row("a1", "renew", "atlas", 0, "out", 40),
+    row("b2", "reveal", "saltmarsh", 60, "out", 310),
+    row("c3", "bid", "saltmarsh", 42, "out", 1_020),
+    row("d4", "receive", null, 1_500, "in", 1_480, "hs1qshowcasecounterparty"),
+    row("e5", "register", "lighthouse", 210, "out", 2_260),
+    row("f6", "send", null, 320.5, "out", 3_100, "hs1qshowcasecounterparty"),
+    row("a7", "redeem", "emberly", 12, "in", 3_940),
+    row("b8", "update", "atlas", 0, "out", 4_700),
+  ];
 }

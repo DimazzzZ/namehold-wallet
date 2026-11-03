@@ -19,6 +19,30 @@ globalThis.__webqa_overrides = {
   get_wallet_balances: world.balances(),
   read_balance: world.legacyBalance(),
   read_names: world.names(),
+  read_action_history: world.history(),
+  // The mock's chain sits at 100,000; the showcase's names count from this tip.
+  node_status: {
+    binary: "hsd",
+    binary_found: true,
+    version: "8.0.0",
+    data_dir: "",
+    network: "mainnet",
+    process_alive: true,
+    ownership: "own",
+    starting: false,
+    connected: true,
+    synced: true,
+    height: world.HEIGHT,
+    verification_progress: 1,
+    headers: world.HEIGHT,
+    last_error: null,
+    index_mismatch: false,
+    read_source: "local",
+    running: true,
+    tip: "0".repeat(64),
+    peers: 8,
+    error: null,
+  },
   // The name page reads one name; the showcase's owned names answer it, so
   // Details shows their heights and values instead of "Nothing on-chain yet."
   read_name_info: (args?: Record<string, unknown>) =>

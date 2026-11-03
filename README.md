@@ -36,6 +36,14 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
     <td align="center">Market (Shakedex)</td>
     <td align="center">Selling your names</td>
   </tr>
+  <tr>
+    <td width="50%"><a href="docs/assets/activity.png"><img src="docs/assets/activity.png" alt="Activity: what is left to finish, what waits for a block, and the history of this wallet" /></a></td>
+    <td width="50%"><a href="docs/assets/settings.png"><img src="docs/assets/settings.png" alt="Settings: connections, node and tray, notifications, backup and import, updates and advanced" /></a></td>
+  </tr>
+  <tr>
+    <td align="center">Activity</td>
+    <td align="center">Settings</td>
+  </tr>
 </table>
 
 The screenshots are generated from the app with showcase data: see [screenshots/README.md](screenshots/README.md).
