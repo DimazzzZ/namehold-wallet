@@ -33,7 +33,7 @@ pub use signer::{
 /// same, and naming the setting beats degrading to empty or to mainnet data.
 pub const EXPLORER_UNAVAILABLE: &str =
     "No explorer is available for this wallet's network, and the local node is \
-     not synced. Set 'explorer_api_url' in Settings, or wait for the node to \
+     not synced. Set the Explorer base URL in Settings, or wait for the node to \
      finish syncing.";
 
 /// The ONE place settings turn into an explorer client (Task 11 / S1, G2).

@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 // check-secrets.mjs — refuse wallet secrets in the repository.
 //
-// A recovery phrase that controls real money was once committed here as a test
-// vector, and the funds it held were stolen. GitHub's secret scanning does not
-// recognise a BIP39 phrase, so this check does.
+// GitHub's secret scanning does not recognise a BIP39 phrase, so this check does.
 //
 // It fails on:
 //   - a BIP39 recovery phrase: 12, 15, 18, 21 or 24 consecutive English

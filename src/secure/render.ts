@@ -152,7 +152,8 @@ export function render(
     const copy = el("button", { textContent: "Copy" });
     const clipboardHint = el("div", {
       className: "hint",
-      textContent: "Clipboard clears when you press Done, or ~30s after copying.",
+      textContent:
+        "Clipboard clears when you press Done, or ~30s after copying while this window is open.",
     });
     let copied = false;
     copy.onclick = async () => {

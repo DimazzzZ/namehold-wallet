@@ -49,7 +49,7 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
   {
     keys: "escape",
     label: "Esc",
-    description: "Close dialog / modal",
+    description: "Close dialog",
     category: "modal",
     scope: "*",
   },
@@ -76,7 +76,7 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
   {
     keys: "r",
     label: "R",
-    description: "Sync / Refresh",
+    description: "Sync",
     category: "action",
     scope: "/",
     actionId: "wallet:sync",

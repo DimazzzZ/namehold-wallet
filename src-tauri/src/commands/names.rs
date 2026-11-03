@@ -791,13 +791,13 @@ pub(crate) const REDEEM_WINDOW_CLOSING_REASON: &str = "Your losing bids on this 
 /// reveal of ours as the owner but the wallet does not track the name yet, so
 /// it holds no owner coin of its own to build from.
 const OWNER_REVEAL_NOT_TRACKED_REASON: &str =
-    "you won this name, but the wallet does not track it yet — Refresh to sync it, then manage";
+    "you won this name, but the wallet does not track it yet — Sync to read it, then manage";
 
 /// Reason surfaced on spend-capable actions when a name is owned per explorer
 /// evidence but its owner coin has not been synced from a node yet. Nothing may
 /// build a spend without a real local `tracked_utxos` owner coin.
 const OWNER_COIN_NOT_SYNCED_REASON: &str =
-    "owner coin not synced locally — connect a node and Refresh to manage";
+    "owner coin not synced locally — connect a node and Sync to manage";
 
 /// Evaluate what the wallet can do with `name` right now.
 ///

@@ -23,7 +23,7 @@ info qn000$TAG; info qn209$TAG                                   # BIDDING, else
 batch '["BID","NAME",0.01,0.02]'; mine 6                          # REVEAL, else mine 1
 W sendbatch '[["REVEAL"]]' >/dev/null; mine 11                    # CLOSED, else mine 1
 batch '["UPDATE","NAME",{"records":[]}]'; mine 1
-APP=<the seller's Receive Address, rs1…>
+APP=<the seller's address from Receive, rs1…>
 batch "[\"TRANSFER\",\"NAME\",\"$APP\"]"; mine 11
 batch '["FINALIZE","NAME"]'; mine 1
 info qn000$TAG; info qn209$TAG                                   # owner: the app's address, transfer 0

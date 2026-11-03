@@ -511,7 +511,7 @@ export function GuidedAction({
                   data-testid="owner-coin-not-synced"
                 >
                   This name is yours, but its owner coin hasn&apos;t synced locally yet.{" "}
-                  {notSyncedReason ?? "Connect a node and Refresh to manage it."}
+                  {notSyncedReason ?? "Connect a node and Sync to manage it."}
                 </div>
               )}
               {inLock && caps.hasOwnerCoin === false && (

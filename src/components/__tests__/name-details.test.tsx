@@ -173,17 +173,16 @@ describe("ReadOnlyDnsRecords", () => {
 });
 
 describe("NameDetails — a name bought on the market", () => {
-  // Reported live: .ferratorr was bought on the market for 250 HNS, and Details
-  // read "High bid 0.01 HNS · Paid price (2nd-price) 0 HNS" — its original
+  // A name bought on the market for 250 HNS: Details used to read "High bid 0.01 HNS · Paid price (2nd-price) 0 HNS" — its original
   // auction (one bid, so a second price of 0) — with nothing about the 250.
   it("leads with the market price and labels the rest as the auction's", async () => {
     route();
     render(
       <NameDetails
-        name="ferratorr"
+        name="examplename"
         profileId="p1"
         info={baseInfo({
-          name: "ferratorr",
+          name: "examplename",
           value: 0,
           highest: 10_000,
           purchase: { priceDoos: 250_000_000, height: 353_400 },

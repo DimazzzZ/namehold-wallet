@@ -14,7 +14,7 @@ transactions. Private keys never leave the device.
 
 ## Import a Ledger wallet
 
-1. Open Namehold → Wallets → **Connect a Ledger device**.
+1. In Namehold, click the wallet card in the sidebar → **Add wallet** → **Connect a Ledger device**.
 2. Enter a label and select the network (mainnet / testnet / regtest).
 3. Make sure the device is unlocked and the Handshake app is open.
 4. Click **Import from Ledger**. The device will prompt you to confirm the
@@ -53,7 +53,7 @@ No passphrase prompt appears — the device IS the signer.
 
 ### Device not found
 
-**Symptom:** "Device not found" or "HID error" when importing or signing.
+**Symptom:** "No Ledger detected. Plug it in, unlock it, and open the Handshake app." when importing or signing.
 
 **Fix:**
 1. Ensure the Ledger device is connected via USB (not Bluetooth).
@@ -79,7 +79,7 @@ No passphrase prompt appears — the device IS the signer.
 
 ### Timeout
 
-**Symptom:** "Timed out waiting for the Ledger" after 30 seconds.
+**Symptom:** "Timed out waiting for your Ledger. Approve or reject the prompt on the device and try again." after 30 seconds.
 
 **Fix:**
 1. The device may have locked or the app closed during signing.
@@ -88,7 +88,7 @@ No passphrase prompt appears — the device IS the signer.
 
 ### Covenant error (0x6a80)
 
-**Symptom:** "Invalid data — covenant/tx serialization rejected" or status code `0x6a80`.
+**Symptom:** "invalid data — covenant/tx serialization rejected" or status code `0x6a80`.
 
 **Fix:**
 1. This is rare and usually indicates a firmware mismatch.
@@ -146,7 +146,7 @@ NAMEHOLD_LEDGER_SIM=disconnect cargo tauri dev --features mock-ledger
 
 **Import path:**
 
-- Click "Wallets" → "Connect a Ledger device"
+- Click the wallet card in the sidebar → "Add wallet" → "Connect a Ledger device"
 - Enter a label and select a network
 - Click "Import from Ledger"
 - Observe: success toast, error message, or timeout handling
@@ -162,7 +162,7 @@ NAMEHOLD_LEDGER_SIM=disconnect cargo tauri dev --features mock-ledger
 
 - Each scenario produces a distinct error message (from the backend, mapped by the frontend)
 - Verify the message is actionable and not clobbered by generic fallbacks
-- Examples: "Timed out — approve or reject the prompt on your Ledger device", "Your Ledger is locked — unlock the device and try again"
+- Examples: "Timed out waiting for your Ledger. Approve or reject the prompt on the device and try again.", "Your Ledger is locked — unlock the device and try again."
 
 ### Notes
 

@@ -279,7 +279,7 @@ rewrites `spend_class` on conflict.
 **R13d — A confirm dialog counts every output the action carries.** A name
 action can carry several: revealing a name bid on more than once emits one
 REVEAL per bid, and redeeming reclaims one per losing reveal. Reporting
-`outputs[0]` offered a live wallet a redeem of three reveals worth 28 HNS with
+`outputs[0]` offered a redeem of three reveals with
 12 on the dialog — the one figure a user checks before signing, wrong on every
 multi-bid action. The total sums every output except change, which the plan
 already identifies by index.

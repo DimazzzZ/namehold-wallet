@@ -25,7 +25,7 @@ Never `mine` while a case below waits for the parent to stay unconfirmed: a bloc
 
 Steps:
 
-1. Wallet → `Send HNS` → `Destination Address` `$WADDR` → `Amount (HNS)` `1` → `Review`; note `Fee` and `Change` → `Sign & Broadcast` → secure window → confirm. Do not mine.
+1. Wallet → `Send` → `Destination Address` `$WADDR` → `Amount (HNS)` `1` → `Review`; note `Fee` and `Change` → `Sign & Broadcast` → secure window → confirm. Do not mine.
 2. Activity: find the `Send` row; read its status and its `Speed up` button (hover it). Press **Sync** on the Wallet page, come back and read the button again.
 3. `Speed up` → read the dialog with `Fee rate (doos/vB)` left empty.
 4. Type in `Fee rate (doos/vB)`, one after the other, reading the dialog after each: `1.5`, `1`, `100000`, then `10`.
@@ -82,15 +82,15 @@ Expected:
 
 Steps:
 
-1. Wallet: note the **Receive Address** (`rs1…`). `Send HNS` → `Destination Address` that address → `Max` (it builds the send and shows its review) → `Sign & Broadcast` → confirm. Do not mine. Call it A.
-2. Sync. `Send HNS` → `$WADDR`, `1` → `Review` → `Sign & Broadcast` → confirm. Do not mine. Call it B. `scripts/regtest.sh rpc getmempoolentry <B's txid>`.
+1. Wallet: note **Your address** in Receive (`rs1…`). `Send` → `Destination Address` that address → `Max` (it fills the amount) → `Review` → `Sign & Broadcast` → confirm. Do not mine. Call it A.
+2. Sync. `Send` → `$WADDR`, `1` → `Review` → `Sign & Broadcast` → confirm. Do not mine. Call it B. `scripts/regtest.sh rpc getmempoolentry <B's txid>`.
 3. Sync; Activity: hover the `Speed up` of A's row and of B's row.
 4. [switch-profile](../../procedures/switch-profile.md) to the watch-only profile, Sync; Activity: look for a `Speed up` button on any row. Switch back to the seller.
 5. `mine 1`, Sync; read both rows.
 
 Expected:
 
-- Step 2: B builds from A's output, the only coin left (if `Send HNS` is disabled or B is refused for funds, the wallet does not count A's unconfirmed output yet: record it, ◐, and go to step 5); B's mempool entry lists A's txid in `depends`, with `ancestorcount` 1.
+- Step 2: B builds from A's output, the only coin left (if `Send` is disabled or B is refused for funds, the wallet does not count A's unconfirmed output yet: record it, ◐, and go to step 5); B's mempool entry lists A's txid in `depends`, with `ancestorcount` 1.
 - Step 3: A's `Speed up` is disabled with "This transaction has no change to spend, so it cannot be sped up." (`Max` leaves no change); B's is disabled with "This transaction waits on another unconfirmed transaction of the mempool; speed that one up, or wait for it to confirm."
 - Step 4: no row of the watch-only profile offers `Speed up` (it has no sent drafts of its own; the backend's "This wallet is watch-only and cannot sign, so it cannot speed up a transaction." is pinned by `a_watch_only_profile_is_refused`, not reachable from the GUI).
 - Step 5: A and B both `Confirmed`, no `Speed up` on either.

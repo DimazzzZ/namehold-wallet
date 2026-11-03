@@ -1,6 +1,6 @@
 {
   "name": "namehold-wallet-e2e",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "End-to-end tests for Namehold Wallet (Tauri app)",
   "private": true,
   "type": "module",

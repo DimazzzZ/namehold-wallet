@@ -23,8 +23,9 @@ non-custodially, with your keys encrypted on your own machine.
 10. [Managing names you own](#10-managing-names-you-own)
     - [Buying names on the Market](#buying-names-on-the-market)
     - [Selling names through Shakedex](#selling-names-through-shakedex)
+    - [Watching names](#10b-watching-names)
 11. [Node control](#11-node-control)
-12. [Move from Namebase](#12-move-from-namebase)
+12. [Import from Namebase](#12-import-from-namebase)
 13. [System Tray](#13-system-tray)
 14. [Data location and macOS quarantine](#14-data-location-and-macos-quarantine)
 15. [Security](#15-security)
@@ -43,9 +44,7 @@ wallet talks directly to the Handshake network:
 - **Reads (balances, owned names, name info): no node required.** Data comes from
   the HNSFans explorer by default. When your local hsd is synced, the wallet
   automatically switches to node-authoritative reads (faster, more reliable).
-- **Writes (Send HNS, name actions): local hsd required.** Broadcasting a
-  Handshake transaction and finding your unspent coins needs a local
-  **address-indexed** hsd node — no hosted provider offers that today.
+- **Writes (Send HNS, name actions): an address-indexed hsd node required**: one on this device (the app can start it), or a remote hsd you trust with "Allow sending via remote node" turned on. No hosted provider offers this today.
 
 Your **secrets never touch the web UI.** Passphrases and recovery phrases are
 entered and displayed only inside a small **Rust-owned secure window**.
@@ -56,65 +55,49 @@ entered and displayed only inside a small **Rust-owned secure window**.
 
 ### Prerequisites
 
-- The Namehold desktop app (macOS `.dmg`, Windows `.msi`, or Linux `.AppImage`/`.deb`).
+- The Namehold desktop app (macOS `.dmg`, Windows `-setup.exe`, or Linux `.AppImage`, `.deb` or `.rpm`).
 - To **send HNS or perform name actions**, you also need [hsd](https://github.com/handshake-org/hsd)
-  — the app can start it for you (see [Node control](#11-node-control)). Reads
-  work without hsd.
+  — the app can start it for you (see [Node control](#11-node-control)). On Windows, set a Node RPC API key in Settings › Connections first. Reads work without hsd.
 
 ### First launch — Onboarding
 
-On first launch the **Welcome to Namehold** screen opens. Pick one of three flows,
-enter a **Wallet Name** and pick a **Network** (Mainnet / Testnet / Regtest), then
-click the corresponding button:
+On first launch **How do you want to connect?** opens: pick a **Network**, then Local Full Node, Remote Node or SPV. The **Welcome to Namehold** screen follows. Pick one of four flows, enter a **Wallet Name**, check the **Network**, and click the button:
 
 | Flow | Button | What it does |
 |------|--------|--------------|
 | **Import your wallet** (recommended for existing users) | "Import in secure window" | Opens the secure window; paste your 12/24-word phrase + an optional BIP-39 passphrase. |
 | **Watch-only (read-only)** | "Add watch-only wallet" | Adds a wallet from an account xpub. Cannot sign or send. |
 | **Create a new wallet** | "Create in secure window" | Opens the secure window; sets a passphrase and displays your recovery phrase for backup. |
+| **Connect a Ledger device** | "Import from Ledger" | Imports the account xpub from the device. Keys stay on it; see [LEDGER.md](LEDGER.md). |
 
 The **recovery phrase is only ever shown in the secure window** — the React UI
 never sees it. Confirm the backup before continuing.
 
 ### Adding more wallets later
 
-From the account bar at the top of the Wallet page, use **Add wallet** and
-**Manage wallets** to switch between wallets, reveal a wallet's phrase in the
-secure window, or delete one you no longer need. Delete wallet opens the secure window; for a wallet with a stored recovery phrase, type its label to enable Delete wallet. Cancel deletes nothing. Creating a wallet: it exists only after you tick "I have written down my recovery phrase" and press Done; closing the window saves nothing. The reveal window's clipboard clears when you press Done, or about 30 s after copying.
+Click the wallet card at the top of the sidebar and use **Add wallet** and **Manage wallets…** to switch between wallets, reveal a wallet's phrase in the secure window, or delete one you no longer need. Delete wallet opens the secure window; for a wallet with a stored recovery phrase, type its label to enable Delete wallet. Cancel deletes nothing. Creating a wallet: it exists only after you tick "I have written down my recovery phrase" and press Done; closing the window saves nothing. The reveal window's clipboard clears when you press Done, or about 30 s after copying while the window stays open. Closing the window with its close button cancels that timer, so the phrase stays in the clipboard until something replaces it: copy something else.
 
 ### Background sync (enabled by default)
 
-Out of the box, **Sync in background** is enabled (Settings → Connections). This
-means hsd stays running after you close the app, and a lightweight background
-daemon keeps your wallet data fresh every 60 seconds. If you'd rather sync only
-while the app is open — and have hsd stop when you close it — uncheck **Settings →
-Connections → "Sync in background"**. See [Section 11](#11-node-control) for
-details.
+Out of the box, **Sync in background** is enabled (Settings › Node & tray). This means hsd stays running after you close the app, and a lightweight background daemon keeps your wallet data fresh every 60 seconds. If you'd rather sync only while the app is open, and have hsd stop when you close it, uncheck **Settings › Node & tray › "Sync in background"**. See [Section 11](#11-node-control) for details.
 
 ---
 
 ## 3. Sidebar and header
 
-The sidebar has seven top-level sections:
+The sidebar has five top-level sections:
 
 | Section | Purpose |
 |---------|---------|
-| **Wallet** | Balance, receive, send, recent transactions, owned names. Default page. |
-| **Activity** | Transaction history and pending activity. |
-| **Auctions** | Look up a name, place bids, reveal, register, see active auctions. |
-| **Market** (marked New) | Browse LearnHNS Market listings, import a listing file, and buy a listed name. |
-| **Watchlist** | Names you track without owning them. |
-| **Move from Namebase** | Retired: the legacy Namebase shut down on 1 October 2026. Explains the shutdown and imports history you exported earlier. |
-| **Settings** | Connections, node control, backups, notifications, advanced options. |
+| **Wallet** | Balance, send, receive, and what needs you. Default page. |
+| **Names** | Names you own, bid on or watch, and finding new ones. |
+| **Market** (marked New) | Buy and sell names through Shakedex. |
+| **Activity** | Every transaction and name action: To finish, Waiting for a block, and History. |
+| **Settings** | Connections, Node & tray, Notifications, Backup & import, Updates and Advanced. |
 
-The digit keys `1`–`7` open the sections in this order.
+The digit keys `1`–`5` open the sections in this order. Above them, the wallet card switches wallets (Add wallet, Manage wallets…), with the lock button beside it.
 
-The header shows two badges:
-
-- **Network** chip (e.g. `mainnet`, `regtest`).
-- **CAN SEND** (green) / **READ-ONLY** (grey) — the current write capability
-  (see [section 6](#6-write-capability)). This is a status indicator, **not**
-  a toggle. There is no "Write Mode" switch.
+At the top right, the readiness pill says which state the wallet is in, for example "Ready to send", "Locked · unlock to send" or "Can't send · node offline" (see [section 6](#6-write-capability)). Click it for Lock or Unlock, the node's Start, Stop and Re-sync, where reads come from, Sync now and the last sync. It is a status, not a toggle; there is no "Write Mode" switch. On testnet or regtest a coloured band at the top names the network.
 
 ---
 
@@ -122,42 +105,23 @@ The header shows two badges:
 
 ### Balance card
 
-A single card shows your spendable balance in HNS as the hero number, with:
+**Spendable**, in HNS, is the large number; its tooltip gives the confirmed balance. Under it: Unconfirmed, and when not zero, Immature, Locked in auctions and Name value. **Send** and **Receive** sit below.
 
-- **Confirmed / Unconfirmed** — coins that are on-chain vs. still in mempool.
-- **Locked in Auctions** — total HNS locked in active bids (unspendable until
-  the auction ends and coins are released).
-- **Name Value** — total value of coins tied up in name covenants.
+### Receive
 
-### Receive and share
+Receive opens a dialog: a QR code, **Your address** with Copy address, New address and (on mainnet) Explorer; **All addresses**, listing every derived address with a used or fresh badge; and **Advanced: account public key (xpub)**, only useful when another service needs to compute your addresses.
 
-A "Receive & share" card holds your receive address with a **Copy** button and a
-network badge (`hs1…` mainnet, `ts1…` testnet, `rs1…` regtest). A **Show QR** /
-**Hide QR** toggle renders a QR code (off by default).
+### Needs you
 
-Below that, a collapsible disclosure — **Show account public key (xpub)** —
-reveals the account xpub. It is only useful when another service needs to compute your Handshake addresses; otherwise leave it closed.
+One row per task, most urgent first: a bid to reveal, a name to renew, a transfer or purchase to finalize, a name to register, a lost bid to redeem. **Renew all N** appears for two renewable names or more. A watch-only wallet does not show this card.
 
-### Owned Names
+### Your names
 
-The Owned Names table lists names your wallet controls, with a phase badge
-(`OPENING`, `BIDDING`, `REVEAL`, `CLOSED`, etc.) and a **substring filter** at
-the top. Click any row to open the Name Actions modal.
+The 5 most urgent names. **All N names** opens Names › Owned.
 
-### Recent transactions
+### Recent activity
 
-Send/receive history from the local cache, with block height and confirmation
-status. Auction-related entries (BID, REVEAL, REGISTER, TRANSFER, FINALIZE)
-show the net cost, not the full lockup.
-
-### Urgency alerts
-
-Yellow/red alert banners appear when a name needs your attention:
-
-- **Reveal alert** — bids you haven't revealed yet, with a countdown.
-- **Register alert** — you won an auction; register the name now.
-- **Redeem alert** — you lost a bid; redeem your lockup.
-- **Expiring alert** — names approaching their renewal deadline.
+The last 5 rows of Activity.
 
 ---
 
@@ -167,9 +131,9 @@ Your **signer** is the in-memory decrypted key material used to sign
 transactions. It is **locked by default** and unlocks only when you enter the
 wallet passphrase.
 
-- **Unlock**: click **Unlock** on the account bar. If the wallet has a
+- **Unlock**: click the lock button beside the wallet card, or Unlock in the readiness pill. If the wallet has a
   passphrase, the secure window opens for entry. If not, it unlocks directly.
-- **Lock**: click **Lock** to zero the signer immediately.
+- **Lock**: the same lock button, or Lock in the readiness pill, zeroes the signer immediately.
 - **Auto-lock**: after a configurable idle timeout (Settings → Advanced → "Signer session timeout", 60 to 3600 s, empty means 900 s), the signer auto-locks, and at the latest one hour after unlock, however often it is used. Saving a change asks you to confirm it in the secure window.
 
 The passphrase is **never** stored on disk — you re-enter it each session. A mainnet wallet needs a passphrase of at least 8 characters: it is what keeps the recovery phrase safe in a copy of the wallet's files (a backup, another program on this computer). A testnet or regtest wallet may be created without one; its phrase is then encrypted under a key that is part of the app, which protects nothing, and it unlocks without a prompt. A mainnet wallet created without a passphrase by an earlier version keeps working, but is just as exposed: move its funds to a new wallet with a passphrase.
@@ -178,53 +142,53 @@ The passphrase is **never** stored on disk — you re-enter it each session. A m
 
 ## 6. Write capability
 
-"Write capability" is the app's honest answer to "can I send or do name actions
-right now?" It's shown in three places: the header **CAN SEND / READ-ONLY**
-badge, next to the **Send** button, and inside the Name Actions modal's red
-"blocked" alert.
+"Write capability" is the app's honest answer to "can I send or do name actions right now?" It's shown in three places: the readiness pill at the top right, next to the **Send** button, and in the "Name actions unavailable." line on a name's page.
 
 You can write when **all** of these hold:
 
 1. **Signer unlockable** — a wallet is loaded and either unlocked or has a
    passphrase you can enter.
-2. **Node reachable** — local hsd RPC responds.
+2. **Node reachable** — the hsd RPC you configured responds.
 3. **Node synced** — the blocks hsd has applied have caught up to the best
    header it knows about; `verification_progress` only corroborates that (see
    "When the wallet calls a node synced" in [NODE_SETUP.md](NODE_SETUP.md)).
 4. **Address-indexed** — hsd was started with `--index-address` (required to
    discover your unspent coins). The wallet asks hsd which indexes it runs,
-   which hsd reports from version 7.0, so the node must be hsd 7.0 or newer.
+   which hsd reports from version 7.0, so a node you run yourself must be hsd 7.0 or newer; the app refuses to start an hsd older than 8.0.0.
 
-When any condition fails, the reason is shown in plain text (e.g. "Node not
-synced (12%)", "hsd not address-indexed — re-sync required", "Signer locked").
+When any condition fails, the reason is shown in plain text (e.g. "Your local node is still syncing (12%). On-chain sends and transfers need a fully-synced node.", "Your node isn't address-indexed — restart hsd with address indexing…", or "Locked · unlock to send" on the pill).
 
 ---
 
 ## 7. Send HNS
 
-On the Wallet page, click **Send HNS**. The Send dialog has:
+On the Wallet page, click **Send**. The Send HNS dialog has:
 
-1. **Address** — the recipient's Handshake address. Format validated on the fly
+1. **Destination Address** — the recipient's Handshake address. Format validated on the fly
    (`hs1…` mainnet, `ts1…` testnet, `rs1…` regtest).
 2. **Amount** in HNS, with a **Max** button to sweep the wallet. Amount fields accept plain digits with at most 6 decimals (for example 12.5). Commas, exponents and signs get a message under the field, and the button stays disabled.
-3. **Review** button — builds a draft (`build_send_draft`) and shows Amount,
+3. **Review** button — builds a draft and shows Amount,
    Fee, Change, Inputs, and destination. **No key is touched yet.**
 4. **Sign & Broadcast** — unlocks the signer (secure window if locked), signs
    the draft, and broadcasts it. The secure window warns when this wallet has never sent to the address: compare it with the source, because a send cannot be undone.
 
 If the broadcast fails, the dialog stays open with a persistent "Not sent"
 error so you don't lose your inputs. On success, the transaction shows up under
-Recent transactions and transitions Pending → Confirmed as blocks arrive.
+Recent activity and transitions Pending → Confirmed as blocks arrive.
 
 ### Speed up a sent transaction
 
 Handshake has no way to raise the fee of a transaction already sent: a second transaction spending the same coins is refused. What a transaction that pays too little for full blocks can get is a child: a second transaction that spends its change back to your wallet and pays a fee high enough for both. Miners running hsd take a transaction at the better of its own fee rate and the rate of it together with everything spending it, so the child pulls the original into a block with it.
 
-In Activity, every transaction of yours that was sent and is not confirmed yet has a **Speed up** button; an Unconfirmed purchase has the same button under Your purchases on the Market. When a transaction cannot be sped up, the button stays visible but disabled, and hovering it says why: it has no change to spend (a send of everything, or a purchase whose change was too small to keep), its change is already spent by another of your transactions, it is already being sped up (or has a Speed up that was never sent, which its Activity row lets you discard), it waits on another unconfirmed transaction (speed that one up, or wait for it to confirm), your node does not hold it in its mempool (send it again instead), it leaves your node's mempool in less than 6 hours, the wallet is watch-only, or the connection is SPV or Explorer, which cannot read the mempool (Speed up needs a local node, or a remote node with "Allow sending via remote node" turned on).
+In Activity, every transaction of yours that was sent and is not confirmed yet has a **Speed up** button; a purchase not yet mined has the same button under Your purchases on the Market. When a transaction cannot be sped up, the button stays visible but disabled, and hovering it says why: it has no change to spend (a send of everything, or a purchase whose change was too small to keep), its change is already spent by another of your transactions, it is already being sped up (or has a Speed up that was never sent, which its Activity row lets you discard), it waits on another unconfirmed transaction (speed that one up, or wait for it to confirm), your node does not hold it in its mempool (send it again instead), it leaves your node's mempool in less than 6 hours, the wallet is watch-only, or the connection is SPV or Explorer, which cannot read the mempool (Speed up needs a local node, or a remote node with "Allow sending via remote node" turned on).
 
 Speed up opens a form with the transaction's size and fee, its fee rate now, the target rate (your node's estimate unless you type one, in doos per vbyte), the child's fee, the change left after it, the rate with it, and the deadline: hsd forgets a transaction 72 hours after it entered your node's mempool, and a child does not extend that. A target your transaction already pays, a change too small to pay the child's fee, or a fee above what your node accepts from one transaction (about 1.08 HNS for a child) is refused there with the reason. **Review and sign** builds the child and opens the secure confirmation, which shows the same numbers and what comes back to your wallet, that the fee goes to the network only (for a purchase: the seller's price and the purchase itself are unchanged), that the original keeps its transaction id, and the deadline; nothing is signed unless you confirm, and a cancelled confirmation discards the child. Just before it is sent, the wallet checks that the original still waits in your node's mempool; if it does not (it was mined meanwhile, or is gone), nothing is sent.
 
 In Activity, the child's row reads "Speeds up" and the original's short transaction id, and the original's row "Sped up by" and the child's. A transaction is sped up once; to try again at a higher rate, wait, or let it expire and send it again. If the original never confirms (it expires, or a purchase loses the name to another buyer), the child can never confirm either: it is marked Not confirmed with "The transaction it sped up (…) did not confirm, so this one can never confirm. Nothing was paid by either."
+
+### Activity
+
+Activity has three lists: **To finish** (drafts still to sign or send), **Waiting for a block** (sent, not mined; Speed up is here) and **History**, with search, an action filter and a status filter. The filters apply to To finish and Waiting for a block too.
 
 ---
 
@@ -235,21 +199,22 @@ name goes through four phases:
 
 | Phase | Duration (mainnet) | What happens |
 |-------|--------------------|--------------|
-| **Opening** | ~1 day (720 blocks) | Name enters the auction. No bids accepted yet. |
-| **Bidding** | ~5 days (1 440 blocks) | Anyone can place sealed bids. Bid + lockup can differ to obscure your real bid. |
+| **Opening** | ~6 hours (37 blocks) | Name enters the auction. No bids accepted yet. |
+| **Bidding** | ~5 days (720 blocks) | Anyone can place sealed bids. Bid + lockup can differ to obscure your real bid. |
 | **Reveal** | ~10 days (1 440 blocks) | Bids revealed. **Fail to reveal and you lose your lockup.** |
 | **Closed** | — | Highest bidder pays the **second-highest** bid and can register the name. |
 
 ### Looking up a name
 
-1. Click **Auctions** in the sidebar.
-2. Type the name (without leading dot) and click **Look up** (or press Enter).
-3. The **Name Actions modal** opens and fetches the current state.
-4. Follow the guided action at the top:
+1. Click **Names** in the sidebar.
+2. Type the name in "Find a name to open, bid on or watch" and click **Look up** (or press Enter).
+3. A name already on your list opens its page. Any other shows a card with Open auction… (Open name if it is already in an auction, or on a watch-only wallet) and Watch.
+4. On the name's page (`/names/<name>`), follow the guided action:
 
 | Current state | Guided action | What you provide |
 |---------------|---------------|------------------|
-| Available / Opening | **Open Auction** | Nothing — just confirm. |
+| Available | **Open Auction** | Nothing — just confirm. |
+| Opening | None: wait for Bidding (a countdown shows) | — |
 | Bidding | **Place Bid** | Bid (HNS) and Lockup (HNS). |
 | Reveal | **Reveal Bid** | Nothing — just confirm. |
 | Closed (you won) | **Register** | Optional DNS records. |
@@ -272,32 +237,26 @@ Both are entered in HNS.
 You can bid on the same name as many times as you like while it is in
 Bidding, each bid with its own value and lockup. Every bid goes to a fresh
 address and gets its own commitment, so each is revealed and reclaimed on its
-own. The Name Actions modal's header reads "Latest bid … · lockup … · N of
-yours", and the bids panel lists every bid on the name with yours tinted.
+own. The name's page shows "Latest bid … · lockup … · N of yours" in its details, and the bids panel lists every bid on the name with yours tinted.
 **Reveal** and **Redeem** act on all of your bids on that name at once, and
 the confirm dialog sums every output they carry.
 
 A bid you did not reveal in time loses its whole lockup: Handshake lets a bid be spent only by a reveal, and only a reveal can be redeemed, so the coin stays on-chain where nothing can move it. If you bid on a name again in a later auction, the guided panel names that stranded lockup and its amount, once your synced node confirms the coin is still unspent, so the money is not mistaken for part of the new bid. If nobody reveals at all, the auction lapses and the name reads Available to Open again; the guided panel names your unrevealed bid's lockup as stranded there too, once your node confirms the coin is still unspent. Without a synced node to ask, the wallet does not guess: the panel says that some of your bids on the name could not be checked, and to sync with your node to see whether a lockup was lost. Redeem a losing reveal before the name expires. A name the winner revoked can still be redeemed from, and Redeem stays on offer while it reads Revoked; a revoked name expires a fixed number of blocks after the revoke (about 29 days on mainnet), any other name at the end of its renewal window. Redeem stops at expiry, not when a new auction opens: in the last block before the name expires the wallet no longer offers it, nor shows the name as a lost bid to redeem, since a redeem would be mined after the expiry, and from then on Handshake no longer redeems a reveal of that auction, which the guided panel names as stranded too.
 
-### Active Auctions
+### Names in auction
 
-The Auctions page shows all names you currently have positions in — pending
-OPEN, open bids, reveals owed — merged into a single list with live phase.
-The **Locked in Auctions** balance on the Wallet page mirrors the HNS tied up
-here.
+Names › In auction lists every name you have a position in: pending OPEN, open bids, reveals owed. **Locked in auctions** on the Wallet page mirrors the HNS tied up here.
 
-### Reveal alert
+### Reveal reminder
 
-A yellow banner appears on the Wallet page any time you have bids in the
-Reveal phase, with a countdown. **If you don't reveal, you lose your lockup.**
+Needs you on the Wallet page lists any bid in the Reveal phase, with a countdown. **If you don't reveal, you lose your lockup.**
 
 ### Recovering a lost bid commitment
 
 Handshake bids need a local "commitment" row (nonce + true value) to reveal.
 Namehold stores this automatically when you bid, but if you lose the file
 (reinstall without a backup, seed-restore into a fresh install, or import a
-bid you made in another hsd-compatible wallet like Bob), the Name Actions
-modal shows a **Recover bid** panel during the REVEAL phase.
+bid you made in another hsd-compatible wallet like Bob), the name's page shows a **Recover bid** panel during the REVEAL phase.
 
 You have two options:
 
@@ -319,16 +278,13 @@ wallets — see [RECOVER_LOST_BIDS.md](RECOVER_LOST_BIDS.md).
 
 ### Advanced actions
 
-Click **Show all actions** at the bottom of the Name Actions modal to reveal
-Update, Renew, Transfer, Finalize, Cancel, and Revoke — only relevant for
-names you already own.
+A name's page has four tabs: Overview, DNS records, Transfer & sell, and Sign message. Update is in DNS records (Publish changes (Update)); Transfer, Finalize, Cancel transfer, Sell…, Renew and Revoke… are in Transfer & sell, for names you own.
 
 ---
 
 ## 9. DNS records editor
 
-The DNS editor lives inside the Name Actions modal (Register and Update
-actions) for owned names.
+The DNS editor lives in the guided Register panel and in the name page's DNS records tab.
 
 ### Prefilled from the chain
 
@@ -345,14 +301,14 @@ editor opens empty.
 | **NS** | Nameserver hostname |
 | **DS** | Key tag, algorithm, digest type, digest hex |
 | **GLUE4** / **GLUE6** | Hostname + IPv4/IPv6 address |
-| **SYNTH4** / **SYNTH6** | Hostname + IPv4/IPv6 address (synthesized) |
+| **SYNTH4** / **SYNTH6** | IPv4/IPv6 address (synthesized) |
 
 Click **+ Add record** to append a row. Records are optional — you can register
 a name with no records and add them later via an Update.
 
 ### Raw-JSON advanced view
 
-A toggle switches the editor into raw-JSON mode for unusual records or when
+**Advanced (raw JSON)** switches the editor into raw-JSON mode for unusual records or when
 you already have a records object you want to paste. Example:
 
 ```json
@@ -363,16 +319,16 @@ you already have a records object you want to paste. Example:
 
 ## 10. Managing names you own
 
-In the Name Actions modal for an owned name, click **Show all actions**:
+On a name's Transfer & sell tab (Update is on its DNS records tab):
 
 | Action | What it does |
 |--------|--------------|
 | **Update** | Replace the on-chain DNS records (uses the DNS editor). |
 | **Renew** | Extend the name's expiry. Not right after the name was registered, renewed or finalized: the network accepts a renewal only 36 blocks (about 6 hours) later on mainnet and testnet, 5 on regtest, and until then the button says how many blocks are left. |
-| **Transfer** | Start a transfer to another Handshake address. Enters a `TRANSFER` covenant. |
+| **Start transfer** | Start a transfer to another Handshake address. Enters a `TRANSFER` covenant. |
 | **Finalize** | Complete a transfer after the lockup period (mainnet: ~2 days). |
-| **Cancel** | Revert a pending transfer before it's finalized. |
-| **Revoke** | Permanently burn the name (irreversible). |
+| **Cancel transfer** | Revert a pending transfer before it's finalized. |
+| **Revoke…** | Permanently burn the name (irreversible; type the name to confirm). |
 
 All of these need the signer unlocked and a synced node.
 
@@ -382,13 +338,12 @@ Sign message opens the secure window with the full text. Cancel signs nothing. T
 
 ### Batch operations
 
-Select multiple names in the Owned Names table using the checkboxes (or the
-header checkbox to select all). A batch action bar appears at the bottom:
+Select names on the Names page using the checkboxes (or the header checkbox to select all). A batch action bar appears above the list:
 
 - **Renew Selected** — renew all selected names in a single transaction.
 - **Reveal Selected** — bulk reveal all selected names' bids (enabled when
   every selected name is in REVEAL phase).
-- **Redeem Selected** — bulk sweep losing-bid coins from selected names.
+- **Redeem Selected** — bulk sweep losing-bid coins from selected names. A lost auction that is not among your names has no checkbox: use Redeem on its row.
 - **Finalize Selected** — bulk finalize outgoing TRANSFERs whose lockup has
   expired.
 - **Transfer Selected…** — transfer all selected names to one recipient: press
@@ -398,14 +353,9 @@ Each batch action opens a **confirmation modal** showing the count, the amount
 the transaction moves (every output except change — a batch reveal or redeem
 carries one per bid), the estimated fee, and a collapsible list of the
 selected names. Cancel closes without
-broadcasting; Confirm signs + broadcasts the draft in one step. Batch Bid also shows "Locked until you reveal: N x L HNS = T HNS" and a forfeit warning on the check and confirm steps.
+broadcasting; Confirm signs + broadcasts the draft in one step. Batch Bid also shows "Locked until you reveal: N × L HNS = T HNS" and a forfeit warning on the check and confirm steps.
 
-A batch is built in the wallet as one transaction with one txid, so it either
-all lands or none of it does. There is no chunking and no `createbatch` RPC in
-hsd. The wallet caps a batch at 100 names, well under hsd's per-transaction
-covenant limits (300 OPENs, 600 UPDATEs, 600 RENEWs), and per-block limits are
-the same as per-transaction ones — so a full batch is never refused for
-carrying too many covenants.
+Up to 100 names go in one transaction with one txid, so they all land or none do, well under hsd's per-transaction covenant limits (300 OPENs, 600 UPDATEs, 600 RENEWs). A larger selection goes out as a series of transactions of up to 100 after one confirmation; if one fails, the names not yet sent stay selected.
 
 ### Names written with look-alike letters
 
@@ -413,7 +363,7 @@ A name can use letters of another alphabet that look Latin: `.аpple` with a Cyr
 
 ### Buying names on the Market
 
-The Market is the fourth sidebar section (hotkey `4`, right after Auctions, marked New). It lists the names that sellers have put up for sale through Shakedex, taken from the LearnHNS Market, and lets you buy one with the wallet you already have.
+The Market is the third sidebar section (hotkey `3`, right after Names, marked New). It lists the names that sellers have put up for sale through Shakedex, taken from the LearnHNS Market, and lets you buy one with the wallet you already have.
 
 A listing is either a fixed price (Buy Now) or a reverse auction whose price steps fall over time to a floor. The Browse tab shows them in one list: listings you imported first, then those of the LearnHNS Market. Each row shows the name, the price now (the price the wallet buys at), the next price for a reverse auction ("↓ 1,100 HNS in ~6 h", or "At its floor"; "Fixed price" otherwise) and whether your node checked it. Those times are approximate, because they are measured against your node's median time: a step becomes valid once its lock time, rounded down to a multiple of 512 seconds, is below that median time, so it can be listed as "now" up to about eight and a half minutes before its own lock time. Above the list, "Find a name" searches by name, the All / Fixed price / Price drops buttons filter by kind, and the sort puts the lowest price first (the default), the soonest price drop first, or the newest first (imports, then the market's own order). A row can carry one tag: "Bought" for a name you are buying, "Expires soon" when the name expires about a month after the earliest finalize, or "From file" / "From link" for an import.
 
@@ -433,11 +383,11 @@ Your purchases, a card at the top of Browse, lists every purchase bought and not
 
 On the Market, `/` focuses the search, `i` opens Import, `j` and `k` (or the arrow keys) move through the list, and `Enter` presses the panel's button.
 
-A purchase appears in Owned Names with its own status: "Unconfirmed purchase" until the transaction confirms, then "Awaiting finalize · N blocks" while the transfer delay runs (288 blocks, about two days, on mainnet and testnet; 10 on regtest; the Market panel states it for your network), then "Ready to finalize" with a Finalize button, and "Finalize · waiting for a block" once the finalize is sent. The name becomes yours only after you finalize it, and Finalize is never gated by the mainnet setting. When it is done, update the DNS records, because the name keeps the seller's. Finalize before the name expires: the Market panel warns when the name expires soon after the finalize becomes possible. A purchase whose name expires unfinalized is lost: the price was paid, but the name is not yours. The row leaves Owned Names, and Activity marks the purchase "Lost" and shows the reason under it; so does any purchase that ends without the name, paid or not.
+A purchase appears on the Names page as Bought, with "waiting for the purchase to confirm" until the transaction confirms, then "awaiting finalize · N blocks left" while the transfer delay runs (288 blocks, about two days, on mainnet and testnet; 10 on regtest; the Market panel states it for your network), then "ready to finalize" with a Finalize button, and "finalize sent" with a "Finalize · waiting for a block" badge once the finalize is sent. The name becomes yours only after you finalize it, and Finalize is never gated by the mainnet setting. When it is done, update the DNS records, because the name keeps the seller's. Finalize before the name expires: the Market panel warns when the name expires soon after the finalize becomes possible. A purchase whose name expires unfinalized is lost: the price was paid, but the name is not yours. The row leaves the Names page, and Activity marks the purchase "Lost" and shows the reason under it; so does any purchase that ends without the name, paid or not.
 
 ### Selling names through Shakedex
 
-Sell is in a name's actions, in the Ownership section next to Transfer. It opens the Lock dialog, the first of a sale's two steps: choose Buy Now (one price) or Reverse auction (the price falls step by step to a floor), and, on mainnet, whether to publish the listing on LearnHNS Market. The price, or a reverse auction's schedule, is not asked here: you set it at Finalize & sign, once the transfer lockup is over (288 blocks, about two days, on mainnet and testnet; 10 on regtest). Lock name builds a transfer of the name to its lock address; the name stays at your own address until that transfer is finalized into the lock. Locking needs the unlocked signer: on a locked wallet Sell is disabled until you unlock it, and if the signer locks while the dialog is open, the dialog asks you to unlock it again and carries on. Sign and send the lock confirms it in the secure window, as for any other spend. Back, or closing the dialog, after the lock is built discards the transaction that was not sent.
+Sell… is on a name's Transfer & sell tab, in the Sell on the market card. It opens the Lock dialog, the first of a sale's two steps: choose Buy Now (one price) or Reverse auction (the price falls step by step to a floor), and, on mainnet, whether to publish the listing on LearnHNS Market. The price, or a reverse auction's schedule, is not asked here: you set it at Finalize & sign, once the transfer lockup is over (288 blocks, about two days, on mainnet and testnet; 10 on regtest). Lock name builds a transfer of the name to its lock address; the name stays at your own address until that transfer is finalized into the lock. Locking needs the unlocked signer: on a locked wallet Sell is disabled until you unlock it, and if the signer locks while the dialog is open, the dialog asks you to unlock it again and carries on. Sign and send the lock confirms it in the secure window, as for any other spend. Back, or closing the dialog, after the lock is built discards the transaction that was not sent.
 
 The dialog states what locking costs: "Once the name is finalized into the lock, its DNS records cannot be changed and it cannot be renewed; the listing lasts at most one renewal window from that finalize, which renews the name."
 
@@ -477,9 +427,9 @@ Once the transfer lockup is over the row reads Ready to Finalize & sign, and Fin
 
 A wallet restored from its recovery phrase looks for the names it had locked for sale once, by itself: at the first sync that ends with the wallet unlocked, it reads its own address history from your node and restores every name still in this wallet's lock, as "Locked — listing details unknown" in My listings, with one message saying how many it found ("Found 2 names locked for sale · restored in My listings"). It needs a recovery-phrase wallet, a synced node that can send, with the address index (`--index-tx` and `--index-address`); with the wallet locked, My listings says that names possibly listed from this phrase were found and offers Unlock. A lock still on its way in, a name sold, cancelled or expired, and a lock cancelled or bought are skipped without a message. A node without the index, or one still syncing, runs no search, and it is tried again at the next sync; so is a search that could not read every address or name, or that found history at the newest addresses the wallet watches, before the next sync has gone past them. After one search has finished, it runs again only when you press "Find my locks" in My listings ("No locked names found" when there is nothing new, or "Some addresses or names could not be read from your node. Try again later." when that search could not read everything), so a lock made later from another device of the same phrase is not taken behind your back. Without the index, or for a name the search skipped, use the manual way. Under the list, "Restore a lock by name" takes the name of a listing it had (when the wallet reads the typed name differently, the line under the field says which name it restores, "Restores .<name>"): the wallet checks on your node that the name sits in this wallet's lock, finalized into it, and adopts it as "Locked — listing details unknown"; anything else (an expired or revoked name, a name not in this wallet's lock, a name still on its way into the lock, a lock already cancelled or bought) is refused with the reason. It needs a recovery-phrase wallet, a node that can send and the unlocked signer. A restored lock can be cancelled at once. Import its listing file, on its row, takes the listing file saved for that lock, pasted or chosen on disk, and makes the lock a full listing again, Listed for sale with its prices; a file for another lock key or another lock coin, paying an address that is not this wallet's, or naming a market fee is refused with the reason. A file paying one of this wallet's first 1000 receive addresses is accepted even when that address lies beyond the ones the restore provisioned, and the address is then added to the wallet, so the payment of a sale is seen.
 
-#### On Owned Names and in Activity
+#### On the Names page and in Activity
 
-A name you are selling shows its listing's state on its Owned Names row, in place of what the name needs next: "Locking · N blocks" while the transfer lockup runs (counted once the lock transfer is mined; "Locking" before that), then the states of My listings ("Ready to Finalize & sign", "Listed for sale", "Cancelled · finalize to bring it home", and so on), and "Sold" for a week after a sale. A lock restored by name reads "Locked — listing details unknown". A name in your lock that is no longer a coin at your own addresses still has its row, at the lock address. The row's My listings button opens Market › My listings, where the listing's actions are; while the listing is open, the name's own Update, Transfer, Renew and Revoke are disabled with "this name is locked for sale through Shakedex". Once a cancelled listing's name is home, the row is an ordinary name again.
+A name you are selling shows its listing's state on its Names row, in place of what the name needs next: "Locking · N blocks" while the transfer lockup runs (counted once the lock transfer is mined; "Locking" before that), then the states of My listings ("Ready to Finalize & sign", "Listed for sale", "Cancelled · finalize to bring it home", and so on), and "Sold" for a week after a sale. A lock restored by name reads "Locked — listing details unknown". A name in your lock that is no longer a coin at your own addresses still has its row, at the lock address. The row's My listings button opens Market › My listings, where the listing's actions are; while the listing is open, the name's own Update, Transfer, Renew and Revoke are disabled with "this name is locked for sale through Shakedex". Once a cancelled listing's name is home, the row is an ordinary name again.
 
 With deadline notifications on (Settings › Notifications), Namehold sends a "Ready to finalize" notification when a name you bought can be finalized ("<name> is paid for — finalize it to make it yours", once), when a listing's transfer lockup is over ("<name>: the transfer lockup is over — Finalize & sign to lock it in and set its price", repeated daily while it waits) and when a cancel's lockup is over ("<name>: the cancel's transfer lockup is over — finalize it to bring the name home"). These three reminders come from the background sync daemon (`namehold-syncd`) while it runs, so they arrive with the app window closed too, and from the app only while the daemon is not running its reminder step; either way each one is sent once (the listing one once a day).
 
@@ -506,43 +456,15 @@ and what a working implementation would need.
 
 ---
 
-## 10b. Name watchlist
+## 10b. Watching names
 
-The **Watchlist** page (sidebar) lets you track names you don't own:
-
-- **Add a name** — enter the name in the input field and click "Add".
-- **From name modals** — the Manage and Info modals now show an
-  **Add to Watchlist** / **Remove from Watchlist** toggle in the header, so
-  you can start tracking a name straight from any auction view.
-- **Columns** — the table shows:
-  - **Name** — clickable (opens the name info modal). An **Owned** badge
-    appears next to names owned by the active wallet profile.
-  - **State** — current auction phase badge (Opening, Bidding, Reveal, Closed,
-    etc.) fetched live from the node or explorer.
-  - **Countdown** — time until the next phase transition, e.g. "Bidding opens
-    in 42 blocks (~7h)" or "Expires in 2400 blocks". Uses the same helpers as
-    the Auctions view.
-  - **Highest bid** — the highest revealed bid so far (HNS). Visible during
-    Reveal and Closed phases.
-  - **Expires** — days until the name expires (colour-graded: green > 90d,
-    yellow 30–90d, red ≤ 30d). Matches the Renewals view thresholds.
-  - **Tags** — inline-editable comma-separated tags.
-  - **Added** — date the name was added to the watchlist.
-- **Tags** — click any tag cell to edit a comma-separated list of tags (e.g.
-  `auctions, expiring-soon, competitors`). Tags are stored per name and
-  round-trip through CSV export/import.
-- **Remove** — click the "Remove" button to stop tracking a name.
-- **CSV export / import** — export your watchlist to
-  `name,tags,notes,added_at,state,expiry` CSV, and re-import into any wallet.
-  Import is additive (existing rows are preserved).
+Names you don't own are tracked on the Names page, under the Watching chip (`/watchlist` redirects there). Press the star on a row, Watch on a Names lookup's card, or Watch in a name page's header; press the star again to stop. Rows have the columns Name, Status, Value / bid and Expires, and a watched row has tags (click to edit a comma-separated list, also in the row's More menu › Edit tags). Import CSV and Export CSV use `name,tags,notes,added_at,state,expiry`; import is additive.
 
 The watchlist is stored in the local SQLite database (`watched_names` table).
-A daemon-written cache (`watched_name_states`) provides instant column data on
-first page open; live RPC refreshes every 30 seconds while the page is visible.
 
 ### Watchlist notifications (background alerts)
 
-Enable in **Settings → Watchlist notifications**. When on, the background sync
+Enable in **Settings › Notifications › Watchlist notifications**. When on, the background sync
 daemon (`namehold-syncd`) polls each watched name every ~60 seconds and fires
 OS notifications when:
 
@@ -562,7 +484,7 @@ same name are treated as fresh episodes.
 |-------|---------|-------|
 | Enable watchlist notifications | Off | Opt-in; triggers OS permission prompt on first enable |
 | Bidding-soon lead time (blocks) | 144 | ~1 day before BIDDING opens |
-| Highest-bid alert threshold (HNS) | (blank = off) | Alert when any watched name's highest bid crosses this value upward |
+| Highest-bid threshold (HNS) | (blank = off) | Alert when any watched name's highest bid crosses this value upward |
 
 **macOS note:** The daemon binary runs unbundled, so notifications may show a
 generic sender icon rather than the Namehold app icon. The alert text is
@@ -580,30 +502,29 @@ The "Ready to finalize" reminders of a Shakedex purchase, listing or cancel (see
 
 ## 11. Node control
 
-All node settings live under **Settings → Connections**.
+Connection settings are under **Settings › Connections**: chain source, node RPC URL and API key, remote sending and explorers. The node's own (data directory, hsd binary path, autostart, Sync in background, Start and Stop) are under **Settings › Node & tray**.
 
 ### Fields
 
 | Field | Default | Notes |
 |-------|---------|-------|
 | **Chain source** | **Local full node** | Which node the wallet sends through: **Local full node** (hsd on this device, full indexes), **SPV — lightweight, read-only** (headers only, explorer for data), **Remote node** (someone else's hsd RPC), or **Read-only (never send)**. Reads are not routed by this selector: they come from the node whenever it is synced and on your wallet's network, and from the explorer otherwise. |
-| **Node RPC URL** | `http://127.0.0.1:12037` | When chain source is Local full node or Remote node. Mainnet 12037, testnet 13037, regtest 14037. |
-| **Node RPC API key** | (empty) | For remote nodes: match the remote hsd's `--api-key`. For a node the app starts it is that node's key; left empty, the app generates a new one at every start and never shows it. With no key configured, that node answers 401 to keyless `hsd-cli` and `hsw-cli` and on its wallet API (12039): to use them, set a key here, then stop and start the node. On Windows, set a key before starting a node from the app. |
+| **Node RPC URL** | `http://127.0.0.1:12037` | Mainnet 12037, testnet 13037, regtest 14037. |
+| **Node RPC API key** | (empty) | For remote nodes: match the remote hsd's `--api-key`. For a node the app starts it is that node's key; left empty, and with no `api-key` in the `hsd.conf` of a configured data directory, the app generates a new one at every start and never shows it. With no key configured, that node answers 401 to keyless `hsd-cli` and `hsw-cli` and on its wallet API (12039): to use them, set a key here, then stop and start the node. On Windows, set a key before starting a node from the app. |
 | **Allow sending via remote node** | **off** | When chain source is Remote node, enable this to broadcast signed transactions to the remote node. Off by default for safety. |
 | **Explorer base URL** | (network-dependent) | Mainnet: `https://e.hnsfans.com`. Testnet/regtest have no default explorer — set one explicitly if you have one. |
 | **Explorer fallback URL** | (empty) | When the primary explorer is unreachable, automatically tries this URL. Leave empty to disable failover. |
 | **Node data directory (`hsd --prefix`)** | (system default) | Use **Browse…** to pick. Local hsd only. |
-| **hsd binary path** | (auto) | Only needed if hsd isn't on PATH. Local hsd only. Must be the full path of an executable file that only its owner can change, owned by you or by root; a link is stored as the file it leads to, so for Homebrew leave the path empty, or confirm it again after an upgrade. |
+| **hsd binary path** | (auto) | Only needed if hsd isn't on PATH. Local hsd only. Must be the full path of an executable file; on macOS and Linux, one that only its owner can change, owned by you or by root; a link is stored as the file it leads to, so for Homebrew leave the path empty, or confirm it again after an upgrade. |
 | **Start the mainnet node automatically** (names the active wallet's network) | **on** | Starts that network's hsd when one of its wallets becomes active, and at launch. Each network has its own setting; toggle off to keep that network's hsd manual. Local hsd only. |
-| **Sync in background** | **on** | When enabled, a background daemon syncs your wallet every 60 seconds, even when the app is closed. Local full node only. |
+| **Sync in background** | **on** | When enabled, a background daemon syncs your wallet every 60 seconds, even when the app is closed. |
 
-An explorer other than `e.hnsfans.com`, `shakeshift.com` or one on this computer gets a warning in that window: it sees your addresses and names, and its answers are shown when your node cannot answer. You can still save it.
 
-Saving a change to the node URL or API key, chain source, node mode, "Allow sending via remote node", explorer URLs, hsd program path, hsd data directory or signer session timeout opens the secure window with one line per change. Cancel saves nothing. If a new node host would receive your stored API key, the window adds a warning naming that host; clear or replace the key in the same save to avoid that. URLs must be https, or http only for this computer, written plainly: no user name or password, no percent-encoding or numeric host spelling such as 127.1, and an international host name in its xn-- form. A node on your local network therefore needs https too. A URL saved earlier keeps working until you change it. A node on another machine needs Remote node and "Allow sending via remote node" selected; until then sending shows as unavailable. "Test connection" on a newly typed URL sends no stored key.
+Saving a change to the node URL or API key, chain source, node mode, "Allow sending via remote node", explorer URLs, hsd program path, hsd data directory or signer session timeout opens the secure window with one line per change. Cancel saves nothing. An explorer other than `e.hnsfans.com`, `shakeshift.com` or one on this computer gets a warning there: it sees your addresses and names, and its answers are shown when your node cannot answer. You can still save it. If a new node host would receive your stored API key, the window adds a warning naming that host; clear or replace the key in the same save to avoid that. URLs must be https, or http only for this computer, written plainly: no user name or password, no percent-encoding or numeric host spelling such as 127.1, and an international host name in its xn-- form. A node on your local network therefore needs https too. A URL saved earlier keeps working until you change it. A node on another machine needs Remote node and "Allow sending via remote node" selected; until then sending shows as unavailable. "Test connection" on a newly typed URL sends no stored key.
 
 ### Background sync
 
-The **Sync in background** checkbox (Settings → Connections) keeps your wallet
+The **Sync in background** checkbox (Settings › Node & tray) keeps your wallet
 data fresh without the app being open.
 
 - **When ON (default):** hsd stays running after you close the app. A background
@@ -626,11 +547,11 @@ full node:
 - **Full node** (default): hsd runs with `--index-address --index-tx`. Requires
   ~15GB disk space and initial sync time. Supports sending and full local data.
 - **SPV** (lightweight): hsd runs with `--spv`. Downloads only block headers
-  (~几十MB). Faster initial sync, less disk usage. **Read-only** — cannot send
+  (tens of MB). Faster initial sync, less disk usage. **Read-only** — cannot send
   transactions. Balance and name data come from the explorer.
 
 When SPV mode is active:
-- The **StatusStrip** shows "Explorer (SPV)" to indicate data comes from the explorer.
+- The readiness pill's panel reads "Reads from the explorer (SPV)".
 - **Sending is blocked** with a clear message: "SPV mode cannot send transactions."
 - **Explorer failover** is available — set a fallback URL in Settings for when the
   primary explorer is unreachable.
@@ -638,27 +559,25 @@ When SPV mode is active:
 **To enable SPV mode:**
 1. Go to **Settings → Connections**
 2. Change **Chain source** from "Local full node" to "SPV — lightweight, read-only"
-3. **Save settings** — hsd restarts with `--spv` flag
+3. **Save settings**, confirm in the secure window, then stop and start the node (Settings › Node & tray); it then runs with `--spv`
 4. Data reads now come from the explorer; sending is blocked
 
 **To switch back to full node:**
 1. Change **Chain source** back to "Local full node"
-2. **Save settings** — hsd restarts with `--index-address --index-tx`
+2. **Save settings**, confirm in the secure window, then stop and start the node; it then runs with `--index-address --index-tx`
 3. Full sync begins (may take time if the chain has advanced significantly)
 
 ### Start, stop, status
 
-Below the settings, the **NodeControl** panel shows a live status dot
-(Connected · Starting · Stopped · Syncing %), the read source (**Local** or
-**Explorer**), the data directory and hsd version. Buttons:
+In **Settings › Node & tray**, a panel shows a live status dot (Connected · Starting · Stopped · Syncing %), the read source (**Local node cache** or **Explorer**), the data directory and hsd version. Buttons:
 
-- **Start mainnet node** (named for the active wallet's network) — spawns that network's hsd with the required flags (`--index-address --index-tx`), listening on 127.0.0.1 only: an `http-host` setting in `hsd.conf` does not apply to a node the app starts. If a node already answers on that network's port, it uses it instead. If something else holds the port, Start refuses and says which port: stop what holds it, or, if it is your own hsd, set its key in Settings. Another network's node keeps running: each network has its own.
+- **Start mainnet node** (named for the active wallet's network; on Windows, set a Node RPC API key first) — spawns that network's hsd with the required flags (`--index-address --index-tx`), listening on 127.0.0.1 only: an `http-host` setting in `hsd.conf` does not apply to a node the app starts. If a node already answers on that network's port, it uses it instead. If something else holds the port, Start refuses and says which port: stop what holds it, or, if it is your own hsd, set its key in Settings. Another network's node keeps running: each network has its own.
 - **Stop mainnet node** — stops the active wallet's network's node, if Namehold started it. A node you started yourself is never stopped by Namehold; the button is disabled and says so.
 - **Re-sync node data** — appears only when the app detects an
   **index mismatch** (hsd's existing chain was synced without `--index-address`).
   hsd cannot add indexes retroactively, so this moves the old `blocks/`,
   `chain/`, `tree/` aside and resyncs with the right flags. Expect this to
-  take hours the first time.
+  take hours the first time. The readiness pill also offers Re-sync for a running node.
 
 ### Ports
 
@@ -675,19 +594,18 @@ dot is Connected). Restart the app — it respawns the daemon on startup when
 "Sync in background" is ON. The daemon writes its process ID to
 `~/.namehold/syncd.pid` while alive.
 
-**hsd is still running after I closed the app.** This is expected when "Sync in background" is enabled: every node Namehold started (one per network) stays alive so the daemon can sync in the background, and on macOS and Linux the next launch still knows they are Namehold's (on Windows it does not, and such a node is then used but not stopped by Namehold). To stop them, either disable "Sync in background" (they are then stopped on the next app close, on macOS and Linux including ones left from an earlier session) or switch to a wallet of that network and click **Stop mainnet node** (or the network you are on) in Settings → Connections.
+**hsd is still running after I closed the app.** This is expected when "Sync in background" is enabled: every node Namehold started (one per network) stays alive so the daemon can sync in the background, and on macOS and Linux the next launch still knows they are Namehold's (on Windows it does not, and such a node is then used but not stopped by Namehold). To stop them, either disable "Sync in background" (they are then stopped on the next app close, on macOS and Linux including ones left from an earlier session) or switch to a wallet of that network and click **Stop mainnet node** (or the network you are on) in Settings › Node & tray.
 
-**I want to stop background sync.** Uncheck **Settings → Connections → "Sync in
-background"**. The daemon exits immediately, and hsd is stopped the next time you
+**I want to stop background sync.** Uncheck **Settings › Node & tray › "Sync in background"**. The daemon exits immediately, and hsd is stopped the next time you
 close the app.
 
 ---
 
-## 12. Move from Namebase
+## 12. Import from Namebase
 
-The legacy custodial Namebase platform (sunset.namebase.io) closed on 1 October 2026. Every request to it now returns "Namebase has shut down", so this screen can no longer connect with a session cookie, list your custodial domains, transfer names out or withdraw HNS.
+The legacy custodial Namebase platform (sunset.namebase.io) closed on 1 October 2026. Every request to it now returns "Namebase has shut down", so the wallet can no longer connect with a session cookie, list your custodial domains, transfer names out or withdraw HNS.
 
-What the screen does now:
+What **Settings › Backup & import › Import from Namebase** does (it was "Move from Namebase" in the sidebar until 0.7.0):
 
 1. Explains the shutdown and links to Namebase's sunset guide. According to Namebase, names and HNS still held there can only be recovered through their manual recovery process, which involves extra verification, longer processing and fees. Contact Namebase for it; the wallet cannot do it for you.
 2. Imports an account-history CSV you exported from Namebase before the shutdown (**Upload CSV**), so your past activity stays visible. "Fetch from Namebase" is disabled because there is nothing left to fetch.
@@ -704,22 +622,21 @@ background sync daemon running even after you close the main window.
 
 ### Close to tray
 
-Enabled by default (**Settings → System Tray → "Close to tray"**). Clicking the
-window's close button hides Namehold to the tray instead of quitting. Click the
-tray icon or choose **Open Namehold** from the tray menu to restore the window.
-Use **Quit** from the tray menu to fully exit.
+Enabled by default (**Settings › Node & tray › System Tray › "Close to tray"**). Clicking the
+window's close button hides Namehold to the tray instead of quitting. Click the tray icon and choose **Open Namehold** to restore the window.
+Use **Quit Namehold** from the tray menu to fully exit.
 
 ### Launch at login
 
-**Settings → System Tray → "Launch at login"** registers Namehold to start
+**Settings › Node & tray › System Tray › "Launch at login"** registers Namehold to start
 automatically when you log in (LaunchAgent on macOS, Run key on Windows,
 `.desktop` on Linux). Pairs well with "Close to tray" for an always-available
 menu-bar experience.
 
 ### Tray menu
 
-Right-click the tray icon for: **Open Namehold**, live **node status** with a
-Start/Stop toggle, a **Sync in background** checkbox, and **Quit**. The tray
+Click or right-click the tray icon for: **Open Namehold**, live **node status** with a
+Start/Stop toggle, a **Background sync** checkbox, and **Quit Namehold**. The tray
 icon reflects node state (normal / syncing / stopped) and adapts to light/dark
 menu bars on macOS.
 
@@ -760,7 +677,7 @@ minisign -V -m SHA256SUMS -x SHA256SUMS.minisig -p namehold.pub
 gh attestation verify Namehold_*.dmg --repo DimazzzZ/namehold-wallet
 ```
 
-Every file on the release has its own `.sig`, checked the same way. These show that a file matches what the release workflow built and signed. They are made with the key that also signs updates, online in that workflow, so they do not protect against someone who has stolen that key.
+Every file on the release except `latest.json`, whose entries carry the signatures, has its own `.sig`, checked the same way. These show that a file matches what the release workflow built and signed. They are made with the key that also signs updates, online in that workflow, so they do not protect against someone who has stolen that key.
 
 On first launch macOS may show:
 
@@ -778,7 +695,7 @@ Then open the app normally.
 
 ---
 
-## 14. Security
+## 15. Security
 
 - **Non-custodial.** Your keys live on your device, encrypted at rest with
   Argon2id + AES-256-GCM. Nothing is custodied.
@@ -788,7 +705,7 @@ Then open the app normally.
 - **Local-first.** No cloud, no telemetry. Keys and secrets stay on your
   device. By default, balance/name lookups go to the public HNSFans explorer,
   which therefore sees your wallet addresses and the names you track; running
-  your own hsd node keeps those lookups fully local. The only other outbound HTTP is to your configured node and, when you use the Market, to LearnHNS Market (browsing and buying, and publishing a listing you chose to publish on mainnet).
+  your own hsd node keeps those lookups fully local. The only other outbound HTTP is to your configured node, to GitHub Releases for the update check, and, when you use the Market, to LearnHNS Market (browsing and buying, and publishing a listing you chose to publish on mainnet).
 - **Localhost-first.** Namehold connects to hsd on `127.0.0.1` by default; another host needs https and your confirmation in the secure window, and sending through it needs "Allow sending via remote node".
 - **Auto-lock.** The unlocked signer times out after a configurable idle period (Settings → Advanced → Signer session timeout, default 15 min) and at the latest one hour after unlock.
 - **Background sync never signs or sends.** The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market. When "Sync in background" is enabled, the `namehold-syncd` daemon reads from hsd and writes sync data to the local database; it never has access to key material. Your keys stay locked in the encrypted vault.
@@ -798,28 +715,22 @@ Then open the app normally.
 
 ---
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
-### Header shows "READ-ONLY" and Send is disabled
+### The pill says "Can't send" or "Locked", and Send is disabled
 
-Hover the button (or open the Send dialog) to see the exact reason. Common
-ones:
+Click the readiness pill, top right, or hover Send, for the exact reason. Common ones:
 
-- **"Signer locked"** — click **Unlock** on the account bar.
-- **"Node not synced (N%)"** — wait for hsd to finish syncing.
-- **"hsd not address-indexed"** — hsd was started without `--index-address`.
-  Restart hsd from Settings → Connections; the app adds the flag. If your
-  chain was already synced without it, use **Re-sync node data**.
-- **"Your node doesn't report its indexes (hsd older than 7.0)"** — the node is
-  an hsd older than 7.0, which cannot say whether it has the address index.
-  Update hsd to 7.0 or newer.
-- **"Your node's status couldn't be read"** — the node answered the sync check but not its status (`GET /`), so the wallet cannot tell whether it has the address index. Check that hsd is running and reachable at the RPC URL, then Refresh.
-- **"Node unreachable"** — check that hsd is running (Settings shows a red dot)
-  and the RPC URL/API key match.
+- **"Locked · unlock to send"**: press Unlock in the pill, or the lock button beside the wallet card in the sidebar.
+- **"Your local node is still syncing (N%)…"**: wait for hsd to finish syncing.
+- **"Your node isn't address-indexed — restart hsd with address indexing…"**: hsd was started without `--index-address`. Restart it from Settings › Node & tray; the app adds the flag. If your chain was already synced without it, use **Re-sync node data**.
+- **"Your node doesn't report its indexes (hsd older than 7.0)…"**: update hsd (8.0 or newer if the app starts it).
+- **"Your node's status couldn't be read…"**: check that hsd is running and reachable at the RPC URL, then press Sync.
+- **"Start your local node (<url>) to send."**: start it from the pill or Settings › Node & tray (the dot there is grey when stopped), and check that the RPC URL and API key match.
 
 ### The balance shows 0 with "Your node can't report this wallet's coins"
 
-The last sync could not read this wallet's coins from your node, so the balance is what the wallet last stored, which is 0 for a wallet never synced through an indexed node. The line under the balance gives the reason the sync recorded: most often hsd was started without `--index-address` (restart it from Settings → Connections), or it is older than 7.0 and cannot say whether it has the index (update it). The next sync through a node that can report the coins removes the line.
+The last sync could not read this wallet's coins from your node, so the balance is what the wallet last stored, which is 0 for a wallet never synced through an indexed node. The line under the balance gives the reason the sync recorded: most often hsd was started without `--index-address` (restart it from Settings › Node & tray), or it is older than 7.0 and cannot say whether it has the index (update it). The next sync through a node that can report the coins removes the line.
 
 ### Activity says "Your node does not have --index-tx enabled"
 
@@ -828,7 +739,7 @@ Activity reads the history with hsd's address and transaction indexes, and the b
 ### The DNS editor opens empty for a name I know has records
 
 Prefill needs a synced node. If you're on Explorer reads only, the editor
-starts empty. Start / wait for hsd and re-open the modal.
+starts empty. Start / wait for hsd and re-open the name's DNS records tab.
 
 ### "Cannot retroactively enable indexing" from hsd
 
@@ -858,12 +769,11 @@ The dialog stays open with the exact error. Common causes: not enough HNS to cov
 
 ### CSV import shows errors
 
-Check that your CSV has a `Name` column, names don't have leading/trailing
-spaces, and duplicate rows are OK (they're updated, not errors).
+The first column must be the name, and a header row is optional. One row that is not a Handshake name stops the import and nothing is stored. Names already on your list are skipped, not updated.
 
 ---
 
-## 16. Auto-update
+## 17. Auto-update
 
 Starting with **v0.2.0**, Namehold checks for its own updates automatically.
 You don't need to visit a website or run a package manager; new signed
@@ -898,9 +808,7 @@ signing key never touches your machine.
 
 ### Checking your current version
 
-Open **Settings > Updates**. Your running version is shown at the top of
-the card (e.g. "Current version: v0.6.0"). This is currently the only
-in-app surface that displays the app version.
+Open **Settings › Updates**. Your running version is shown at the top of the card (e.g. "Current version v0.7.0"). It is also in the sidebar's footer and on the About page.
 
 ---
 

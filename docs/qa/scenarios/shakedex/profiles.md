@@ -25,13 +25,13 @@ Steps:
 
 1. Wallet page → switch profile in the header → go straight to Market › My listings without waiting; snapshot the rows right after the page renders, and again after 5 s.
 2. Open Market › Browse right after the switch.
-3. Three full cycles seller ↔ second device. Read Owned Names and the balance after each switch too.
+3. Three full cycles seller ↔ second device. Read the Names page and the balance after each switch too.
 
 Expected:
 
 - My listings never shows a row, state or button of the other profile, not even for a moment; while the new profile's list loads it may show a loading state or nothing, never the old rows.
 - Browse in a regtest profile shows "Nothing is listed right now" / "There is no LearnHNS Market on this network. If a seller sent you a listing directly, import it." with `Import listing…` in the header, and no rows (and no Your purchases entries) carried over from the other profile.
-- Owned Names and the balances never swap.
+- The Names page and the balances never swap.
 - After each switch the header shows `Signer locked` (the switch drops the other profile's signer); `Signer unlocked` right after a switch is ❌.
 - Passes if none of the snapshots (two per switch, six switches) shows a foreign row.
 

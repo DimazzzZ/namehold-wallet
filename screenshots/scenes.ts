@@ -24,4 +24,6 @@ export const SCENES: Scene[] = [
       await page.getByRole("tab", { name: "My listings" }).click();
     },
   },
+  { file: "activity", route: "/activity" },
+  { file: "settings", route: "/settings" },
 ];

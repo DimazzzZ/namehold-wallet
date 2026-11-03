@@ -52,6 +52,8 @@ async function main() {
       await page.addInitScript(showcase);
       const unmocked = watchUnmocked(page);
       await page.goto(BASE + scene.route);
+      // The browser mock's own notice: true of this harness, not of the app.
+      await page.addStyleTag({ content: '[data-testid="web-qa-banner"]{display:none}' });
       await settle(page);
       await scene.prepare?.(page);
       await settle(page);

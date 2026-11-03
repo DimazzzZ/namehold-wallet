@@ -222,7 +222,7 @@ fn build_redeem_draft_reclaims_reveal_value_to_its_address() {
     );
 }
 
-/// Reported from a live wallet: the confirm dialog offered to reclaim three
+/// Seen in practice: the confirm dialog offered to reclaim three
 /// losing bids worth 28 HNS and showed 12 — the value of the first output
 /// alone. Outbidding yourself is the ordinary case this whole path exists for,
 /// so a multi-output redeem is not an edge, and the one figure the user checks

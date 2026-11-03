@@ -26,13 +26,13 @@ npx playwright test
 ### What can be validated
 - Navigation and layout rendering
 - Form validation (send HNS, bid amounts, transfer addresses)
-- Modal flows (NameActionsModal, wallet management, settings)
+- Name pages (`/names/:name`), wallet management, settings
 - Button enable/disable logic (gating by signer lock, node sync state)
 - Status badge rendering
 - Settings UI (node controls, explorer URL, RPC URL)
 - Auction lookup and phase badge display
 - Wallet switching and add-wallet flows
-- Background sync toggle (**Settings → Connections → "Sync in background"**) —
+- Background sync toggle (**Settings › Node & tray → "Sync in background"**) —
   checkbox enable/disable, toast feedback, form state revert on failure
 
 ### Current limitations
@@ -77,7 +77,7 @@ Then use the `cua-driver` skill for background automation (snapshot → click/ty
 
 To verify background sync works correctly:
 
-1. **Enable background sync:** Toggle **Settings → Connections → "Sync in
+1. **Enable background sync:** Toggle **Settings › Node & tray → "Sync in
    background"** ON. Confirm the daemon spawns (check `~/.namehold/syncd.pid`
    exists and contains a valid PID).
 2. **Close the app:** Verify hsd is still running (e.g., `ps aux | grep hsd` or
@@ -100,21 +100,22 @@ Full end-to-end lifecycle validation with real hsd RPC. This is the only mode wh
 1. hsd installed and available on PATH
 2. A regtest node running:
    ```bash
-   hsd --network=regtest --daemon
+   scripts/regtest.sh start
    ```
 3. The app configured to connect to `http://127.0.0.1:14037` (regtest RPC port).
 4. The regtest wallet funded by mining blocks:
    ```bash
-   hsd-cli rpc generate 200
+   scripts/regtest.sh mine 200 <address>
    ```
 
 ### Auction lifecycle on regtest
 ```bash
 # Mine blocks to advance through auction phases
-hsd-cli rpc generate 1    # advance 1 block
-hsd-cli rpc generate 720  # advance through OPENING phase
-hsd-cli rpc generate 720  # advance through BIDDING phase
-hsd-cli rpc generate 1440 # advance through REVEAL phase
+# (regtest: tree interval 5, bidding 5, reveal 10)
+scripts/regtest.sh mine 1 <address>  # advance 1 block
+scripts/regtest.sh mine 6 <address>  # advance through OPENING phase
+scripts/regtest.sh mine 5 <address>  # advance through BIDDING phase
+scripts/regtest.sh mine 10 <address> # advance through REVEAL phase
 ```
 
 ### What can be validated
@@ -132,9 +133,9 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 
 ### A. Shell & navigation
 - [ ] App loads without console errors
-- [ ] All sidebar routes render: Wallet, Auctions, Watchlist, Move from Namebase, Settings
-- [ ] Status strip shows correct wallet/network/signer/node/source badges
-- [ ] Beta warning banner visible
+- [ ] All sidebar routes render: Wallet, Names, Market, Activity, Settings; `/auctions`, `/watchlist` and `/migration` redirect
+- [ ] Readiness pill shows wallet, signer, node and read source in its panel
+- [ ] Beta badge in the sidebar, with its warning on hover
 
 ### B. Settings & node status
 - [ ] Explorer URL field editable and saveable
@@ -142,7 +143,7 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] Node data directory field + Browse button (Tauri only)
 - [ ] Start/Stop buttons name the active wallet's network and reflect its node's state; Stop is disabled for a node Namehold did not start
 - [ ] Sync progress bar shows during sync, 100% when synced
-- [ ] Read source label: "Explorer" when node not synced, "Local" when synced
+- [ ] Read source label: "Explorer" when node not synced, "Local node cache" when synced
 - [ ] Last error shown when node start fails
 - [ ] Re-sync button appears on index mismatch
 - [ ] **Chain source** selector offers Local full node, SPV, Remote node and Read-only (no separate Node mode dropdown)
@@ -151,38 +152,37 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 
 ### B2. SPV mode
 - [ ] Switch to SPV in Settings → Chain source
-- [ ] hsd restarts with `--spv` flag (check logs)
-- [ ] StatusStrip shows "Explorer (SPV)" label
+- [ ] After stopping and starting the node, hsd runs with `--spv` (check logs)
+- [ ] Readiness panel shows "Reads from the explorer (SPV)"
 - [ ] Balance loads from explorer (not local cache)
 - [ ] Name info loads from explorer
 - [ ] Send HNS blocked with "SPV mode cannot send transactions" message
 - [ ] Name actions blocked with clear SPV message
-- [ ] Switch back to Full node → hsd restarts with `--index-address`
+- [ ] Switch back to Local full node; after stopping and starting the node, hsd runs with `--index-address`
 - [ ] Full sync begins after switching back
 - [ ] Explorer failover works (set invalid primary, valid fallback)
 
 ### C. Wallet flows
-- [ ] Receive address displayed with copy button
-- [ ] Balance shows confirmed/unconfirmed/spendable
+- [ ] Receive dialog shows the address with Copy address
+- [ ] Balance shows Spendable, Unconfirmed; confirmed in Spendable's tooltip
 - [ ] Send HNS: address validation (mainnet `hs1…`, regtest `rs1…`, testnet `ts1…`)
 - [ ] Send HNS: amount validation, fee display, review step
-- [ ] Every HNS amount field (Send, Bid, Lockup, Batch bid, Recover bid, Namebase withdrawal) refuses a 7th decimal with "HNS has at most 6 decimals" and anything but plain digits with one point (`1,5`, `1e3`, `-1`) with "Enter an amount greater than 0, in digits like 12.5"; 1234.567891 reaches the review as exactly 1,234.567891 HNS
+- [ ] Every HNS amount field (Send, Bid, Lockup, Batch bid, Recover bid) refuses a 7th decimal with "HNS has at most 6 decimals" and anything but plain digits with one point (`1,5`, `1e3`, `-1`) with "Enter an amount greater than 0, in digits like 12.5"; 1234.567891 reaches the review as exactly 1,234.567891 HNS
 - [ ] Send HNS: build → sign → broadcast draft lifecycle
 - [ ] Signer lock/unlock toggle
-- [ ] Wallet switching via dropdown
+- [ ] Wallet switching via the sidebar wallet card
 - [ ] Add wallet: create / import / watch-only paths
 - [ ] Manage wallets dialog: switch, reveal phrase, delete
 
 ### D. Auction flows
-- [ ] Auctions page: name lookup field
-- [ ] Lookup any name → NameActionsModal opens
-- [ ] Available name: Open Auction button shown
+- [ ] Names page: lookup field
+- [ ] Lookup any name → its page, or the Open auction… / Watch card
+- [ ] Available name: Open auction… button shown
 - [ ] Opening phase: waiting for bidding to start
 - [ ] Bidding phase: Bid form (bid amount + lockup), countdown timer
 - [ ] Reveal phase: Reveal button, unrevealed bids warning
 - [ ] Closed/won: Register button
 - [ ] Gating: actions disabled when signer locked or node not synced
-- [ ] Wallet page "Get a TLD" card links to Auctions
 
 ### E. Post-auction name management
 - [ ] Update DNS records
@@ -192,27 +192,25 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] Cancel transfer
 - [ ] Revoke name
 
-### F. Transfers & Namebase migration
-- [ ] Transfers view: incoming/outgoing transfers
-- [ ] Move from Namebase shows the "Legacy Namebase has shut down" notice (no cookie form) with a working link to Namebase's sunset guide
+### F. Namebase import
+- [ ] Settings › Backup & import shows the "Legacy Namebase has shut down" notice (no cookie form) with a working link to Namebase's sunset guide
 - [ ] Account-history CSV upload still imports and lists rows
-- [ ] Renewals view
 
 ### G. System tray
 - [ ] Tray icon appears in menu bar / notification area
 - [ ] Tray icon reflects node state (normal / syncing / stopped)
 - [ ] "Close to tray" (default ON): closing window hides to tray, does not quit
 - [ ] Click tray icon restores the window
-- [ ] Tray menu: Open Namehold, node status with Start/Stop toggle, Sync in background checkbox, Quit
+- [ ] Tray menu: Open Namehold, node status with Start/Stop toggle, Background sync checkbox, Quit Namehold
 - [ ] "Launch at login" toggle registers/unregisters OS autostart
 - [ ] Quit from tray menu fully exits the app
 
 ### H. Watchlist
-- [ ] Watchlist page visible in sidebar
-- [ ] Add a name to the watchlist from the name modal
+- [ ] Names › Watching chip lists watched names
+- [ ] Star a name on its row or page header
 - [ ] Remove a name from the watchlist
-- [ ] Watchlist table shows Countdown, Highest bid, Expires columns
-- [ ] Owned names get an inline Owned badge
+- [ ] Columns Name, Status, Value / bid, Expires
+- [ ] A name you own and watch has one row, under the Owned chip
 - [ ] CSV export downloads a valid file
 - [ ] CSV import loads names with tags
 - [ ] Tag management (comma-separated tags per name)
@@ -220,7 +218,7 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] OS notification fires when a watched name enters BIDDING
 
 ### I. Batch operations
-- [ ] Multi-select checkboxes appear on the Owned Names table
+- [ ] Multi-select checkboxes appear on the Names table
 - [ ] Selecting 2+ names shows the batch action bar
 - [ ] "Renew Selected" opens BatchConfirmModal with count + amount + estimated fee + name list; the fee reads as the secure window's, in HNS (e.g. ~0.001410, never ~0.000000)
 - [ ] Batch Bid's check step shows "Locked until you reveal: N × L HNS = T HNS" and the amber warning that a bid you don't reveal forfeits its entire lockup; the confirm repeats the warning with the total; nothing says only the fee is spent
@@ -233,7 +231,7 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 The full agent-runnable scenarios for this section (steps, exact expected text, evidence, block budgets) are in [docs/qa/README.md](qa/README.md); this checklist stays the overview.
 
 Paid name swaps were withdrawn on 2026-09-21 (`docs/specs/2026-09-21-paid-name-swaps.md`); a claim panel for an offer recorded before that still works. Buying and selling through Shakedex replace them. The buying checklist comes first, the selling checklist after it.
-- [ ] Market is the 4th sidebar item, right after Auctions, with a "New" tag, and hotkey 4 opens it; 5, 6 and 7 open Watchlist, Move from Namebase and Settings
+- [ ] Market is the 3rd sidebar item, right after Names, with a "New" tag, and hotkey 3 opens it; 4 and 5 open Activity and Settings
 - [ ] Browse: one list of imports and market listings with Name · Price now · Next price · Check; the first verified row is selected and shown in the panel beside the list; next-price times read as approximate
 - [ ] Search ("Find a name", a leading dot ignored), the All / Fixed price / Price drops filter and the Lowest price / Next price drop / Newest sort; a search with no match reads "No listings match"
 - [ ] Unavailable listings are not rows: the toggle at the foot of the list counts them by reason ("▸ N unavailable listings hidden: …") and expands to names and a reason each, not selectable
@@ -251,48 +249,47 @@ Paid name swaps were withdrawn on 2026-09-21 (`docs/specs/2026-09-21-paid-name-s
 - [ ] LearnHNS fee published by LearnHNS is pre-ticked; an unpublished fee address is unticked with a warning; the choice is kept per listing while the app is open
 - [ ] The listing panel shows the price, "Checked by your node", price to seller, LearnHNS fee with its percentage, network fee and total to 6 decimals, the Fee rate disclosure, and the Buy · Wait · Finalize steps (step 2 "Wait ~2 days" on mainnet, "Wait 10 blocks" on regtest); the secure window adds the market fee address
 - [ ] When Buy cannot be pressed, the amber line above it says why (short of the total by how much, a fee rate that is not a whole number or below 1,000, the profile's or node's refusal, an own listing); Buy otherwise reads "Buy .<name> for <total> HNS"
-- [ ] Purchase goes through the secure window; the panel reads "Purchase sent", the row is tagged "Bought", Your purchases lists it, and Owned Names shows "Unconfirmed purchase"
+- [ ] Purchase goes through the secure window; the panel reads "Purchase sent", the row is tagged "Bought", Your purchases lists it, and the Names page shows Bought, "waiting for the purchase to confirm"
 - [ ] Cancel the secure window: the prepared purchase is discarded and Buy on the same listing works again at once, without a sync
 - [ ] Reverse auction: if a cheaper step becomes valid between confirming and broadcast, nothing is sent; the panel says "the price changed — review the purchase again" and shows the new figures
-- [ ] Unconfirmed purchase stays "Unconfirmed purchase" (not "Awaiting finalize") while its TRANSFER is only in the mempool, also on a node without a transaction index
-- [ ] A purchase on its way does not appear in Renewals
-- [ ] After confirmation it reads "Awaiting finalize · N blocks", then "Ready to finalize" with a Finalize button
+- [ ] A purchase stays "waiting for the purchase to confirm" (not "awaiting finalize") while its TRANSFER is only in the mempool, also on a node without a transaction index
+- [ ] After confirmation it reads "awaiting finalize · N blocks left", then "ready to finalize" with a Finalize button
 - [ ] Market › Your purchases shows each purchase with "Paid <price> HNS", "<done> of <lockup> blocks" (288 on mainnet/testnet, 10 on regtest) and how long is left: "~<time> left" on mainnet and testnet, "<n> blocks left" on regtest (it mines on demand), and Finalize once ready, also with mainnet buying off; a purchase leaves the card once its finalize is sent
 - [ ] Finalize works; the row then reads "Finalize · waiting for a block" with no second Finalize until the name arrives; the DNS records are then updated by the buyer
 - [ ] A purchase someone else beats (or the seller cancels) reads "Lost" in Activity with "nothing was paid" shown under the badge, and its coins are spendable again
 - [ ] SPV and Explorer modes: the list says listings can't be checked yet, so nothing can be bought
 - [ ] Remote node with "Allow sending via remote node" off: the line above Buy gives the backend's reason and Buy stays disabled
-- [ ] Mainnet with the Shakedex setting off: the banner "Buying on mainnet is off." with Turn on buying, and the panel's button reads Turn on buying (outlined, not filled); either ticks the setting, the toast says "Mainnet buying turned on · also in Settings › Shakedex", the banner goes and Buy appears
+- [ ] Mainnet with the Shakedex setting off: the banner "Buying on mainnet is off." with Turn on buying, and the panel's button reads Turn on buying (outlined, not filled); either ticks the setting, the toast says "Mainnet buying turned on · also in Settings › Advanced", the banner goes and Buy appears
 - [ ] Market hotkeys: `/` focuses the search, `i` opens Import, `j`/`k` move the selection, Enter presses the panel's button; the shortcuts sheet lists them on the Market
-- [ ] Ledger, watch-only and extended-private-key wallets cannot buy: Buy is disabled with "Shakedex works with a recovery-phrase wallet for now." above it. On a purchase row in Owned Names, Finalize is disabled with the same reason for Ledger and extended-private-key wallets, and not shown at all for watch-only ones; in Your purchases it is disabled with that reason, shown above the rows, for all three
+- [ ] Ledger, watch-only and extended-private-key wallets cannot buy: Buy is disabled with "Shakedex works with a recovery-phrase wallet for now." above it. On a purchase row on the Names page, Finalize is disabled with the same reason for Ledger and extended-private-key wallets, and not shown at all for watch-only ones; in Your purchases it is disabled with that reason, shown above the rows, for all three
 - [ ] Mainnet without "Allow buying and selling names on mainnet through Shakedex (experimental)" in Settings: nothing can be bought until it is on, and the panel's button is Turn on buying (above) rather than Buy; testnet and regtest need no flag; Finalize works regardless. A watch-only wallet on mainnet with the setting off sees the banner's filled Turn on buying and a grey disabled Buy, never two blue buttons
 - [ ] Regtest: buy a listing created by the shakedex CLI end to end
 - [ ] Legacy: Activity lists offers recorded before the withdrawal under "Paid swap offers", read-only (name, buyer address, price, "Claimed" / "Not claimed"), and shows no such card without one; a name's actions show no claim panel
 
 Selling (regtest: node `http://127.0.0.1:14037`, key `test`; never a mainnet profile for these runs; mine with `scripts/regtest.sh mine <n> <address>`):
-- [ ] Sell is in a name's actions (Manage → Ownership, next to Transfer) and opens the Lock dialog; Ledger, watch-only and extended-private-key wallets see it disabled with "Shakedex works with a recovery-phrase wallet for now"; a name that cannot be transferred shows the reason
+- [ ] Sell… is on the name's Transfer & sell tab and opens the Lock dialog; Ledger, watch-only and extended-private-key wallets see it disabled with "Shakedex works with a recovery-phrase wallet for now"; a name that cannot be transferred shows the reason
 - [ ] Lock dialog: Buy Now / Reverse auction, no price field; the costs sentence (no DNS changes or renewals once finalized into the lock, at most one renewal window); on regtest no publish box and "Shared as a file only: LearnHNS Market lists mainnet names only"; on mainnet the box is ticked by default with its privacy note
 - [ ] Lock dialog near expiry: a name expiring within about six months shows the blocks left before anything is signed; one that would expire before its transfer into the lock could be finalized is refused with the advice to renew first, and nothing is built
-- [ ] Lock name → Sign and send (transaction secure window) → mine 1: the Owned Names row reads "Locking · N blocks" with a My listings button that opens Market › My listings; Activity labels the draft "Lock for sale"
+- [ ] Lock name → Sign and send (transaction secure window) → mine 1: the Names row reads "Locking · N blocks" with a My listings button that opens Market › My listings; Activity labels the draft "Lock for sale"
 - [ ] Mine 9 more (a TRANSFER mined at height h can be finalized in block h + 10, so the row read "Locking · 9 blocks" after the first block): My listings reads "Ready to Finalize & sign"; Finalize & sign with a Buy Now price of 5 HNS shows the R20 secure window with the fee and the price; the row reads "Finalizing into the lock", then, after a block, "Listed for sale" with "Price 5 HNS"; Activity labels the draft "Finalize into lock"
 - [ ] Finalize & sign of a reverse auction: start, floor, number of prices and minutes between them; an incomplete schedule keeps the button disabled with "a reverse auction needs its schedule…"; the secure window lists every price with when it becomes valid; once Listed the row shows now, next and floor, and every step behind "All N price steps"
-- [ ] Export listing file saves the stored file where chosen; `scripts/shakedex-cli-sell.sh fill <file>` buys it, mine 1 and sync: My listings and Owned Names read "Sold", and `scripts/regtest.sh rpc getnameinfo <name>` shows the fill's TRANSFER
+- [ ] Export listing file saves the stored file where chosen; `scripts/shakedex-cli-sell.sh fill <file>` buys it, mine 1 and sync: My listings and the Names page read "Sold", and `scripts/regtest.sh rpc getnameinfo <name>` shows the fill's TRANSFER
 - [ ] Lower price on a Listed listing: a price not below the current one is refused before anything is asked; a lower one goes through the secure window and becomes the current price; the exported file then carries both prices and `scripts/shakedex-cli-sell.sh fill` pays the lower one
 - [ ] Reverse auction step down: once the second price's time has passed and a block is mined, the row reads the next price as "Now"; the CLI's fill pays exactly the price current at the median time
-- [ ] Sale pending: with the CLI's fill in the mempool and no sync yet, Cancel listing and Lower price are refused before any secure window ("a purchase of this listing is in the node's mempool: …"); after a sync the row reads "Sale pending" with Export listing file only, and after the block "Sold" on My listings and Owned Names
+- [ ] Sale pending: with the CLI's fill in the mempool and no sync yet, Cancel listing and Lower price are refused before any secure window ("a purchase of this listing is in the node's mempool: …"); after a sync the row reads "Sale pending" with Export listing file only, and after the block "Sold" on My listings and the Names page
 - [ ] Declining the secure window of Finalize & sign, Cancel listing or Lower price shows "Confirmation declined" and writes nothing: the row keeps its state and no draft appears in Activity
 - [ ] Lock dialog: Back, the close button or one Escape after Lock name leaves no Locking row, no "Lock for sale" draft and no reserved coins; one Escape closes only the Lock dialog, the next one the name's actions
 - [ ] A Locking or Listed name cannot be locked again (Sell disabled with "this name is locked for sale through Shakedex"), nor taken into a batch action; a name with a pending transfer cannot be locked
-- [ ] Every listing pays a fresh address: the exported files carry different `paymentAddr` values, none equal to the Receive Address shown; a relisting after a cancel keeps the `publicKey` (the same lock) with a new lock outpoint
+- [ ] Every listing pays a fresh address: the exported files carry different `paymentAddr` values, none equal to the address shown in Receive; a relisting after a cancel keeps the `publicKey` (the same lock) with a new lock outpoint
 - [ ] With the signer locked, each signing action (Lock name, Finalize & sign, Lower price, Cancel listing, Finalize home, Restore, Import its listing file) first asks for the passphrase; Export listing file never does
 - [ ] With deadline notifications on, "Ready to finalize" notifications arrive when a listing's lockup is over ("…Finalize & sign to lock it in and set its price", daily while it waits) and when a cancel's lockup is over ("…finalize it to bring the name home")
 - [ ] With "Sync in background" on, a listing bought while the app is closed reads "Sold" at the next launch; the daemon signs and sends nothing
-- [ ] Cancel listing shows the R28 text before anything is signed, then the cancel's own secure window; Activity labels it "Cancel listing"; mine 1: "Cancelled · finalize to bring it home" with Finalize home disabled with "the cancel can be finalized in N blocks"; mine 9: Finalize home → mine 1: "Cancelled", Activity labels it "Finalize cancel", and the name is back on Owned Names as an ordinary name (`getnameinfo` owner at our cancel address, `transfer` 0)
+- [ ] Cancel listing shows the R28 text before anything is signed, then the cancel's own secure window; Activity labels it "Cancel listing"; mine 1: "Cancelled · finalize to bring it home" with Finalize home disabled with "the cancel can be finalized in N blocks"; mine 9: Finalize home → mine 1: "Cancelled", Activity labels it "Finalize cancel", and the name is back on the Names page as an ordinary name (`getnameinfo` owner at our cancel address, `transfer` 0)
 - [ ] A row with a signed transaction that was not sent offers Send and Discard; Discard puts the listing back (a Locking listing goes with its lock); a transaction the node may hold offers Send again and no Discard
 - [ ] Find my locks, from a second profile of the same recovery phrase, on a node with both indexes: while the signer is locked My listings says that names possibly listed from this phrase were found, with Unlock (only with a candidate); after Unlock, the next sync ends with the toast "Found 1 name locked for sale · restored in My listings" and the row "Locked — listing details unknown"; a second sync adds nothing; "Find my locks" answers "No locked names found" (or "Some addresses or names could not be read from your node. Try again later." when the node failed a read); on a node without the address index the line "Finding your locks needs a node run with --index-tx and --index-address; Restore a lock by name works without them." shows and nothing is restored
 - [ ] Restore a lock by name, from a second profile of the same recovery phrase: a typed name the wallet changes ("dex sale") shows "Restores .dexsale" under the field; the row reads "Locked — listing details unknown" with Cancel listing and Import its listing file; importing the saved file makes it "Listed for sale"; restoring an ordinary name, a name still Locking, a cancel awaiting its finalize, a name never registered or one already tracked is refused with its reason and adds nothing; importing a file for another lock coin, one naming a market fee, or one with no Restored lock of its name is refused and leaves the row as it was
 - [ ] Mainnet only, never driven against mainnet in these runs: in browser QA (whose mock profile is mainnet) Sell and Lock name are disabled with "Selling names through Shakedex on mainnet is experimental: enable it in Settings" until the setting is ticked, while Finalize & sign of an existing listing needs no flag; an unpublished Listed listing offers Publish on LearnHNS Market, and once published offers no Unpublish; the market status texts per status ("On LearnHNS Market as a pending listing", "Not on market — retrying", "LearnHNS Market refused the listing", …) are pinned by `my-listings.test.tsx`, since the mock never reports a market status
-- [ ] Browser QA (`pnpm dev`, no Tauri; its mock profile is mainnet): tick the mainnet selling setting in Settings, win a name in the mock's auction engine, then Sell it; with `__webqa_mine(n)` in the console moving blocks (a lockup of 10 blocks, as on regtest) the listing walks Locking · N blocks → Ready to Finalize & sign → Finalizing into the lock → Listed for sale → Cancelling → Cancelled · finalize to bring it home → Coming home → Cancelled; each row shows only the actions the backend would allow, the Owned Names row follows the state, and the name's owner actions say "this name is locked for sale through Shakedex" until the listing is Cancelled. The R19 abort walks too: once the lock is mined and before Finalize & sign, Manage → Cancel transfer builds the listing's abort; while it is unmined, during the lockup as after it, Finalize & sign is disabled with "a Cancel transfer of this listing is pending and spends the same coin…" (not the lockup sentence), discarding it unsent puts Finalize & sign back, and once it is mined the row reads "Lock aborted" and the name is an ordinary name again. The mock's rows take every action and refusal sentence from `src/test/fixtures/listing-actions.json`, the backend's own output
+- [ ] Browser QA (`pnpm dev`, no Tauri; its mock profile is mainnet): tick the mainnet selling setting in Settings, win a name in the mock's auction engine, then Sell it; with `__webqa_mine(n)` in the console moving blocks (a lockup of 10 blocks, as on regtest) the listing walks Locking · N blocks → Ready to Finalize & sign → Finalizing into the lock → Listed for sale → Cancelling → Cancelled · finalize to bring it home → Coming home → Cancelled; each row shows only the actions the backend would allow, the Names row follows the state, and the name's owner actions say "this name is locked for sale through Shakedex" until the listing is Cancelled. The R19 abort walks too: once the lock is mined and before Finalize & sign, the name's Transfer & sell tab → Cancel transfer builds the listing's abort; while it is unmined, during the lockup as after it, Finalize & sign is disabled with "a Cancel transfer of this listing is pending and spends the same coin…" (not the lockup sentence), discarding it unsent puts Finalize & sign back, and once it is mined the row reads "Lock aborted" and the name is an ordinary name again. The mock's rows take every action and refusal sentence from `src/test/fixtures/listing-actions.json`, the backend's own output
 
 ### K. Bid recovery
 - [ ] REVEAL-phase name with no local bid data shows "Recover bid" panel
@@ -313,18 +310,14 @@ Selling (regtest: node `http://127.0.0.1:14037`, key `test`; never a mainnet pro
 ## Auction Lifecycle Reference
 
 ```
-AVAILABLE → OPENING (5 days / ~720 blocks)
-         → BIDDING (5 days / ~720 blocks)
-         → REVEAL (10 days / ~1440 blocks)
+AVAILABLE → OPENING (~6 hours / 37 blocks)
+         → BIDDING (~5 days / 720 blocks)
+         → REVEAL (~10 days / 1440 blocks)
          → CLOSED (winner can REGISTER)
          → REGISTERED (owner can UPDATE / RENEW / TRANSFER / REVOKE)
 ```
 
 On regtest, these periods are much shorter and blocks can be mined instantly.
-
----
-
-```
 
 ---
 
@@ -406,8 +399,8 @@ cd src-tauri && cargo llvm-cov --open
 | Web mock backend | `src/lib/webqa-mock.ts` |
 | App entry / routing | `src/App.tsx` |
 | Wallet page | `src/components/WalletView.tsx` |
-| Auctions page | `src/components/AuctionsView.tsx` |
-| Name actions modal | `src/components/NameActionsModal.tsx` |
+| Names page | `src/components/NamesView.tsx` |
+| Name page | `src/components/NamePage.tsx`, `src/components/name-page/` |
 | Settings page | `src/components/Settings.tsx` |
 | Auction phase logic | `src/lib/auction.ts` |
 | Read queries | `src/queries/read.ts` |

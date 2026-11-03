@@ -1941,7 +1941,7 @@ async fn read_name_info_node_ready_uses_node_branch() {
 // read_name_info — a name bought on the market carries its purchase
 // ---------------------------------------------------------------------------
 
-/// Reported live: the name page of a name bought on the market for 250 HNS
+/// The name page of a name bought on the market
 /// showed only its original auction ("Paid price (2nd-price) 0 HNS"), because
 /// nothing passed the purchase to the page. An owned purchase of the active
 /// wallet now rides along as `purchase { priceDoos, height }`; one that is

@@ -812,7 +812,7 @@ describe("Name page — guided acquisition flow", () => {
   });
 
   it("shows a not-synced-locally banner for an owned CLOSED name with no local owner coin", async () => {
-    const notSyncedReason = "owner coin not synced locally — connect a node and Refresh to manage";
+    const notSyncedReason = "owner coin not synced locally — connect a node and Sync to manage";
     invokeMock.mockImplementation(
       routeModal(
         {

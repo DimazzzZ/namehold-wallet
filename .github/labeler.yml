@@ -20,7 +20,7 @@
       - any-glob-to-any-file:
           - "src-tauri/src/commands/{names,bids,batches,paid_swaps,watchlist,deadlines,watched_states}.rs"
           - "src-tauri/src/noncustodial/{names,bids,covenants,actions}.rs"
-          - "src/components/{AuctionsView,NameActionsModal,NameInfoModal,BatchBidModal,BatchConfirmModal,Watchlist,WatchlistToggle}.tsx"
+          - "src/components/{NamesView,NamePage,BatchBidModal,BatchConfirmModal,Watchlist,WatchlistToggle}.tsx"
           - "src/components/name-actions/**"
           - "src/queries/batches.ts"
           - "src/lib/auction.ts"
