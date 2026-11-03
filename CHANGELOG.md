@@ -72,7 +72,7 @@
 - **A name whose only task is reclaiming your own outbid reveals counts as owned.** The Reveal step no longer shows a disabled Redeem.
 
 ### Added
-- **A note on names written with look-alike letters.** A name such as `.аpple`, with a Cyrillic `а`, says what it reads like and that it is a different name, on its page, in Names lookup and on a Market listing. It covers the common Cyrillic, Greek and Armenian look-alikes, so no note does not prove a name is safe.
+- **A note on names written with look-alike letters.** A name such as `.аpple`, with a Cyrillic `а`, says what it reads like and that it is a different name, on its page, in Names lookup and on a Market listing. A name holding invisible characters says so too. It covers the common Cyrillic, Greek and Armenian look-alikes, so no note does not prove a name is safe.
 - **Renew all from Needs you.** When two or more names on the Wallet page can be renewed now, Renew all renews them in one confirmation, as a series of up to 100 names each.
 - **Renew all on a renewal reminder (macOS and Linux).** Its button opens Namehold and the same confirmation; nothing is signed from the notification.
 - **Every row on the Names page has a ⋯ menu**, not only watched names. It holds what the name allows right now: Renew, Reveal, Redeem and Finalize run for that name alone, with the same confirmation as a batch and without touching your selection; Transfer or sell…, Edit DNS records, Sign message and Cancel transfer… open the name's page where they live; a watched name also gets Edit tags. Revoke stays on the name's page only.

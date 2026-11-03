@@ -409,7 +409,7 @@ carrying too many covenants.
 
 ### Names written with look-alike letters
 
-A name can use letters of another alphabet that look Latin: `.аpple` with a Cyrillic `а` is a different name from `.apple`. Its page, Names lookup and a Market listing then say what it reads like and show the name it really is. This covers the common look-alikes only, so no note does not prove a name is what it seems. Check the `xn--` form before paying.
+A name can use letters of another alphabet that look Latin: `.аpple` with a Cyrillic `а` is a different name from `.apple`. Its page, Names lookup and a Market listing then say what it reads like and show the name it really is. A name holding characters that do not show, such as a zero-width space, is marked the same way. This covers the common look-alikes only, so no note does not prove a name is what it seems. Check the `xn--` form before paying.
 
 ### Buying names on the Market
 

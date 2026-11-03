@@ -13,6 +13,13 @@ describe("ConfusableNameNote", () => {
     expect(note).toHaveTextContent(`.${name}`);
   });
 
+  it("names hidden characters when the letters give nothing away", () => {
+    render(<ConfusableNameNote name="xn--90ai7ab7866a" />);
+    expect(screen.getByTestId("confusable-name-note")).toHaveTextContent(
+      "characters that do not show",
+    );
+  });
+
   it("renders nothing for a plain name", () => {
     const { container } = render(<ConfusableNameNote name="apple" />);
     expect(container).toBeEmptyDOMElement();

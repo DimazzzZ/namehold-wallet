@@ -43,20 +43,38 @@ const LOOK_ALIKES: Record<string, string> = {
   ɡ: "g",
 };
 
+/** What a decoded name hides or imitates; see {@link confusable}. */
+export interface Confusable {
+  /** The plain ASCII name it reads as, when every letter looks Latin. */
+  readsAs: string | null;
+  /** It holds characters that do not show, such as a zero-width space. */
+  hidden: boolean;
+}
+
 /**
- * The ASCII name an IDN reads as, when every letter of it that is not plain
- * ASCII looks like a Latin one: `.аpple`, in Cyrillic, reads as `apple`. `null`
- * for a plain ASCII name, and for an IDN with any letter that gives it away,
- * such as `сбер`. A name is the buyer's to check, so this only informs.
+ * Whether an IDN hides characters or reads as an ASCII name: `.аpple`, in
+ * Cyrillic, reads as `apple`. The chain takes any `xn--` label, so a label can
+ * decode to what IDNA would refuse: invisible characters and compatibility forms
+ * are read away first, or one of them would take a look-alike out of the table.
+ * `null` for a plain name, and for an IDN with a letter that gives it away, such
+ * as `сбер`. A name is the buyer's to check, so this only informs.
  */
-export function readsAsLatin(name: string): string | null {
+export function confusable(name: string): Confusable | null {
   const decoded = displayName(name);
   if (decoded === name) return null;
+  const hidden = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/u.test(decoded);
+  const visible = decoded
+    .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")
+    .normalize("NFKC")
+    .toLowerCase();
   let latin = "";
-  for (const ch of decoded) {
+  for (const ch of visible) {
     const mapped = ch.charCodeAt(0) < 0x80 ? ch : LOOK_ALIKES[ch];
-    if (!mapped) return null;
+    if (!mapped) {
+      latin = "";
+      break;
+    }
     latin += mapped;
   }
-  return latin || null;
+  return latin || hidden ? { readsAs: latin || null, hidden } : null;
 }
