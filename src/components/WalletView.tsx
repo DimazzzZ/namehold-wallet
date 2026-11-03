@@ -30,6 +30,9 @@ import { useOpenName } from "../hooks/useOpenName";
 import { BlockInfoModal } from "./BlockInfoModal";
 import { RecentActivityCard } from "./activity/RecentActivityCard";
 import { useSignerToggle } from "../hooks/useSignerToggle";
+import { useNameBatchActions } from "../hooks/useNameBatchActions";
+import { BatchConfirmModal } from "./BatchConfirmModal";
+import { ProgressLine } from "./names/NameBatchBar";
 import { NeedsYouCard } from "./NeedsYouCard";
 import { ReceiveDialog } from "./ReceiveDialog";
 import { AddWalletForm } from "./AddWalletForm";
@@ -111,6 +114,11 @@ export function WalletView() {
   const unlocked = isLedger ? true : isSignerUnlockedFor(signer, profile?.id);
   const canWrite = writeCap?.canWrite ?? false;
   const isWatchOnly = profile?.watchOnly ?? false;
+  // Renew all in Needs you: the same series, confirmation and send as Names.
+  const batch = useNameBatchActions({ profile, capsByName, unlocked });
+  const renewable = needsYou.items
+    .filter((i) => i.kind === "renew" && capsByName.get(i.name)?.canRenew.allowed)
+    .map((i) => i.name);
   const finalizeRefusal = shakedexRefusal(profile?.kind, writeCap);
   // Spending uses node-synced coins (tracked_utxos), NOT the explorer balance.
   // If the explorer shows funds but nothing is synced yet, the user must connect
@@ -584,6 +592,15 @@ export function WalletView() {
           }
           finalizingId={finalizingId}
           finalizeRefusal={finalizeRefusal}
+          renewAll={{
+            count: renewable.length,
+            onClick: () => void batch.runFor("renew", renewable),
+            disabledReason: !canWrite
+              ? sendBlockedReason
+              : batch.progress
+                ? "Already working on it"
+                : undefined,
+          }}
           allNamesLink={
             <button
               type="button"
@@ -594,6 +611,21 @@ export function WalletView() {
               All names <Icon icon={ArrowRight} size={12} />
             </button>
           }
+        />
+      )}
+
+      {batch.progress && <ProgressLine progress={batch.progress} />}
+      {batch.modal && (
+        <BatchConfirmModal
+          open={batch.modal.open}
+          action={batch.modal.action}
+          names={batch.modal.names}
+          batches={batch.modal.batches}
+          estimatedFeeDoos={batch.modal.feeDoos}
+          amountDoos={batch.modal.amountDoos}
+          recipient={batch.modal.recipient}
+          onConfirm={batch.confirm}
+          onCancel={batch.cancel}
         />
       )}
 

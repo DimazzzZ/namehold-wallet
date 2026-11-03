@@ -1856,6 +1856,88 @@ describe("WalletView — one capability fetch", () => {
   });
 });
 
+describe("WalletView — Renew all in Needs you", () => {
+  const renewCap = (name: string, allowed: boolean) => ({
+    name,
+    phase: "CLOSED",
+    taskState: "expiringSoon",
+    ownsName: true,
+    nameIsRegistered: true,
+    transferPending: false,
+    redeemableRevealCount: 0,
+    redeemableValueDoos: 0,
+    hasBidCommitment: false,
+    hasBidCoin: false,
+    hasRevealCoin: false,
+    hasOwnerCoin: true,
+    revealTxid: null,
+    bidValueDoos: null,
+    lockupValueDoos: null,
+    myBidCount: 0,
+    canOpen: { allowed: false, reason: null },
+    canBid: { allowed: false, reason: null },
+    canReveal: { allowed: false, reason: null },
+    canRedeem: { allowed: false, reason: null },
+    canRegister: { allowed: false, reason: null },
+    canUpdate: { allowed: true, reason: null },
+    canTransfer: { allowed: true, reason: null },
+    canFinalize: { allowed: false, reason: null },
+    canCancelTransfer: { allowed: false, reason: null },
+    canRenew: { allowed, reason: allowed ? null : "listed for sale" },
+    canRevoke: { allowed: true, reason: null },
+    nextActionKey: "RENEW",
+    nextActionLabel: "Renew",
+    nextActionReason: null,
+    countdownLabel: null,
+    countdownBlocks: 100,
+    countdownHours: 16,
+  });
+  const route = (canWrite: boolean) => {
+    const base = routeInvoke({
+      unlocked: canWrite,
+      canWrite,
+      names: threeNames(["alpha", "beta", "listed"]),
+    });
+    return (cmd: string) => {
+      if (cmd === "get_names_action_capabilities") {
+        return Promise.resolve([
+          renewCap("alpha", true),
+          renewCap("beta", true),
+          renewCap("listed", false),
+        ]);
+      }
+      if (cmd === "build_batch_renew_draft") {
+        return Promise.resolve({
+          id: "d1",
+          status: "draft",
+          summary: { feeDoos: 1410, sendTotalDoos: 0 },
+        });
+      }
+      return base(cmd);
+    };
+  };
+
+  it("renews every name that can be renewed now, after one confirmation", async () => {
+    invokeMock.mockImplementation(route(true));
+    render(<WalletView />, { wrapper: wrapper() });
+    const button = await screen.findByTestId("needs-you-renew-all");
+    expect(button).toHaveTextContent("Renew all 2");
+    fireEvent.click(button);
+
+    expect(await screen.findByText(/Confirm batch renew/i)).toBeInTheDocument();
+    const call = invokeMock.mock.calls.find((c) => c[0] === "build_batch_renew_draft");
+    expect((call?.[1] as { names: string[] }).names).toEqual(["alpha", "beta"]);
+    // Nothing is signed before the confirmation.
+    expect(invokeMock.mock.calls.some((c) => c[0] === "sign_tx_draft")).toBe(false);
+  });
+
+  it("stays off while this wallet cannot send", async () => {
+    invokeMock.mockImplementation(route(false));
+    render(<WalletView />, { wrapper: wrapper() });
+    expect(await screen.findByTestId("needs-you-renew-all")).toBeDisabled();
+  });
+});
+
 const threeNames = (names: string[]) =>
   names.map((name) => ({
     name,

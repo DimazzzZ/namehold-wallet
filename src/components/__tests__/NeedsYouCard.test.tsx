@@ -43,6 +43,51 @@ function renderCard(over: Partial<React.ComponentProps<typeof NeedsYouCard>> = {
 }
 
 describe("NeedsYouCard", () => {
+  it("offers Renew all for two names or more, and says why it is off", () => {
+    const onClick = vi.fn();
+    const { rerender } = render(
+      <NeedsYouCard
+        items={ITEMS}
+        isLoading={false}
+        isDegraded={false}
+        onOpenName={vi.fn()}
+        onFinalizePurchase={vi.fn()}
+        finalizingId={null}
+        finalizeRefusal={null}
+        renewAll={{ count: 1, onClick }}
+      />,
+    );
+    expect(screen.queryByTestId("needs-you-renew-all")).toBeNull();
+    rerender(
+      <NeedsYouCard
+        items={ITEMS}
+        isLoading={false}
+        isDegraded={false}
+        onOpenName={vi.fn()}
+        onFinalizePurchase={vi.fn()}
+        finalizingId={null}
+        finalizeRefusal={null}
+        renewAll={{ count: 3, onClick }}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("needs-you-renew-all"));
+    expect(screen.getByTestId("needs-you-renew-all")).toHaveTextContent("Renew all 3");
+    expect(onClick).toHaveBeenCalledOnce();
+    rerender(
+      <NeedsYouCard
+        items={ITEMS}
+        isLoading={false}
+        isDegraded={false}
+        onOpenName={vi.fn()}
+        onFinalizePurchase={vi.fn()}
+        finalizingId={null}
+        finalizeRefusal={null}
+        renewAll={{ count: 3, onClick, disabledReason: "Unlock first" }}
+      />,
+    );
+    expect(screen.getByTestId("needs-you-renew-all")).toBeDisabled();
+  });
+
   it("renders the rows in the order given, with the count", () => {
     renderCard();
     const rows = screen.getAllByTestId("needs-you-row");

@@ -225,7 +225,69 @@ pub fn scan_deadlines(
             title: "Renewal due soon".into(),
             body: format!("{} — expires in {:.1} days", d.name, d.days_remaining),
         });
-    dedup_imminent(reveals.chain(renewals), config, previously_notified)
+    let mut result = dedup_imminent(reveals.chain(renewals), config, previously_notified);
+    result.notifications = group_renewals(result.notifications, renewal);
+    result
+}
+
+/// How many names a grouped renewal notification spells out.
+const GROUPED_RENEWAL_NAMES: usize = 3;
+
+/// One notification per wallet for its renewals: a wallet of hundreds of names
+/// bought together comes due together, and one notification per name would
+/// bury the desktop. Each name keeps its own episode key in the scan's state.
+fn group_renewals(
+    notifications: Vec<PendingNotification>,
+    renewal: &[RenewalDeadline],
+) -> Vec<PendingNotification> {
+    let due: std::collections::HashMap<String, &RenewalDeadline> =
+        renewal.iter().map(|d| (renewal_key(d), d)).collect();
+    let mut by_wallet: std::collections::BTreeMap<&str, Vec<&RenewalDeadline>> = Default::default();
+    for n in &notifications {
+        if let Some(d) = due.get(&n.key) {
+            by_wallet
+                .entry(d.wallet_profile_id.as_str())
+                .or_default()
+                .push(d);
+        }
+    }
+    let grouped = |key: &str| {
+        due.get(key)
+            .is_some_and(|d| by_wallet[d.wallet_profile_id.as_str()].len() > 1)
+    };
+    let mut out: Vec<PendingNotification> = notifications
+        .iter()
+        .filter(|n| !grouped(&n.key))
+        .cloned()
+        .collect();
+    for (wallet, mut names) in by_wallet.clone() {
+        if names.len() < 2 {
+            continue;
+        }
+        names.sort_by(|a, b| a.days_remaining.total_cmp(&b.days_remaining));
+        let shown: Vec<&str> = names
+            .iter()
+            .take(GROUPED_RENEWAL_NAMES)
+            .map(|d| d.name.as_str())
+            .collect();
+        let rest = names.len().saturating_sub(GROUPED_RENEWAL_NAMES);
+        let list = if rest > 0 {
+            format!("{} and {rest} more", shown.join(", "))
+        } else {
+            shown.join(", ")
+        };
+        out.push(PendingNotification {
+            key: format!("renewal-group:{wallet}"),
+            title: "Renewals due soon".into(),
+            body: format!(
+                "{} names, first {} in {:.1} days: {list}. Open Namehold to renew them.",
+                names.len(),
+                names[0].name,
+                names[0].days_remaining
+            ),
+        });
+    }
+    out
 }
 
 /// The scan both scanners share: every `imminent` episode stays active, and
@@ -915,6 +977,64 @@ mod tests {
         assert_eq!(result.notifications.len(), 1);
         assert_eq!(result.notifications[0].key, "renewal:p1:nameb");
         assert!(result.active_episodes.contains("renewal:p1:nameb"));
+    }
+
+    #[test]
+    fn several_renewals_of_a_wallet_are_one_notification() {
+        let result = scan_deadlines(
+            &[reveal("p1", "namer", 5)],
+            &[
+                renewal("p1", "late", 9.0),
+                renewal("p1", "soon", 2.5),
+                renewal("p1", "mid", 5.0),
+                renewal("p1", "more", 6.0),
+                renewal("p2", "other", 3.0),
+            ],
+            &cfg(true),
+            &Default::default(),
+        );
+        // The reveal, one for p1's four names, and p2's own.
+        assert_eq!(result.notifications.len(), 3);
+        let group = result
+            .notifications
+            .iter()
+            .find(|n| n.title == "Renewals due soon")
+            .expect("a grouped notification");
+        assert_eq!(
+            group.body,
+            "4 names, first soon in 2.5 days: soon, mid, more and 1 more. Open Namehold to renew them."
+        );
+        let single = result
+            .notifications
+            .iter()
+            .find(|n| n.body.starts_with("other"))
+            .expect("p2's own notification");
+        assert_eq!(single.title, "Renewal due soon");
+        // Each name stays its own episode, so one renewed name ends only its own.
+        for key in ["p1:late", "p1:soon", "p1:mid", "p1:more", "p2:other"] {
+            assert!(result.active_episodes.contains(&format!("renewal:{key}")));
+        }
+    }
+
+    #[test]
+    fn a_name_notified_before_is_not_counted_again() {
+        let previous: BTreeSet<String> = ["renewal:p1:old".to_string()].into();
+        let result = scan_deadlines(
+            &[],
+            &[
+                renewal("p1", "old", 1.0),
+                renewal("p1", "new", 4.0),
+                renewal("p1", "newer", 5.0),
+            ],
+            &cfg(true),
+            &previous,
+        );
+        assert_eq!(result.notifications.len(), 1);
+        assert_eq!(
+            result.notifications[0].body,
+            "2 names, first new in 4.0 days: new, newer. Open Namehold to renew them."
+        );
+        assert!(result.active_episodes.contains("renewal:p1:old"));
     }
 
     #[test]

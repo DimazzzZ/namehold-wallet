@@ -564,6 +564,10 @@ same name are treated as fresh episodes.
 generic sender icon rather than the Namehold app icon. The alert text is
 unaffected.
 
+### Renewal reminders
+
+With deadline notifications on (Settings › Notifications), the app reminds you when an owned name comes within the lead time you set. Names of one wallet that come due in the same check share one notification: how many, which comes first, and the first three names. The notification only informs: open Namehold and press **Renew all** in Needs you on the Wallet page, which appears for two names or more and renews every name that can be renewed now after one confirmation. Renewal reminders are sent while the app is running, not by the background daemon.
+
 ### Finalize reminders in the background
 
 The "Ready to finalize" reminders of a Shakedex purchase, listing or cancel (see Market › My listings) follow the deadline notifications setting in **Settings › Notifications**. While background sync is enabled and the daemon runs, the daemon checks for them after each background sync cycle (about a minute apart) and sends them itself, also with the app closed; the app then sends none of them, so you get each reminder once. If the daemon stops, or has not finished a cycle for about three minutes, the app sends them again. With background sync off, the app sends them while it is open, every ~10 minutes and at launch. The reveal and renewal reminders are sent by the app only. After a reboot the daemon starts again when the app is opened (or launched at login).

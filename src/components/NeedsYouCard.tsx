@@ -19,6 +19,8 @@ interface NeedsYouCardProps {
   finalizeRefusal: string | null;
   /** The "All names" link; omitted until the Names page exists. */
   allNamesLink?: React.ReactNode;
+  /** Renews every name that can be renewed now, in one confirmation. */
+  renewAll?: { count: number; onClick: () => void; disabledReason?: string };
 }
 
 /**
@@ -35,6 +37,7 @@ export function NeedsYouCard({
   finalizingId,
   finalizeRefusal,
   allNamesLink,
+  renewAll,
 }: NeedsYouCardProps) {
   return (
     <section
@@ -45,7 +48,22 @@ export function NeedsYouCard({
         <h3 className="text-sm font-semibold text-gray-700">
           Needs you <span className="font-normal text-gray-500">· {items.length}</span>
         </h3>
-        {allNamesLink}
+        <div className="flex items-center gap-3">
+          {renewAll && renewAll.count > 1 && (
+            <Tooltip content={renewAll.disabledReason}>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={!!renewAll.disabledReason}
+                onClick={renewAll.onClick}
+                data-testid="needs-you-renew-all"
+              >
+                Renew all {renewAll.count}
+              </Button>
+            </Tooltip>
+          )}
+          {allNamesLink}
+        </div>
       </div>
       {isDegraded && (
         <div
