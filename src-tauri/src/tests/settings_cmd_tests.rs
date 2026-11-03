@@ -94,11 +94,11 @@ async fn get_settings_omits_presence_markers_when_unset() {
     let app = app_with(conn);
 
     let out = get_settings(app.state()).await.unwrap();
-    // The migrations insert default rows for node_rpc_api_key and hsd_api_key
-    // (with empty values), so the markers ARE present. Only namebase_cookie
-    // is never seeded, so its marker should be absent.
+    // The migrations insert an empty row for node_rpc_api_key: a row with no
+    // value is no stored secret, and Settings must not say "stored" for it.
+    assert!(out.get("node_rpc_api_key").is_none(), "still redacted");
+    assert!(out.get("__has_node_rpc_api_key").is_none());
     assert!(out.get("__has_namebase_cookie").is_none());
-    assert_eq!(out["__has_node_rpc_api_key"], "true");
     // hsd_api_key is deleted by migration 010, so no marker.
     assert!(out.get("__has_hsd_api_key").is_none());
 }
