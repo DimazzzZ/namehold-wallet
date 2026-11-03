@@ -2,6 +2,7 @@
 
 ## Releases
 
+- [0.7.0](#070---2026-11-03)
 - [0.6.1](#061---2026-10-25)
 - [0.6.0](#060---2026-10-23)
 - [0.5.0](#050---2026-08-20)
@@ -13,6 +14,10 @@
 - [0.1.0](#010---2026-06-30)
 
 ## [Unreleased]
+
+## [0.7.0] - 2026-11-03
+
+> **Highlights:** a redesigned app, with one Names page, a page per name and a wallet that opens on your balance; a security audit's fixes, so settings that decide whom the wallet trusts and what you sign are confirmed in the secure window; batch actions and renewals for wallets with hundreds of names; and warnings for look-alike names, unknown explorers and first sends. **Saving a node URL now needs https unless the node is on this computer, the node the app starts now requires an API key, and values saved earlier are not re-checked, so look over Settings once after updating.**
 
 ### Security
 - **What you confirm is what is signed.** A send now signs only the coins it reserved when it was built, so a Max send can no longer sweep coins that arrived after you reviewed it, and signing refuses any transaction whose txid is not the one the secure window showed. Change must go to the wallet's own change address, re-derived from its key, for every signer.

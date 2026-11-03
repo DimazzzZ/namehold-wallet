@@ -23,7 +23,7 @@ import type {
   ShakedexListingState,
   ShakedexMyListing,
   ShakedexNameListing,
-  ShakedexStoredStep,
+  ShakedexListingStep,
   WalletBalances,
   WalletProfileSummary,
 } from "../../src/types";
@@ -457,10 +457,9 @@ export function myListings(now: Date): ShakedexMyListing[] {
   const mtp = Math.floor(now.getTime() / 1000) - 3_600;
   const start = mtp - 36 * 3_600;
   return LISTINGS.map((l) => {
-    const steps: ShakedexStoredStep[] = l.prices.map((price, i) => ({
+    const steps: ShakedexListingStep[] = l.prices.map((price, i) => ({
       price: hns(price),
       lockTime: start - LOCK_TIME_UNIT_SECS + i * 24 * 3_600,
-      signature: "00".repeat(65),
     }));
     const valid = steps.filter((st) => st.lockTime < mtp);
     const ahead = steps.filter((st) => st.lockTime >= mtp);
