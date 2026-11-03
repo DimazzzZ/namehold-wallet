@@ -19,7 +19,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<serde_json::Valu
     // only consumed by backend commands). Emit a "__has_<key>": "true" marker
     // so the UI can still show "configured" without seeing the value.
     for &key in security::SENSITIVE_SETTING_KEYS {
-        if settings.remove(key).is_some() {
+        if settings.remove(key).is_some_and(|v| !v.is_empty()) {
             settings.insert(format!("__has_{key}"), "true".to_string());
         }
     }
