@@ -19,8 +19,6 @@
 //! `GET /api/account/history/export` (via `namebase_base_url`).
 //! is idempotent.
 
-use std::fs;
-
 use tauri::State;
 
 use crate::db::namebase_history::{self, ImportHistoryResult, NamebaseHistorySummary};
@@ -36,7 +34,7 @@ pub async fn import_namebase_history_from_file(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<ImportHistoryResult, AppError> {
-    let csv_text = fs::read_to_string(&path)?;
+    let csv_text = super::user_file::read_chosen_file(std::path::Path::new(&path))?;
     let events = parse_history_csv(&csv_text)?;
 
     let mut db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;

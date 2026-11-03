@@ -103,17 +103,23 @@ fn test_session_ttl_ms_rejects_zero() {
 }
 
 #[test]
-fn test_resolve_secret_key_empty_uses_device_key() {
-    let (key, kdf) = secure_wallet::resolve_secret_key("");
+fn test_resolve_secret_key_empty_uses_device_key_on_a_test_network() {
+    let (key, kdf) =
+        secure_wallet::resolve_secret_key("", crate::noncustodial::network::Network::Regtest)
+            .unwrap();
     assert_eq!(kdf, "none");
-    assert_eq!(key, "namehold::no-passphrase::v1");
+    assert_eq!(key.as_str(), "namehold::no-passphrase::v1");
 }
 
 #[test]
 fn test_resolve_secret_key_non_empty_uses_argon2id() {
-    let (key, kdf) = secure_wallet::resolve_secret_key("my-passphrase");
+    let (key, kdf) = secure_wallet::resolve_secret_key(
+        "my-passphrase",
+        crate::noncustodial::network::Network::Main,
+    )
+    .unwrap();
     assert_eq!(kdf, "argon2id");
-    assert_eq!(key, "my-passphrase");
+    assert_eq!(key.as_str(), "my-passphrase");
 }
 
 #[test]

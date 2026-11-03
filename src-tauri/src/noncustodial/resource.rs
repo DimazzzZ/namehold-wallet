@@ -82,9 +82,26 @@ fn write_ipv6(out: &mut Vec<u8>, s: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// hsd's `rules.MAX_RESOURCE_SIZE`: the most bytes a REGISTER or UPDATE
+/// resource may encode to (`lib/covenants/rules.js`); a larger one is
+/// refused by the node only after the transaction was signed and sent.
+pub const MAX_RESOURCE_SIZE: usize = 512;
+
 /// Encode a slice of record JSON objects to the raw Resource bytes.
-/// An empty slice yields a valid zero-record resource (`[0x00]`).
+/// An empty slice yields a valid zero-record resource (`[0x00]`). Records
+/// that encode past [`MAX_RESOURCE_SIZE`] are refused.
 pub fn encode(records: &[serde_json::Value]) -> Result<Vec<u8>, AppError> {
+    let out = encode_unbounded(records)?;
+    if out.len() > MAX_RESOURCE_SIZE {
+        return Err(err(format!(
+            "these DNS records take {} bytes; a Handshake name holds at most {MAX_RESOURCE_SIZE}",
+            out.len()
+        )));
+    }
+    Ok(out)
+}
+
+fn encode_unbounded(records: &[serde_json::Value]) -> Result<Vec<u8>, AppError> {
     let mut out = vec![VERSION];
     for rec in records {
         let kind = field(rec, "type")?
@@ -288,6 +305,24 @@ fn read_ip(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    fn txt(len: usize) -> serde_json::Value {
+        serde_json::json!({ "type": "TXT", "txt": ["x".repeat(len)] })
+    }
+
+    /// hsd refuses a resource over 512 bytes (`rules.MAX_RESOURCE_SIZE`): it
+    /// is refused when it is encoded, before anything is built or signed.
+    #[test]
+    fn a_resource_over_512_bytes_is_refused_and_512_is_accepted() {
+        // The version byte, then per TXT record 1 (type) + 1 (string count) +
+        // 1 (length) + its text: 200, 200 and `n` take 1 + 203 + 203 + 3 + n.
+        let exact = 512 - (1 + 203 + 203 + 3);
+        let ok = encode(&[txt(200), txt(200), txt(exact)]).unwrap();
+        assert_eq!(ok.len(), MAX_RESOURCE_SIZE);
+        let err = encode(&[txt(200), txt(200), txt(exact + 1)]).unwrap_err();
+        assert!(err.to_string().contains("at most 512"), "{err}");
+    }
+
     use super::*;
 
     #[test]

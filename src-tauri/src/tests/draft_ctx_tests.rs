@@ -488,3 +488,29 @@ async fn lock_recheck_without_the_node_tip_is_an_rpc_error() {
         );
     }
 }
+
+/// An owner action (register, update, renew, transfer, finalize, cancel,
+/// revoke) is built from a strictly read name state: a reply without the
+/// height, renewals, claimed count, weak flag or value refuses the build.
+#[tokio::test]
+async fn owner_name_state_refuses_a_reply_missing_a_field_it_commits_to() {
+    let full = info();
+    let read = |reply: Value| async move {
+        crate::commands::draft_ctx::fetch_owner_name_state(
+            &MockNodeRpc::new().with_name_info(reply),
+            "dexreviews",
+        )
+        .await
+    };
+    let ns = read(full.clone()).await.unwrap();
+    assert_eq!((ns.height, ns.value, ns.renewals), (150_000, 1_000, 2));
+    for key in ["height", "value", "renewals", "claimed", "weak"] {
+        let mut reply = full.clone();
+        reply["info"].as_object_mut().unwrap().remove(key);
+        let err = read(reply).await.unwrap_err();
+        assert!(
+            matches!(&err, AppError::Rpc(m) if m.contains(key)),
+            "{key}: {err:?}"
+        );
+    }
+}

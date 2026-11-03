@@ -448,3 +448,54 @@ fn is_watched_propagates_query_error() {
         "is_watched should fail when the table is gone"
     );
 }
+
+// --- a compromised webview names the path (audit 2026-10) ---
+
+/// A file whose rows are not Handshake names imports nothing, and the
+/// refusal does not repeat the row: the watchlist the webview reads back
+/// cannot carry another file's lines (hsd.conf's api-key, say).
+#[test]
+fn import_refuses_a_file_whose_rows_are_not_names_and_stores_nothing() {
+    let app = app();
+    let path = tmp_csv_path("not_names");
+    std::fs::write(&path, "alpha\napi-key: hunter2\nbeta\n").unwrap();
+    let err = import_watchlist_csv(app.state(), path.clone()).unwrap_err();
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        err.to_string().contains("row 2 is not a Handshake name"),
+        "{err}"
+    );
+    assert!(!err.to_string().contains("hunter2"), "{err}");
+    assert!(list_watchlist(app.state()).unwrap().is_empty());
+}
+
+/// Names are stored in Handshake's lower case.
+#[test]
+fn import_stores_names_in_lower_case() {
+    let app = app();
+    let path = tmp_csv_path("case");
+    std::fs::write(&path, "Alpha\n").unwrap();
+    let r = import_watchlist_csv(app.state(), path.clone()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(r.imported, 1);
+    assert!(is_watched(app.state(), "alpha".into()).unwrap());
+}
+
+/// An export never writes through a symbolic link: its target is left as
+/// it was.
+#[cfg(unix)]
+#[test]
+fn export_refuses_a_symlink_and_leaves_its_target() {
+    let app = app();
+    add_to_watchlist(app.state(), "alpha".into(), None, None).unwrap();
+    let target = tmp_csv_path("target");
+    std::fs::write(&target, "keep").unwrap();
+    let link = tmp_csv_path("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let err = export_watchlist_csv(app.state(), link.clone()).unwrap_err();
+    let kept = std::fs::read_to_string(&target).unwrap();
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_file(&target);
+    assert!(err.to_string().contains("symbolic link"), "{err}");
+    assert_eq!(kept, "keep");
+}

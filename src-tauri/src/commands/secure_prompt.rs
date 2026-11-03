@@ -34,6 +34,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime, State, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::oneshot;
+use zeroize::Zeroizing;
 
 use crate::error::AppError;
 use crate::AppState;
@@ -49,15 +50,14 @@ pub enum ImportInput {
 /// A request shown by the secure window. `payload` carries display-only secret
 /// material (e.g. a mnemonic to reveal); it is sent window-ward only.
 ///
-/// Known limitation (documented, accepted): when `payload` carries a mnemonic
-/// for a `reveal` prompt, the value is serialised through `serde_json` and the
-/// Tauri IPC bridge. Both leave transient copies in heap buffers that are
-/// outside the `Zeroize` discipline the rest of the wallet enforces. Because
-/// of that, the reveal window is deliberately short-lived: `reveal_mnemonic`
-/// zeroises the local `phrase` immediately after dispatching the prompt, and
-/// the window is closed by the backend once the user acknowledges. Any
-/// tightening here would require a shared-memory or zero-copy IPC channel,
-/// which Tauri does not expose today.
+/// `payload` is wiped when the request (or a clone of it) is dropped. Known
+/// limitation (documented, accepted): when it carries a mnemonic for a `reveal`
+/// prompt, the value is serialised through `serde_json` and the Tauri IPC
+/// bridge into the window's webview. Those copies, and the same ones of a
+/// passphrase or phrase typed into a window, are outside the wallet's reach
+/// and cannot be wiped; the window is closed by the backend once the user
+/// answers. Any tightening here would require a shared-memory or zero-copy IPC
+/// channel, which Tauri does not expose today.
 #[derive(Clone, Default, Serialize)]
 pub struct SecurePromptRequest {
     /// One of: `passphrase`, `passphrase_new`, `reveal`, `import`, `confirm`.
@@ -66,7 +66,7 @@ pub struct SecurePromptRequest {
     pub message: String,
     /// For `reveal`: the mnemonic to display. `None` otherwise.
     /// See the struct-level doc-comment for the IPC-transience caveat.
-    pub payload: Option<String>,
+    pub payload: Option<Zeroizing<String>>,
     /// For `import`: what the user is asked to type, `recovery_phrase` or
     /// `xpub`; the window picks its placeholder and empty-entry error from it.
     /// `None` means a recovery phrase.
@@ -79,11 +79,12 @@ pub struct SecurePromptRequest {
     pub details: Option<serde_json::Value>,
 }
 
-/// The user's answer to a secure prompt.
+/// The user's answer to a secure prompt. `value` is wiped when it is dropped,
+/// on every path, whoever holds it by then.
 #[derive(Clone, Deserialize)]
 pub struct SecurePromptResult {
     /// Entered secret (passphrase for `passphrase*`, mnemonic for `import`).
-    pub value: Option<String>,
+    pub value: Option<Zeroizing<String>>,
     /// `true` when the user confirmed; `false` on cancel / window close.
     pub confirmed: bool,
 }
@@ -110,14 +111,24 @@ pub(crate) fn random_id() -> String {
 // integration tests drive the confirmation flow deterministically.
 #[cfg(test)]
 thread_local! {
-    static TEST_ANSWERS: std::cell::RefCell<std::collections::VecDeque<SecurePromptResult>> =
-        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+    static TEST_ANSWERS: std::cell::RefCell<
+        std::collections::VecDeque<Result<SecurePromptResult, AppError>>,
+    > = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
 /// Enqueue a canned answer that the next `prompt_secure` call will return.
 #[cfg(test)]
 pub(crate) fn push_test_answer(result: SecurePromptResult) {
-    TEST_ANSWERS.with(|q| q.borrow_mut().push_back(result));
+    TEST_ANSWERS.with(|q| q.borrow_mut().push_back(Ok(result)));
+}
+
+/// Make the next `prompt_secure` call fail, as when the window cannot open.
+#[cfg(test)]
+pub(crate) fn push_test_prompt_failure() {
+    TEST_ANSWERS.with(|q| {
+        q.borrow_mut()
+            .push_back(Err(AppError::Other("failed to open secure window".into())))
+    });
 }
 
 /// Drop every queued answer no prompt took (a test that expected no
@@ -177,10 +188,11 @@ pub async fn prompt_secure<R: Runtime>(
             if let Some(f) = TEST_ON_ANSWER.with(|h| h.borrow_mut().take()) {
                 f();
             }
-            return Ok(answer);
+            return answer;
         }
     }
     let id = random_id();
+    let mode_is_confirm = request.mode == "confirm";
     let (tx, rx) = oneshot::channel();
 
     {
@@ -201,9 +213,16 @@ pub async fn prompt_secure<R: Runtime>(
     }
 
     let label = format!("secure-prompt-{id}");
+    // A confirmation lists every row of what is signed (a batch names each
+    // name); it gets the room to show them, and scrolls past that.
+    let (width, height) = if mode_is_confirm {
+        (560.0, 620.0)
+    } else {
+        (480.0, 440.0)
+    };
     let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("secure.html".into()))
         .title("Namehold — Secure")
-        .inner_size(480.0, 440.0)
+        .inner_size(width, height)
         .resizable(false)
         .focused(true)
         .always_on_top(true)

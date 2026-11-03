@@ -14,6 +14,31 @@
 
 ## [Unreleased]
 
+### Security
+- **What you confirm is what is signed.** A send now signs only the coins it reserved when it was built, so a Max send can no longer sweep coins that arrived after you reviewed it, and signing refuses any transaction whose txid is not the one the secure window showed. Change must go to the wallet's own change address, re-derived from its key, for every signer.
+- **A mainnet wallet needs a passphrase.** A new mainnet wallet can no longer be created or imported without a passphrase of at least 8 characters: a wallet without one had its recovery phrase encrypted under a key that is part of the public source, so anyone who could read the wallet's files could take its funds. Test-network wallets may still opt out.
+- **Wallet files are private to your account.** `~/.namehold` is now readable by its owner only and the database file 0600, tightened on an existing install; deleted data is zero-filled, so a deleted wallet's encrypted seed does not stay in the file.
+- **Imports read only name lists, exports never follow links.** Importing a watchlist or a name list refuses a symbolic link, a file that is not text or over 8 MiB, and a watchlist file whose rows are not Handshake names, without repeating the row; exports write through the same checks as the bid backup, so a link cannot redirect them onto another file.
+- **A cap on the fee rate.** No transaction is built at more than 1,000 doos per byte (1 HNS per kB), whether the rate comes from Settings, the transaction's own fee field or the node's estimate; Settings and the fee fields say so before you submit.
+- **Name actions refused before signing, not after.** A transaction hsd would refuse after you signed it is now refused when it is built: a bid on a name that is not open for bidding, DNS records over Handshake's 512 bytes, a batch listing a name twice, a payment to an address version nodes do not relay, a name transfer to an address this wallet could not finalize to, and an owner action whose name state the node did not fully report.
+- **The secure window shows what a name action does.** Every name action lists its names, a transfer its recipient, a finalize where the name goes, a bid its value and how much is locked until reveal (with the warning that an unrevealed bid loses it), all read from the transaction that is signed. A revoke warns that it burns the name and asks you to type the name first.
+- **Trust-root settings need your confirmation.** The renderer can no longer change which hsd program runs, which node or explorer is trusted, where a node API key is sent, or whether a send may go to a remote node without a confirmation in the secure window. `update_setting` now accepts only an explicit list of keys.
+- **Node and explorer URLs say where they go.** They must use https, or http only for this computer, and may not hide their real host behind a user name or an encoded spelling. The confirmation warns when a new host would receive your node API key.
+- **The hsd program is checked before every run.** A stored path is refused if it is not an absolute path to an executable file that only its owner can change.
+- **Remote sends always need the opt-in.** A send to a node on another machine needs "Allow sending via remote node" even when the chain source says local node, and sending shows as unavailable before you sign.
+- **Deleting a wallet asks first.** The secure window confirms a delete, and a wallet with a stored recovery phrase also asks you to type its label.
+- **Signing a message shows the message.** The full text appears in the secure window first; messages over 4096 bytes, with invisible characters, or padded with blank space are refused. When a confirmation's details do not fit, Confirm stays disabled until you scroll to the end.
+- **A new wallet exists only after you confirm its phrase.** It is saved once you confirm in the reveal window that the phrase is written down; closing that window creates nothing. Pressing Done clears a copied phrase from the clipboard.
+- **The signer session has a hard limit.** The timeout is 60 to 3600 seconds, a session ends at most one hour after unlock, and an expired session's key is dropped from memory within a second. The master private key, passphrases, recovery phrases and the vault's working keys are overwritten when no longer needed. Release builds write no core dumps.
+- **The node the app starts always has an API key.** It is passed through the node's environment; a generated key is new at every start and goes only to the node the app started. The app refuses to start a node while something else holds its RPC port, the started node listens on 127.0.0.1 only, whatever `hsd.conf` says, and its files and logs are owner-only.
+- **The webview is more closed.** It can no longer reach loopback ports by request, submit forms, register workers, or navigate away from the app's own pages.
+- **Node and explorer clients keep their requests.** They follow no redirects, cap reply sizes, and keep loopback traffic away from proxies.
+- **A node has to prove itself.** A send is refused when the node's network cannot be confirmed, and a node still syncing, or with a tip over 12 hours old on main or testnet, no longer changes which of the wallet's coins are spent.
+- **A reused pid is not the daemon.** A pid in `syncd.pid` that belongs to another program is no longer signalled or taken for the daemon.
+- **Shakedex price steps.** A re-signed Finalize & sign never reuses a lock coin that price steps were signed over; it is refused until the next block, and the prompt names the lock coin. Price-step signatures no longer reach the app's main window. A market fee over 5% of the price is never ticked for you and always carries a warning, whatever rate the market publishes.
+- **Amounts are read exactly.** HNS amounts in Send, Bid, Lockup, Batch bid, Recover bid and the Namebase withdrawal refuse a 7th decimal, a sign, an exponent or a thousands separator with a message, instead of rounding or misreading them.
+- **Batch Bid and Activity tell the truth about a lockup.** Batch Bid no longer says the lockup comes back as change and only the fee is spent: it says the lockup is locked until reveal and an unrevealed bid forfeits it, with the amounts at stake. Activity calls a bid row's value its lockup, and a draft that was not sent, failed or was dropped says nothing has moved. The bid forfeit warning shows the lockup as read and no longer repeats text the amount field refused.
+
 ### Fixed
 - **A wallet with more than 200 names had no name actions at all.** The capability check was asked for every name in one call, which the backend refuses above 200; names showed their bare phase and every batch button stayed grey. It is now asked in chunks of 100, and polled every five minutes instead of every thirty seconds on wallets with more than 100 names.
 - **Batch actions take any number of names.** A selection over 100 names is sent as a series of transactions of up to 100 after one confirmation, with a progress line while each is built and sent; if one fails, the names not yet sent stay selected. Transfer no longer waits for the capability check: the chain's own facts decide, and the batch bar names every selected name that blocks a transfer, with the reason, and drops them in one click. "Select all transferable" picks every name that can move.
@@ -27,6 +52,11 @@
 - **A long batch no longer stops when it runs out of free coins.** A sent transaction holds its coin until a sync brings its change, so a series could stop partway with "insufficient funds". It now syncs and tries again, and the same refusal says what the coins are waiting for and that one sync frees them, without waiting for a block. A batch builder also refuses a node behind the chain before it builds.
 - **A running series shows it is working.** The batch bar shows a spinner, the names being read from your node and the seconds this step has taken. Transfer's blockers appear only when dropping them would leave a transfer to run.
 - **Max and coin selection spend a lost bid's redeemed coin.** It was left out, so Max could leave a redeemed bid's HNS behind and a send could report too little.
+- **A Ledger wallet can send.** It was always reported as locked, so Send stayed disabled behind an Unlock that could only fail. The device signs, so a Ledger is ready whenever the node is.
+- **Upgrading no longer starts a second hsd over the running one's data directory.** The app reaches the node the previous build started.
+- **Name pages no longer sit on "Loading name info…" with a synced node.** The check for a usable node asked the app-wide node address rather than the active wallet's, so a leftover address sent every name read the slow way.
+- **Details shows the market price of a name you bought on the market.** It showed only that name's original auction, often a second price of 0, with nothing about what you paid.
+- **A name whose only task is reclaiming your own outbid reveals counts as owned.** The Reveal step no longer shows a disabled Redeem.
 
 ### Added
 - **Every row on the Names page has a ⋯ menu**, not only watched names. It holds what the name allows right now: Renew, Reveal, Redeem and Finalize run for that name alone, with the same confirmation as a batch and without touching your selection; Transfer or sell…, Edit DNS records, Sign message and Cancel transfer… open the name's page where they live; a watched name also gets Edit tags. Revoke stays on the name's page only.
@@ -34,9 +64,24 @@
 - **ICANN collision flag.** A name that someone has also applied for as a new gTLD in ICANN's 2026 round (1,614 applications on 1,203 strings as of 29 October 2026) carries a yellow ICANN badge on the Names page and in the header of its own page; the badge's tooltip gives the applicant count and whether the string is in contention. Details opens with an "ICANN 2026 round" row naming the applicants, each a link to the application on ICANN's site, and the date of the list; it shows even for a watched name nobody has opened on-chain. The Filters popover gets an "ICANN 2026 round" switch, kept in the URL as `icann=collision`. The list of strings ships with the app, refreshed by `just icann-strings`; the app never contacts ICANN. An applicant who switched to a replacement string counts only under the string they ended on.
 
 ### Changed
+
+**A redesigned app**
+- **Wallet opens on your balance.** Send and Receive sit right under it, receiving moves into a dialog, and the reveal, won, lost and expiring banners become one **Needs you** list sorted by urgency.
+- **One Names page.** Owned names, auctions and the watchlist were three pages; `/names` holds them in one table, one row per name, with a lookup and the chips All, Needs you, In auction, Owned and Watching. Sort by a column header, narrow with the Filters popover (expiry, length, kind of name, tags), and everything stays in the URL. The counts equal the rows they open. Purchases are listed with your names and open the Market.
+- **Every name has its own page,** at `/names/<name>`, in place of the name dialog: one status line with approximate dates, a timeline, one main action, and tabs for Overview, DNS records, Transfer & sell, and Sign message. Details shows short amounts with the exact value in a tooltip, a high bid only once it is known, and "nothing — no second bid" instead of a price of 0.
+- **Activity is three lists:** To finish (drafts to sign, send, retry or discard), Waiting for a block (with Speed up on the row, and how long ago it was sent) and History. Search and filters apply to all three.
+- **A simpler frame.** A wallet switcher and the signer lock in the sidebar, five navigation items with counts, and one readiness pill that says whether this wallet can send, with the node's controls in its popover. Testnet, regtest and simnet each have their own colour and a strip across the top, so a test wallet no longer looks like mainnet.
+- **Settings has six sections** (Connections, Node & tray, Notifications, Backup & import, Updates, Advanced), kept in the URL. When Save is blocked, the bar names the error, a red dot marks its section and Show opens it. Importing your Namebase history moves here from the sidebar, and pages use the full width of the window.
+- Unlock is a secondary button with an icon, Sync explains itself in a tooltip, and a name still opening reads "Opening" everywhere.
+
+**On the Names page**
 - **The Names batch bar shows its actions only once a name is selected.** With nothing selected it keeps just "Select all N transferable" and the progress of a running action.
 - **Transfer Selected asks for the recipient after it is pressed.** It is enabled as soon as the selected names can move and opens a dialog for the address (checked against the wallet's network) with Review, instead of waiting, greyed out, for an address typed in a field before it.
 - **README screenshots show the redesigned app.** Wallet, Names, a name's page (with the ICANN flag) and the Market replace the Auctions and Namebase-history images, whose screens are gone; `just screenshots` regenerates them.
+
+### CI / tooling
+- Take `async-executor` 1.14.1, since 1.14.0 was yanked. RUSTSEC-2026-0429 (`zip` aborts the process on a crafted symlink entry) is suppressed with the other `zip` advisories: `tauri-plugin-updater` pins `zip` 4.6.1, and extraction runs only on Windows, on a bundle whose signature is already verified. See `SECURITY.md`.
+- A pull request's type label comes from the commit type its title starts with.
 
 ## [0.6.1] - 2026-10-25
 

@@ -2181,7 +2181,7 @@ pub(crate) fn build_open_draft_inner(
     name: &str,
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
-    let rate = self::fee_rate(ctx, fee_rate);
+    let rate = self::fee_rate(ctx, fee_rate)?;
     let nh = names::hash_name(name)?;
     let nh_hex = hex::encode(nh);
     let raw = names::raw_name(name)?;
@@ -2289,6 +2289,21 @@ pub async fn build_bid_draft(
 ///
 /// `ns` is the pre-fetched on-chain name state (the async RPC call
 /// happens in the wrapper before the lock is acquired).
+/// A BID is built only for a name in its BIDDING phase (or the OPENING
+/// window just before it, which the capability check also offers): hsd
+/// refuses any other BID only after it was signed and sent. One rule for the
+/// single and the batch bid.
+pub(crate) fn ensure_biddable(name: &str, ns: &NameState) -> Result<(), AppError> {
+    let phase = ns.phase.as_str();
+    if phase != "BIDDING" && phase != "OPENING" {
+        let shown = if phase.is_empty() { "AVAILABLE" } else { phase };
+        return Err(AppError::InvalidInput(format!(
+            "'{name}' is not open for bidding (phase: {shown})"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn build_bid_draft_inner(
     conn: &rusqlite::Connection,
     ctx: &Ctx,
@@ -2298,7 +2313,8 @@ pub(crate) fn build_bid_draft_inner(
     fee_rate: Option<u64>,
     ns: &NameState,
 ) -> Result<TxDraftSummary, AppError> {
-    let rate = self::fee_rate(ctx, fee_rate);
+    ensure_biddable(name, ns)?;
+    let rate = self::fee_rate(ctx, fee_rate)?;
     let nh = names::hash_name(name)?;
     let nh_hex = hex::encode(nh);
     let raw = names::raw_name(name)?;
@@ -2443,16 +2459,7 @@ pub async fn build_batch_bid_draft(
     lockup: i64,
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
-    if names.is_empty() {
-        return Err(AppError::InvalidInput("no names provided".into()));
-    }
-    if names.len() > MAX_BATCH_SIZE {
-        return Err(AppError::InvalidInput(format!(
-            "batch too large: {} names (max {})",
-            names.len(),
-            MAX_BATCH_SIZE
-        )));
-    }
+    check_batch_names(&names)?;
     if bid_value <= 0 || lockup < bid_value {
         return Err(AppError::InvalidInput(
             "lockup must be >= bid value > 0".into(),
@@ -2460,7 +2467,7 @@ pub async fn build_batch_bid_draft(
     }
 
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
+    let rate = self::fee_rate(&ctx, fee_rate)?;
     let client = ctx.node.clone();
 
     // Pre-fetch all name states and hashes to validate phase + catch errors
@@ -2512,14 +2519,7 @@ pub(crate) fn build_batch_bid_draft_inner(
     // capability logic). A single ineligible name aborts the entire batch:
     // batch-bid is defined as all-or-nothing (see the fn doc-comment above).
     for spec in &name_specs {
-        let phase = spec.ns.phase.as_str();
-        if phase != "BIDDING" && phase != "OPENING" {
-            let shown = if phase.is_empty() { "AVAILABLE" } else { phase };
-            return Err(AppError::InvalidInput(format!(
-                "'{}' is not open for bidding (phase: {})",
-                spec.name, shown
-            )));
-        }
+        ensure_biddable(&spec.name, &spec.ns)?;
     }
 
     // Multi-bid (Namebase-style): a wallet may hold several independent bids
@@ -2729,7 +2729,7 @@ pub(crate) fn build_reveal_draft_inner(
             "no unspent bid coin for '{name}' (sync first?)"
         )));
     }
-    let rate = self::fee_rate(ctx, fee_rate);
+    let rate = self::fee_rate(ctx, fee_rate)?;
     let nh = names::hash_name(name)?;
 
     // One REVEAL per bid, in ONE transaction. A wallet may hold several bids on
@@ -2856,7 +2856,7 @@ pub(crate) fn build_redeem_draft_inner(
     if reveal_coins.is_empty() {
         return Err(only_earlier_auction_reveals(name, reveal_coins_held));
     }
-    let rate = self::fee_rate(ctx, fee_rate);
+    let rate = self::fee_rate(ctx, fee_rate)?;
     let nh = names::hash_name(name)?;
 
     // One REDEEM per losing reveal, in ONE transaction — a wallet that outbid
@@ -2917,7 +2917,7 @@ async fn owner_coin_and_state(
             .ok_or_else(|| AppError::NotFound(format!("wallet does not hold '{name}' (sync?)")))?
     };
     let client = ctx.node.clone();
-    let ns = fetch_name_state(&client, name).await?;
+    let ns = super::draft_ctx::fetch_owner_name_state(&client, name).await?;
     Ok((coin, ns))
 }
 
@@ -2966,7 +2966,7 @@ pub(crate) fn build_register_draft_inner(
     owner_coin: &queries::NameCoin,
     renewal_block: &[u8; 32],
 ) -> Result<TxDraftSummary, AppError> {
-    let rate = self::fee_rate(ctx, fee_rate);
+    let rate = self::fee_rate(ctx, fee_rate)?;
     let nh = names::hash_name(name)?;
     let res_bytes = match records {
         Some(r) if !r.is_empty() => resource::encode(r)?,
@@ -3049,7 +3049,7 @@ pub(crate) fn build_update_draft_inner(
     ns: &NameState,
     owner_coin: &queries::NameCoin,
 ) -> Result<TxDraftSummary, AppError> {
-    let rate = self::fee_rate(ctx, fee_rate);
+    let rate = self::fee_rate(ctx, fee_rate)?;
     let nh = names::hash_name(name)?;
     let res_bytes = resource::encode(records)?;
     // UPDATE keeps the full owner-coin value on the name (no price change);
@@ -3106,7 +3106,7 @@ pub(crate) fn build_renew_draft_inner(
     owner_coin: &queries::NameCoin,
     renewal_block: &[u8; 32],
 ) -> Result<TxDraftSummary, AppError> {
-    let rate = self::fee_rate(ctx, fee_rate);
+    let rate = self::fee_rate(ctx, fee_rate)?;
     let nh = names::hash_name(name)?;
     // RENEW keeps the full owner-coin value on the name (no price change);
     // only the renewal-block reference is refreshed to extend the lease.
@@ -3159,9 +3159,9 @@ pub(crate) fn build_transfer_draft_inner(
     ns: &NameState,
     owner_coin: &queries::NameCoin,
 ) -> Result<TxDraftSummary, AppError> {
-    let rate = self::fee_rate(ctx, fee_rate);
+    let rate = self::fee_rate(ctx, fee_rate)?;
     let nh = names::hash_name(name)?;
-    let (version, program) = address::decode(ctx.network, recipient)?;
+    let (version, program) = address::decode_transfer_recipient(ctx.network, recipient)?;
     // TRANSFER initiates a name transfer to `recipient`; the output keeps the
     // full owner-coin value on the name and stays at the current owner address
     // until FINALIZE moves it.
@@ -3226,7 +3226,7 @@ pub(crate) fn build_finalize_draft_inner(
     owner_coin: &queries::NameCoin,
     renewal_block: &[u8; 32],
 ) -> Result<TxDraftSummary, AppError> {
-    let rate = self::fee_rate(ctx, fee_rate);
+    let rate = self::fee_rate(ctx, fee_rate)?;
     let nh = names::hash_name(name)?;
     let raw = names::raw_name(name)?;
 
@@ -3240,24 +3240,7 @@ pub(crate) fn build_finalize_draft_inner(
         .get("items")
         .and_then(|i| i.as_array())
         .ok_or_else(|| AppError::InvalidInput("owner coin has no covenant items".into()))?;
-    if items.len() < 4 {
-        return Err(AppError::InvalidInput(
-            "owner coin is not a TRANSFER".into(),
-        ));
-    }
-    let ver_hex = items[2].as_str().unwrap_or("00");
-    let hash_hex = items[3].as_str().unwrap_or("");
-    let version = u8::from_str_radix(ver_hex, 16).unwrap_or(0);
-    let target_hash = hex::decode(hash_hex)
-        .map_err(|e| AppError::InvalidInput(format!("bad transfer target: {e}")))?;
-    if version != 0 || target_hash.len() != 20 {
-        return Err(AppError::InvalidInput(
-            "finalize target must be p2wpkh".into(),
-        ));
-    }
-    let mut h160 = [0u8; 20];
-    h160.copy_from_slice(&target_hash);
-    let target_address = address::encode_p2wpkh(ctx.network, &h160)?;
+    let target_address = address::finalize_target(ctx.network, items)?;
 
     let flags: u8 = if ns.weak { 1 } else { 0 };
     let res = actions::build_plan(
@@ -3302,7 +3285,7 @@ pub async fn build_cancel_draft(
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
     refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), true)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
+    let rate = self::fee_rate(&ctx, fee_rate)?;
     let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let res = actions::build_plan(
@@ -3360,7 +3343,7 @@ pub async fn build_revoke_draft(
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
     refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), false)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
+    let rate = self::fee_rate(&ctx, fee_rate)?;
     let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let res = actions::build_plan(
@@ -3400,13 +3383,11 @@ pub async fn build_revoke_draft(
 /// this size is always ONE atomic transaction (no chunking).
 pub const MAX_BATCH_SIZE: usize = 100;
 
-#[tauri::command]
-#[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn build_batch_renew_draft(
-    state: State<'_, AppState>,
-    names: Vec<String>,
-    fee_rate: Option<u64>,
-) -> Result<TxDraftSummary, AppError> {
+/// The shape every batch takes: at least one name, at most
+/// [`MAX_BATCH_SIZE`], and no name twice. A name listed twice would spend its
+/// one owner coin twice in one transaction, which hsd refuses only after it
+/// was signed and sent (and says so only in its log).
+pub(crate) fn check_batch_names(names: &[String]) -> Result<(), AppError> {
     if names.is_empty() {
         return Err(AppError::InvalidInput("no names provided".into()));
     }
@@ -3417,10 +3398,27 @@ pub async fn build_batch_renew_draft(
             MAX_BATCH_SIZE
         )));
     }
+    let mut seen = std::collections::HashSet::with_capacity(names.len());
+    if let Some(dup) = names.iter().find(|n| !seen.insert(n.as_str())) {
+        return Err(AppError::InvalidInput(format!(
+            "'{dup}' is in the batch twice; each name can be in it once"
+        )));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn build_batch_renew_draft(
+    state: State<'_, AppState>,
+    names: Vec<String>,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    check_batch_names(&names)?;
     let ctx = load_ctx(&state)?;
     super::draft_ctx::refuse_behind_chain(&ctx.node).await?;
     refuse_while_listed(&state, &ctx.profile_id, &names, false)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
+    let rate = self::fee_rate(&ctx, fee_rate)?;
     let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
 
@@ -3497,22 +3495,13 @@ pub async fn build_batch_transfer_draft(
     recipient: String,
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
-    if names.is_empty() {
-        return Err(AppError::InvalidInput("no names provided".into()));
-    }
-    if names.len() > MAX_BATCH_SIZE {
-        return Err(AppError::InvalidInput(format!(
-            "batch too large: {} names (max {})",
-            names.len(),
-            MAX_BATCH_SIZE
-        )));
-    }
+    check_batch_names(&names)?;
     let ctx = load_ctx(&state)?;
     refuse_while_listed(&state, &ctx.profile_id, &names, false)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
+    let rate = self::fee_rate(&ctx, fee_rate)?;
     // Decode the shared recipient once, up front, so a bad address aborts the
     // whole batch before any owner-coin prefetch or DB write.
-    let (version, program) = address::decode(ctx.network, &recipient)?;
+    let (version, program) = address::decode_transfer_recipient(ctx.network, &recipient)?;
     super::draft_ctx::refuse_behind_chain(&ctx.node).await?;
 
     let mut per_name: PerNameOwner = Vec::with_capacity(names.len());
@@ -3592,19 +3581,10 @@ pub async fn build_batch_reveal_draft(
     names: Vec<String>,
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
-    if names.is_empty() {
-        return Err(AppError::InvalidInput("no names provided".into()));
-    }
-    if names.len() > MAX_BATCH_SIZE {
-        return Err(AppError::InvalidInput(format!(
-            "batch too large: {} names (max {})",
-            names.len(),
-            MAX_BATCH_SIZE
-        )));
-    }
+    check_batch_names(&names)?;
     let ctx = load_ctx(&state)?;
     super::draft_ctx::refuse_behind_chain(&ctx.node).await?;
-    let rate = self::fee_rate(&ctx, fee_rate);
+    let rate = self::fee_rate(&ctx, fee_rate)?;
     let client = ctx.node.clone();
 
     // Per-name prefetch: brief DB lock (bid commitment + unspent BID coin),
@@ -3746,19 +3726,10 @@ pub async fn build_batch_redeem_draft(
     names: Vec<String>,
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
-    if names.is_empty() {
-        return Err(AppError::InvalidInput("no names provided".into()));
-    }
-    if names.len() > MAX_BATCH_SIZE {
-        return Err(AppError::InvalidInput(format!(
-            "batch too large: {} names (max {})",
-            names.len(),
-            MAX_BATCH_SIZE
-        )));
-    }
+    check_batch_names(&names)?;
     let ctx = load_ctx(&state)?;
     super::draft_ctx::refuse_behind_chain(&ctx.node).await?;
-    let rate = self::fee_rate(&ctx, fee_rate);
+    let rate = self::fee_rate(&ctx, fee_rate)?;
     let client = ctx.node.clone();
 
     // Per-name prefetch: async RPC first, then a brief DB lock for the
@@ -3883,20 +3854,11 @@ pub async fn build_batch_finalize_draft(
     names: Vec<String>,
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
-    if names.is_empty() {
-        return Err(AppError::InvalidInput("no names provided".into()));
-    }
-    if names.len() > MAX_BATCH_SIZE {
-        return Err(AppError::InvalidInput(format!(
-            "batch too large: {} names (max {})",
-            names.len(),
-            MAX_BATCH_SIZE
-        )));
-    }
+    check_batch_names(&names)?;
     let ctx = load_ctx(&state)?;
     super::draft_ctx::refuse_behind_chain(&ctx.node).await?;
     refuse_while_listed(&state, &ctx.profile_id, &names, false)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
+    let rate = self::fee_rate(&ctx, fee_rate)?;
     let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
 
@@ -3974,20 +3936,10 @@ pub(crate) fn build_batch_finalize_draft_inner(
                 name
             )));
         }
-        let ver_hex = items[2].as_str().unwrap_or("00");
-        let hash_hex = items[3].as_str().unwrap_or("");
-        let version = u8::from_str_radix(ver_hex, 16).unwrap_or(0);
-        let target_hash = hex::decode(hash_hex)
-            .map_err(|e| AppError::InvalidInput(format!("'{}' bad transfer target: {e}", name)))?;
-        if version != 0 || target_hash.len() != 20 {
-            return Err(AppError::InvalidInput(format!(
-                "'{}' finalize target must be p2wpkh",
-                name
-            )));
-        }
-        let mut h160 = [0u8; 20];
-        h160.copy_from_slice(&target_hash);
-        let target_address = address::encode_p2wpkh(ctx.network, &h160)?;
+        let target_address = address::finalize_target(ctx.network, items).map_err(|e| match e {
+            AppError::InvalidInput(m) => AppError::InvalidInput(format!("'{name}' {m}")),
+            other => other,
+        })?;
 
         let flags: u8 = if ns.weak { 1 } else { 0 };
         let cov = covenants::finalize(nh, ns.height, raw, flags, ns.claimed, ns.renewals, rblock);

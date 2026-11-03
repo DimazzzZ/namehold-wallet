@@ -8,9 +8,9 @@ export function dollarydoosToHns(dollarydoos: number): string {
 /**
  * Doos that actually LEAVE the wallet for a draft (excluding the fee, which is
  * shown separately). Covenant name-actions (update/renew/register/reveal/bid/
- * open/redeem/cancel) carry the name's locked value onto your OWN new coin —
- * the backend funds that output by spending the name coin itself, so nothing
- * leaves beyond the fee → 0. Only a genuine transfer to another party
+ * open/redeem/cancel) put their output on a coin of your OWN — the name's
+ * locked value, or for a bid its lockup, which stays locked until the reveal —
+ * so nothing leaves beyond the fee → 0. Only a genuine transfer to another party
  * (send_hns / transfer / finalize — the actions that set `recipientAddress`)
  * moves value out of the wallet.
  *
@@ -39,11 +39,6 @@ function addThousandSeparators(nStr: string): string {
  */
 export function formatCount(value: number): string {
   return addThousandSeparators(String(value));
-}
-
-export function hnsToDollarydoos(hns: string | number): number {
-  const n = typeof hns === "number" ? hns : parseFloat(hns);
-  return Math.round(n * 1_000_000);
 }
 
 /** The bech32 HRP+separator an HNS address starts with on a given network. */
@@ -258,8 +253,8 @@ export function formatShortDate(iso: string | null | undefined): string {
  *   moves, or any zero-magnitude row (gray, no sign).
  *
  * The rule mirrors `netSpendDoos`: a DNS UPDATE / BID / REGISTER / RENEW /
- * REVEAL / REDEEM re-homes the name's own locked value onto our new coin
- * (`valueDoos === 0`) — nothing was lost, so it MUST NOT paint red.
+ * REVEAL / REDEEM keeps its output value on our own new coin
+ * (`valueDoos === 0`) — nothing left the wallet, so it MUST NOT paint red.
  */
 export function amountTone(row: {
   direction: string;

@@ -668,6 +668,15 @@ impl<'a> Reader<'a> {
 /// (witness version + program), verifying the HRP matches `network`.
 pub fn output_address_from_string(network: Network, addr: &str) -> Result<OutputAddress, AppError> {
     let (version, program) = address::decode(network, addr)?;
+    // hsd relays a payment only to a version-0 program (`isUnknown` makes any
+    // other version non-standard, `requireStandard` is on for main): an
+    // output to another version would be signed and then silently dropped.
+    if version != 0 {
+        return Err(AppError::InvalidInput(format!(
+            "'{addr}' is a version-{version} address; Handshake nodes relay payments only to \
+             version-0 addresses (hs1q…)"
+        )));
+    }
     Ok(OutputAddress {
         version,
         hash: program,
@@ -677,6 +686,18 @@ pub fn output_address_from_string(network: Network, addr: &str) -> Result<Output
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An output to a witness version other than 0 is refused when it is
+    /// built: hsd would refuse to relay the signed transaction.
+    #[test]
+    fn an_output_to_a_non_v0_address_is_refused() {
+        let hrp = bech32::Hrp::parse(Network::Main.address_hrp()).unwrap();
+        let v1 = bech32::segwit::encode_v1(hrp, &[7u8; 32]).unwrap();
+        let err = output_address_from_string(Network::Main, &v1).unwrap_err();
+        assert!(err.to_string().contains("version-1 address"), "{err}");
+        let v0 = address::encode_p2wpkh(Network::Main, &[7; 20]).unwrap();
+        assert!(output_address_from_string(Network::Main, &v0).is_ok());
+    }
 
     // Blake2b-256 of the empty input. Canonical BLAKE2b-256 test vector.
     #[test]

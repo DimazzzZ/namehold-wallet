@@ -9,8 +9,8 @@ import { useUiStore } from "../../stores/ui";
 import { shortTxid } from "../SpeedUp";
 import { Button } from "../ui/Button";
 import { Tooltip } from "../ui/Tooltip";
-import { LOCKED_VALUE_TAIL, AmountCell, DateCell, StatusCell, TxLink, WhatCell } from "./cells";
-import { rowBadge, rowIso, showsNameValue } from "./activityText";
+import { AmountCell, DateCell, StatusCell, TxLink, WhatCell } from "./cells";
+import { lockedValueTail, rowBadge, rowIso, showsNameValue } from "./activityText";
 
 export interface HistoryPager {
   page: number;
@@ -253,8 +253,7 @@ function RowDetail({
       </div>
       {covenant && (
         <p className="text-gray-500 [text-wrap:pretty]">
-          {formatHns(row.nameValueDoos!)} HNS{" "}
-          {LOCKED_VALUE_TAIL.replace("leaves your wallet", "left your wallet")}
+          {formatHns(row.nameValueDoos!)} HNS {lockedValueTail(row, true)}
         </p>
       )}
       {rowBadge(row).hint && <p className="text-gray-500">{rowBadge(row).hint}</p>}

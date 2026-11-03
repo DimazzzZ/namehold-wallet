@@ -561,6 +561,17 @@ describe("webqa-mock selling", () => {
     expect(mockInvoke<Settings>("get_settings").shakedex_experimental).toBe("false");
   });
 
+  it("keeps a confirmed protected setting, as the secure window would after a yes", () => {
+    expect(mockInvoke<Settings>("get_settings").chain_source).toBe("local_node");
+    const written = mockInvoke<string[]>("update_protected_settings", {
+      changes: [{ key: "chain_source", value: "remote_node" }],
+    });
+    expect(written).toEqual(["chain_source"]);
+    expect(mockInvoke<Settings>("get_settings").chain_source).toBe("remote_node");
+    __resetChainForTests();
+    expect(mockInvoke<Settings>("get_settings").chain_source).toBe("local_node");
+  });
+
   it("restores a lock by name and makes it Listed with its own file", () => {
     const r = mockInvoke<ShakedexListingSummary>("shakedex_restore_lock", { name: "dexsale" });
     expect(r.state).toBe("restored");

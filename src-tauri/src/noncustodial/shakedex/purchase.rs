@@ -321,6 +321,20 @@ pub fn items_name_height(items: &[String]) -> Option<u32> {
         .map(u32::from_le_bytes)
 }
 
+/// The largest market fee, in basis points of the price, a purchase takes as
+/// the market's own (5%), whatever rate the market publishes in its
+/// `fee_info`; a larger fee is never pre-selected and always carries a
+/// warning. LearnHNS published a rate of 0 on 2026-11-02; without a cap the
+/// market's word alone could make a fee of any size its own.
+pub const MAX_MARKET_FEE_BPS: u32 = 500;
+
+/// Whether `fee` is over [`MAX_MARKET_FEE_BPS`] of `price`; any fee is, on a
+/// price of 0. Exact, in u128: no rounding lets a fee just over the cap
+/// through.
+pub fn market_fee_over_cap(fee: u64, price: u64) -> bool {
+    u128::from(fee) * 10_000 > u128::from(price) * u128::from(MAX_MARKET_FEE_BPS)
+}
+
 /// The market fee as basis points of the price, for display. `None` when
 /// there is no price or the figure does not fit a u32 (a fee over 429,496
 /// times the price, which a foreign listing file may still carry): such a

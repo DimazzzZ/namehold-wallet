@@ -35,6 +35,53 @@ fn row_of(conn: &Connection, id: &str) -> MyListing {
         .expect("the listing's row")
 }
 
+/// Whether any object in `v`, at any depth, has the key `key`.
+pub(crate) fn has_key(v: &serde_json::Value, key: &str) -> bool {
+    match v {
+        serde_json::Value::Object(m) => m.contains_key(key) || m.values().any(|x| has_key(x, key)),
+        serde_json::Value::Array(a) => a.iter().any(|x| has_key(x, key)),
+        _ => false,
+    }
+}
+
+/// shakedex-2: My listings runs in the main webview's reach, so its rows
+/// carry each stored step's price and lock time and never its signature,
+/// in every state — Finalizing (a FINALIZE not even sent, whose steps a
+/// re-sign must never see reused) as much as Listed. The steps are still
+/// read: the row shows them, and its prices are R3's current step of them.
+#[test]
+fn my_listings_carry_no_step_signatures() {
+    let sig = format!("{}84", "ab".repeat(64));
+    let conn = store_conn();
+    for (i, state) in ListingState::ALL.into_iter().enumerate() {
+        let mut l = with_steps(listing(&format!("l{i}"), &format!("name{i}"), state));
+        l.steps_json = format!(
+            r#"[{{"price":5000000,"lockTime":1700000000,"signature":"{sig}"}},
+                {{"price":4000000,"lockTime":1700003600,"signature":"{sig}"}}]"#
+        );
+        l.lock_txid = Some(format!("{i:02x}").repeat(32));
+        insert(&conn, &l);
+    }
+    let rows =
+        my_listings_from_conn(&conn, "sell1", Network::Main, Some(Ok(1_700_100_000))).unwrap();
+    assert_eq!(rows.len(), ListingState::ALL.len());
+    for row in &rows {
+        assert_eq!(
+            row.listing
+                .steps
+                .iter()
+                .map(|s| (s.price, s.lock_time))
+                .collect::<Vec<_>>(),
+            [(5_000_000, 1_700_000_000), (4_000_000, 1_700_003_600)],
+            "{:?}",
+            row.listing.state
+        );
+    }
+    let json = serde_json::to_value(&rows).unwrap();
+    assert!(!has_key(&json, "signature"), "{json}");
+    assert!(!json.to_string().contains(&sig), "{json}");
+}
+
 fn allowed(a: &ListingAction) -> bool {
     assert_eq!(a.allowed, a.reason.is_none(), "{a:?}");
     a.allowed

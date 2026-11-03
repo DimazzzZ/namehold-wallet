@@ -130,7 +130,9 @@ pub struct WriteCapability {
 impl WriteCapability {
     /// Evaluate the gate from the unlocked-signer flag and the chain source.
     /// `allow_remote` mirrors the `allow_remote_broadcast` setting and only
-    /// matters for a remote node source.
+    /// matters for a remote node source. A caller that knows the node's URL
+    /// passes `rpc::send_source`, since a node off this machine is remote
+    /// whatever the chain source says.
     pub fn evaluate(signer_unlocked: bool, source: ChainSource, allow_remote: bool) -> Self {
         let broadcaster_available = match source {
             ChainSource::LocalNode => true,
@@ -153,7 +155,7 @@ impl WriteCapability {
                         .to_string()
                 }
                 ChainSource::RemoteNode => {
-                    "Remote broadcast is disabled. Enable \"Allow sending via remote node\" in Settings → Connections."
+                    "Sending via remote node is disabled. Choose Remote node and enable \"Allow sending via remote node\" in Settings → Connections."
                         .to_string()
                 }
                 ChainSource::LocalNode => unreachable!(),

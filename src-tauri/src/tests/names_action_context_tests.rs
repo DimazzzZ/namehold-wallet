@@ -1225,7 +1225,24 @@ mod rpc_injected_tests {
         s.insert("fee_rate_doos_per_kvb".into(), "5000".into());
         let ctx = ctx_with_settings(s);
 
-        assert_eq!(fee_rate(&ctx, Some(100)), 100);
+        assert_eq!(fee_rate(&ctx, Some(100)).unwrap(), 100);
+    }
+
+    /// A name action is never built at a rate past the cap, whether the
+    /// argument or the renderer-writable setting asks for it.
+    #[test]
+    fn fee_rate_refuses_a_rate_past_the_cap_from_the_argument_or_the_setting() {
+        let over = crate::noncustodial::send::MAX_FEE_RATE_PER_BYTE + 1;
+        let ctx = ctx_with_settings(std::collections::HashMap::new());
+        assert!(fee_rate(&ctx, Some(over)).is_err());
+        let mut s = std::collections::HashMap::new();
+        s.insert("fee_rate_doos_per_kvb".into(), "5000000".into());
+        let ctx = ctx_with_settings(s);
+        let err = fee_rate(&ctx, None).unwrap_err();
+        assert!(
+            err.to_string().contains("more than this wallet pays"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1236,7 +1253,7 @@ mod rpc_injected_tests {
         let ctx = ctx_with_settings(s);
 
         // 5000 / 1000 = 5 doos/byte (well above MIN_FEE_RATE_PER_BYTE = 1).
-        assert_eq!(fee_rate(&ctx, None), 5);
+        assert_eq!(fee_rate(&ctx, None).unwrap(), 5);
     }
 
     #[test]
@@ -1245,7 +1262,7 @@ mod rpc_injected_tests {
         let ctx = ctx_with_settings(std::collections::HashMap::new());
 
         assert_eq!(
-            fee_rate(&ctx, None),
+            fee_rate(&ctx, None).unwrap(),
             crate::noncustodial::send::DEFAULT_FEE_RATE_PER_BYTE
         );
     }
@@ -1258,7 +1275,7 @@ mod rpc_injected_tests {
         let ctx = ctx_with_settings(s);
 
         assert_eq!(
-            fee_rate(&ctx, None),
+            fee_rate(&ctx, None).unwrap(),
             crate::noncustodial::send::MIN_FEE_RATE_PER_BYTE
         );
     }
@@ -1271,7 +1288,7 @@ mod rpc_injected_tests {
         let ctx = ctx_with_settings(s);
 
         assert_eq!(
-            fee_rate(&ctx, None),
+            fee_rate(&ctx, None).unwrap(),
             crate::noncustodial::send::DEFAULT_FEE_RATE_PER_BYTE
         );
     }

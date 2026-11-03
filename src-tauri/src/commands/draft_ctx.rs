@@ -219,15 +219,17 @@ pub(crate) fn name_input_from(coin: queries::NameCoin) -> NameInputSpec {
 /// the default. An unset or unreadable setting falls back to the default
 /// rather than failing the build: the resulting fee is shown in the
 /// confirmation before anything is signed.
-pub(crate) fn fee_rate(ctx: &Ctx, fee_rate: Option<u64>) -> u64 {
-    fee_rate
-        .or_else(|| {
-            ctx.settings
-                .get("fee_rate_doos_per_kvb")
-                .and_then(|s| s.parse::<u64>().ok())
-                .map(|kvb| (kvb / 1000).max(send::MIN_FEE_RATE_PER_BYTE))
-        })
-        .unwrap_or(send::DEFAULT_FEE_RATE_PER_BYTE)
+pub(crate) fn fee_rate(ctx: &Ctx, fee_rate: Option<u64>) -> Result<u64, AppError> {
+    send::checked_fee_rate(
+        fee_rate
+            .or_else(|| {
+                ctx.settings
+                    .get("fee_rate_doos_per_kvb")
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .map(|kvb| (kvb / 1000).max(send::MIN_FEE_RATE_PER_BYTE))
+            })
+            .unwrap_or(send::DEFAULT_FEE_RATE_PER_BYTE),
+    )
 }
 
 /// Minimal view of `getnameinfo` we need to build covenants.
@@ -272,6 +274,28 @@ pub(crate) async fn fetch_name_state_strict(
     name: &str,
 ) -> Result<NameState, AppError> {
     name_state_strict(&client.get_name_info(name).await?, name)
+}
+
+/// The name state an owner action (register, update, renew, transfer,
+/// finalize, cancel, revoke and their batches) is built from: every field its
+/// covenant or output commits to is read strictly ([`name_state_strict`]),
+/// and so is the name's `value`, which a REGISTER output carries. A field the
+/// node leaves out refuses the build, never defaults to 0 and fails at the
+/// node after the user signed.
+pub(crate) async fn fetch_owner_name_state(
+    client: &dyn NodeRpc,
+    name: &str,
+) -> Result<NameState, AppError> {
+    let v = client.get_name_info(name).await?;
+    let ns = name_state_strict(&v, name)?;
+    let value = v
+        .get("info")
+        .and_then(|i| i.get("value"))
+        .and_then(|x| x.as_u64())
+        .ok_or_else(|| {
+            AppError::Rpc(format!("node did not report the name's value for '{name}'"))
+        })?;
+    Ok(NameState { value, ..ns })
 }
 
 /// [`fetch_name_state_strict`] of a `getnameinfo` reply already in hand, so a

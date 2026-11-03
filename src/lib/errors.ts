@@ -81,6 +81,15 @@ export class StagedError extends Error {
   }
 }
 
+/**
+ * True for `AppError::UserRejected` ("Confirmation declined", see
+ * `error.rs`): the user said no in the secure window. That is their answer,
+ * not a failure to report.
+ */
+export function isUserRejected(error: unknown): boolean {
+  return /confirmation declined/i.test(String(unwrapStaged(error)));
+}
+
 /** Stage of a `StagedError`, or `undefined` for any other error shape. */
 export function stageOf(error: unknown): MutationStage | undefined {
   return error instanceof StagedError ? error.stage : undefined;

@@ -21,7 +21,7 @@ export function makeListing(over: Partial<ShakedexListingSummary> = {}): Shakede
     lockTxid: "11".repeat(32),
     lockVout: 0,
     paymentAddress: "rs1qpay",
-    steps: [{ price: 5_000_000, lockTime: 1_700_000_000, signature: "00" }],
+    steps: [{ price: 5_000_000, lockTime: 1_700_000_000 }],
     expiresAt: 1_731_536_000,
     finalizeDraftId: null,
     cancelDraftId: null,

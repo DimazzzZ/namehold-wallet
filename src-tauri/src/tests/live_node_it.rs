@@ -3825,15 +3825,30 @@ async fn live_sign_name_message_ownership_gate() {
     unlock(&app);
 
     // Owned → signs OK. Response is a JSON object; we accept any Ok().
-    let ok =
-        crate::commands::tx::sign_name_message(app.state(), owned.clone(), "hello".into(), None)
-            .await;
+    crate::commands::secure_prompt::push_test_answer(
+        crate::commands::secure_prompt::SecurePromptResult {
+            value: None,
+            confirmed: true,
+        },
+    );
+    let ok = crate::commands::tx::sign_name_message(
+        app.handle().clone(),
+        owned.clone(),
+        "hello".into(),
+        None,
+    )
+    .await;
     assert!(ok.is_ok(), "owned name must sign: {:?}", ok.err());
 
     // Not owned → refused. Use a plausible-but-untracked name.
     let not_owned = format!("snm{tip}notmine");
-    let bad =
-        crate::commands::tx::sign_name_message(app.state(), not_owned, "hello".into(), None).await;
+    let bad = crate::commands::tx::sign_name_message(
+        app.handle().clone(),
+        not_owned,
+        "hello".into(),
+        None,
+    )
+    .await;
     assert!(bad.is_err(), "unowned name must be refused");
 }
 
@@ -8207,6 +8222,15 @@ fn listing_row(
     db::queries::get_shakedex_listing(&c, id).unwrap().unwrap()
 }
 
+/// The signed steps stored on listing `id`; a `ListingSummary` carries
+/// their prices and lock times only.
+fn stored_steps(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    id: &str,
+) -> Vec<crate::noncustodial::shakedex::sell::StoredStep> {
+    crate::shakedex_jobs::stored_steps(&listing_row(app, id)).unwrap()
+}
+
 /// A fresh name locked, finalized into its lock at `price` HNS and Listed
 /// by the job. `(app, client, our address, name, listing id, the Finalize &
 /// sign summary)`.
@@ -8285,7 +8309,8 @@ async fn auction_listed_on_chain(
     // R19: the first step is valid at once, the next ones not yet.
     let mtp = node_mtp(&cl).await;
     assert_eq!(
-        crate::noncustodial::shakedex::sell::current_step_price(&s.steps, mtp).unwrap(),
+        crate::noncustodial::shakedex::sell::current_step_price(&stored_steps(&app, &id), mtp)
+            .unwrap(),
         Some(5_000_000),
         "step 0 is current at {mtp} once Listed"
     );
@@ -9292,7 +9317,8 @@ async fn shakedex_namehold_reverse_auction_is_bought_by_the_cli_at_the_current_s
     advance_mtp_past(&cl, &addr, s.steps[1].lock_time).await;
     let mtp = node_mtp(&cl).await;
     assert_eq!(
-        crate::noncustodial::shakedex::sell::current_step_price(&s.steps, mtp).unwrap(),
+        crate::noncustodial::shakedex::sell::current_step_price(&stored_steps(&app, &id), mtp)
+            .unwrap(),
         Some(4_000_000),
         "step 1 is current at {mtp}"
     );
@@ -10935,6 +10961,18 @@ async fn live_regtest_and_testnet_nodes_run_side_by_side() {
     start_hsd(app.state()).await.expect("regtest starts");
     let regtest = wait_connected("regtest").await;
     assert_eq!(regtest["ownership"], "own");
+    // The started node answers no one without its key: hsd turns
+    // authentication off by itself on loopback when it has none, and the key
+    // reaches it through HSD_API_KEY, not the command line.
+    let anonymous = crate::http::client_builder()
+        .build()
+        .unwrap()
+        .post("http://127.0.0.1:14037/")
+        .body(r#"{"method":"getblockchaininfo","params":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), reqwest::StatusCode::UNAUTHORIZED);
 
     activate("p-testnet");
     start_hsd(app.state())

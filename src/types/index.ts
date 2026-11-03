@@ -979,12 +979,14 @@ export interface MarketPage {
   pageCount: number;
 }
 
-/** One signed price step of our listing (`sell::StoredStep`). */
-export interface ShakedexStoredStep {
+/**
+ * One price step of our listing (`commands/shakedex.rs::ListingStep`): its price and lock time.
+ * The signature stays in the backend and leaves the wallet only in the listing file, once the
+ * finalize into the lock is mined.
+ */
+export interface ShakedexListingStep {
   price: number;
   lockTime: number;
-  /** 65 bytes, hex: the low-S signature and the 0x84 sighash byte. */
-  signature: string;
 }
 
 /** One of our listings (`commands/shakedex.rs::ListingSummary`). */
@@ -1058,7 +1060,7 @@ export interface ShakedexListingSummary {
   lockTxid: string | null;
   lockVout: number | null;
   paymentAddress: string | null;
-  steps: ShakedexStoredStep[];
+  steps: ShakedexListingStep[];
   expiresAt: number | null;
   /** The signed FINALIZE into the lock; `broadcast_tx_draft` sends it. */
   finalizeDraftId: string | null;

@@ -132,6 +132,68 @@ describe("BatchBidModal", () => {
     });
   });
 
+  it("before the build, says the lockup is locked until reveal and forfeited if not revealed", async () => {
+    vi.mocked(readQueries.useNamesActionCapabilities).mockReturnValue({
+      data: [cap("name1", true), cap("name2", true)],
+      isFetching: false,
+    } as any);
+    render(<BatchBidModal open={true} onClose={vi.fn()} activeProfileId="p1" />);
+    fireEvent.change(screen.getByTestId("batch-bid-names-input"), {
+      target: { value: "name1\nname2" },
+    });
+    fireEvent.change(screen.getByTestId("batch-bid-value-input"), { target: { value: "1" } });
+    fireEvent.change(screen.getByTestId("batch-bid-lockup-input"), { target: { value: "2.5" } });
+    fireEvent.click(screen.getByTestId("batch-bid-check-names-btn"));
+
+    expect(await screen.findByTestId("batch-bid-total-lockup")).toHaveTextContent(
+      "Locked until you reveal: 2 × 2.500000 HNS = 5.000000 HNS",
+    );
+    const warning = screen.getByTestId("batch-bid-forfeit-warning");
+    expect(warning).toHaveTextContent("forfeits its entire lockup");
+    expect(warning).toHaveTextContent("2.500000 HNS a name, 5.000000 HNS for all 2");
+    // The old copy said the opposite of the chain rule.
+    expect(screen.queryByText(/only the fee is spent/i)).toBeNull();
+    expect(screen.queryByText(/returned as change/i)).toBeNull();
+  });
+
+  it("names the one lockup at stake when a single name is biddable", async () => {
+    vi.mocked(readQueries.useNamesActionCapabilities).mockReturnValue({
+      data: [cap("name1", true)],
+      isFetching: false,
+    } as any);
+    render(<BatchBidModal open={true} onClose={vi.fn()} activeProfileId="p1" />);
+    fireEvent.change(screen.getByTestId("batch-bid-names-input"), { target: { value: "name1" } });
+    fireEvent.change(screen.getByTestId("batch-bid-value-input"), { target: { value: "1" } });
+    fireEvent.change(screen.getByTestId("batch-bid-lockup-input"), { target: { value: "2.5" } });
+    fireEvent.click(screen.getByTestId("batch-bid-check-names-btn"));
+
+    const warning = await screen.findByTestId("batch-bid-forfeit-warning");
+    expect(warning).toHaveTextContent("forfeits its entire lockup. That is 2.500000 HNS.");
+  });
+
+  it("the confirm step repeats the forfeit warning with the draft's total lockup", async () => {
+    vi.mocked(readQueries.useNamesActionCapabilities).mockReturnValue({
+      data: [cap("name1", true), cap("name2", true)],
+      isFetching: false,
+    } as any);
+    buildMutateAsync.mockResolvedValue({
+      id: "draft1",
+      summary: { feeDoos: 500, sendTotalDoos: 5_000_000 },
+    });
+    render(<BatchBidModal open={true} onClose={vi.fn()} activeProfileId="p1" />);
+    fireEvent.change(screen.getByTestId("batch-bid-names-input"), {
+      target: { value: "name1\nname2" },
+    });
+    fireEvent.change(screen.getByTestId("batch-bid-value-input"), { target: { value: "1" } });
+    fireEvent.change(screen.getByTestId("batch-bid-lockup-input"), { target: { value: "2.5" } });
+    fireEvent.click(screen.getByTestId("batch-bid-check-names-btn"));
+    fireEvent.click(await screen.findByTestId("batch-bid-build-draft-btn"));
+
+    const warning = await screen.findByTestId("batch-bid-confirm-forfeit-warning");
+    expect(warning).toHaveTextContent("5.000000 HNS is locked until you reveal.");
+    expect(warning).toHaveTextContent("forfeits its entire lockup");
+  });
+
   it("after build, confirm signs + broadcasts and invalidates queries", async () => {
     vi.mocked(readQueries.useNamesActionCapabilities).mockReturnValue({
       data: [cap("name1", true)],
@@ -170,6 +232,53 @@ describe("BatchBidModal", () => {
       expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["wallet"] });
       expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["read"] });
       expect(onClose).toHaveBeenCalled();
+    });
+  });
+
+  it("refuses a 7th decimal in the bid or the lockup instead of rounding it", () => {
+    render(<BatchBidModal open={true} onClose={vi.fn()} activeProfileId="p1" />);
+    fireEvent.change(screen.getByTestId("batch-bid-names-input"), { target: { value: "name1" } });
+    fireEvent.change(screen.getByTestId("batch-bid-value-input"), {
+      target: { value: "1.0000005" },
+    });
+    fireEvent.change(screen.getByTestId("batch-bid-lockup-input"), {
+      target: { value: "2.0000005" },
+    });
+
+    expect(screen.getByTestId("batch-bid-value-error")).toHaveTextContent(
+      "HNS has at most 6 decimals",
+    );
+    expect(screen.getByTestId("batch-bid-lockup-error")).toHaveTextContent(
+      "HNS has at most 6 decimals",
+    );
+    expect(screen.getByTestId("batch-bid-check-names-btn")).toBeDisabled();
+  });
+
+  it("bids 1234.567891 HNS per name as exactly 1,234,567,891 doos", async () => {
+    vi.mocked(readQueries.useNamesActionCapabilities).mockReturnValue({
+      data: [cap("name1", true)],
+      isFetching: false,
+    } as any);
+    buildMutateAsync.mockResolvedValue({ id: "draft1", summary: { feeDoos: 500 } });
+
+    render(<BatchBidModal open={true} onClose={vi.fn()} activeProfileId="p1" />);
+    fireEvent.change(screen.getByTestId("batch-bid-names-input"), { target: { value: "name1" } });
+    fireEvent.change(screen.getByTestId("batch-bid-value-input"), {
+      target: { value: "1234.567891" },
+    });
+    fireEvent.change(screen.getByTestId("batch-bid-lockup-input"), {
+      target: { value: "2000.000001" },
+    });
+    fireEvent.click(screen.getByTestId("batch-bid-check-names-btn"));
+    fireEvent.click(await screen.findByTestId("batch-bid-build-draft-btn"));
+
+    await waitFor(() => {
+      expect(buildMutateAsync).toHaveBeenCalledWith({
+        names: ["name1"],
+        bidValue: 1_234_567_891,
+        lockup: 2_000_000_001,
+        feeRate: undefined,
+      });
     });
   });
 

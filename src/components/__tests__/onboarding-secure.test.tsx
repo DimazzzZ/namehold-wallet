@@ -15,6 +15,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 }));
 
 import { Onboarding } from "../Onboarding";
+import { loadSettings } from "../../test/fixtures/settings";
 
 function wrapper() {
   const queryClient = new QueryClient({
@@ -28,6 +29,9 @@ function wrapper() {
 beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockResolvedValue({ id: "p1", label: "Primary" });
+  // The app loads the settings before Onboarding renders; the connection
+  // step saves against them and advances only once saved.
+  loadSettings({ onboarding_complete: "false" });
 });
 
 describe("Onboarding (secure, non-custodial)", () => {

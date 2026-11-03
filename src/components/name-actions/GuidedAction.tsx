@@ -45,11 +45,13 @@ export interface GuidedActionProps {
   bidError: string | null;
   lockupError: string | null;
   bidFormValid: boolean;
-  forfeitLockupText: string;
+  forfeitLockupText: string | null;
   onBid: () => void;
   // Recover-bid widget (REVEAL phase, missing commitment).
   recoverHns: string;
   onRecoverHnsChange: (value: string) => void;
+  /** Why the typed recover amount is refused; null when it is empty or valid. */
+  recoverError: string | null;
   onRecoverBid: () => void;
   onBruteForceRecover: () => void;
   // Reveal confirm-panel + pending-card wiring (this PR).
@@ -96,6 +98,7 @@ export function GuidedAction({
   onBid,
   recoverHns,
   onRecoverHnsChange,
+  recoverError,
   onRecoverBid,
   onBruteForceRecover,
   revealConfirming,
@@ -353,19 +356,25 @@ export function GuidedAction({
                       value={recoverHns}
                       onChange={(e) => onRecoverHnsChange(e.target.value)}
                       placeholder="10.0"
-                      type="number"
-                      step="0.000001"
+                      inputMode="decimal"
+                      autoComplete="off"
                     />
                   </div>
                   <Button
                     size="sm"
                     variant="secondary"
-                    disabled={!recoverHns || busy === "RECOVER"}
+                    disabled={!recoverHns.trim() || !!recoverError || busy === "RECOVER"}
                     onClick={onRecoverBid}
+                    data-testid="recover-bid-submit"
                   >
                     {busy === "RECOVER" ? "Recovering…" : "Recover bid"}
                   </Button>
                 </div>
+                {recoverError && (
+                  <div className="text-xs text-red-600" data-testid="recover-bid-error">
+                    {recoverError}
+                  </div>
+                )}
                 <div className="text-xs text-gray-600 pt-1 border-t border-gray-200">
                   Don't remember the amount? We can search for it automatically.
                 </div>

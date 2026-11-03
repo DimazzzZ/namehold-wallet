@@ -1,7 +1,7 @@
 //! Command-level tests for the settings/audit secrecy guarantees (security
 //! audit issue #7). These drive the REAL `#[tauri::command]` functions
 //! (`get_settings`, `update_setting`, `get_audit_log`) through a managed
-//! `AppState` over a fully-migrated in-memory DB, so the redaction / denylist
+//! `AppState` over a fully-migrated in-memory DB, so the redaction / allowlist
 //! logic is exercised as shipped — not via a hand-copied replica that could
 //! drift from the command body.
 
@@ -11,6 +11,7 @@ use tauri::Manager;
 use crate::commands::settings::{get_audit_log, get_settings, update_setting};
 use crate::db;
 use crate::error::AppError;
+use crate::security;
 use crate::AppState;
 
 fn migrated_conn() -> rusqlite::Connection {
@@ -102,7 +103,7 @@ async fn get_settings_omits_presence_markers_when_unset() {
     assert!(out.get("__has_hsd_api_key").is_none());
 }
 
-// --- update_setting denylist ----------------------------------------------
+// --- update_setting allowlist ---------------------------------------------
 
 #[tokio::test]
 async fn update_setting_rejects_write_to_namebase_base_url() {
@@ -137,56 +138,108 @@ async fn update_setting_rejects_write_to_namebase_cookie() {
     assert_eq!(raw_setting(&app, "namebase_cookie"), None);
 }
 
+/// The trust root is written only through `update_protected_settings`: each
+/// protected key is refused before the database is touched, so its row keeps
+/// its value and nothing reaches the audit log.
 #[tokio::test]
-async fn update_setting_allows_non_denylisted_keys() {
+async fn update_setting_refuses_every_protected_key_and_leaves_its_row() {
     let conn = migrated_conn();
+    for key in security::PROTECTED_SETTING_KEYS {
+        db::queries::set_setting(&conn, key, "before").unwrap();
+    }
     let app = app_with(conn);
 
-    update_setting(app.state(), "hsd_prefix".to_string(), "true".to_string())
+    for key in security::PROTECTED_SETTING_KEYS {
+        let err = update_setting(app.state(), key.to_string(), "/tmp/attacker".to_string())
+            .await
+            .expect_err(key);
+        assert!(
+            matches!(&err, AppError::InvalidInput(m) if m.contains("secure window")),
+            "{key}: {err}"
+        );
+        assert_eq!(raw_setting(&app, key).as_deref(), Some("before"), "{key}");
+    }
+    let log = get_audit_log(app.state(), Some(100)).await.unwrap();
+    assert!(log.as_array().unwrap().is_empty(), "nothing logged: {log}");
+}
+
+/// An allowlist fails closed: a key nobody listed is refused, not stored.
+#[tokio::test]
+async fn update_setting_refuses_an_unknown_key() {
+    let app = app_with(migrated_conn());
+
+    let err = update_setting(app.state(), "some_future_key".to_string(), "x".to_string())
         .await
-        .unwrap();
-    assert_eq!(raw_setting(&app, "hsd_prefix").as_deref(), Some("true"));
+        .unwrap_err();
+    assert!(matches!(err, AppError::InvalidInput(_)));
+    assert_eq!(raw_setting(&app, "some_future_key"), None);
 }
 
-// --- update_setting audit redaction ----------------------------------------
-
+/// Keys only backend flows write (the active profile, the LearnHNS host, the
+/// tray hint, the encrypted cookie) are refused from the renderer.
 #[tokio::test]
-async fn update_setting_writes_star_star_star_for_sensitive_key() {
+async fn update_setting_refuses_keys_only_the_backend_writes() {
     let conn = migrated_conn();
+    for key in [
+        "active_wallet_profile_id",
+        "learnhns_base_url",
+        "tray_hint_shown",
+        "namebase_cookie_v1",
+    ] {
+        db::queries::set_setting(&conn, key, "before").unwrap();
+    }
     let app = app_with(conn);
 
-    // node_rpc_api_key is sensitive but NOT write-denied, so the write path
-    // (and its audit entry) is reachable from the renderer.
-    update_setting(
-        app.state(),
-        "node_rpc_api_key".to_string(),
-        "leaky-secret".to_string(),
-    )
-    .await
-    .unwrap();
-
-    let log = get_audit_log(app.state(), Some(10)).await.unwrap();
-    let detail = log.as_array().unwrap()[0]["detail"].as_str().unwrap();
-    assert!(detail.contains("\"***\""), "audit must redact: {detail}");
-    assert!(
-        !detail.contains("leaky-secret"),
-        "raw secret leaked: {detail}"
-    );
+    for key in [
+        "active_wallet_profile_id",
+        "learnhns_base_url",
+        "tray_hint_shown",
+        "namebase_cookie_v1",
+    ] {
+        let err = update_setting(app.state(), key.to_string(), "after".to_string())
+            .await
+            .expect_err(key);
+        assert!(matches!(err, AppError::InvalidInput(_)), "{key}");
+        assert_eq!(raw_setting(&app, key).as_deref(), Some("before"), "{key}");
+    }
 }
+
+#[tokio::test]
+async fn update_setting_writes_every_key_on_the_renderer_list() {
+    let app = app_with(migrated_conn());
+
+    for key in security::RENDERER_SETTING_KEYS {
+        update_setting(app.state(), key.to_string(), "v".to_string())
+            .await
+            .unwrap_or_else(|e| panic!("{key}: {e}"));
+        assert_eq!(raw_setting(&app, key).as_deref(), Some("v"), "{key}");
+    }
+}
+
+// --- update_setting audit -------------------------------------------------
+
+// The renderer can no longer write a secret through `update_setting` (no
+// sensitive key is on its list), so the redacted audit entry of an api-key
+// write is pinned on `update_protected_settings` instead
+// (`protected_settings_tests::an_api_key_row_says_set_and_never_shows_the_key`).
 
 #[tokio::test]
 async fn update_setting_writes_raw_value_for_non_sensitive_key() {
     let conn = migrated_conn();
     let app = app_with(conn);
 
-    update_setting(app.state(), "hsd_prefix".to_string(), "true".to_string())
-        .await
-        .unwrap();
+    update_setting(
+        app.state(),
+        "address_gap_limit".to_string(),
+        "25".to_string(),
+    )
+    .await
+    .unwrap();
 
     let log = get_audit_log(app.state(), Some(10)).await.unwrap();
     let detail = log.as_array().unwrap()[0]["detail"].as_str().unwrap();
-    assert!(detail.contains("hsd_prefix"));
-    assert!(detail.contains("true"));
+    assert!(detail.contains("address_gap_limit"));
+    assert!(detail.contains("25"));
 }
 
 // --- get_audit_log defense-in-depth ----------------------------------------

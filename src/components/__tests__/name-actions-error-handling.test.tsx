@@ -185,8 +185,8 @@ describe("Name page — mutation error handling (Task 13)", () => {
 
     // The page is still on screen and the typed values weren't wiped.
     expect(screen.getByTestId("name-phase")).toBeInTheDocument();
-    expect(screen.getByLabelText(/^Bid \(HNS\)/i)).toHaveValue(10);
-    expect(screen.getByLabelText(/Lockup \(HNS\)/i)).toHaveValue(12);
+    expect(screen.getByLabelText(/^Bid \(HNS\)/i)).toHaveValue("10");
+    expect(screen.getByLabelText(/Lockup \(HNS\)/i)).toHaveValue("12");
   });
 
   it("stays on the page after a successful broadcast and toasts it", async () => {

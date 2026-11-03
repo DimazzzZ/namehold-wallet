@@ -959,3 +959,166 @@ describe("ActivityView — To finish / Waiting / History (v2)", () => {
     expect(within(finish).getAllByTestId("activity-to-finish-row")).toHaveLength(1);
   });
 });
+
+describe("ActivityView — what a covenant row's value is", () => {
+  /** One confirmed covenant row whose own output holds `nameValueDoos`. */
+  const covenantRow = (action: string, over: Record<string, unknown> = {}) =>
+    row({
+      txid: "cc",
+      action,
+      name: "foo",
+      valueDoos: 0,
+      nameValueDoos: 500_000_000,
+      direction: "send",
+      height: 300,
+      ...over,
+    });
+
+  async function tooltipOf(
+    action: string,
+    over: Record<string, unknown> = {},
+    drafts: unknown[] = [],
+  ) {
+    invokeMock.mockImplementation(routes([covenantRow(action, over)], drafts));
+    render(<ActivityView />, { wrapper: wrapper() });
+    const value = await screen.findByTestId("activity-locked-value");
+    fireEvent.mouseEnter(value.parentElement!);
+    return screen.findByRole("tooltip");
+  }
+
+  async function detailOf(action: string) {
+    invokeMock.mockImplementation(routes([covenantRow(action)]));
+    render(<ActivityView />, { wrapper: wrapper() });
+    fireEvent.click(await screen.findByTestId("activity-row-toggle"));
+    return screen.getByTestId("activity-row-detail");
+  }
+
+  it("a bid row calls its value the lockup, locked until reveal and forfeited unrevealed", async () => {
+    const tip = await tooltipOf("bid");
+    expect(tip).toHaveTextContent(
+      "500.000000 HNS is this bid's lockup, locked until you reveal it.",
+    );
+    expect(tip).toHaveTextContent("forfeits its entire lockup");
+    expect(tip).not.toHaveTextContent(/not spent/);
+    expect(tip).not.toHaveTextContent(/only the network fee/i);
+    expect(tip).not.toHaveTextContent(/the name's locked value/);
+  });
+
+  it("a bid row's expanded detail says the same", async () => {
+    const detail = await detailOf("bid");
+    expect(detail).toHaveTextContent("this bid's lockup, locked until you reveal it.");
+    expect(detail).toHaveTextContent("forfeits its entire lockup");
+    expect(detail).not.toHaveTextContent(/not spent/);
+  });
+
+  it("a batch bid row says the value is each bid's lockup", async () => {
+    const batchDraft = {
+      id: "d1",
+      walletProfileId: "p1",
+      action: "batch-bid",
+      status: "confirmed",
+      summary: {
+        action: "batch-bid",
+        sendTotalDoos: 1_000_000_000,
+        feeDoos: 5_000,
+        changeDoos: 0,
+        inputTotalDoos: 1_000_005_000,
+        numInputs: 1,
+        recipientAddress: null,
+        txid: "cc",
+        warnings: [],
+        name: "foo",
+        nameList: ["foo", "bar"],
+      },
+      errorMessage: null,
+      txid: "cc",
+      confirmationHeight: 300,
+      purchaseLostReason: null,
+      createdAt: "2026-10-14 12:00:00",
+    };
+    const tip = await tooltipOf("bid", {}, [batchDraft]);
+    expect(tip).toHaveTextContent(
+      "500.000000 HNS is each bid's lockup, locked until you reveal it.",
+    );
+    expect(tip).toHaveTextContent("forfeits its entire lockup");
+  });
+
+  it("a reveal row calls its value the revealed bid, held until the auction closes", async () => {
+    const tip = await tooltipOf("reveal");
+    expect(tip).toHaveTextContent("is your revealed bid, locked until the auction closes");
+    expect(tip).not.toHaveTextContent(/not spent/);
+  });
+
+  const batchDraftOf = (action: string) => ({
+    id: "d1",
+    walletProfileId: "p1",
+    action,
+    status: "confirmed",
+    summary: {
+      action,
+      sendTotalDoos: 1_000_000_000,
+      feeDoos: 5_000,
+      changeDoos: 0,
+      inputTotalDoos: 1_000_005_000,
+      numInputs: 1,
+      recipientAddress: null,
+      txid: "cc",
+      warnings: [],
+      name: "foo",
+      nameList: ["foo", "bar"],
+    },
+    errorMessage: null,
+    txid: "cc",
+    confirmationHeight: 300,
+    purchaseLostReason: null,
+    createdAt: "2026-10-14 12:00:00",
+  });
+
+  it("a batch reveal row says the value is one of the revealed bids", async () => {
+    const tip = await tooltipOf("reveal", {}, [batchDraftOf("batch-reveal")]);
+    expect(tip).toHaveTextContent("500.000000 HNS is one of these revealed bids, locked until");
+    expect(tip).not.toHaveTextContent(/your revealed bid/);
+  });
+
+  it("a redeem row calls its value the losing bid, back in the wallet to spend", async () => {
+    const tip = await tooltipOf("redeem");
+    expect(tip).toHaveTextContent(
+      "500.000000 HNS is your losing bid, back in your wallet to spend. Only the network fee leaves your wallet.",
+    );
+    expect(tip).not.toHaveTextContent(/the name's locked value/);
+  });
+
+  it("a batch redeem row says the value is one of the losing bids", async () => {
+    const tip = await tooltipOf("redeem", {}, [batchDraftOf("batch-redeem")]);
+    expect(tip).toHaveTextContent(
+      "500.000000 HNS is one of these losing bids, back in your wallet",
+    );
+  });
+
+  it("a redeem row's expanded detail says the fee left", async () => {
+    const detail = await detailOf("redeem");
+    expect(detail).toHaveTextContent("your losing bid, back in your wallet to spend.");
+    expect(detail).toHaveTextContent("Only the network fee left your wallet.");
+  });
+
+  it("a register row calls its value the name's price, the second-highest bid", async () => {
+    const tip = await tooltipOf("register");
+    expect(tip).toHaveTextContent(
+      "is the name's price, the second-highest bid, locked in the name. The rest of your bid comes back to you in this transaction.",
+    );
+    expect(tip).not.toHaveTextContent(/not spent/);
+  });
+
+  it("an update row keeps the locked-value sentence: only the network fee leaves", async () => {
+    const tip = await tooltipOf("update");
+    expect(tip).toHaveTextContent(
+      "is the name's locked value, carried onto your own new coin — not spent. Only the network fee leaves your wallet.",
+    );
+    expect(tip).not.toHaveTextContent(/forfeit/);
+  });
+
+  it("an update row's expanded detail says the fee left", async () => {
+    const detail = await detailOf("update");
+    expect(detail).toHaveTextContent("Only the network fee left your wallet.");
+  });
+});

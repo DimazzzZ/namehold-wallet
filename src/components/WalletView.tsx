@@ -42,13 +42,8 @@ import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
 import { Dialog } from "./ui/Dialog";
 import { PageHeader } from "./ui/PageHeader";
-import {
-  formatHns,
-  formatHnsShort,
-  hnsToDollarydoos,
-  isLikelyHnsAddress,
-  hnsAddressPrefix,
-} from "../lib/utils";
+import { formatHns, formatHnsShort, isLikelyHnsAddress, hnsAddressPrefix } from "../lib/utils";
+import { doosToHnsDigits, parseHnsAmount } from "../lib/hnsAmount";
 import { mapError, unwrapStaged } from "../lib/errors";
 import { explorerCoversNetwork } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
@@ -245,9 +240,7 @@ export function WalletView() {
   const handleMax = async () => {
     try {
       const est = await estimateMax.mutateAsync(parseFeeRateArg(sendFeeRate) ?? undefined);
-      // Plain digits: the amount field is a number input, which drops a value
-      // with thousands separators (dollarydoosToHns adds them).
-      setSendAmount((est.maxSendDoos / 1_000_000).toFixed(6));
+      setSendAmount(doosToHnsDigits(est.maxSendDoos));
       setMaxFill(est.maxSendDoos);
     } catch (e) {
       showToast(mapError(e), "error");
@@ -255,21 +248,22 @@ export function WalletView() {
   };
 
   const handleBuildDraft = async () => {
-    const max = maxFill != null && hnsToDollarydoos(sendAmount) === maxFill;
     if (!sendAddress.trim()) {
       showToast("Enter a destination address", "error");
       return;
     }
-    const doos = hnsToDollarydoos(sendAmount);
-    if (!max && (isNaN(doos) || doos <= 0)) {
-      showToast("Invalid amount", "error");
+    // Max sweeps whatever is spendable; the backend ignores the amount then.
+    const amount = parseHnsAmount(sendAmount);
+    const max = maxFill != null && "doos" in amount && amount.doos === maxFill;
+    if (!max && "error" in amount) {
+      showToast(amount.error, "error");
       return;
     }
     setSendError(null);
     try {
       const d = await buildDraft.mutateAsync({
         toAddress: sendAddress.trim(),
-        valueDoos: doos,
+        valueDoos: "doos" in amount ? amount.doos : 0,
         max,
         feeRate: parseFeeRateArg(sendFeeRate) ?? undefined,
       });
@@ -318,17 +312,18 @@ export function WalletView() {
 
   // Inline send-form validation (profile is non-null here). The backend
   // address::decode stays authoritative at build; this is fast UI feedback.
-  const sendAmtDoos = hnsToDollarydoos(sendAmount);
+  const sendParsed = parseHnsAmount(sendAmount);
   const addressError =
     sendAddress.trim() && !isLikelyHnsAddress(sendAddress, profile.network)
       ? `Enter a valid ${profile.network} address (starts with ${hnsAddressPrefix(
           profile.network,
         )}…)`
       : null;
-  const amountError =
-    sendAmount.trim() && (isNaN(sendAmtDoos) || sendAmtDoos <= 0)
-      ? "Enter a positive amount"
-      : sendAmount.trim() && sendAmtDoos > spendable
+  const amountError = !sendAmount.trim()
+    ? null
+    : "error" in sendParsed
+      ? sendParsed.error
+      : sendParsed.doos > spendable
         ? "Amount exceeds your spendable balance"
         : null;
   const canMax = !!sendAddress.trim() && !addressError && spendable > 0;
@@ -650,8 +645,8 @@ export function WalletView() {
                     value={sendAmount}
                     onChange={(e) => setSendAmount(e.target.value)}
                     placeholder="1.0"
-                    type="number"
-                    step="0.000001"
+                    inputMode="decimal"
+                    autoComplete="off"
                   />
                 </div>
                 <Tooltip content="Fill in your whole spendable balance minus the network fee; you can lower it before Review">

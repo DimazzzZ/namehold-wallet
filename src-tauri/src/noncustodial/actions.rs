@@ -166,6 +166,7 @@ fn select_funding(
     funding: &[SpendableCoin],
     rate: u64,
 ) -> Result<(usize, u64, u64), AppError> {
+    let rate = crate::noncustodial::send::checked_fee_rate(rate)?;
     let mut taken = 0usize;
     let (fee, change) = loop {
         let funded: u64 = funding[..taken].iter().map(|c| c.value).sum();

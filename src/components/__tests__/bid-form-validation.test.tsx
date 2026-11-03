@@ -147,6 +147,22 @@ describe("Name page — guided bid form validation (F4)", () => {
     });
   });
 
+  it("the forfeit warning shows the lockup as read, and no figure for refused text", async () => {
+    invokeMock.mockImplementation(route());
+    render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
+
+    await screen.findByText("Place a Bid");
+    const lockupInput = screen.getByLabelText(/Lockup \(HNS\)/i);
+    const warning = () => screen.getByTestId("bid-forfeit-warning");
+
+    fireEvent.change(lockupInput, { target: { value: "1e3" } });
+    await waitFor(() => expect(warning()).toHaveTextContent("the entire lockup is forfeited."));
+    expect(warning()).not.toHaveTextContent(/1e3/);
+
+    fireEvent.change(lockupInput, { target: { value: "25.50" } });
+    await waitFor(() => expect(warning()).toHaveTextContent(/\(25\.5 HNS\) is forfeited\./));
+  });
+
   it("blocks submit and shows an error when bid exceeds lockup", async () => {
     invokeMock.mockImplementation(route());
     render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
@@ -162,12 +178,81 @@ describe("Name page — guided bid form validation (F4)", () => {
     expect(bidButtons[0]).toBeDisabled();
   });
 
-  // Note: an `<input type="number">` sanitizes non-numeric text to "" at the
-  // DOM level (both real browsers and jsdom), so a literal "abc" never
-  // reaches React state via a simulated change event — the NaN/non-numeric
-  // guard itself is unit-tested directly against `validateBidInputs` in
-  // `src/lib/auction.test.ts`. Here we exercise the DOM-reachable invalid
-  // cases: empty, zero, negative, and bid > lockup.
+  // The amount fields are text fields (inputMode "decimal"), so whatever is
+  // typed reaches the parser and gets its sentence; `validateBidInputs` and
+  // `parseHnsAmount` are unit-tested in `src/lib`.
+
+  it("says what is wrong with a bid that is not plain digits", async () => {
+    invokeMock.mockImplementation(route());
+    render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
+
+    await screen.findByText("Place a Bid");
+    fireEvent.change(screen.getByLabelText(/^Bid \(HNS\)/i), { target: { value: "abc" } });
+    fireEvent.change(screen.getByLabelText(/Lockup \(HNS\)/i), { target: { value: "10" } });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("bid-error")).toHaveTextContent(/in digits like 12\.5/);
+    });
+    expect(screen.getAllByRole("button", { name: /^Bid$|Place bid/i })[0]).toBeDisabled();
+  });
+
+  it("refuses a 7th decimal in the bid instead of rounding it, and builds nothing", async () => {
+    invokeMock.mockImplementation(route());
+    render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
+
+    await screen.findByText("Place a Bid");
+    fireEvent.change(screen.getByLabelText(/^Bid \(HNS\)/i), {
+      target: { value: "10.0000005" },
+    });
+    fireEvent.change(screen.getByLabelText(/Lockup \(HNS\)/i), { target: { value: "12" } });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("bid-error")).toHaveTextContent("HNS has at most 6 decimals");
+    });
+    const submit = screen.getAllByRole("button", { name: /^Bid$|Place bid/i })[0]!;
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(invokeMock.mock.calls.map((c) => c[0])).not.toContain("build_bid_draft");
+  });
+
+  it("refuses a 7th decimal in the lockup instead of rounding it", async () => {
+    invokeMock.mockImplementation(route());
+    render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
+
+    await screen.findByText("Place a Bid");
+    fireEvent.change(screen.getByLabelText(/^Bid \(HNS\)/i), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText(/Lockup \(HNS\)/i), {
+      target: { value: "12.0000001" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("lockup-error")).toHaveTextContent("HNS has at most 6 decimals");
+    });
+    expect(screen.getAllByRole("button", { name: /^Bid$|Place bid/i })[0]).toBeDisabled();
+  });
+
+  it("bids 1234.567891 HNS as exactly 1,234,567,891 doos", async () => {
+    invokeMock.mockImplementation(route());
+    render(<NamePageAt path="/names/bidname" />, { wrapper: wrapper() });
+
+    await screen.findByText("Place a Bid");
+    fireEvent.change(screen.getByLabelText(/^Bid \(HNS\)/i), {
+      target: { value: "1234.567891" },
+    });
+    fireEvent.change(screen.getByLabelText(/Lockup \(HNS\)/i), {
+      target: { value: "2000.000001" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /Placing bid…|^Bid$/i }));
+
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find((c) => c[0] === "build_bid_draft");
+      expect(call?.[1]).toMatchObject({
+        name: "bidname",
+        bidValue: 1_234_567_891,
+        lockup: 2_000_000_001,
+      });
+    });
+  });
 
   it("blocks submit and shows an error when the bid is zero", async () => {
     invokeMock.mockImplementation(route());

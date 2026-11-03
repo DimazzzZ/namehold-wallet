@@ -593,7 +593,8 @@ describe("WalletView multi-wallet management", () => {
   });
 
   it("deleting the active wallet auto-switches to a remaining one", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    // The secure window confirms a delete (backend); the page asks nothing.
+    const nativeConfirm = vi.spyOn(window, "confirm");
     invokeMock.mockImplementation(
       routeInvoke({ profiles: [{ ...baseProfile, active: true }, secondProfile] }),
     );
@@ -605,7 +606,7 @@ describe("WalletView multi-wallet management", () => {
     await screen.findByText("Trading");
 
     // Delete the active wallet (the first Delete button = Primary's row).
-    fireEvent.click(screen.getAllByRole("button", { name: /^Delete$/i })[0]!);
+    fireEvent.click(screen.getAllByTestId("wallet-delete")[0]!);
     await waitFor(() => {
       expect(invokeMock.mock.calls.find((c) => c[0] === "delete_wallet_profile")?.[1]).toEqual({
         walletProfileId: "p1",
@@ -616,6 +617,54 @@ describe("WalletView multi-wallet management", () => {
       expect(invokeMock.mock.calls.find((c) => c[0] === "set_active_wallet_profile")?.[1]).toEqual({
         walletProfileId: "p2",
       });
+    });
+    expect(nativeConfirm).not.toHaveBeenCalled();
+  });
+
+  it("a delete declined in the secure window is silent and switches nothing", async () => {
+    const route = routeInvoke({ profiles: [{ ...baseProfile, active: true }, secondProfile] });
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "delete_wallet_profile" ? Promise.reject("Confirmation declined") : route(cmd),
+    );
+    render(<WithShell />, { wrapper: wrapper() });
+
+    await screen.findByTestId("receive-open");
+    fireEvent.click(screen.getByTestId("wallet-switcher"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Manage wallets/i }));
+    await screen.findByText("Trading");
+    useUiStore.getState().clearToast();
+
+    fireEvent.click(screen.getAllByTestId("wallet-delete")[0]!);
+    await waitFor(() => {
+      expect(invokeMock.mock.calls.some((c) => c[0] === "delete_wallet_profile")).toBe(true);
+    });
+    // Let the rejected mutation settle (a macrotask runs after every queued
+    // microtask) before checking nothing followed it.
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    expect(useUiStore.getState().toastQueue).toEqual([]);
+    expect(invokeMock.mock.calls.some((c) => c[0] === "set_active_wallet_profile")).toBe(false);
+  });
+
+  it("a delete the backend refuses for another reason says why", async () => {
+    const route = routeInvoke({ profiles: [{ ...baseProfile, active: true }, secondProfile] });
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "delete_wallet_profile"
+        ? Promise.reject("This wallet changed while you were asked to confirm.")
+        : route(cmd),
+    );
+    render(<WithShell />, { wrapper: wrapper() });
+
+    await screen.findByTestId("receive-open");
+    fireEvent.click(screen.getByTestId("wallet-switcher"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Manage wallets/i }));
+    await screen.findByText("Trading");
+    useUiStore.getState().clearToast();
+
+    fireEvent.click(screen.getAllByTestId("wallet-delete")[0]!);
+    await waitFor(() => {
+      expect(useUiStore.getState().toastQueue.map((t) => [t.type, t.message])).toEqual([
+        ["error", "This wallet changed while you were asked to confirm."],
+      ]);
     });
   });
 
@@ -636,6 +685,29 @@ describe("WalletView multi-wallet management", () => {
     await waitFor(() => {
       const call = invokeMock.mock.calls.find((c) => c[0] === "secure_create_wallet");
       expect(call?.[1]).toEqual({ label: "Savings", network: "mainnet" });
+    });
+  });
+
+  it("a create whose reveal was not confirmed shows the backend's reason, not success", async () => {
+    const reason =
+      "The wallet was not created: you did not confirm that the recovery phrase is written down. Nothing was saved.";
+    const route = routeInvoke();
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "secure_create_wallet" ? Promise.reject(reason) : route(cmd),
+    );
+    render(<WithShell />, { wrapper: wrapper() });
+
+    await screen.findByTestId("receive-open");
+    fireEvent.click(screen.getByTestId("wallet-switcher"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Add wallet/i }));
+    fireEvent.click(await screen.findByText(/Create a new wallet/i));
+    useUiStore.getState().clearToast();
+    fireEvent.click(screen.getByRole("button", { name: /Create in secure window/i }));
+
+    await waitFor(() => {
+      expect(useUiStore.getState().toastQueue.map((t) => [t.type, t.message])).toEqual([
+        ["error", reason],
+      ]);
     });
   });
 

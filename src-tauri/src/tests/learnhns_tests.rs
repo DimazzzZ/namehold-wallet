@@ -225,12 +225,75 @@ fn market_fee_must_match_published() {
             address: None
         }
     ));
-    // No overflow at the u64 extremes.
+    // No overflow at the u64 extremes: a fee of 1% of the largest price at
+    // the largest rate is published; the same fee as the price is not, past
+    // the 5% cap (`a_published_rate_above_the_cap_is_not_published`).
     let big = FeeInfo {
         rate: u32::MAX,
         address: Some("a".into()),
     };
-    assert!(market_fee_is_published(u64::MAX, Some("a"), u64::MAX, &big));
+    assert!(market_fee_is_published(
+        u64::MAX / 100,
+        Some("a"),
+        u64::MAX,
+        &big
+    ));
+    assert!(!market_fee_is_published(
+        u64::MAX,
+        Some("a"),
+        u64::MAX,
+        &big
+    ));
+}
+
+/// shakedex-3: the market's own word makes a fee its own only up to 5% of
+/// the price (`purchase::MAX_MARKET_FEE_BPS`), whatever rate it publishes:
+/// at a published 100% rate a fee of the whole price is not published, 5%
+/// exactly is, one doo more is not; under the cap the published rate still
+/// bounds the fee.
+#[test]
+fn a_published_rate_above_the_cap_is_not_published() {
+    use crate::noncustodial::shakedex::purchase::MAX_MARKET_FEE_BPS;
+    let price = 250_000_000;
+    let all = FeeInfo {
+        rate: 10_000,
+        address: Some("hs1qfee".into()),
+    };
+    assert_eq!(MAX_MARKET_FEE_BPS, 500);
+    assert!(!market_fee_is_published(
+        price,
+        Some("hs1qfee"),
+        price,
+        &all
+    ));
+    assert!(market_fee_is_published(
+        price / 20,
+        Some("hs1qfee"),
+        price,
+        &all
+    ));
+    assert!(!market_fee_is_published(
+        price / 20 + 1,
+        Some("hs1qfee"),
+        price,
+        &all
+    ));
+    let four = FeeInfo {
+        rate: 400,
+        address: Some("hs1qfee".into()),
+    };
+    assert!(market_fee_is_published(
+        price * 3 / 100,
+        Some("hs1qfee"),
+        price,
+        &four
+    ));
+    assert!(!market_fee_is_published(
+        price * 45 / 1_000,
+        Some("hs1qfee"),
+        price,
+        &four
+    ));
 }
 
 // --- writes (R23, R25, R28): only the market's own JSON answer is a verdict ---

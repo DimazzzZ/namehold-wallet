@@ -14,7 +14,7 @@ export interface BidFormProps {
   onLockupChange: (value: string) => void;
   bidError: string | null;
   lockupError: string | null;
-  forfeitLockupText: string;
+  forfeitLockupText: string | null;
   disabled: boolean;
   busy: boolean;
   onSubmit: () => void;
@@ -49,8 +49,8 @@ export function BidForm({
         value={bidHns}
         onChange={(e) => onBidChange(e.target.value)}
         placeholder="10.0"
-        type="number"
-        step="0.000001"
+        inputMode="decimal"
+        autoComplete="off"
       />
       {bidError && (
         <div className="mt-1 text-xs text-red-600" data-testid="bid-error">
@@ -67,8 +67,8 @@ export function BidForm({
         value={lockupHns}
         onChange={(e) => onLockupChange(e.target.value)}
         placeholder="≥ bid"
-        type="number"
-        step="0.000001"
+        inputMode="decimal"
+        autoComplete="off"
       />
       {lockupError && (
         <div className="mt-1 text-xs text-red-600" data-testid="lockup-error">
@@ -83,8 +83,8 @@ export function BidForm({
       className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2"
       data-testid="bid-forfeit-warning"
     >
-      If you don't reveal during the reveal window, the entire lockup ({forfeitLockupText} HNS) is
-      forfeited.
+      If you don't reveal during the reveal window, the entire lockup
+      {forfeitLockupText !== null && ` (${forfeitLockupText} HNS)`} is forfeited.
     </div>
   );
 

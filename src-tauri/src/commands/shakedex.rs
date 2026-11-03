@@ -54,6 +54,10 @@ use crate::AppState;
 const MARKET_PER_PAGE: u32 = 100;
 const UNPUBLISHED_FEE_WARNING: &str = "not signed by the seller and not the market's published \
      fee — anyone could have added it";
+/// A fee over `purchase::MAX_MARKET_FEE_BPS` of the price, whatever the
+/// market publishes: never the market's own here, so never pre-selected.
+const HIGH_FEE_WARNING: &str = "over 5% of the price, more than this wallet takes as any \
+     market's fee, and not signed by the seller — anyone could have added it";
 const DNS_RECORDS_HINT: &str =
     "The name still carries the seller's DNS records: update them once it is yours.";
 
@@ -327,7 +331,10 @@ fn hidden_to_error(h: Hidden) -> AppError {
 ///
 /// `published` must come from a freshly fetched `fee_info` and only for a
 /// listing that came from LearnHNS (R11). A missing fee address, or a fee
-/// below dust, is never paid: the line says why.
+/// below dust, is never paid: the line says why. A fee over
+/// `purchase::MAX_MARKET_FEE_BPS` of the price is never published here,
+/// whatever `published` says, and carries its own warning; the user may
+/// still choose to pay it.
 fn decide_market_fee(
     l: &ListingFile,
     step: usize,
@@ -369,7 +376,13 @@ fn decide_market_fee(
             None,
         );
     }
-    let warning = (!published).then_some(UNPUBLISHED_FEE_WARNING);
+    let over_cap = purchase::market_fee_over_cap(s.fee, s.price);
+    let published = published && !over_cap;
+    let warning = if over_cap {
+        Some(HIGH_FEE_WARNING)
+    } else {
+        (!published).then_some(UNPUBLISHED_FEE_WARNING)
+    };
     let pay = pay_market_fee.then_some(MarketFee {
         address,
         value: s.fee,
@@ -413,7 +426,7 @@ pub(crate) fn software_writer_ctx(state: &State<'_, AppState>) -> Result<Ctx, Ap
     let ctx = draft_ctx::load_ctx(state)?;
     let cap = WriteCapability::evaluate(
         true,
-        ctx.node.source(),
+        rpc::send_source(ctx.node.source(), ctx.node.node_url()),
         rpc::remote_broadcast_allowed(&ctx.settings),
     );
     if !cap.broadcaster_available {
@@ -564,7 +577,7 @@ fn plan_purchase(
         market_fee: p.market_fee.clone(),
         funding: &p.ctx.funding,
         change_address: &p.ctx.change_address,
-        rate: draft_ctx::fee_rate(&p.ctx, fee_rate),
+        rate: draft_ctx::fee_rate(&p.ctx, fee_rate)?,
         #[cfg(test)]
         fixed_fee: None,
     })
@@ -841,7 +854,9 @@ fn could_not_check(what: &str, name: &str) -> AppError {
 }
 
 /// R18, R19, R31 at Finalize & sign: every gate and node read, then the lock
-/// key (after the reads) and the FINALIZE plan. Writes nothing and asks
+/// key (after the reads) and the FINALIZE plan, refused when price steps
+/// were already stored over its lock coin
+/// ([`queries::lock_txid_was_signed_over`]). Writes nothing and asks
 /// nothing; a refusal leaves the listing ReadyToFinalize. Every node field
 /// it reads is matched on its own: a missing one is "could not check".
 pub(crate) async fn prepare_lock_finalize(
@@ -1015,7 +1030,7 @@ pub(crate) async fn prepare_lock_finalize(
         ));
     }
     let renewal_block = draft_ctx::renewal_block(&ctx.node, ctx.network).await?;
-    let rate = draft_ctx::fee_rate(&ctx, fee_rate);
+    let rate = draft_ctx::fee_rate(&ctx, fee_rate)?;
 
     // R18: re-derive the key now, after every read, and check the node's
     // confirmed TRANSFER commits to SHA3-256 of its lock script.
@@ -1051,6 +1066,16 @@ pub(crate) async fn prepare_lock_finalize(
         #[cfg(test)]
         fixed_fee: None,
     })?;
+    // No second set of steps over one lock coin: refused before the prompt,
+    // and again where the steps are stored (`finalize_and_sign_confirmed`).
+    {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        if queries::lock_txid_was_signed_over(&conn, &plan.txid)? {
+            return Err(AppError::InvalidInput(
+                sell::LOCK_COIN_ALREADY_SIGNED.into(),
+            ));
+        }
+    }
     // R19: the first step valid at once; a schedule's next steps follow it
     // (R24).
     let first = sell::buy_now_lock_time(mtp);
@@ -1080,6 +1105,29 @@ pub const FINALIZE_AND_SIGN_TITLE: &str = "Confirm Finalize & sign";
 const FINALIZE_AND_SIGN_MESSAGE: &str = "Review these details. This signs the finalize of \
      the name into its lock and every price below with the lock key.";
 
+/// One price step of our listing as the UI reads it: its price and lock
+/// time, never its signature. Every command that returns a
+/// [`ListingSummary`] runs in the main webview's reach, Finalize & sign
+/// while its FINALIZE is not even sent; the signatures stay in
+/// `shakedex_listings.steps_json` and leave the wallet only in the listing
+/// file ([`export_listing_file_from_conn`], [`save_listing_file_from_conn`])
+/// and the market upload, both once the FINALIZE into the lock is mined.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListingStep {
+    pub price: u64,
+    pub lock_time: u64,
+}
+
+impl From<&sell::StoredStep> for ListingStep {
+    fn from(s: &sell::StoredStep) -> Self {
+        Self {
+            price: s.price,
+            lock_time: s.lock_time,
+        }
+    }
+}
+
 /// A listing as the UI reads it ("My listings").
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1091,7 +1139,8 @@ pub struct ListingSummary {
     pub lock_txid: Option<String>,
     pub lock_vout: Option<i64>,
     pub payment_address: Option<String>,
-    pub steps: Vec<sell::StoredStep>,
+    /// The stored steps without their signatures ([`ListingStep`]).
+    pub steps: Vec<ListingStep>,
     pub expires_at: Option<i64>,
     /// The FINALIZE into the lock, signed; `broadcast_tx_draft` sends it.
     pub finalize_draft_id: Option<String>,
@@ -1126,14 +1175,15 @@ impl ListingSummary {
     fn of(conn: &rusqlite::Connection, l: &ShakedexListing) -> Result<Self, AppError> {
         Ok(Self::with_steps(
             l,
-            shakedex_jobs::stored_steps(l)?,
+            &shakedex_jobs::stored_steps(l)?,
             lockup_left(conn, l)?,
         ))
     }
 
+    /// `l` with its `steps`, which lose their signatures here.
     fn with_steps(
         l: &ShakedexListing,
-        steps: Vec<sell::StoredStep>,
+        steps: &[sell::StoredStep],
         blocks_until_finalize: Option<i64>,
     ) -> Self {
         Self {
@@ -1144,7 +1194,7 @@ impl ListingSummary {
             lock_txid: l.lock_txid.clone(),
             lock_vout: l.lock_vout,
             payment_address: l.payment_address.clone(),
-            steps,
+            steps: steps.iter().map(ListingStep::from).collect(),
             expires_at: l.expires_at,
             finalize_draft_id: l.lock_finalize_draft_id.clone(),
             cancel_draft_id: l.cancel_draft_id.clone(),
@@ -1191,10 +1241,13 @@ fn lockup_left(conn: &rusqlite::Connection, l: &ShakedexListing) -> Result<Optio
 /// ([`prepare_lock_finalize`]), confirm (R20), then in one hold of the
 /// unlocked session sign the FINALIZE and every step over the lock coin it
 /// creates, write the listing file, and store the signed FINALIZE draft with
-/// the listing — now Finalizing — in one database transaction. Sends
-/// nothing: `commands::tx::broadcast_tx_draft` sends the draft, and the
-/// steps leave the wallet only once that FINALIZE is mined
-/// ([`export_listing_file_from_conn`]).
+/// the listing — now Finalizing — in one database transaction, which also
+/// records the FINALIZE's txid and stores nothing when it was recorded
+/// already ([`queries::record_signed_lock_txid_in_tx`]). Sends
+/// nothing: `commands::tx::broadcast_tx_draft` sends the draft. The summary
+/// it returns carries each step's price and lock time, never its signature
+/// ([`ListingStep`]); the signatures leave the wallet only in the listing
+/// file once that FINALIZE is mined ([`export_listing_file_from_conn`]).
 pub(crate) async fn finalize_and_sign_confirmed<R: tauri::Runtime>(
     state: &State<'_, AppState>,
     app: &tauri::AppHandle<R>,
@@ -1215,6 +1268,7 @@ pub(crate) async fn finalize_and_sign_confirmed<R: tauri::Runtime>(
             name: &p.listing.name,
             finalize_fee: p.plan.fee,
             lock_address: &p.key.address,
+            lock_coin: &format!("{}:{lock_vout}", p.plan.txid),
             payment_address: &p.payment_address,
             steps: &steps,
             mtp: p.mtp,
@@ -1287,6 +1341,15 @@ pub(crate) async fn finalize_and_sign_confirmed<R: tauri::Runtime>(
     // listing leaves CANCEL_ABORTABLE in the same transaction, so the
     // before-lock job never reads its FINALIZE as an abort.
     let tx = conn.unchecked_transaction()?;
+    // The steps are stored only under a lock coin no steps were stored over
+    // before; this run's are dropped otherwise (another run stored its steps
+    // over the same FINALIZE while the prompt was open). Recorded in the
+    // same transaction, kept when the listing goes back to ReadyToFinalize.
+    if !queries::record_signed_lock_txid_in_tx(&tx, &p.plan.txid, &p.listing.id)? {
+        return Err(AppError::InvalidInput(
+            sell::LOCK_COIN_ALREADY_SIGNED.into(),
+        ));
+    }
     let draft_id = draft_ctx::persist_in_tx(
         &tx,
         &p.ctx.profile_id,
@@ -1743,7 +1806,7 @@ pub(crate) async fn prepare_cancel(
         cancel_index,
         funding: &ctx.funding,
         change_address: &ctx.change_address,
-        rate: draft_ctx::fee_rate(&ctx, fee_rate),
+        rate: draft_ctx::fee_rate(&ctx, fee_rate)?,
         #[cfg(test)]
         fixed_fee: None,
     })?;
@@ -2534,11 +2597,7 @@ pub(crate) fn my_listing_from_conn(
             let refused = || ListingAction::refused_by(Some(e.to_string()));
             return Ok(MyListing {
                 // The degraded row must not fail on the lockup count either.
-                listing: ListingSummary::with_steps(
-                    l,
-                    Vec::new(),
-                    lockup_left(conn, l).ok().flatten(),
-                ),
+                listing: ListingSummary::with_steps(l, &[], lockup_left(conn, l).ok().flatten()),
                 actions: ListingActions {
                     finalize_and_sign: refused(),
                     lower_price: refused(),
@@ -2568,7 +2627,7 @@ pub(crate) fn my_listing_from_conn(
         }
     };
     let prices = listing_prices(&steps, chain);
-    let mut listing = ListingSummary::with_steps(l, steps, lockup_left(conn, l)?);
+    let mut listing = ListingSummary::with_steps(l, &steps, lockup_left(conn, l)?);
     if counts_buyable_blocks(l.state) {
         listing.blocks_until_unbuyable = buyable.get(&l.name).copied();
     }
@@ -2606,7 +2665,7 @@ pub(crate) fn my_listing_from_conn(
         foreign_step_price_doos: shown_managed_elsewhere(l)
             .then(|| foreign_step_of(l).map(|s| s.price))
             .flatten(),
-        sold_elsewhere: sold_elsewhere(conn, l, &listing.steps)?,
+        sold_elsewhere: sold_elsewhere(conn, l, &steps)?,
         cancelled_elsewhere: cancelled_elsewhere(conn, l)?,
         listing,
         unbuyable_warn_blocks,
@@ -3076,7 +3135,8 @@ pub(crate) struct OwnFileInput<'a> {
 /// mode it names (`ListingFile::mode`), or else the one its step times give
 /// ([`sell::mode_of_step_times`]);
 /// the file is kept as parsed (`ListingFile::to_json`, unknown fields
-/// included). Writes nothing on a refusal.
+/// included). The lock txid is recorded with the steps
+/// ([`queries::record_signed_lock_txid_in_tx`]). Writes nothing on a refusal.
 pub(crate) fn upgrade_restored_lock_inner(
     conn: &rusqlite::Connection,
     i: &OwnFileInput,
@@ -3110,10 +3170,12 @@ pub(crate) fn upgrade_restored_lock_inner(
         .map(i64::try_from)
         .transpose()
         .map_err(|_| AppError::InvalidInput("the listing file's expiry is out of range".into()))?;
+    let lock_txid = hex::encode(file.lock_txid);
+    let tx = conn.unchecked_transaction()?;
     let n = queries::upgrade_restored_lock(
-        conn,
+        &tx,
         &i.listing.id,
-        &hex::encode(file.lock_txid),
+        &lock_txid,
         file.lock_vout,
         &hex::encode(file.public_key),
         &queries::UpgradedListing {
@@ -3129,6 +3191,11 @@ pub(crate) fn upgrade_restored_lock_inner(
             "this lock changed meanwhile: nothing was saved; try again".into(),
         ));
     }
+    // Already recorded is fine: these steps are not signed here. A reorg can
+    // take this Listed lock back to ReadyToFinalize, where a rebuilt FINALIZE
+    // with this txid must be refused like any other (shakedex-1).
+    queries::record_signed_lock_txid_in_tx(&tx, &lock_txid, &i.listing.id)?;
+    tx.commit()?;
     let l = queries::get_shakedex_listing(conn, &i.listing.id)?
         .ok_or_else(|| AppError::Other("listing vanished after the import".into()))?;
     ListingSummary::of(conn, &l)
@@ -3386,9 +3453,12 @@ pub async fn shakedex_build_purchase_draft(
         .then(expiry_warning)
         .into_iter()
         .collect();
-    let fee_published = p.fee_line.as_ref().is_some_and(|l| l.published);
-    if p.market_fee.is_some() && !fee_published {
-        warnings.push(format!("Market fee: {UNPUBLISHED_FEE_WARNING}"));
+    // A fee paid carries its line's warning (not the market's, or over the
+    // cap) into the secure window.
+    if p.market_fee.is_some() {
+        if let Some(w) = p.fee_line.as_ref().and_then(|l| l.warning.as_deref()) {
+            warnings.push(format!("Market fee: {w}"));
+        }
     }
     let market_fee_address = p.market_fee.as_ref().and(p.listing.fee_addr.as_deref());
     let summary = PurchaseSummary {
@@ -3588,7 +3658,7 @@ pub async fn shakedex_build_purchase_finalize_draft(
         dest_address: &p.destination_address,
         funding: &ctx.funding,
         change_address: &ctx.change_address,
-        rate: draft_ctx::fee_rate(&ctx, fee_rate),
+        rate: draft_ctx::fee_rate(&ctx, fee_rate)?,
         #[cfg(test)]
         fixed_fee: None,
     })?;
@@ -3690,7 +3760,7 @@ pub async fn shakedex_build_lock_draft(
     let params = ctx.network.name_params();
     let notice = lock_expiry_guard(&params, &reply, tip, i64::from(params.transfer_lockup))?;
     let ns = draft_ctx::name_state_strict(&reply, &name)?;
-    let rate = draft_ctx::fee_rate(&ctx, fee_rate);
+    let rate = draft_ctx::fee_rate(&ctx, fee_rate)?;
     let key = derive_listing_key(&state, &ctx, &name)?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     build_lock_draft_inner(
@@ -4051,7 +4121,7 @@ pub(crate) async fn finalize_cancel(
         dest_address: &dest,
         funding: &ctx.funding,
         change_address: &ctx.change_address,
-        rate: draft_ctx::fee_rate(&ctx, fee_rate),
+        rate: draft_ctx::fee_rate(&ctx, fee_rate)?,
         #[cfg(test)]
         fixed_fee: None,
     })?;
@@ -4299,6 +4369,42 @@ mod tests {
         );
         assert!(line.unwrap().warning.unwrap().contains("dust"));
         assert!(pay.is_none());
+    }
+
+    /// shakedex-3: a fee over 5% of the price is never the market's own
+    /// here, even when its `fee_info` says so (`published` true), and its
+    /// line carries the over-the-cap warning rather than "not the market's
+    /// published fee"; the user may still choose to pay it. 5% exactly is
+    /// published and has no warning.
+    #[test]
+    fn a_fee_over_the_cap_is_never_published_and_warns() {
+        let price = 435_000_000;
+        let over = listing(price / 20 + 1, Some(addr()));
+        let (line, pay) = decide_market_fee(&over, 0, Network::Main, true, true);
+        let line = line.unwrap();
+        assert!(!line.published);
+        assert!(line.payable);
+        assert_eq!(line.warning.as_deref(), Some(HIGH_FEE_WARNING));
+        assert_eq!(pay.unwrap().value, price / 20 + 1, "the user's choice");
+        let (line, _) = decide_market_fee(&over, 0, Network::Main, false, false);
+        assert_eq!(line.unwrap().warning.as_deref(), Some(HIGH_FEE_WARNING));
+        let (line, _) = decide_market_fee(
+            &listing(price / 20, Some(addr())),
+            0,
+            Network::Main,
+            true,
+            true,
+        );
+        let line = line.unwrap();
+        assert!(line.published);
+        assert_eq!(line.warning, None);
+    }
+
+    /// The warning names the cap the code applies.
+    #[test]
+    fn high_fee_warning_names_the_cap() {
+        let percent = purchase::MAX_MARKET_FEE_BPS / 100;
+        assert!(HIGH_FEE_WARNING.starts_with(&format!("over {percent}% of the price")));
     }
 
     #[test]

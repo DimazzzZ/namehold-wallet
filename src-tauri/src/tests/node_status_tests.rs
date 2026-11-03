@@ -228,8 +228,9 @@ use crate::commands::node::pick_hsd_path;
 
 #[test]
 fn pick_hsd_path_honors_explicit_override_verbatim() {
-    // An explicit hsd_path is trusted as-is (even if it doesn't exist yet), and
-    // wins over candidates.
+    // An explicit override is returned as-is and wins over candidates. The
+    // app passes none: a configured `hsd_path` goes through
+    // `hsd_binary_to_run`, which checks it (`protected_settings_tests`).
     let candidates = vec!["/opt/homebrew/bin/hsd".to_string()];
     assert_eq!(
         pick_hsd_path(Some("/custom/hsd"), &candidates).as_deref(),

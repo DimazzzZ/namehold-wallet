@@ -947,8 +947,16 @@ pub fn list_wallet_profiles(
 
 /// Delete a wallet profile and (via `ON DELETE CASCADE`) all its secrets,
 /// addresses, UTXOs, drafts, bids, name-states, and sync cursors.
+/// Delete a wallet profile and, by cascade, its encrypted seed, addresses,
+/// coins, drafts and bids. `secure_delete` zero-fills the freed content and
+/// the checkpoint empties the write-ahead log, so the deleted seed does not
+/// stay readable in the database's free pages or its log.
+/// `shakedex_signed_lock_txids` has no foreign key and deliberately outlives
+/// the profile (public lock txids and listing ids, no keys), so a re-imported
+/// seed still never signs over a recorded lock coin.
 pub fn delete_wallet_profile(conn: &rusqlite::Connection, id: &str) -> Result<(), AppError> {
     conn.execute("DELETE FROM wallet_profiles WHERE id = ?1", params![id])?;
+    crate::db::connection::checkpoint_truncate(conn);
     Ok(())
 }
 
@@ -1531,7 +1539,9 @@ pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result
             params![id, ListingState::Locking],
         )?;
         // An unsent FINALIZE into the lock takes its steps with it: they were
-        // signed over a coin that never existed.
+        // signed over a coin that does not exist. Its txid stays recorded
+        // (`lock_txid_was_signed_over`), so no later Finalize & sign signs
+        // over that coin again, should the same FINALIZE be built.
         tx.execute(
             &format!(
                 "UPDATE shakedex_listings SET {}
@@ -2823,7 +2833,8 @@ fn ends_before_lock_sql(w: ListingWrite) -> String {
 
 /// What a listing ended from Finalizing loses of its dead FINALIZE: the
 /// draft link, the steps and file signed over a lock coin that never
-/// existed, and their expiry. Already so for a listing before the lock.
+/// existed, and their expiry; the FINALIZE's txid stays recorded
+/// ([`lock_txid_was_signed_over`]). Already so for a listing before the lock.
 /// R38: the mark of a listing managed elsewhere belongs to its lock coin and
 /// steps, so it goes with them.
 const DROP_DEAD_FINALIZE_SET: &str = "lock_finalize_draft_id = NULL, steps_json = '[]', \
@@ -2908,9 +2919,44 @@ pub fn mark_listing_finalizing_in_tx(
     )?)
 }
 
+/// Whether price steps were ever stored over the lock coin of the FINALIZE
+/// `lock_txid` (`shakedex_signed_lock_txids`, migration 041). A FINALIZE
+/// rebuilt at the same tip from the same coins and fee rate has the same
+/// txid, so its lock coin is the coin those steps were signed over; a txid
+/// recorded here is never signed over again.
+pub fn lock_txid_was_signed_over(
+    conn: &rusqlite::Connection,
+    lock_txid: &str,
+) -> Result<bool, AppError> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM shakedex_signed_lock_txids WHERE lock_txid = ?1)",
+        params![listing_txid(lock_txid)],
+        |r| r.get(0),
+    )?)
+}
+
+/// Record, inside the caller's transaction (the one that stores the steps),
+/// that listing `listing_id` stored price steps over the FINALIZE
+/// `lock_txid`, signed here or adopted from its own listing file. Returns `false`, writing nothing, when that txid is already
+/// recorded: the caller rolls back rather than store a second set of steps
+/// over the same lock coin ([`lock_txid_was_signed_over`]).
+pub fn record_signed_lock_txid_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    lock_txid: &str,
+    listing_id: &str,
+) -> Result<bool, AppError> {
+    let n = tx.execute(
+        "INSERT OR IGNORE INTO shakedex_signed_lock_txids (lock_txid, listing_id)
+         VALUES (?1, ?2)",
+        params![listing_txid(lock_txid), listing_id],
+    )?;
+    Ok(n == 1)
+}
+
 /// A Finalizing listing whose FINALIZE never landed goes back to
 /// ReadyToFinalize, losing its lock outpoint, steps and file. Returns how
-/// many rows changed (0 or 1).
+/// many rows changed (0 or 1). The FINALIZE's txid stays recorded
+/// ([`lock_txid_was_signed_over`]).
 pub fn revert_listing_to_ready(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
     Ok(conn.execute(
         &format!(
@@ -6369,6 +6415,39 @@ pub fn insert_bid_commitment(
 /// `recover_bid_commitment` uses to make re-running recovery for an
 /// already-recovered bid a safe no-op instead of hitting
 /// [`insert_bid_commitment`]'s honest conflict error.
+/// The wallet's record of the bid whose blind is `blind_hex` (its true value
+/// and nonce), for the secure window to show the value a BID commits to.
+/// `None` when there is no record, or the stored value or nonce cannot be
+/// read: the window then refuses the BID rather than show a guess.
+pub fn get_bid_by_blind(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    blind_hex: &str,
+) -> Result<Option<crate::noncustodial::review::BidOnRecord>, AppError> {
+    let row: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT bid_value_doos, nonce_hex FROM bid_commitments
+             WHERE wallet_profile_id = ?1 AND lower(blind_hex) = lower(?2)
+             ORDER BY rowid DESC LIMIT 1",
+            params![profile_id, blind_hex],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((value, nonce_hex)) = row else {
+        return Ok(None);
+    };
+    let (Ok(value), Ok(nonce)) = (u64::try_from(value), hex::decode(&nonce_hex)) else {
+        return Ok(None);
+    };
+    let Ok(nonce) = <[u8; 32]>::try_from(nonce.as_slice()) else {
+        return Ok(None);
+    };
+    Ok(Some(crate::noncustodial::review::BidOnRecord {
+        value,
+        nonce,
+    }))
+}
+
 pub fn bid_commitment_exists(
     conn: &rusqlite::Connection,
     profile_id: &str,

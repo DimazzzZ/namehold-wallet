@@ -806,6 +806,11 @@ pub enum NodeStep {
 /// balance (`nodeCoinsNotSyncedReason` in `src/queries/sync.ts`).
 pub const NODE_COINS_NOT_SYNCED: &str = "the node's coins were not synced";
 
+/// Why a node still catching up is not asked for the wallet's coins.
+pub(crate) fn node_still_syncing(blocks: i64) -> String {
+    format!("the node is still syncing, at block {blocks}")
+}
+
 /// Node UTXO sync: scan the profile's addresses, apply the batch, grow the
 /// address window ([`grow_address_window`]) and apply what it found. Writes
 /// nothing more once `lock` is raised (another process took the sync lock
@@ -840,6 +845,10 @@ pub(crate) async fn sync_node_step_with_client(
         Ok(a) => a,
         Err(_) => return NodeStep::Failed,
     };
+    let profile_network = match queries::get_wallet_profile(&conn, profile_id) {
+        Ok(Some(p)) => p.network,
+        _ => return NodeStep::Failed,
+    };
     // The settings read fails as the reads above do: no sync step, not a
     // window grown by a gap the user did not set.
     let gap = match queries::get_settings(&conn) {
@@ -849,7 +858,29 @@ pub(crate) async fn sync_node_step_with_client(
     drop(conn);
 
     let height = match client.get_blockchain_info().await {
-        Ok(info) => info.blocks,
+        Ok(info) => {
+            // Only a node on this wallet's chain that has caught up answers for
+            // its coins: one behind the tip, in initial block download or back
+            // from a day switched off, has not seen the coins above its height,
+            // and applied, its list would mark them spent and unspend what the
+            // wallet spent up there.
+            if crate::noncustodial::network::network_check(
+                Some(&profile_network),
+                info.chain.as_deref(),
+            ) == Some(false)
+            {
+                return NodeStep::NotAuthoritative(format!(
+                    "the node is on another network ({NODE_COINS_NOT_SYNCED}, and nothing was marked spent)"
+                ));
+            }
+            if !info.is_current(&profile_network, crate::noncustodial::rpc::unix_now_secs()) {
+                return NodeStep::NotAuthoritative(format!(
+                    "{} ({NODE_COINS_NOT_SYNCED}, and nothing was marked spent)",
+                    node_still_syncing(info.blocks)
+                ));
+            }
+            info.blocks
+        }
         Err(_) => return NodeStep::Failed,
     };
 
@@ -2242,7 +2273,7 @@ mod db_hardening_tests {
             .with_status(200)
             .with_body(
                 serde_json::json!({
-                    "result": { "blocks": 100, "headers": 100, "verificationprogress": 1.0 },
+                    "result": { "blocks": 100, "headers": 100, "verificationprogress": 1.0, "mediantime": 4_102_444_800u64 },
                     "error": null, "id": null
                 })
                 .to_string(),
@@ -2551,7 +2582,7 @@ mod address_window_tests {
         let _info = server
             .mock("POST", "/")
             .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-            .with_body(r#"{"result":{"chain":"main","blocks":100},"error":null,"id":1}"#)
+            .with_body(r#"{"result":{"chain":"main","blocks":100,"mediantime":4102444800},"error":null,"id":1}"#)
             .create_async()
             .await;
         let coins = [
@@ -2683,7 +2714,7 @@ mod address_window_tests {
         let _info = server
             .mock("POST", "/")
             .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-            .with_body(r#"{"result":{"chain":"main","blocks":100},"error":null,"id":1}"#)
+            .with_body(r#"{"result":{"chain":"main","blocks":100,"mediantime":4102444800},"error":null,"id":1}"#)
             .create_async()
             .await;
         let lock = crate::db::sync_lock::LockLost::default();
@@ -2811,7 +2842,7 @@ mod address_window_tests {
         let _info = server
             .mock("POST", "/")
             .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-            .with_body(r#"{"result":{"chain":"main","blocks":100},"error":null,"id":1}"#)
+            .with_body(r#"{"result":{"chain":"main","blocks":100,"mediantime":4102444800},"error":null,"id":1}"#)
             .create_async()
             .await;
         let (r2, r4) = (addr(BRANCH_RECEIVE, 2), addr(BRANCH_RECEIVE, 4));

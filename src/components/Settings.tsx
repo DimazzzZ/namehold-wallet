@@ -29,6 +29,7 @@ import {
   type ConnectionMode,
 } from "../lib/connectionMode";
 import { boolToSetting, hasStoredSecret, settingToBool } from "../lib/settingsBool";
+import { isProtectedSettingKey, sessionTimeoutError } from "../lib/protectedSettings";
 import { useUiStore } from "../stores/ui";
 import { Tooltip } from "./ui/Tooltip";
 import {
@@ -40,8 +41,12 @@ import {
 } from "../lib/nodeNetwork";
 import { UpdatesSettings } from "./UpdatesSettings";
 import { useAppUpdate } from "../hooks/useAppUpdate";
-import { MIN_FEE_RATE_DOOS_PER_KVB, parseDoosPerKvb } from "../lib/feeRate";
-import { MAX_ADDRESS_GAP_LIMIT } from "../lib/settingsDefaults";
+import { FEE_RATE_RULE, MIN_FEE_RATE_DOOS_PER_KVB, parseDoosPerKvb } from "../lib/feeRate";
+import {
+  MAX_ADDRESS_GAP_LIMIT,
+  MAX_SIGNER_SESSION_SECS,
+  MIN_SIGNER_SESSION_SECS,
+} from "../lib/settingsDefaults";
 import {
   enable as enableAutostart,
   disable as disableAutostart,
@@ -105,6 +110,13 @@ export function Settings() {
     return (
       (profileNetwork ? all[networkNodeSettingKey(base, profileNetwork)] : undefined) ?? all[base]
     );
+  };
+  // The value the form shows for `key` before any edit: the stored setting,
+  // or for the node mode and autostart the active network's own.
+  const shownSetting = (key: string): string => {
+    const all = (settings ?? {}) as unknown as Record<string, string | undefined>;
+    if (key === "node_mode" || key === "autostart_hsd") return ofNetwork(key) ?? all[key] ?? "";
+    return all[key] ?? "";
   };
   useEffect(() => {
     if (settings) {
@@ -196,10 +208,7 @@ export function Settings() {
   // to a positive integer; parseDoosPerKvb floors to the minimum, so the only
   // failure mode we surface is "you typed something that isn't a whole number".
   const feeRateRaw = (form.fee_rate_doos_per_kvb ?? "").trim();
-  const feeRateError =
-    feeRateRaw && parseDoosPerKvb(feeRateRaw) === null
-      ? "Fee rate must be a whole number of doos/kvB"
-      : null;
+  const feeRateError = feeRateRaw && parseDoosPerKvb(feeRateRaw) === null ? FEE_RATE_RULE : null;
 
   // The gap limit is optional (empty = the default, 20). The backend uses a
   // whole number in 1..=MAX_ADDRESS_GAP_LIMIT and clamps a larger one, so
@@ -211,10 +220,13 @@ export function Settings() {
       ? `Address gap limit must be a whole number from 1 to ${MAX_ADDRESS_GAP_LIMIT}`
       : null;
 
+  // The rule the backend applies when it saves the timeout.
+  const sessionTimeoutRefusal = sessionTimeoutError(form.signer_session_timeout_seconds ?? "");
+
   // A stored value outside its range lands here as an error while Save stays
   // disabled; the Advanced nav item gets a red dot and the save bar says why
   // (with Show from another section), so the block is never silent.
-  const advancedHasError = !!feeRateError || !!gapLimitError;
+  const advancedHasError = !!feeRateError || !!gapLimitError || !!sessionTimeoutRefusal;
 
   // Pick the hsd data directory with the native folder browser (Finder).
   const pickDataDir = async () => {
@@ -246,12 +258,14 @@ export function Settings() {
       ? { reason: feeRateError, section: "advanced" }
       : gapLimitError
         ? { reason: gapLimitError, section: "advanced" }
-        : nodeNetworkMismatch
-          ? {
-              reason: `the node is on ${nodeProbe.result?.network ?? "another network"}, not this wallet's network`,
-              section: "connections",
-            }
-          : null;
+        : sessionTimeoutRefusal
+          ? { reason: sessionTimeoutRefusal, section: "advanced" }
+          : nodeNetworkMismatch
+            ? {
+                reason: `the node is on ${nodeProbe.result?.network ?? "another network"}, not this wallet's network`,
+                section: "connections",
+              }
+            : null;
   const sectionErrors: Partial<Record<SettingsSection, boolean>> = {
     connections: !!explorerUrlError || nodeNetworkMismatch,
     advanced: advancedHasError,
@@ -276,26 +290,38 @@ export function Settings() {
       ...form,
       explorer_api_url: (form.explorer_api_url ?? "").trim().replace(/\/+$/, ""),
     };
+    const toSave: Record<string, string> = { ...normalized };
+    // A protected setting (lib/protectedSettings.ts) the user left as the form
+    // showed it is not sent: the secure window would only be asked to confirm
+    // nothing. The form shows a network's own node mode, so that is what it
+    // is compared with.
+    for (const key of Object.keys(toSave)) {
+      if (isProtectedSettingKey(key) && toSave[key] === shownSetting(key)) {
+        delete toSave[key];
+      }
+    }
+    if (profileNetwork) {
+      for (const base of ["node_mode", "autostart_hsd"] as const) {
+        if (toSave[base] !== undefined) {
+          toSave[networkNodeSettingKey(base, profileNetwork)] = toSave[base];
+          delete toSave[base];
+        }
+      }
+    }
     // Secret fields (currently `node_rpc_api_key`) are write-only: the backend
     // never returns their value, so the form always starts empty even when one
     // is stored. Saving that empty value would clobber the stored secret.
     // Skip the field on save when it's still empty AND the backend reported a
     // stored value via the `__has_<key>` marker.
-    if (profileNetwork) {
-      for (const base of ["node_mode", "autostart_hsd"] as const) {
-        if (normalized[base] !== undefined) {
-          normalized[networkNodeSettingKey(base, profileNetwork)] = normalized[base];
-          delete normalized[base];
-        }
-      }
-    }
     const hasStoredApiKey = hasStoredSecret(settings, "node_rpc_api_key");
-    if (hasStoredApiKey && (normalized.node_rpc_api_key ?? "") === "") {
-      delete normalized.node_rpc_api_key;
+    if (hasStoredApiKey && (toSave.node_rpc_api_key ?? "") === "") {
+      delete toSave.node_rpc_api_key;
     }
     setSaving(true);
     try {
-      await saveAll(normalized);
+      // Declined in the secure window: nothing was saved, which is the
+      // user's answer rather than a failure, so the form stays as edited.
+      if (!(await saveAll(toSave))) return;
       setForm(normalized);
       setDirty(false);
       showToast("Settings saved", "success");
@@ -417,7 +443,9 @@ export function Settings() {
                   <div className="text-xs text-gray-500">
                     Needed only to send or do name actions. Run hsd with{" "}
                     <code>--index-address</code>. See NODE_SETUP.md. "Test connection" reuses your
-                    stored API key when the URL matches the saved node.
+                    stored API key when the URL matches the saved node. Saving a change to the
+                    explorers, the chain source or the node asks you to confirm it in the secure
+                    window.
                   </div>
                   {chainSource === "remote_node" && (
                     <AllowRemoteBroadcastToggle
@@ -468,7 +496,9 @@ export function Settings() {
                   />
                   <div className="text-xs text-gray-500">
                     Leave empty to auto-detect. Set this if the app can't find your hsd install
-                    (e.g. <code>$(which hsd)</code>). Save settings to apply.
+                    (e.g. <code>$(which hsd)</code>): the full path of an executable file. Saving a
+                    new program path or data directory asks you to confirm it in the secure window;
+                    a program path is shown, and kept, as the file it leads to.
                   </div>
 
                   <label className="flex items-center gap-2 text-sm pt-2">
@@ -766,12 +796,33 @@ export function Settings() {
                       </div>
                     )}
                   </div>
-                  <Input
-                    label="Signer session timeout (seconds)"
-                    value={form.signer_session_timeout_seconds ?? ""}
-                    onChange={(e) => updateField("signer_session_timeout_seconds", e.target.value)}
-                    placeholder="900"
-                  />
+                  <div>
+                    <Input
+                      label="Signer session timeout (seconds)"
+                      value={form.signer_session_timeout_seconds ?? ""}
+                      onChange={(e) =>
+                        updateField("signer_session_timeout_seconds", e.target.value)
+                      }
+                      placeholder="900"
+                      inputMode="numeric"
+                      data-testid="settings-session-timeout"
+                    />
+                    {sessionTimeoutRefusal ? (
+                      <div
+                        className="text-xs text-red-600 mt-1"
+                        data-testid="settings-session-timeout-error"
+                      >
+                        {sessionTimeoutRefusal}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-500 mt-1">
+                        The signer locks this long after its last use, and at the latest{" "}
+                        {MAX_SIGNER_SESSION_SECS / 60} minutes after you unlock it:{" "}
+                        {MIN_SIGNER_SESSION_SECS} to {MAX_SIGNER_SESSION_SECS} seconds. Saving a
+                        change asks you to confirm it in the secure window.
+                      </div>
+                    )}
+                  </div>
                   <div>
                     <Input
                       label="Fee rate (doos/kvB)"

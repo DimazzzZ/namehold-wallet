@@ -122,7 +122,7 @@ fn test_fee_rate_explicit_overrides_settings() {
     };
 
     // Explicit fee_rate takes priority
-    assert_eq!(names::fee_rate(&ctx, Some(42)), 42);
+    assert_eq!(names::fee_rate(&ctx, Some(42)).unwrap(), 42);
 }
 
 #[test]
@@ -149,7 +149,10 @@ fn test_fee_rate_from_settings_falls_back() {
     };
 
     // No explicit fee_rate and no settings → default
-    assert_eq!(names::fee_rate(&ctx, None), send::DEFAULT_FEE_RATE_PER_BYTE);
+    assert_eq!(
+        names::fee_rate(&ctx, None).unwrap(),
+        send::DEFAULT_FEE_RATE_PER_BYTE
+    );
 }
 
 #[test]
@@ -179,7 +182,7 @@ fn test_fee_rate_from_settings_kvb() {
         ),
     };
 
-    let rate = names::fee_rate(&ctx, None);
+    let rate = names::fee_rate(&ctx, None).unwrap();
     // 1000 / 1000 = 1, clamped to MIN
     assert_eq!(rate, send::MIN_FEE_RATE_PER_BYTE.max(1));
 }
@@ -210,7 +213,7 @@ fn test_fee_rate_from_settings_large_kvb() {
         ),
     };
 
-    assert_eq!(names::fee_rate(&ctx, None), 100);
+    assert_eq!(names::fee_rate(&ctx, None).unwrap(), 100);
 }
 
 #[test]
@@ -240,7 +243,10 @@ fn test_fee_rate_invalid_kvb_string_falls_back() {
     };
 
     // Invalid parse → falls back to default
-    assert_eq!(names::fee_rate(&ctx, None), send::DEFAULT_FEE_RATE_PER_BYTE);
+    assert_eq!(
+        names::fee_rate(&ctx, None).unwrap(),
+        send::DEFAULT_FEE_RATE_PER_BYTE
+    );
 }
 
 // --- load_ctx error path tests ---
@@ -2410,10 +2416,57 @@ async fn reveal_errors_on_ambiguous_bid_coins_for_same_name() {
 /// New bids must NOT land on receive[0] once it is used: the BID output (and
 /// the persisted commitment) go to the next unused receive index, and that
 /// address is registered in derived_addresses so sync/lookups can see it.
+/// A BID is built only for a name open for bidding, as the batch bid
+/// already required; any other BID hsd refuses after it was signed and sent.
+#[tokio::test]
+async fn build_bid_draft_refuses_a_name_not_open_for_bidding() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc_with_state(&mut server, "REVEAL").await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+    }
+    let app = mock_app_with(state);
+    let err = names::build_bid_draft(app.state(), "namea".into(), 1000, 2000, None)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("not open for bidding (phase: REVEAL)"),
+        "{err}"
+    );
+    let state: tauri::State<crate::AppState> = app.state();
+    let conn = state.db.lock().unwrap();
+    let rows: i64 = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM wallet_tx_drafts) + (SELECT COUNT(*) FROM bid_commitments)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 0, "no draft and no bid record");
+}
+
+/// A batch never lists a name twice: it would spend that name's one owner
+/// coin twice in one transaction.
+#[test]
+fn a_batch_listing_a_name_twice_is_refused() {
+    let names = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert!(names::check_batch_names(&names(&["alpha", "bravo"])).is_ok());
+    let err = names::check_batch_names(&names(&["alpha", "bravo", "alpha"])).unwrap_err();
+    assert!(
+        err.to_string().contains("'alpha' is in the batch twice"),
+        "{err}"
+    );
+    assert!(names::check_batch_names(&[]).is_err());
+}
+
 #[tokio::test]
 async fn new_bid_rotates_to_fresh_receive_address() {
     let mut server = mockito::Server::new_async().await;
-    let _mocks = mock_names_rpc(&mut server).await;
+    let _mocks = mock_names_rpc_with_state(&mut server, "BIDDING").await;
     let state = create_full_test_state();
     let (profile_id, receive0) = {
         let conn = state.db.lock().unwrap();
@@ -2474,7 +2527,7 @@ async fn new_bid_rotates_to_fresh_receive_address() {
 #[tokio::test]
 async fn bid_draft_persists_reveal_end_height_estimate() {
     let mut server = mockito::Server::new_async().await;
-    let _mocks = mock_names_rpc(&mut server).await;
+    let _mocks = mock_names_rpc_with_state(&mut server, "BIDDING").await;
     let state = create_full_test_state();
     let profile_id = {
         let conn = state.db.lock().unwrap();
@@ -2666,7 +2719,7 @@ async fn build_bid_draft_allows_second_independent_bid() {
     // Multi-bid (Namebase-style): a second bid on the same name succeeds and
     // persists its own draft + commitment (distinct value ⇒ distinct blind).
     let mut server = mockito::Server::new_async().await;
-    let _mocks = mock_names_rpc(&mut server).await;
+    let _mocks = mock_names_rpc_with_state(&mut server, "BIDDING").await;
     let state = create_full_test_state();
     let profile_id = {
         let conn = state.db.lock().unwrap();
@@ -2717,7 +2770,7 @@ async fn build_bid_draft_allows_second_independent_bid() {
 #[tokio::test]
 async fn build_bid_draft_allows_bid_when_an_unspent_bid_coin_already_exists() {
     let mut server = mockito::Server::new_async().await;
-    let _mocks = mock_names_rpc(&mut server).await;
+    let _mocks = mock_names_rpc_with_state(&mut server, "BIDDING").await;
     let state = create_full_test_state();
     let profile_id = {
         let conn = state.db.lock().unwrap();
@@ -2765,7 +2818,7 @@ async fn build_bid_draft_allows_bid_when_an_unspent_bid_coin_already_exists() {
 #[tokio::test]
 async fn build_bid_draft_allows_bid_on_a_different_name() {
     let mut server = mockito::Server::new_async().await;
-    let _mocks = mock_names_rpc(&mut server).await;
+    let _mocks = mock_names_rpc_with_state(&mut server, "BIDDING").await;
     let state = create_full_test_state();
     {
         let conn = state.db.lock().unwrap();
@@ -2792,7 +2845,7 @@ async fn build_bid_draft_allows_bid_on_a_different_name() {
 #[tokio::test]
 async fn build_bid_draft_persists_bid_txid_on_its_commitment() {
     let mut server = mockito::Server::new_async().await;
-    let _mocks = mock_names_rpc(&mut server).await;
+    let _mocks = mock_names_rpc_with_state(&mut server, "BIDDING").await;
     let state = create_full_test_state();
     let profile_id = {
         let conn = state.db.lock().unwrap();

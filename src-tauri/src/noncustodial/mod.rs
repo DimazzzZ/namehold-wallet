@@ -18,6 +18,7 @@ pub mod network;
 pub mod node_config;
 pub mod node_rpc;
 pub mod resource;
+pub mod review;
 pub mod rpc;
 pub mod send;
 pub mod session;

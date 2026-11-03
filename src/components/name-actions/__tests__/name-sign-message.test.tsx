@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
@@ -190,6 +190,26 @@ describe("NameSignMessage — sign an arbitrary message with the owning key (Tas
 
     const cmdOrder = invokeMock.mock.calls.map((c) => c[0]);
     expect(cmdOrder).toEqual(["sign_name_message", "unlock_local_signer", "sign_name_message"]);
+  });
+
+  it("a sign declined in the secure window shows no error and no signature", async () => {
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "sign_name_message" ? Promise.reject("Confirmation declined") : Promise.resolve(null),
+    );
+    render(<NameSignMessage name="ecology" profileId="p1" caps={capsFor("ecology", true)} />, {
+      wrapper: wrapper(),
+    });
+
+    fireEvent.change(screen.getByTestId("sign-message-input"), { target: { value: "verify" } });
+    fireEvent.click(screen.getByTestId("sign-message-button"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("sign-message-button")).toHaveTextContent("Sign"),
+    );
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("sign-message-signature")).not.toBeInTheDocument();
   });
 
   it("punycode: sends the RAW xn-- name to the backend, but renders the decoded Unicode heading", async () => {

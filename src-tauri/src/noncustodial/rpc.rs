@@ -257,6 +257,74 @@ pub fn resolve_node_api_key(settings: &HashMap<String, String>) -> String {
     read_hsd_conf_api_key(prefix).unwrap_or_default()
 }
 
+/// The setting that holds the api-key Namehold generated for the hsd it starts
+/// itself on `network` (`commands::node::start_hsd`), used when no key is
+/// configured: the app never starts a node that answers without one. One key
+/// per network, so a regtest node never learns the mainnet node's key.
+pub const fn managed_node_api_key_setting(network: Network) -> &'static str {
+    match network {
+        Network::Main => "managed_node_api_key.main",
+        Network::Testnet => "managed_node_api_key.testnet",
+        Network::Regtest => "managed_node_api_key.regtest",
+        Network::Simnet => "managed_node_api_key.simnet",
+    }
+}
+
+/// The api-key to authenticate to `url` with: [`resolve_node_api_key`] (the
+/// configured key, then hsd.conf), else the key Namehold generated for its own
+/// node ([`managed_node_api_key_for_url`]). Empty when none applies.
+pub fn resolve_node_api_key_for_url(settings: &HashMap<String, String>, url: &str) -> String {
+    let configured = resolve_node_api_key(settings);
+    if !configured.is_empty() {
+        return configured;
+    }
+    managed_node_api_key_for_url(settings, url)
+}
+
+/// The network whose own node listens at `url`: plain http to `127.0.0.1` or
+/// `localhost` (which the client pins to `127.0.0.1`) on that network's default
+/// RPC port. hsd binds `127.0.0.1`, so `[::1]` on that port is somebody else's.
+fn managed_node_network_of_url(url: &str) -> Option<Network> {
+    let url = url::Url::parse(url.trim()).ok()?;
+    let ours = url.scheme() == "http"
+        && match url.host()? {
+            url::Host::Domain(d) => d.eq_ignore_ascii_case("localhost"),
+            url::Host::Ipv4(a) => a == std::net::Ipv4Addr::LOCALHOST,
+            url::Host::Ipv6(_) => false,
+        };
+    let port = url.port()?;
+    Network::ALL
+        .into_iter()
+        .find(|n| ours && n.default_rpc_port() == port)
+}
+
+/// The key Namehold generated for `url`'s network, when `url` is that network's
+/// node address AND the app's own node of that network is running: its pid
+/// record names a live process with the recorded start time
+/// ([`crate::commands::local_node::own_node_pid`]), which holds for this
+/// session's child and for the node an earlier session left, in the app and the
+/// daemon alike. Otherwise empty: whatever else answers on that port (a node of
+/// the user's being adopted, a process that took the port first) never receives
+/// the key, and a stored key is no reason to send it.
+pub fn managed_node_api_key_for_url(settings: &HashMap<String, String>, url: &str) -> String {
+    let Some(network) = managed_node_network_of_url(url) else {
+        return String::new();
+    };
+    let key = settings
+        .get(managed_node_api_key_setting(network))
+        .map(|k| k.trim().to_string())
+        .unwrap_or_default();
+    if key.is_empty() {
+        return key;
+    }
+    let base = crate::commands::local_node::configured_base(settings);
+    let data_dir = crate::commands::local_node::network_scoped_data_dir(&base, network);
+    if crate::commands::local_node::own_node_pid(std::path::Path::new(&data_dir)).is_none() {
+        return String::new();
+    }
+    key
+}
+
 /// Words [`NodeRpcClient`]'s JSON-RPC call puts in the messages of the
 /// failures that are not an answer from hsd: a body that is not JSON (e.g. a proxy's 502
 /// page), a body that is not a JSON-RPC envelope, an error object hsd did not
@@ -303,6 +371,21 @@ pub fn remote_broadcast_allowed(settings: &HashMap<String, String>) -> bool {
         .unwrap_or(false)
 }
 
+/// The largest node reply read. `GET /tx/address/:address` has no limit in hsd
+/// 8.0.0 (`lib/node/http.js`): it lists every transaction of an address, about
+/// 2-3 KB of JSON each, so this holds over 20,000 of them, and 64 full blocks
+/// (`MAX_BLOCK_SIZE` is 1 MB) for any single RPC. A reply over it is refused
+/// rather than parsed into several times its size in memory.
+pub(crate) const NODE_REPLY_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// A node reply's body as JSON, at most [`NODE_REPLY_MAX_BYTES`] of it.
+async fn read_node_json(resp: reqwest::Response) -> Result<serde_json::Value, String> {
+    let body = crate::http::read_capped(resp, NODE_REPLY_MAX_BYTES)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_slice(&body).map_err(|e| e.to_string())
+}
+
 /// Parse `api-key: <value>` (or `api-key <value>`) from `<prefix>/hsd.conf`.
 fn read_hsd_conf_api_key(prefix: &str) -> Option<String> {
     let conf = std::path::Path::new(prefix).join("hsd.conf");
@@ -335,7 +418,8 @@ fn read_hsd_conf_api_key(prefix: &str) -> Option<String> {
 /// non-loopback host. An empty api-key is always allowed (nothing to leak).
 /// `https://` is always allowed. Loopback `http://` (127.0.0.1/::1/localhost)
 /// is allowed for the common local-node case. Remote `http://` with a key
-/// present is refused.
+/// present is refused. `localhost` stays accepted: the client connects it to
+/// `127.0.0.1` and past any proxy ([`crate::http::chain_source_client_builder`]).
 pub fn guard_transport(node_url: &str, api_key: &str) -> Result<(), AppError> {
     if api_key.is_empty() {
         return Ok(());
@@ -352,13 +436,7 @@ pub fn guard_transport(node_url: &str, api_key: &str) -> Result<(), AppError> {
         )));
     }
     // http scheme: only loopback is allowed when an api-key is set.
-    let is_loopback = match parsed.host() {
-        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(a)) => a.is_loopback(),
-        Some(url::Host::Ipv6(a)) => a.is_loopback(),
-        None => false,
-    };
-    if is_loopback {
+    if crate::http::is_loopback_url(&parsed) {
         Ok(())
     } else {
         Err(AppError::InvalidInput(
@@ -374,7 +452,7 @@ impl NodeRpcClient {
             // Fallback for callers that ignore the guard: keep the invalid URL
             // but blank the api-key so it can never be sent in the clear. The
             // subsequent RPC call will fail loudly at request time.
-            http: crate::http::client_builder()
+            http: crate::http::chain_source_client_builder(node_url)
                 .timeout(Duration::from_secs(30))
                 .build()
                 .expect("failed to build HTTP client"),
@@ -390,7 +468,7 @@ impl NodeRpcClient {
     pub fn try_new(node_url: &str, api_key: &str, source: ChainSource) -> Result<Self, AppError> {
         guard_transport(node_url, api_key)?;
         Ok(Self {
-            http: crate::http::client_builder()
+            http: crate::http::chain_source_client_builder(node_url)
                 .timeout(Duration::from_secs(30))
                 .build()
                 .expect("failed to build HTTP client"),
@@ -402,13 +480,14 @@ impl NodeRpcClient {
 
     /// Construct from the Phase 1 non-custodial settings map.
     ///
-    /// Reads `node_rpc_url`, `node_rpc_api_key`, and `chain_source`.
+    /// Reads `node_rpc_url`, `node_rpc_api_key` (through
+    /// [`resolve_node_api_key_for_url`]), and `chain_source`.
     pub fn from_settings(settings: &HashMap<String, String>) -> Self {
         let url = settings
             .get("node_rpc_url")
             .map(|s| s.as_str())
             .unwrap_or("http://127.0.0.1:12037");
-        let key = resolve_node_api_key(settings);
+        let key = resolve_node_api_key_for_url(settings, url);
         let source = ChainSource::from_settings(settings);
         Self::new(url, &key, source)
     }
@@ -480,8 +559,7 @@ impl NodeRpcClient {
         refuse_unauthorized(status)?;
         // hsd returns the JSON-RPC envelope even for some 4xx (e.g. method
         // errors), so parse the body before treating status as fatal.
-        let body: serde_json::Value = resp
-            .json()
+        let body = read_node_json(resp)
             .await
             .map_err(|e| AppError::Rpc(format!("{NON_JSON_BODY} (status {status}): {e}")))?;
 
@@ -576,7 +654,7 @@ impl NodeRpcClient {
             .await?;
         let status = resp.status();
         refuse_unauthorized(status)?;
-        let body: serde_json::Value = resp.json().await.map_err(|e| {
+        let body = read_node_json(resp).await.map_err(|e| {
             AppError::Rpc(format!(
                 "node returned non-JSON for its status (status {status}): {e}"
             ))
@@ -606,7 +684,7 @@ impl NodeRpcClient {
             .await?;
         let status = resp.status();
         refuse_unauthorized(status)?;
-        let body: serde_json::Value = resp.json().await.map_err(|e| {
+        let body = read_node_json(resp).await.map_err(|e| {
             AppError::Rpc(format!(
                 "node returned non-JSON for coins (status {status}): {e}"
             ))
@@ -637,7 +715,7 @@ impl NodeRpcClient {
         if status == reqwest::StatusCode::NOT_FOUND {
             return hsd_not_found(resp, "coin").await.map(|()| None);
         }
-        let body: serde_json::Value = resp.json().await.map_err(|e| {
+        let body = read_node_json(resp).await.map_err(|e| {
             AppError::Rpc(format!(
                 "node returned non-JSON for coin (status {status}): {e}"
             ))
@@ -699,7 +777,7 @@ impl NodeRpcClient {
             .await?;
         let status = resp.status();
         refuse_unauthorized(status)?;
-        let body: serde_json::Value = resp.json().await.map_err(|e| {
+        let body = read_node_json(resp).await.map_err(|e| {
             AppError::Rpc(format!(
                 "node returned non-JSON for tx-by-address (status {status}): {e}"
             ))
@@ -784,7 +862,7 @@ impl NodeRpcClient {
                 .await
                 .map(|()| serde_json::Value::Null);
         }
-        let body: serde_json::Value = resp.json().await.map_err(|e| {
+        let body = read_node_json(resp).await.map_err(|e| {
             AppError::Rpc(format!(
                 "node returned non-JSON for tx-by-hash (status {status}): {e}"
             ))
@@ -1013,6 +1091,38 @@ impl BlockchainInfo {
             assume_when_unknown,
         )
     }
+
+    /// Whether this node may decide which of `network`'s coins are spent: it
+    /// reports itself synced and, where hsd's own `chain.synced` rule asks for
+    /// it, its tip is recent. `network` is a profile's network name; one this
+    /// build does not know gets the stricter rule.
+    ///
+    /// [`Self::is_synced`] alone cannot tell: hsd reports `headers == blocks`,
+    /// and its time-based progress clears the floor while the tip is days old.
+    /// `mediantime` is the only tip time `getblockchaininfo` sends. It lags the
+    /// tip by about an hour, which only refuses a little sooner, and a reply
+    /// without it is refused on the networks that have this rule.
+    pub fn is_current(&self, network: &str, now_secs: u64) -> bool {
+        use crate::noncustodial::network::Network;
+        let tip_is_recent = matches!(
+            Network::from_str_opt(network),
+            Some(Network::Regtest | Network::Simnet)
+        ) || self
+            .mediantime
+            .is_some_and(|t| now_secs.saturating_sub(t) <= MAX_TIP_AGE_SECS);
+        self.is_synced(/* assume_when_unknown */ true) && tip_is_recent
+    }
+}
+
+/// hsd's `maxTipAge` on main and testnet (`protocol/networks.js`); on regtest
+/// and simnet blocks come when someone mines, and it is effectively unlimited.
+const MAX_TIP_AGE_SECS: u64 = 12 * 60 * 60;
+
+/// This machine's clock, for [`BlockchainInfo::is_current`].
+pub fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Loose floor below which a `blocks == headers` match is distrusted as
@@ -1181,7 +1291,9 @@ fn rest_error_message<'a>(body: &'a serde_json::Value, fallback: &'a str) -> &'a
 /// nothing about the coin or transaction, so it is an error, never "spent"
 /// or "unknown".
 async fn hsd_not_found(resp: reqwest::Response, what: &str) -> Result<(), AppError> {
-    let body = resp.bytes().await?;
+    let body = crate::http::read_capped(resp, NODE_REPLY_MAX_BYTES)
+        .await
+        .map_err(|e| AppError::Rpc(format!("{what} lookup got a 404 that is not hsd's: {e}")))?;
     if body.iter().all(u8::is_ascii_whitespace) {
         Ok(())
     } else {
@@ -1209,13 +1321,27 @@ pub struct NodeCovenant {
     pub items: Vec<String>,
 }
 
+/// What the chain source means for a send through `node_url`: the source is only
+/// a label, so a node off this machine is remote whatever it says. A URL that
+/// does not parse counts as off this machine.
+pub fn send_source(source: ChainSource, node_url: &str) -> ChainSource {
+    let on_this_machine = url::Url::parse(node_url.trim())
+        .map(|u| crate::http::is_loopback_url(&u))
+        .unwrap_or(false);
+    if source == ChainSource::LocalNode && !on_this_machine {
+        ChainSource::RemoteNode
+    } else {
+        source
+    }
+}
+
 /// The gates every send passes before a signed transaction leaves the
 /// wallet — the user's broadcast and the sync job's rebroadcast alike:
 ///
 /// - the chain source can broadcast at all (Explorer and SPV are read-only);
 /// - a remote node also needs the user's "Allow sending via remote node"
 ///   opt-in, so no code path broadcasts through someone else's node without
-///   it;
+///   it. Remote is decided by [`send_source`];
 /// - the node is on the wallet's own chain
 ///   ([`broadcast_network_guard_with_client`]).
 pub async fn broadcast_gates(
@@ -1228,47 +1354,52 @@ pub async fn broadcast_gates(
             "chain source is read-only; broadcasting is disabled".to_string(),
         ));
     }
-    if client.source() == ChainSource::RemoteNode && !remote_broadcast_allowed(settings) {
+    if send_source(client.source(), client.node_url()) == ChainSource::RemoteNode
+        && !remote_broadcast_allowed(settings)
+    {
         return Err(AppError::InvalidInput(
-            "sending via remote node is disabled; enable \"Allow sending via remote node\" in Settings → Connections"
+            "sending via remote node is disabled; choose Remote node and enable \"Allow sending via remote node\" in Settings → Connections"
                 .to_string(),
         ));
     }
     broadcast_network_guard_with_client(client, expected_network).await
 }
 
-/// Refuse to broadcast through a node that reports a different chain than the
-/// wallet profile. The chain step of [`broadcast_gates`], kept separate so it
-/// can be tested against a mock without an `AppState`.
+/// Refuse to broadcast unless the node confirms it is on the wallet's chain.
+/// The chain step of [`broadcast_gates`], kept separate so it can be tested
+/// against a mock without an `AppState`.
 ///
-/// Mirrors the read gate's conservatism: only a POSITIVE mismatch refuses. A
-/// node that does not report `chain` (older hsd builds), or a draft whose
-/// profile has vanished, leaves the decision to hsd as before — `None` from
-/// `network_check` means "unknown", not "wrong".
+/// Unlike the read gates, where `None` from `network_check` means "unknown"
+/// and a read goes on, this is the money path and fails closed: a probe that
+/// fails, a reply without `chain` (hsd 8 always sends it), or a draft whose
+/// profile has no network all refuse the send.
 pub async fn broadcast_network_guard_with_client(
     client: &dyn crate::noncustodial::node_rpc::NodeRpc,
     expected_network: Option<&str>,
 ) -> Result<(), AppError> {
-    // Nothing to compare against: skip the probe entirely rather than spend an
-    // RPC round-trip on a check that cannot fail.
+    const NOT_SENT: &str =
+        "refusing to broadcast; the transaction was not sent and the draft is unchanged";
+    let unconfirmed = |why: &str| {
+        AppError::InvalidInput(format!(
+            "could not confirm the node's network ({why}) \u{2014} {NOT_SENT}"
+        ))
+    };
     let Some(expected) = expected_network else {
-        return Ok(());
+        return Err(unconfirmed("this wallet's network is not known"));
     };
-    // A probe failure is not a mismatch. Let the broadcast proceed and be
-    // classified by the existing transport/RPC error handling.
-    let Ok(info) = client.get_blockchain_info().await else {
-        return Ok(());
-    };
-    if crate::noncustodial::network::network_check(Some(expected), info.chain.as_deref())
-        == Some(false)
-    {
-        return Err(cross_network_refusal(
+    let info = client
+        .get_blockchain_info()
+        .await
+        .map_err(|e| unconfirmed(&e.to_string()))?;
+    match crate::noncustodial::network::network_check(Some(expected), info.chain.as_deref()) {
+        Some(true) => Ok(()),
+        Some(false) => Err(cross_network_refusal(
             info.chain.as_deref(),
             expected,
-            "refusing to broadcast; the transaction was not sent and the draft is unchanged",
-        ));
+            NOT_SENT,
+        )),
+        None => Err(unconfirmed("the node did not report its chain")),
     }
-    Ok(())
 }
 
 /// The refusal a cross-network node earns, with what the caller was about to do.
@@ -1344,6 +1475,42 @@ mod tests {
         // Nothing reported at all: the caller decides.
         assert!(chain_synced(10, None, None, true));
         assert!(!chain_synced(10, None, None, false));
+    }
+
+    /// hsd's real shape: `headers == blocks`, progress over the floor for days
+    /// after the tip stops moving. The tip's age decides on main and testnet.
+    #[test]
+    fn a_node_is_current_only_with_a_recent_tip_where_hsd_asks_for_one() {
+        const NOW: u64 = 1_800_000_000;
+        const HOUR: u64 = 3600;
+        let info = |progress, mediantime| BlockchainInfo {
+            blocks: 500,
+            headers: Some(500),
+            verification_progress: Some(progress),
+            chain: None,
+            bestblockhash: None,
+            mediantime,
+        };
+        for network in ["main", "mainnet", "testnet", "some-future-network"] {
+            let current = |t| info(0.9995, t).is_current(network, NOW);
+            assert!(current(Some(NOW - HOUR)), "{network}");
+            assert!(current(Some(NOW - 12 * HOUR)), "{network}: the limit");
+            assert!(!current(Some(NOW - 12 * HOUR - 1)), "{network}");
+            assert!(!current(Some(NOW - 48 * HOUR)), "{network}");
+            assert!(!current(None), "{network}: no tip time");
+            // A clock behind the node's is no lag.
+            assert!(current(Some(NOW + HOUR)), "{network}");
+        }
+        for network in ["regtest", "simnet"] {
+            assert!(info(1.0, None).is_current(network, NOW), "{network}");
+            assert!(
+                info(1.0, Some(NOW - 1000 * HOUR)).is_current(network, NOW),
+                "{network}: nobody mined for a while"
+            );
+        }
+        // Recent or not, a node that says it is behind is behind.
+        assert!(!info(0.08, Some(NOW)).is_current("main", NOW));
+        assert!(!info(0.08, None).is_current("regtest", NOW));
     }
 
     #[test]
@@ -1533,6 +1700,23 @@ mod tests {
         }
     }
 
+    /// Only the local label is overruled: a read-only source stays read-only
+    /// wherever its URL points, or the opt-in would make it able to send.
+    #[test]
+    fn send_source_counts_a_local_label_off_this_machine_as_remote_and_nothing_else() {
+        use ChainSource::*;
+        let off = "https://node.example:12037";
+        assert_eq!(send_source(LocalNode, off), RemoteNode);
+        assert_eq!(send_source(LocalNode, "not a url"), RemoteNode);
+        assert_eq!(send_source(LocalNode, "http://127.0.0.1:12037"), LocalNode);
+        assert_eq!(
+            send_source(RemoteNode, "http://127.0.0.1:12037"),
+            RemoteNode
+        );
+        assert_eq!(send_source(Explorer, off), Explorer);
+        assert_eq!(send_source(SpvNode, off), SpvNode);
+    }
+
     #[test]
     fn guard_transport_blocks_remote_http_with_key() {
         // Remote http + api-key is refused (would leak the key in cleartext).
@@ -1542,6 +1726,9 @@ mod tests {
         // Loopback http is fine (the common local-node case).
         assert!(guard_transport("http://127.0.0.1:12037", "secret").is_ok());
         assert!(guard_transport("http://localhost:12037", "secret").is_ok());
+        // A host that only starts like one is remote.
+        assert!(guard_transport("http://localhost.evil.example:12037", "secret").is_err());
+        assert!(guard_transport("http://127.0.0.1.evil.example:12037", "secret").is_err());
         // No api-key: nothing to leak, anything goes.
         assert!(guard_transport("http://10.0.0.5:13037", "").is_ok());
     }

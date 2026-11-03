@@ -66,6 +66,18 @@ fn derivation_derive(s: &[u8]) -> (secp256k1::SecretKey, [u8; 33], String) {
 
 /// Build a fully-migrated, seeded in-memory DB with one spendable coin under a
 /// non-watch-only profile owning leaf 0/0. `node_url` is stored for broadcast.
+/// The chain probe every send starts with (`broadcast_gates`), answered as a
+/// node on `seeded_conn`'s network.
+async fn mock_chain_probe(server: &mut mockito::ServerGuard) -> mockito::Mock {
+    server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"main","blocks":500,"headers":500},"error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await
+}
+
 fn seeded_conn(node_url: &str, value: u64) -> rusqlite::Connection {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
@@ -188,17 +200,14 @@ async fn full_lifecycle_build_sign_broadcast_succeeds() {
     // Three POSTs: the chain-identity probe `broadcast_tx_draft` runs before
     // it hands over a signed transaction, `sendrawtransaction` itself, then
     // `getrawtransaction` to see that the node took it (hsd answers the txid
-    // whatever its mempool does). The probe gets the txid-shaped body, fails to
-    // decode as blockchain info, and — a probe failure being no evidence of a
-    // mismatch — lets the broadcast proceed.
+    // whatever its mempool does).
+    let _probe = mock_chain_probe(&mut server).await;
     let m = server
         .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex(
-            "getblockchaininfo|sendrawtransaction".into(),
-        ))
+        .match_body(mockito::Matcher::Regex("sendrawtransaction".into()))
         .with_header("content-type", "application/json")
         .with_body(format!(r#"{{"result":"{node_txid}","error":null,"id":1}}"#))
-        .expect(2)
+        .expect(1)
         .create_async()
         .await;
     let taken = server
@@ -267,6 +276,7 @@ async fn full_lifecycle_build_sign_broadcast_succeeds() {
 #[tokio::test]
 async fn broadcast_failure_marks_draft_failed_and_errors() {
     let mut server = mockito::Server::new_async().await;
+    let _probe = mock_chain_probe(&mut server).await;
     // hsd 8.0.0's only refusal of `sendrawtransaction` (`lib/node/rpc.js`
     // `sendRawTransaction`: TYPE_ERROR for a body it cannot decode); a mempool
     // refusal is only logged, never returned.
@@ -1188,6 +1198,7 @@ async fn remote_node_source_can_broadcast() {
     // `allow_remote_broadcast = "true"` (the Settings toggle). Same
     // build→sign→broadcast flow, but chain_source = remote_node.
     let mut server = mockito::Server::new_async().await;
+    let _probe = mock_chain_probe(&mut server).await;
     let node_txid = "fee0000000000000000000000000000000000000000000000000000000000abc";
     let _m = server
         .mock("POST", "/")
@@ -1315,7 +1326,7 @@ async fn sync_wallet_state_fetches_coins_and_reports_reachable() {
     let _bi = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"chain":"main","blocks":150000},"error":null,"id":1}"#)
+        .with_body(r#"{"result":{"chain":"main","blocks":150000,"mediantime":4102444800},"error":null,"id":1}"#)
         .create_async()
         .await;
     // Address coins come from the node REST route, NOT JSON-RPC — return the raw
@@ -1353,7 +1364,7 @@ async fn sync_wallet_state_refuses_a_node_without_the_address_index() {
     let _bi = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"chain":"main","blocks":150000},"error":null,"id":1}"#)
+        .with_body(r#"{"result":{"chain":"main","blocks":150000,"mediantime":4102444800},"error":null,"id":1}"#)
         .create_async()
         .await;
     let _status = server
@@ -1405,6 +1416,27 @@ fn bi_body(progress: f64) -> String {
     format!(
         r#"{{"result":{{"chain":"main","blocks":100,"verificationprogress":{progress}}},"error":null,"id":1}}"#
     )
+}
+
+/// A send `broadcast_gates` would refuse is not offered for signing first: a
+/// node off this machine needs the opt-in whatever the chain source says. The
+/// signer stays locked, so neither case reaches the node.
+#[tokio::test]
+async fn write_capability_asks_the_opt_in_for_a_node_off_this_machine_labelled_local() {
+    let conn = seeded_conn("https://node.example:12037", 2_000_000);
+    db::queries::set_setting(&conn, "chain_source", "local_node").unwrap();
+    let app = app_with(conn);
+
+    let cap = get_write_capability(app.state()).await.expect("cap");
+    assert!(!cap.broadcaster_available);
+
+    {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        db::queries::set_setting(&conn, "allow_remote_broadcast", "true").unwrap();
+    }
+    let cap = get_write_capability(app.state()).await.expect("cap");
+    assert!(cap.broadcaster_available);
 }
 
 #[tokio::test]
@@ -1646,6 +1678,76 @@ async fn write_capability_allows_when_synced_indexed_and_unlocked() {
 /// cursor coin selection reads for coinbase maturity nor the tracked name
 /// states. The refusal happens before the coin fetch, so the coin route is
 /// never asked.
+/// A node still in initial block download lists only the coins below its
+/// height: its list is not read, and the wallet's coin stays unspent.
+#[tokio::test]
+async fn sync_wallet_state_refuses_a_node_behind_the_tip() {
+    let mut server = mockito::Server::new_async().await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"chain":"main","blocks":10,"headers":150000},"error":null,"id":1}"#,
+        )
+        .create_async()
+        .await;
+    let coins = server
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body("[]")
+        .expect(0)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    let app = app_with(conn);
+
+    let err = sync_wallet_state(app.state(), None)
+        .await
+        .expect_err("a node behind the tip must not sync");
+    assert!(err.to_string().contains("still syncing"), "{err}");
+    coins.assert_async().await;
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    let spent_by: Option<String> = c
+        .query_row(
+            "SELECT spent_by_txid FROM tracked_utxos WHERE txid = ?1",
+            [COIN_TXID],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(spent_by, None);
+}
+
+/// hsd's real shape for a node back from days switched off: `headers == blocks`
+/// and a progress over the floor. The age of its tip is what refuses it.
+#[tokio::test]
+async fn sync_wallet_state_refuses_a_node_with_an_old_tip() {
+    let mut server = mockito::Server::new_async().await;
+    let old_tip = crate::noncustodial::rpc::unix_now_secs() - 48 * 3600;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(format!(
+            r#"{{"result":{{"chain":"main","blocks":500,"headers":500,"verificationprogress":0.9995,"mediantime":{old_tip}}},"error":null,"id":1}}"#
+        ))
+        .create_async()
+        .await;
+    let coins = server
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body("[]")
+        .expect(0)
+        .create_async()
+        .await;
+
+    let app = app_with(seeded_conn(&server.url(), 2_000_000));
+
+    let err = sync_wallet_state(app.state(), None)
+        .await
+        .expect_err("a node with an old tip must not sync");
+    assert!(err.to_string().contains("still syncing"), "{err}");
+    coins.assert_async().await;
+}
+
 #[tokio::test]
 async fn sync_wallet_state_refuses_a_node_on_another_chain() {
     let mut server = mockito::Server::new_async().await;
@@ -1814,6 +1916,7 @@ async fn deleting_a_draft_frees_its_coin_for_a_later_draft() {
 #[tokio::test]
 async fn deleting_a_broadcasted_draft_is_refused() {
     let mut server = mockito::Server::new_async().await;
+    let _probe = mock_chain_probe(&mut server).await;
     let node_txid = "abc0000000000000000000000000000000000000000000000000000000000def";
     let _m = server
         .mock("POST", "/")
@@ -1911,6 +2014,7 @@ async fn resign_uses_the_reserved_coin_even_if_a_larger_coin_arrived_later() {
 #[tokio::test]
 async fn broadcast_rejection_frees_the_coin_for_a_new_draft() {
     let mut server = mockito::Server::new_async().await;
+    let _probe = mock_chain_probe(&mut server).await;
     let _m = server
         .mock("POST", "/")
         .with_body(r#"{"result":null,"error":{"message":"Invalid hex string.","code":-3},"id":1}"#)
@@ -1944,9 +2048,10 @@ async fn broadcast_rejection_frees_the_coin_for_a_new_draft() {
 async fn broadcast_transport_error_keeps_reservation_and_is_not_marked_failed() {
     // Finding 2 (Task 5 review): a transport failure (connection refused/
     // dropped, timeout, ...) is NOT the same as the node answering with a
-    // definitive rejection — the node may already hold the tx. Point the
-    // draft at an address nothing listens on so `send_raw_transaction` fails
-    // with a transport error (`AppError::Http`, not `AppError::Rpc`).
+    // definitive rejection — the node may already hold the tx. The node answers
+    // the chain probe, then drops the connection on the send, so
+    // `send_raw_transaction` fails with a transport error (`AppError::Http`, not
+    // `AppError::Rpc`).
     let conn = seeded_conn("http://127.0.0.1:12037", 2_000_000);
     let app = app_with(conn);
     let to = recv_addr();
@@ -1957,11 +2062,29 @@ async fn broadcast_transport_error_keeps_reservation_and_is_not_marked_failed() 
     unlock(&app, PROFILE);
     sign_tx_draft_inner(&app.state(), &draft.id).await.unwrap();
 
-    // Repoint at an unreachable address just before broadcasting.
+    // Repoint at the flaky node just before broadcasting.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let flaky_url = format!("http://{}", listener.local_addr().unwrap());
+    let _flaky_node = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let mut request = vec![0u8; 64 * 1024];
+            let n = socket.read(&mut request).await.unwrap_or(0);
+            if String::from_utf8_lossy(&request[..n]).contains("getblockchaininfo") {
+                let body =
+                    r#"{"result":{"chain":"main","blocks":500,"headers":500},"error":null,"id":1}"#;
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(reply.as_bytes()).await;
+            }
+        }
+    });
     {
         let state = app.state::<AppState>();
         let conn = state.db.lock().unwrap();
-        db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+        db::queries::set_setting(&conn, "node_rpc_url", &flaky_url).unwrap();
     }
 
     let err = broadcast_tx_draft(app.state(), draft.id.clone())
@@ -2543,7 +2666,7 @@ async fn sync_wallet_state_auto_provisions_addresses_when_empty() {
     let _bi = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .with_body(r#"{"result":{"chain":"main","blocks":200,"mediantime":4102444800},"error":null,"id":1}"#)
         .create_async()
         .await;
     let _coins = server
@@ -2580,7 +2703,7 @@ async fn sync_wallet_state_with_explicit_profile_id() {
     let _bi = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"chain":"main","blocks":100},"error":null,"id":1}"#)
+        .with_body(r#"{"result":{"chain":"main","blocks":100,"mediantime":4102444800},"error":null,"id":1}"#)
         .create_async()
         .await;
     let _coins = server
@@ -2630,7 +2753,7 @@ async fn sync_wallet_state_caches_transactions_returned_by_node() {
     let _bi = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .with_body(r#"{"result":{"chain":"main","blocks":200,"mediantime":4102444800},"error":null,"id":1}"#)
         .create_async()
         .await;
     let _coins = server
@@ -2801,6 +2924,37 @@ async fn sign_covenant_open_draft_via_hot_session() {
 
 // --- tx.rs coverage tests: resolve_fee_rate, coin loop, ledger covenant names, session guard ------
 
+/// A fee rate past the wallet's cap is refused from every source (the
+/// argument, the renderer-writable setting) and no draft is written.
+#[tokio::test]
+async fn a_send_at_a_fee_rate_past_the_cap_is_refused_and_writes_no_draft() {
+    let app = app_with(seeded_conn("http://127.0.0.1:1", 5_000_000));
+    let over = crate::noncustodial::send::MAX_FEE_RATE_PER_BYTE + 1;
+    let err = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(over), None)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("more than this wallet pays"),
+        "{err}"
+    );
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::set_setting(&c, "fee_rate_doos_per_kvb", "5000000").unwrap();
+    }
+    let err = build_send_hns_draft(app.state(), recv_addr(), 500_000, None, None)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("more than this wallet pays"),
+        "{err}"
+    );
+    assert!(list_tx_drafts(app.state(), Some(PROFILE.into()))
+        .await
+        .unwrap()
+        .is_empty());
+}
+
 #[tokio::test]
 async fn resolve_fee_rate_uses_explicit_override_when_provided() {
     // Directly exercise the `if let Some(r) = fee_rate` early-return branch of
@@ -2808,7 +2962,7 @@ async fn resolve_fee_rate_uses_explicit_override_when_provided() {
     // are bypassed entirely.
     let conn = seeded_conn("http://127.0.0.1:1", 5_000_000);
     let app = app_with(conn);
-    let rate = resolve_fee_rate(&app.state(), Some(42)).await;
+    let rate = resolve_fee_rate(&app.state(), Some(42)).await.unwrap();
     assert_eq!(rate, 42, "explicit override must be returned unchanged");
 }
 
@@ -2821,7 +2975,7 @@ async fn resolve_fee_rate_uses_fee_rate_doos_per_kvb_setting_when_set() {
     db::queries::set_setting(&conn, "fee_rate_doos_per_kvb", "5000").unwrap();
     let app = app_with(conn);
     // 5000 doos/kvB ÷ 1000 = 5 doos/byte, .max(MIN_FEE_RATE_PER_BYTE=1) = 5.
-    let rate = resolve_fee_rate(&app.state(), None).await;
+    let rate = resolve_fee_rate(&app.state(), None).await.unwrap();
     assert_eq!(rate, 5, "kvb setting must be scaled to doos/byte");
 }
 
@@ -2841,7 +2995,7 @@ async fn resolve_fee_rate_falls_back_to_default_when_node_estimate_fails() {
 
     let conn = seeded_conn(&server.url(), 5_000_000);
     let app = app_with(conn);
-    let rate = resolve_fee_rate(&app.state(), None).await;
+    let rate = resolve_fee_rate(&app.state(), None).await.unwrap();
     // send::DEFAULT_FEE_RATE_PER_BYTE == 1.
     assert_eq!(rate, 1, "must fall back to DEFAULT_FEE_RATE_PER_BYTE");
 }
@@ -2870,7 +3024,7 @@ async fn resolve_fee_rate_falls_back_to_default_when_settings_missing() {
     db::queries::set_active_profile(&conn, PROFILE).unwrap();
     // Deliberately do NOT set any settings.
     let app = app_with(conn);
-    let rate = resolve_fee_rate(&app.state(), None).await;
+    let rate = resolve_fee_rate(&app.state(), None).await.unwrap();
     assert_eq!(rate, 1, "must fall back to DEFAULT_FEE_RATE_PER_BYTE");
 }
 
@@ -2891,7 +3045,7 @@ async fn sync_wallet_state_marks_address_used_when_coin_has_address() {
     let _bi = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .with_body(r#"{"result":{"chain":"main","blocks":200,"mediantime":4102444800},"error":null,"id":1}"#)
         .create_async()
         .await;
     let _coins = server
@@ -2944,7 +3098,7 @@ async fn sync_wallet_state_calls_mark_missing_as_spent_when_coins_present() {
     let _bi = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"chain":"main","blocks":100},"error":null,"id":1}"#)
+        .with_body(r#"{"result":{"chain":"main","blocks":100,"mediantime":4102444800},"error":null,"id":1}"#)
         .create_async()
         .await;
     let _coins = server
@@ -2997,50 +3151,423 @@ async fn sync_wallet_state_calls_mark_missing_as_spent_when_coins_present() {
     );
 }
 
-#[tokio::test]
-async fn sign_tx_draft_inner_loads_reserved_coins_when_present() {
-    // When a send_hns draft has reservation rows, sign_via_hot_session loads
-    // the reserved coins (L612-613). When there are NO reservation rows,
-    // it falls back to load_spendable_coins (L614). This test verifies the
-    // fallback path by creating a draft with no reservations.
-    let conn = seeded_conn("http://127.0.0.1:1", 5_000_000);
-    let app = app_with(conn);
-    unlock(&app, PROFILE);
+// --- signing is bound to the transaction the user reviewed (audit 2026-10) ---
 
-    // Build a send_hns draft (which normally reserves coins).
+use crate::commands::secure_prompt::{
+    clear_test_answers, push_test_answer, take_test_requests, SecurePromptResult,
+};
+
+fn confirm_with(value: Option<&str>) {
+    push_test_answer(SecurePromptResult {
+        value: value.map(|v| v.to_string().into()),
+        confirmed: true,
+    });
+}
+
+/// A send whose reservation was released is refused before the secure
+/// window opens. Re-selecting over the wallet's other coins at sign time (the
+/// old fallback) would sign a transaction the user never reviewed.
+#[tokio::test]
+async fn a_send_whose_reservation_was_released_is_refused_before_the_window_opens() {
+    let app = app_with(seeded_conn("http://127.0.0.1:1", 5_000_000));
+    unlock(&app, PROFILE);
     let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
         .await
         .expect("build draft");
+    release_tx_draft_reservation(app.state(), draft.id.clone())
+        .await
+        .unwrap();
 
-    // Now clear the reservation column to force the fallback path — the
-    // coins remain spendable but no longer belong to this draft's reservation.
+    clear_test_answers();
+    let _ = take_test_requests();
+    confirm_with(None);
+    let err = sign_tx_draft_confirmed(&app.state(), app.handle(), &draft.id)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("no longer builds the transaction you reviewed"),
+        "{err}"
+    );
+    assert!(
+        take_test_requests().is_empty(),
+        "no window for a draft that would not sign what it shows"
+    );
+    clear_test_answers();
+    let row = draft_row(&app, &draft.id);
+    assert_eq!(row.status, "draft");
+    assert!(row.signed_tx_hex.is_none());
+}
+
+/// The sweep the audit found: a Max send reviewed over the one coin it saw,
+/// whose reservation is then released while a bigger coin arrives, is
+/// refused; it never signs over the new coin. Before the fix it re-selected
+/// every spendable coin and sent them all to the recipient while the window
+/// showed the small amount.
+#[tokio::test]
+async fn a_max_send_never_sweeps_a_coin_that_arrived_after_it_was_reviewed() {
+    let app = app_with(seeded_conn("http://127.0.0.1:1", 2_000_000));
+    unlock(&app, PROFILE);
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 0, Some(1), Some(true))
+        .await
+        .expect("build max draft");
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        add_second_coin(&c, 5_000_000);
+    }
+    release_tx_draft_reservation(app.state(), draft.id.clone())
+        .await
+        .unwrap();
+
+    let err = sign_tx_draft_inner(&app.state(), &draft.id)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("no longer builds the transaction you reviewed"),
+        "{err}"
+    );
+    let row = draft_row(&app, &draft.id);
+    assert_eq!(row.status, "draft");
+    assert!(row.signed_tx_hex.is_none());
+}
+
+/// A Max send whose reservation holds signs exactly the coins it reserved,
+/// even when another coin arrived since: one input, the reviewed amount.
+#[tokio::test]
+async fn a_max_send_signs_exactly_the_coins_it_reserved() {
+    let app = app_with(seeded_conn("http://127.0.0.1:1", 2_000_000));
+    unlock(&app, PROFILE);
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 0, Some(1), Some(true))
+        .await
+        .expect("build max draft");
+    let reviewed: TxSummary =
+        serde_json::from_str(&draft_row(&app, &draft.id).summary_json).unwrap();
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        add_second_coin(&c, 5_000_000);
+    }
+    sign_tx_draft_inner(&app.state(), &draft.id)
+        .await
+        .expect("sign the reviewed max send");
+    let row = draft_row(&app, &draft.id);
+    let raw = hex::decode(row.signed_tx_hex.unwrap()).unwrap();
+    let tx = crate::noncustodial::tx::Transaction::decode(&raw).unwrap();
+    assert_eq!(tx.inputs.len(), 1);
+    assert_eq!(hex::encode(tx.inputs[0].prevout.hash), COIN_TXID);
+    assert_eq!(tx.outputs.len(), 1);
+    assert_eq!(tx.outputs[0].value as i64, reviewed.send_total_doos);
+    assert_eq!(Some(tx.txid()), reviewed.txid);
+}
+
+/// The change of a send goes to the account's own change address,
+/// re-derived from its xpub at sign time; a draft naming another address (even
+/// one of ours) is refused.
+#[tokio::test]
+async fn signing_refuses_a_send_whose_change_is_not_the_wallets_change_address() {
+    let app = app_with(seeded_conn("http://127.0.0.1:1", 5_000_000));
+    unlock(&app, PROFILE);
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .expect("build draft");
     {
         let state = app.state::<AppState>();
         let c = state.db.lock().unwrap();
         c.execute(
-            "UPDATE tracked_utxos SET reserved_by_draft_id = NULL WHERE reserved_by_draft_id = ?1",
-            [&draft.id],
+            "UPDATE wallet_tx_drafts
+                SET signing_inputs_json = json_set(signing_inputs_json, '$.change_address', ?2)
+              WHERE id = ?1",
+            params![draft.id, recv_addr()],
         )
         .unwrap();
     }
-
-    // Sign the draft. The fallback path (load_spendable_coins) should be taken,
-    // and signing should succeed because the spendable coin is still available.
-    use crate::commands::secure_prompt::{push_test_answer, SecurePromptResult};
-    push_test_answer(SecurePromptResult {
-        value: None,
-        confirmed: true,
-    });
-
-    let result = sign_tx_draft_confirmed(&app.state(), app.handle(), &draft.id)
+    let err = sign_tx_draft_inner(&app.state(), &draft.id)
         .await
-        .expect("sign with fallback coins");
-    assert_eq!(result.id, draft.id);
-    let row = draft_row(&app, &draft.id);
-    assert_eq!(
-        row.status, "signed",
-        "draft must be signed after fallback coin load"
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("change does not go to this wallet"),
+        "{err}"
     );
+    assert_eq!(draft_row(&app, &draft.id).status, "draft");
+}
+
+/// A summary (what the window shows) of another transaction than the plan
+/// (what is signed) is refused.
+#[tokio::test]
+async fn signing_refuses_a_send_whose_summary_is_of_another_transaction() {
+    let app = app_with(seeded_conn("http://127.0.0.1:1", 5_000_000));
+    unlock(&app, PROFILE);
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .expect("build draft");
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute(
+            "UPDATE wallet_tx_drafts SET summary_json = json_set(summary_json, '$.txid', ?2)
+              WHERE id = ?1",
+            params![draft.id, "00".repeat(32)],
+        )
+        .unwrap();
+    }
+    let err = sign_tx_draft_inner(&app.state(), &draft.id)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("no longer builds the transaction you reviewed"),
+        "{err}"
+    );
+    assert_eq!(draft_row(&app, &draft.id).status, "draft");
+}
+
+const OWNER_COIN_TXID: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+
+fn own_change_address() -> String {
+    let xpub = ExtendedPubKey::from_xpub(Network::Main, &account_xpub()).unwrap();
+    crate::noncustodial::derivation::derive_one(
+        Network::Main,
+        &xpub,
+        crate::noncustodial::derivation::BRANCH_CHANGE,
+        0,
+    )
+    .unwrap()
+    .address
+}
+
+/// Store a covenant draft whose plan spends `inputs` into one covenant
+/// output (value `cov_value`, to our receive address) plus change, as a name
+/// builder would; returns its id.
+fn insert_name_draft(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    action: &str,
+    name: &str,
+    cov: crate::noncustodial::tx::Covenant,
+    inputs: Vec<(&str, u64)>,
+    cov_value: u64,
+) -> String {
+    use crate::noncustodial::actions::{DraftPlan, PlanInput, PlanOutput, FINAL_SEQUENCE};
+    let fee = 10_000u64;
+    let total: u64 = inputs.iter().map(|(_, v)| v).sum();
+    let plan = DraftPlan {
+        version: 0,
+        locktime: 0,
+        account: 0,
+        network: "main".into(),
+        inputs: inputs
+            .iter()
+            .map(|(txid, value)| PlanInput {
+                txid: txid.to_string(),
+                vout: 0,
+                value: *value,
+                branch: 0,
+                child_index: 0,
+                sighash_type: 1,
+                sequence: FINAL_SEQUENCE,
+                foreign_witness_hex: None,
+                lock_key_name: None,
+            })
+            .collect(),
+        outputs: vec![
+            PlanOutput {
+                value: cov_value,
+                address: recv_addr(),
+                covenant_type: cov.covenant_type,
+                covenant_items_hex: cov.items.iter().map(hex::encode).collect(),
+            },
+            PlanOutput {
+                value: total - cov_value - fee,
+                address: own_change_address(),
+                covenant_type: 0,
+                covenant_items_hex: Vec::new(),
+            },
+        ],
+        change_output_index: Some(1),
+    };
+    let unsigned = crate::noncustodial::actions::rebuild_unsigned(&plan, Network::Main).unwrap();
+    let summary = serde_json::json!({
+        "action": action, "name": name, "sendTotalDoos": cov_value, "feeDoos": fee,
+        "changeDoos": total - cov_value - fee, "inputTotalDoos": total,
+        "numInputs": inputs.len(), "recipientAddress": null, "txid": unsigned.txid(),
+    });
+    let id = format!("{action}-draft");
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    db::queries::insert_tx_draft(
+        &c,
+        &id,
+        PROFILE,
+        action,
+        &hex::encode(unsigned.serialize()),
+        &serde_json::to_string(&plan).unwrap(),
+        &summary.to_string(),
+    )
+    .unwrap();
+    id
+}
+
+fn rows_of(req: &crate::commands::secure_prompt::SecurePromptRequest) -> Vec<(String, String)> {
+    req.details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["label"].as_str().unwrap().to_string(),
+                r["value"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// A REVOKE burns the name, so the secure window asks for the name to be
+/// typed and warns it cannot be undone; the backend signs only when what was
+/// typed is the name.
+#[tokio::test]
+async fn a_revoke_is_signed_only_once_its_name_is_typed_in_the_window() {
+    let app = app_with(seeded_conn("http://127.0.0.1:1", 5_000_000));
+    unlock(&app, PROFILE);
+    let nh = crate::noncustodial::names::hash_name("alice").unwrap();
+    let id = insert_name_draft(
+        &app,
+        "revoke",
+        "alice",
+        crate::noncustodial::covenants::revoke(&nh, 100),
+        vec![(OWNER_COIN_TXID, 1_000_000), (COIN_TXID, 5_000_000)],
+        1_000_000,
+    );
+
+    clear_test_answers();
+    let _ = take_test_requests();
+    for typed in [Some("bob"), None, Some("")] {
+        confirm_with(typed);
+        let err = sign_tx_draft_confirmed(&app.state(), app.handle(), &id)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::UserRejected), "{typed:?}: {err}");
+        assert_eq!(draft_row(&app, &id).status, "draft", "{typed:?}");
+    }
+    let reqs = take_test_requests();
+    assert_eq!(reqs.len(), 3);
+    let details = reqs[0].details.as_ref().unwrap();
+    assert_eq!(details["confirmText"], "alice");
+    let rows = rows_of(&reqs[0]);
+    assert!(rows.contains(&("Name".into(), "alice".into())), "{rows:?}");
+    assert!(
+        rows.iter()
+            .any(|(l, v)| l == "Warning" && v.contains("burns alice for good")),
+        "{rows:?}"
+    );
+
+    confirm_with(Some("alice"));
+    sign_tx_draft_confirmed(&app.state(), app.handle(), &id)
+        .await
+        .expect("signed once the name is typed");
+    assert_eq!(draft_row(&app, &id).status, "signed");
+    clear_test_answers();
+}
+
+/// The window shows a bid's true value from the wallet's own record, checked
+/// against the blind the BID commits to, and what is locked until reveal.
+#[tokio::test]
+async fn the_window_shows_a_bids_value_from_the_wallets_record() {
+    let app = app_with(seeded_conn("http://127.0.0.1:1", 5_000_000));
+    unlock(&app, PROFILE);
+    let nh = crate::noncustodial::names::hash_name("alice").unwrap();
+    let nonce = [9u8; 32];
+    let blind = crate::noncustodial::bids::compute_blind(2_000_000, &nonce);
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::insert_bid_commitment(
+            &c,
+            PROFILE,
+            "alice",
+            &hex::encode(nh),
+            &recv_addr(),
+            0,
+            0,
+            2_000_000,
+            3_000_000,
+            &hex::encode(nonce),
+            // Stored upper-case: the lookup does not depend on hex case.
+            &hex::encode_upper(blind),
+        )
+        .unwrap();
+    }
+    let id = insert_name_draft(
+        &app,
+        "bid",
+        "alice",
+        crate::noncustodial::covenants::bid(&nh, 100, b"alice", &blind),
+        vec![(COIN_TXID, 5_000_000)],
+        3_000_000,
+    );
+    clear_test_answers();
+    let _ = take_test_requests();
+    confirm_with(None);
+    sign_tx_draft_confirmed(&app.state(), app.handle(), &id)
+        .await
+        .expect("sign bid");
+    let rows = rows_of(&take_test_requests()[0]);
+    assert!(
+        rows.contains(&("Bid".into(), "2.000000 HNS".into())),
+        "{rows:?}"
+    );
+    assert!(
+        rows.contains(&("Locked until reveal".into(), "3.000000 HNS".into())),
+        "{rows:?}"
+    );
+    clear_test_answers();
+}
+
+/// A name draft whose change output is not the wallet's own change address
+/// is refused for every signer, as the Ledger path always did.
+#[tokio::test]
+async fn signing_refuses_a_name_plan_whose_change_is_not_ours() {
+    let app = app_with(seeded_conn("http://127.0.0.1:1", 5_000_000));
+    unlock(&app, PROFILE);
+    let nh = crate::noncustodial::names::hash_name("alice").unwrap();
+    let id = insert_name_draft(
+        &app,
+        "renew",
+        "alice",
+        crate::noncustodial::covenants::renew(&nh, 100, &[1u8; 32]),
+        vec![(OWNER_COIN_TXID, 1_000_000), (COIN_TXID, 5_000_000)],
+        1_000_000,
+    );
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        let row = db::queries::get_tx_draft(&c, &id).unwrap().unwrap();
+        let mut plan: crate::noncustodial::actions::DraftPlan =
+            serde_json::from_str(&row.signing_inputs_json).unwrap();
+        plan.outputs[1].address = recv_addr();
+        let txid = crate::noncustodial::actions::rebuild_unsigned(&plan, Network::Main)
+            .unwrap()
+            .txid();
+        let mut summary: serde_json::Value = serde_json::from_str(&row.summary_json).unwrap();
+        summary["txid"] = serde_json::json!(txid);
+        c.execute(
+            "UPDATE wallet_tx_drafts SET signing_inputs_json = ?2, summary_json = ?3 WHERE id = ?1",
+            params![
+                id,
+                serde_json::to_string(&plan).unwrap(),
+                summary.to_string()
+            ],
+        )
+        .unwrap();
+    }
+    let err = sign_tx_draft_inner(&app.state(), &id).await.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("change does not go to this wallet"),
+        "{err}"
+    );
+    assert_eq!(draft_row(&app, &id).status, "draft");
 }
 
 #[tokio::test]
@@ -3194,7 +3721,7 @@ async fn broadcast_tx_draft_uses_per_profile_node_override() {
     let mut global = mockito::Server::new_async().await;
     let _g = global
         .mock("POST", "/")
-        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .with_body(r#"{"result":{"chain":"main","blocks":200,"mediantime":4102444800},"error":null,"id":1}"#)
         .create_async()
         .await;
 
@@ -3206,7 +3733,7 @@ async fn broadcast_tx_draft_uses_per_profile_node_override() {
     let _o_probe = override_node
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .with_body(r#"{"result":{"chain":"main","blocks":200,"mediantime":4102444800},"error":null,"id":1}"#)
         .create_async()
         .await;
     let o_send = override_node
@@ -3248,7 +3775,7 @@ async fn sync_wallet_state_uses_per_profile_node_override() {
     let _g = global
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .with_body(r#"{"result":{"chain":"main","blocks":200,"mediantime":4102444800},"error":null,"id":1}"#)
         .create_async()
         .await;
 
@@ -3263,7 +3790,7 @@ async fn sync_wallet_state_uses_per_profile_node_override() {
     let _o_bi = override_node
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .with_body(r#"{"result":{"chain":"main","blocks":200,"mediantime":4102444800},"error":null,"id":1}"#)
         .create_async()
         .await;
     let o_coins = override_node
@@ -3314,7 +3841,7 @@ async fn refresh_tx_confirmations_uses_per_profile_node_override() {
     let o_tip = override_node
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"chain":"main","blocks":300},"error":null,"id":1}"#)
+        .with_body(r#"{"result":{"chain":"main","blocks":300,"mediantime":4102444800},"error":null,"id":1}"#)
         .expect_at_least(1)
         .create_async()
         .await;
@@ -3347,7 +3874,7 @@ async fn get_write_capability_uses_per_profile_node_override() {
     let _o_bi = override_node
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .with_body(r#"{"result":{"chain":"main","blocks":200,"mediantime":4102444800},"error":null,"id":1}"#)
         .create_async()
         .await;
     let _o_coins = override_node
@@ -3398,7 +3925,7 @@ async fn resolve_fee_rate_uses_per_profile_node_override() {
     let app = app_with(conn);
     set_profile_node_override(&app, &override_node.url());
 
-    let rate = resolve_fee_rate(&app.state(), None).await;
+    let rate = resolve_fee_rate(&app.state(), None).await.unwrap();
     o_fee.assert_async().await;
     // 0.01 HNS/kvB -> (0.01 * 1e6) / 1000 = 10 doos/byte. An exact value that
     // is impossible to reach via the default (1) fallback — proving the
@@ -3427,12 +3954,7 @@ async fn broadcast_not_taken_keeps_its_coins_and_says_why() {
     sign_tx_draft_inner(&app.state(), &draft.id).await.unwrap();
     let txid = summary_of(&draft_row(&app, &draft.id)).txid.unwrap();
 
-    let _probe = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"blocks":500,"headers":500},"error":null,"id":1}"#)
-        .create_async()
-        .await;
+    let _probe = mock_chain_probe(&mut server).await;
     let _send = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("sendrawtransaction".into()))

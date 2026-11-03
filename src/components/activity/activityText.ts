@@ -2,7 +2,8 @@
  * Activity's labels and sentences, kept out of the page so its row
  * components can import them without importing the page.
  */
-import type { MergedRow } from "../../lib/activity";
+import { isToFinish, type MergedRow } from "../../lib/activity";
+import { BID_FORFEIT_RULE } from "../../lib/auction";
 import { displayName } from "../../lib/idn";
 import { formatDateShort, formatHns, formatHnsShort } from "../../lib/utils";
 
@@ -43,9 +44,10 @@ export const ACTION_META: Record<
 
 export const FALLBACK_META = { label: "Other", variant: "default" as const };
 
-// Actions whose covenant output re-homes the name's locked value onto the
-// wallet's own new coin. For these, the Amount cell shows the locked value as
-// an informational "⤷ N" (not a spend) with a tooltip; net flow stays 0.
+// Actions whose covenant output holds value on the wallet's own new coin: a
+// bid's lockup, a revealed bid, or the name's locked value. For these, the
+// Amount cell shows that value as an informational "⤷ N" (not a spend) with a
+// tooltip that says what it is (`lockedValueTail`); net flow stays 0.
 //
 // Deliberately a subset of the action labels the backend emits — "open",
 // "revoke" and "claim" move no locked value — so which actions belong here is
@@ -150,7 +152,10 @@ export function nameLabel(row: MergedRow): string {
   return row.name ? `.${displayName(row.name)}` : "";
 }
 
-/** A covenant row that re-homes the name's locked value: only the fee left. */
+/**
+ * A covenant row whose output value stays on the wallet's own coin, so only
+ * the fee left: its Amount cell shows that value, with `lockedValueTail`.
+ */
 export function showsNameValue(row: MergedRow): boolean {
   return (
     row.covenantAction != null &&
@@ -158,6 +163,46 @@ export function showsNameValue(row: MergedRow): boolean {
     row.valueDoos === 0 &&
     row.nameValueDoos != null
   );
+}
+
+/**
+ * What a covenant row's value is, said after "N HNS". The value is the
+ * covenant output's own (`history.rs::classify_tx`), so what it means depends
+ * on the covenant:
+ * - a draft not sent, or sent and failed or dropped: nothing has moved, whatever
+ *   the covenant. A block including it (`confirmed`) outranks the draft's status.
+ * - BID: the lockup. hsd spends a BID coin only by a REVEAL in the reveal
+ *   period, so a bid never revealed forfeits it. A batch bid's row carries
+ *   one output's value, and every bid of a batch has the same lockup.
+ * - REVEAL: the bid, held until the auction closes; a win keeps the
+ *   second-highest bid in the name, a loss is redeemed. A batch row carries one
+ *   output's value, and a batch's reveals can differ.
+ * - REDEEM: a losing bid released to a plain spendable coin (hsd's
+ *   `isNonspendable` is false for REDEEM); same batch caveat.
+ * - REGISTER: the second-highest bid, locked in the name; the rest of the bid
+ *   returns as change in the same transaction (`build_register_draft`).
+ * - every other name covenant: the name's locked value, carried onto a coin of
+ *   our own. `past` words that sentence for the expanded row.
+ */
+export function lockedValueTail(row: MergedRow, past = false): string {
+  if (!row.confirmed && isToFinish(row)) {
+    return "is the value this transaction would lock or carry. It was not sent or did not go through, so nothing has moved.";
+  }
+  const batch = row.nameList != null && row.nameList.length > 1;
+  switch (row.covenantAction) {
+    case "bid": {
+      const whose = batch ? "each bid's" : "this bid's";
+      return `is ${whose} lockup, locked until you reveal it. ${BID_FORFEIT_RULE}`;
+    }
+    case "reveal":
+      return `is ${batch ? "one of these revealed bids" : "your revealed bid"}, locked until the auction closes: if you win, the second-highest bid stays locked in the name and the rest comes back when you register; if you lose, Redeem gives it back.`;
+    case "redeem":
+      return `is ${batch ? "one of these losing bids" : "your losing bid"}, back in your wallet to spend. Only the network fee ${past ? "left" : "leaves"} your wallet.`;
+    case "register":
+      return "is the name's price, the second-highest bid, locked in the name. The rest of your bid comes back to you in this transaction.";
+    default:
+      return `is the name's locked value, carried onto your own new coin — not spent. Only the network fee ${past ? "left" : "leaves"} your wallet.`;
+  }
 }
 
 /** The row's time as an ISO string for the date formatters; null when unknown. */

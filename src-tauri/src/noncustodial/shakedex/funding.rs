@@ -105,7 +105,7 @@ pub(super) fn fund(
     rate: u64,
     fixed_fee: Option<u64>,
 ) -> Result<PlanResult, AppError> {
-    let rate = rate.max(SHAKEDEX_MIN_RATE_PER_BYTE);
+    let rate = crate::noncustodial::send::checked_fee_rate(rate)?.max(SHAKEDEX_MIN_RATE_PER_BYTE);
     let out_total = checked_sum(
         before_change
             .iter()

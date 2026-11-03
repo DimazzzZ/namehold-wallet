@@ -47,9 +47,15 @@
 use crate::error::AppError;
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::{Algorithm, Argon2, Block, Params, Version};
 use rand::RngCore;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
+
+// aes's `zeroize` feature is what wipes the expanded key inside `Aes256Gcm`.
+const _: fn() = || {
+    fn wiped_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+    wiped_on_drop::<aes::Aes256>();
+};
 
 const MAGIC_V1: &[u8; 4] = b"NHV1";
 const MAGIC_V2: &[u8; 4] = b"NHV2";
@@ -131,8 +137,11 @@ fn derive_key(
         .map_err(|e| AppError::Crypto(format!("argon2 params: {e}")))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0u8; KEY_LEN];
+    // Why not `hash_password_into`: it frees its memory blocks unwiped, and the
+    // last one is what the key is hashed from.
+    let mut blocks = Zeroizing::new(vec![Block::default(); argon.params().block_count()]);
     argon
-        .hash_password_into(passphrase, salt, &mut key)
+        .hash_password_into_with_memory(passphrase, salt, &mut key, &mut *blocks)
         .map_err(|e| AppError::Crypto(format!("argon2 derive: {e}")))?;
     Ok(key)
 }
@@ -167,15 +176,20 @@ pub fn encrypt(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, AppError> 
     let mut nonce_bytes = [0u8; NONCE_LEN];
     rand::rng().fill_bytes(&mut nonce_bytes);
 
-    let mut key_bytes = derive_key(passphrase.as_bytes(), &salt, V2_MEM_KIB, V2_ITERS, V2_LANES)?;
-    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+    let key_bytes = Zeroizing::new(derive_key(
+        passphrase.as_bytes(),
+        &salt,
+        V2_MEM_KIB,
+        V2_ITERS,
+        V2_LANES,
+    )?);
+    let key = Key::<Aes256Gcm>::from_slice(&key_bytes[..]);
     let cipher = Aes256Gcm::new(key);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
         .encrypt(nonce, plaintext)
         .map_err(|e| AppError::Crypto(format!("aes-gcm encrypt: {e}")))?;
-    key_bytes.zeroize();
 
     // Assemble NHV2 blob:
     //   magic(4) | mem_kib(4) | iters(4) | lanes(4) | salt_len(1) | salt | nonce(12) | ct
@@ -221,16 +235,20 @@ pub fn decrypt(blob: &[u8], passphrase: &str) -> Result<Vec<u8>, AppError> {
         return Err(AppError::Crypto("unrecognized vault format/version".into()));
     };
 
-    let mut key_bytes = derive_key(passphrase.as_bytes(), salt, mem_kib, iters, lanes)?;
-    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+    let key_bytes = Zeroizing::new(derive_key(
+        passphrase.as_bytes(),
+        salt,
+        mem_kib,
+        iters,
+        lanes,
+    )?);
+    let key = Key::<Aes256Gcm>::from_slice(&key_bytes[..]);
     let cipher = Aes256Gcm::new(key);
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
+    cipher.decrypt(nonce, ciphertext).map_err(|_| {
         AppError::Crypto("decryption failed (wrong passphrase or corrupt data)".into())
-    });
-    key_bytes.zeroize();
-    plaintext
+    })
 }
 
 /// Parse an NHV1 blob into `(mem_kib, iters, lanes, salt, nonce, ct)`. Params

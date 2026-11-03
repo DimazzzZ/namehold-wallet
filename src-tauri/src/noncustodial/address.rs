@@ -102,6 +102,49 @@ pub fn decode(network: Network, addr: &str) -> Result<(u8, Vec<u8>), AppError> {
     Ok((version.to_u8(), program))
 }
 
+/// Why a name transfer to an address that is not a single-key (P2WPKH)
+/// address is refused.
+pub const TRANSFER_TO_P2WPKH_ONLY: &str = "Namehold can transfer a name only to a single-key \
+     address (hs1q followed by 38 characters): it could not finalize a transfer to this one, and \
+     the name would be stuck until the transfer is cancelled.";
+
+/// Decode the address a name is transferred to: a version-0, 20-byte
+/// (P2WPKH) program on `network`, the only shape this wallet's FINALIZE can
+/// pay ([`TRANSFER_TO_P2WPKH_ONLY`] otherwise).
+pub fn decode_transfer_recipient(network: Network, addr: &str) -> Result<(u8, Vec<u8>), AppError> {
+    let (version, program) = decode(network, addr)?;
+    if version != 0 || program.len() != 20 {
+        return Err(AppError::InvalidInput(TRANSFER_TO_P2WPKH_ONLY.to_string()));
+    }
+    Ok((version, program))
+}
+
+/// The address a TRANSFER covenant commits a name to, from its items as
+/// stored (`[nameHash, height, version, hash]`, hex), for the FINALIZE that
+/// completes it. Read strictly: a missing or malformed item is refused, never
+/// read as version 0, and only a P2WPKH target is paid (the one shape
+/// [`decode_transfer_recipient`] lets a transfer commit to).
+pub fn finalize_target(network: Network, items: &[serde_json::Value]) -> Result<String, AppError> {
+    let item = |i: usize| -> Result<Vec<u8>, AppError> {
+        let hex_item = items
+            .get(i)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::InvalidInput("owner coin is not a TRANSFER".to_string()))?;
+        hex::decode(hex_item)
+            .map_err(|e| AppError::InvalidInput(format!("bad transfer target: {e}")))
+    };
+    let version = item(2)?;
+    let hash = item(3)?;
+    if version.as_slice() != [0u8] || hash.len() != 20 {
+        return Err(AppError::InvalidInput(
+            "finalize target must be p2wpkh".to_string(),
+        ));
+    }
+    let mut h160 = [0u8; 20];
+    h160.copy_from_slice(&hash);
+    encode_p2wpkh(network, &h160)
+}
+
 /// Validate that an address is well-formed and belongs to the given network.
 pub fn is_valid(network: Network, addr: &str) -> bool {
     decode(network, addr).is_ok()
@@ -110,6 +153,49 @@ pub fn is_valid(network: Network, addr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_transfer_goes_only_to_a_single_key_address() {
+        let p2wpkh = encode_p2wpkh(Network::Main, &[7; 20]).unwrap();
+        assert_eq!(
+            decode_transfer_recipient(Network::Main, &p2wpkh).unwrap(),
+            (0, vec![7; 20])
+        );
+        let p2wsh = encode_p2wsh(Network::Main, &[7; 32]).unwrap();
+        let err = decode_transfer_recipient(Network::Main, &p2wsh).unwrap_err();
+        assert!(err.to_string().contains("single-key address"), "{err}");
+        let other_net = encode_p2wpkh(Network::Regtest, &[7; 20]).unwrap();
+        assert!(decode_transfer_recipient(Network::Main, &other_net).is_err());
+    }
+
+    /// A finalize reads its target strictly: a missing version is not read
+    /// as 0, and a 32-byte target is refused.
+    #[test]
+    fn finalize_target_reads_the_transfer_items_strictly() {
+        let items = |v: &str, h: &str| {
+            vec![
+                serde_json::json!("aa"),
+                serde_json::json!("00000000"),
+                serde_json::json!(v),
+                serde_json::json!(h),
+            ]
+        };
+        let h = "07".repeat(20);
+        assert_eq!(
+            finalize_target(Network::Main, &items("00", &h)).unwrap(),
+            encode_p2wpkh(Network::Main, &[7; 20]).unwrap()
+        );
+        assert!(finalize_target(Network::Main, &items("01", &h)).is_err());
+        assert!(finalize_target(Network::Main, &items("00", &"07".repeat(32))).is_err());
+        assert!(finalize_target(Network::Main, &items("zz", &h)).is_err());
+        let missing = vec![
+            serde_json::json!("aa"),
+            serde_json::json!("00"),
+            serde_json::Value::Null,
+            serde_json::json!(h),
+        ];
+        assert!(finalize_target(Network::Main, &missing).is_err());
+    }
 
     // CANONICAL hsd vector from hsd/test/address-test.js:
     //   raw hash160 = 6d5571fdbca1019cd0f0cd792d1b0bdfa7651c7e

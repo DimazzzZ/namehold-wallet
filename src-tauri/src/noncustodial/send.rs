@@ -41,6 +41,28 @@ pub const MIN_FEE_RATE_PER_BYTE: u64 = 1;
 /// of the relay floor to land in a mined block promptly without overpaying.
 pub const DEFAULT_FEE_RATE_PER_BYTE: u64 = 1;
 
+/// The highest fee rate this wallet builds a transaction at: 1,000 doos per
+/// byte, 1 HNS per kB, a thousand times hsd's relay floor and ten times what
+/// Bob Wallet pays by default. The rate comes from a renderer-writable
+/// setting, a per-draft argument from the webview or the node's own
+/// estimate; none of them may make a send spend the wallet on fees. (hsd's
+/// mempool refuses a fee ten times higher still, `ABSURD_FEE_FACTOR`; Speed
+/// up keeps that cap for the child it builds.)
+pub const MAX_FEE_RATE_PER_BYTE: u64 = 1_000;
+
+/// `rate` floored at the relay minimum, or a refusal when it is above
+/// [`MAX_FEE_RATE_PER_BYTE`]. Every rate a draft is built at passes here.
+pub fn checked_fee_rate(rate: u64) -> Result<u64, AppError> {
+    if rate > MAX_FEE_RATE_PER_BYTE {
+        return Err(AppError::InvalidInput(format!(
+            "A fee rate of {rate} doos per byte is more than this wallet pays (at most \
+             {MAX_FEE_RATE_PER_BYTE}, which is 1 HNS per kB); lower it in Settings or for this \
+             transaction."
+        )));
+    }
+    Ok(rate.max(MIN_FEE_RATE_PER_BYTE))
+}
+
 /// Dust threshold in dollarydoos. Change below this is dropped into the fee
 /// rather than created as an unspendable-in-practice output. A standard
 /// P2WPKH output costs ~31 bytes to create and ~41 to later spend; at the
@@ -391,6 +413,7 @@ pub fn select_coins(
     amount: u64,
     rate_per_byte: u64,
 ) -> Result<Selection, AppError> {
+    let rate_per_byte = checked_fee_rate(rate_per_byte)?;
     if amount == 0 {
         return Err(AppError::InvalidInput(
             "send amount must be greater than zero".to_string(),
@@ -520,6 +543,7 @@ pub fn select_all_coins(
     available: &[SpendableCoin],
     rate_per_byte: u64,
 ) -> Result<Selection, AppError> {
+    let rate_per_byte = checked_fee_rate(rate_per_byte)?;
     if available.is_empty() {
         return Err(AppError::InvalidInput(
             "no spendable coins to send".to_string(),
@@ -766,6 +790,30 @@ mod tests {
     }
 
     const ACCOUNT: u32 = 0;
+
+    /// The cap is inclusive at 1 HNS per kB and refuses one doo per byte
+    /// more; a rate below the relay floor is raised to it.
+    #[test]
+    fn checked_fee_rate_refuses_above_the_cap_and_floors_below() {
+        assert_eq!(checked_fee_rate(MAX_FEE_RATE_PER_BYTE).unwrap(), 1_000);
+        let err = checked_fee_rate(MAX_FEE_RATE_PER_BYTE + 1).unwrap_err();
+        assert!(
+            err.to_string().contains("more than this wallet pays"),
+            "{err}"
+        );
+        assert!(checked_fee_rate(u64::MAX).is_err());
+        assert_eq!(checked_fee_rate(0).unwrap(), MIN_FEE_RATE_PER_BYTE);
+    }
+
+    /// Coin selection refuses a rate past the cap on its own, whatever the
+    /// caller resolved: the whole balance can never become a fee.
+    #[test]
+    fn coin_selection_refuses_a_fee_rate_past_the_cap() {
+        let coins = [coin(1, 10_000_000_000, 0, 0)];
+        assert!(select_coins(&coins, 1_000_000, MAX_FEE_RATE_PER_BYTE + 1).is_err());
+        assert!(select_all_coins(&coins, MAX_FEE_RATE_PER_BYTE + 1).is_err());
+        assert!(select_coins(&coins, 1_000_000, MAX_FEE_RATE_PER_BYTE).is_ok());
+    }
 
     fn coin(txid_byte: u8, value: u64, branch: u32, child: u32) -> SpendableCoin {
         SpendableCoin {

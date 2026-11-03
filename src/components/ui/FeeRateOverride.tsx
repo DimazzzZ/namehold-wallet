@@ -2,7 +2,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { Icon } from "./Icon";
 import { useState } from "react";
 import { Input } from "./Input";
-import { MIN_FEE_RATE_DOOS_PER_KVB, parseDoosPerKvb } from "../../lib/feeRate";
+import { FEE_RATE_RULE, MIN_FEE_RATE_DOOS_PER_KVB, parseDoosPerKvb } from "../../lib/feeRate";
 
 export interface FeeRateOverrideProps {
   /** Current raw text (kept in the parent so submit paths can read it). */
@@ -40,10 +40,7 @@ export function FeeRateOverride({
 }: FeeRateOverrideProps) {
   const [open, setOpen] = useState(defaultOpen || value.trim().length > 0);
   const trimmed = value.trim();
-  const error =
-    trimmed && parseDoosPerKvb(trimmed) === null
-      ? "Fee rate must be a whole number of doos/kvB"
-      : null;
+  const error = trimmed && parseDoosPerKvb(trimmed) === null ? FEE_RATE_RULE : null;
 
   return (
     <div className="border border-gray-200 rounded">

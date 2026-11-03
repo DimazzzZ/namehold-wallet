@@ -19,6 +19,15 @@ import type { Settings } from "../types";
  */
 export const MAX_ADDRESS_GAP_LIMIT = 1000;
 
+/**
+ * `noncustodial/session.rs::{MIN_SESSION_SECS, MAX_SESSION_SECS}`: the signer
+ * session timeout the backend uses, in seconds; it clamps a value outside
+ * this range, and Settings refuses one. The maximum is also the longest a
+ * session lasts after its unlock, however often it is used.
+ */
+export const MIN_SIGNER_SESSION_SECS = 60;
+export const MAX_SIGNER_SESSION_SECS = 3600;
+
 export const DEFAULT_SETTINGS: Settings = {
   // Sending node (hsd RPC); reads come from the explorer below.
   node_rpc_url: "http://127.0.0.1:12037",

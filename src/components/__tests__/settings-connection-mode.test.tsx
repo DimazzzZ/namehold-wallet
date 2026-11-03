@@ -35,6 +35,20 @@ beforeEach(() => {
   invokeMock.mockImplementation(routeSettingsCommand);
 });
 
+/** The changes of the one `update_protected_settings` call, or null before it. */
+function protectedChanges(): { key: string; value: string }[] | null {
+  const calls = invokeMock.mock.calls.filter((c) => c[0] === "update_protected_settings");
+  expect(calls.length).toBeLessThanOrEqual(1);
+  return calls[0] ? (calls[0][1] as { changes: { key: string; value: string }[] }).changes : null;
+}
+
+/** The keys written through the plain `update_setting`. */
+function plainKeys(): string[] {
+  return invokeMock.mock.calls
+    .filter((c) => c[0] === "update_setting")
+    .map((c) => (c[1] as { key: string }).key);
+}
+
 describe("Settings — Chain source (connection mode)", () => {
   it("shows SPV as the selected mode when node_mode is spv", async () => {
     loadSettings({ chain_source: "local_node", node_mode: "spv" });
@@ -45,7 +59,7 @@ describe("Settings — Chain source (connection mode)", () => {
     expect(screen.queryByTestId("node-mode-select")).toBeNull();
   });
 
-  it("selecting Remote node saves chain_source=remote_node AND node_mode=full", async () => {
+  it("selecting Remote node sends chain_source=remote_node AND node_mode=full to be confirmed", async () => {
     loadSettings({ chain_source: "local_node", node_mode: "spv" });
     renderSettings();
     fireEvent.change(await screen.findByTestId("chain-source-select"), {
@@ -55,16 +69,19 @@ describe("Settings — Chain source (connection mode)", () => {
     expect(screen.getByTestId("allow-remote-broadcast-checkbox")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^save/i }));
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("update_setting", {
-        key: "chain_source",
-        value: "remote_node",
-      }),
+    await waitFor(() => expect(protectedChanges()).not.toBeNull());
+    expect(protectedChanges()).toHaveLength(2);
+    expect(protectedChanges()).toEqual(
+      expect.arrayContaining([
+        { key: "chain_source", value: "remote_node" },
+        { key: "node_mode", value: "full" },
+      ]),
     );
-    expect(invokeMock).toHaveBeenCalledWith("update_setting", { key: "node_mode", value: "full" });
+    expect(plainKeys()).not.toContain("chain_source");
+    expect(plainKeys()).not.toContain("node_mode");
   });
 
-  it("selecting SPV saves chain_source=local_node AND node_mode=spv, and hides the remote opt-in", async () => {
+  it("selecting SPV sends chain_source=local_node AND node_mode=spv to be confirmed, and hides the remote opt-in", async () => {
     loadSettings({
       chain_source: "remote_node",
       node_mode: "full",
@@ -77,12 +94,15 @@ describe("Settings — Chain source (connection mode)", () => {
     expect(screen.queryByTestId("allow-remote-broadcast-checkbox")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /^save/i }));
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("update_setting", { key: "node_mode", value: "spv" }),
+    await waitFor(() => expect(protectedChanges()).not.toBeNull());
+    expect(protectedChanges()).toHaveLength(2);
+    expect(protectedChanges()).toEqual(
+      expect.arrayContaining([
+        { key: "chain_source", value: "local_node" },
+        { key: "node_mode", value: "spv" },
+      ]),
     );
-    expect(invokeMock).toHaveBeenCalledWith("update_setting", {
-      key: "chain_source",
-      value: "local_node",
-    });
+    expect(plainKeys()).not.toContain("chain_source");
+    expect(plainKeys()).not.toContain("node_mode");
   });
 });

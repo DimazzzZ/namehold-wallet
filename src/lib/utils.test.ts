@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   dollarydoosToHns,
-  hnsToDollarydoos,
   formatHns,
   formatCount,
   formatHnsAmount,
@@ -36,28 +35,6 @@ describe("dollarydoosToHns", () => {
 
   it("converts small amount", () => {
     expect(dollarydoosToHns(1)).toBe("0.000001");
-  });
-});
-
-describe("hnsToDollarydoos", () => {
-  it("converts zero", () => {
-    expect(hnsToDollarydoos("0")).toBe(0);
-  });
-
-  it("converts 1 HNS", () => {
-    expect(hnsToDollarydoos("1")).toBe(1_000_000);
-  });
-
-  it("converts fractional", () => {
-    expect(hnsToDollarydoos("0.5")).toBe(500_000);
-  });
-
-  it("rounds correctly", () => {
-    expect(hnsToDollarydoos("1.23456789")).toBe(1_234_568);
-  });
-
-  it("handles large numbers", () => {
-    expect(hnsToDollarydoos("1000")).toBe(1_000_000_000);
   });
 });
 

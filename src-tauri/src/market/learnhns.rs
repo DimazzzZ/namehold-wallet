@@ -13,6 +13,7 @@ use crate::error::AppError;
 use crate::models::settings::SettingsMap;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::shakedex::listing_file::{ListingFile, MAX_LISTING_FILE_BYTES};
+use crate::noncustodial::shakedex::purchase;
 
 pub const LEARNHNS_BASE_URL: &str = "https://market.learnhns.com";
 const LEARNHNS_HOST: &str = "market.learnhns.com";
@@ -420,25 +421,14 @@ fn request_failed(e: reqwest::Error) -> AppError {
     AppError::Other(format!("LearnHNS Market request failed: {e}"))
 }
 
-/// Read `resp`'s body; one over `max_bytes` is refused, and at most
-/// `max_bytes + 1` bytes are ever read.
-async fn read_capped(mut resp: reqwest::Response, max_bytes: usize) -> Result<Vec<u8>, AppError> {
-    let too_large = || {
-        AppError::Other(format!(
-            "LearnHNS Market response is larger than {max_bytes} bytes"
-        ))
-    };
-    if resp.content_length().is_some_and(|n| n > max_bytes as u64) {
-        return Err(too_large());
-    }
-    let mut body: Vec<u8> = Vec::new();
-    while let Some(chunk) = resp.chunk().await.map_err(request_failed)? {
-        if body.len() + chunk.len() > max_bytes {
-            return Err(too_large());
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
+/// Read `resp`'s body; one over `max_bytes` is refused.
+async fn read_capped(resp: reqwest::Response, max_bytes: usize) -> Result<Vec<u8>, AppError> {
+    crate::http::read_capped(resp, max_bytes)
+        .await
+        .map_err(|e| match e {
+            crate::http::BodyError::Transport(e) => request_failed(e),
+            too_large => AppError::Other(format!("LearnHNS Market {too_large}")),
+        })
 }
 
 /// Read the `learnhns_base_url` test seam, but ONLY in debug builds / tests.
@@ -584,7 +574,9 @@ pub fn name_from_listing_link(url: &str) -> Option<String> {
 }
 
 /// True when the fee is paid to the market's published address and does not
-/// exceed its published rate of the price.
+/// exceed its published rate of the price, nor
+/// [`purchase::MAX_MARKET_FEE_BPS`] of it whatever rate the market publishes:
+/// the market's own word does not make a larger fee its own.
 pub fn market_fee_is_published(
     fee: u64,
     fee_addr: Option<&str>,
@@ -595,4 +587,5 @@ pub fn market_fee_is_published(
         && fee_addr.is_some()
         && fee_addr == info.address.as_deref()
         && (fee as u128) * 10_000 <= (price as u128) * (info.rate as u128)
+        && !purchase::market_fee_over_cap(fee, price)
 }

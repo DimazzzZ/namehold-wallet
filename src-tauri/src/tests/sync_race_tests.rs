@@ -825,7 +825,7 @@ mod coverage_tests {
             .mock("POST", "/")
             .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
             .with_body(
-                r#"{"result":{"chain":"mainnet","blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#,
+                r#"{"result":{"chain":"mainnet","blocks":1000,"headers":1000,"verificationprogress":1.0,"mediantime":4102444800},"error":null,"id":1}"#,
             )
             .create_async()
             .await;
@@ -910,7 +910,7 @@ mod coverage_tests {
             .mock("POST", "/")
             .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
             .with_body(
-                r#"{"result":{"chain":"mainnet","blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#,
+                r#"{"result":{"chain":"mainnet","blocks":1000,"headers":1000,"verificationprogress":1.0,"mediantime":4102444800},"error":null,"id":1}"#,
             )
             .create_async()
             .await;
@@ -992,9 +992,151 @@ mod coverage_tests {
                 headers: Some(1000),
                 verification_progress: Some(1.0),
                 bestblockhash: None,
-                mediantime: None,
+                mediantime: Some(4_102_444_800),
             },
         )
+    }
+
+    /// A node still in initial block download lists only the coins below its
+    /// height. Its list is not read: every tracked coin stays as it is, the
+    /// cursor stays, and the run says why.
+    #[tokio::test]
+    async fn node_step_against_a_node_behind_the_tip_marks_nothing_spent() {
+        use crate::tests::mock_node_rpc::{node_status_with_indexes, MockNodeRpc, RpcCall};
+        for (blocks, headers, progress) in [
+            (10, Some(10), Some(0.08)),
+            (10, Some(1000), Some(1.0)),
+            (10, None, Some(0.5)),
+            (0, Some(0), None),
+        ] {
+            let path = seeded_db();
+            let _guard = TempDbGuard(path.clone());
+            seed_address(&path, PROFILE_A, MYADDR);
+            seed_tracked_coin(&path);
+            let node = MockNodeRpc::new()
+                .with_blockchain_info(crate::noncustodial::rpc::BlockchainInfo {
+                    chain: Some("main".into()),
+                    blocks,
+                    headers,
+                    verification_progress: progress,
+                    bestblockhash: None,
+                    mediantime: None,
+                })
+                .with_node_status(node_status_with_indexes(true, true))
+                .with_coins_by_address(vec![])
+                .with_txs_by_address(vec![]);
+
+            let step = crate::commands::sync::sync_node_step_with_client(
+                &node,
+                path.to_str().unwrap(),
+                PROFILE_A,
+                &crate::db::sync_lock::LockLost::default(),
+            )
+            .await;
+
+            assert_eq!(tracked_coin_and_cursor(&path), (None, 50), "{blocks}");
+            match &step {
+                crate::commands::sync::NodeStep::NotAuthoritative(why) => {
+                    assert!(why.contains("still syncing"), "{why}");
+                    assert!(
+                        why.contains(crate::commands::sync::NODE_COINS_NOT_SYNCED),
+                        "the Wallet page finds the reason by this phrase: {why}"
+                    );
+                }
+                other => panic!("{blocks}: {other:?}"),
+            }
+            assert!(node
+                .calls_matching(|c| matches!(c, RpcCall::CoinsByAddress(_)))
+                .is_empty());
+        }
+    }
+
+    /// A node back from days switched off reports `headers == blocks` and a
+    /// progress over the floor, as hsd does: its tip's age gives it away. With a
+    /// recent tip the same reply is read.
+    #[tokio::test]
+    async fn node_step_against_a_node_with_an_old_tip_marks_nothing_spent() {
+        use crate::tests::mock_node_rpc::{node_status_with_indexes, MockNodeRpc, RpcCall};
+        let now = crate::noncustodial::rpc::unix_now_secs();
+        for (age_secs, read) in [(48 * 3600, false), (3600, true)] {
+            let path = seeded_db();
+            let _guard = TempDbGuard(path.clone());
+            seed_address(&path, PROFILE_A, MYADDR);
+            seed_tracked_coin(&path);
+            let node = MockNodeRpc::new()
+                .with_blockchain_info(crate::noncustodial::rpc::BlockchainInfo {
+                    chain: Some("main".into()),
+                    blocks: 500,
+                    headers: Some(500),
+                    verification_progress: Some(0.9995),
+                    bestblockhash: None,
+                    mediantime: Some(now - age_secs),
+                })
+                .with_node_status(node_status_with_indexes(true, true))
+                .with_coins_by_address(vec![])
+                .with_txs_by_address(vec![]);
+
+            let step = crate::commands::sync::sync_node_step_with_client(
+                &node,
+                path.to_str().unwrap(),
+                PROFILE_A,
+                &crate::db::sync_lock::LockLost::default(),
+            )
+            .await;
+
+            assert_eq!(
+                !node
+                    .calls_matching(|c| matches!(c, RpcCall::CoinsByAddress(_)))
+                    .is_empty(),
+                read,
+                "{age_secs}: {step:?}"
+            );
+            if !read {
+                assert_eq!(tracked_coin_and_cursor(&path), (None, 50));
+                assert!(
+                    matches!(&step, crate::commands::sync::NodeStep::NotAuthoritative(why)
+                        if why.contains("still syncing")),
+                    "{step:?}"
+                );
+            }
+        }
+    }
+
+    /// A node on another chain does not answer for this wallet's coins either.
+    #[tokio::test]
+    async fn node_step_against_a_node_on_another_chain_marks_nothing_spent() {
+        use crate::tests::mock_node_rpc::{node_status_with_indexes, MockNodeRpc};
+        let path = seeded_db();
+        let _guard = TempDbGuard(path.clone());
+        seed_address(&path, PROFILE_A, MYADDR);
+        seed_tracked_coin(&path);
+        let node = MockNodeRpc::new()
+            .with_blockchain_info(crate::noncustodial::rpc::BlockchainInfo {
+                chain: Some("regtest".into()),
+                blocks: 1000,
+                headers: Some(1000),
+                verification_progress: Some(1.0),
+                bestblockhash: None,
+                mediantime: None,
+            })
+            .with_node_status(node_status_with_indexes(true, true))
+            .with_coins_by_address(vec![])
+            .with_txs_by_address(vec![]);
+
+        let step = crate::commands::sync::sync_node_step_with_client(
+            &node,
+            path.to_str().unwrap(),
+            PROFILE_A,
+            &crate::db::sync_lock::LockLost::default(),
+        )
+        .await;
+
+        assert_eq!(tracked_coin_and_cursor(&path), (None, 50));
+        assert!(
+            matches!(&step, crate::commands::sync::NodeStep::NotAuthoritative(why)
+                if why.contains("another network")),
+            "{step:?}"
+        );
     }
 
     /// hsd 8.0.0 without `--index-address` answers `GET /coin/address` and
@@ -1172,7 +1314,7 @@ mod coverage_tests {
             .mock("POST", "/")
             .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
             .with_body(
-                r#"{"result":{"chain":"main","blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#,
+                r#"{"result":{"chain":"main","blocks":1000,"headers":1000,"verificationprogress":1.0,"mediantime":4102444800},"error":null,"id":1}"#,
             )
             .create_async()
             .await;
@@ -1399,7 +1541,7 @@ mod coverage_tests {
             .mock("POST", "/")
             .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
             .with_body(
-                r#"{"result":{"chain":"mainnet","blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#,
+                r#"{"result":{"chain":"mainnet","blocks":1000,"headers":1000,"verificationprogress":1.0,"mediantime":4102444800},"error":null,"id":1}"#,
             )
             .create_async()
             .await;
@@ -2614,7 +2756,7 @@ mod lock_lost_tests {
             .mock("POST", "/")
             .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
             .with_body(
-                r#"{"result":{"chain":"main","blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#,
+                r#"{"result":{"chain":"main","blocks":1000,"headers":1000,"verificationprogress":1.0,"mediantime":4102444800},"error":null,"id":1}"#,
             )
             .expect(1)
             .create_async()
@@ -2681,7 +2823,7 @@ mod lock_lost_tests {
             let lost = status.lock().await.lock_lost.clone();
             let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let seen = calls.clone();
-            let synced = r#"{"result":{"chain":"main","blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#;
+            let synced = r#"{"result":{"chain":"main","blocks":1000,"headers":1000,"verificationprogress":1.0,"mediantime":4102444800},"error":null,"id":1}"#;
             let behind = r#"{"result":{"chain":"main","blocks":10,"headers":1000,"verificationprogress":0.01},"error":null,"id":1}"#;
             let _info = server
                 .mock("POST", "/")
@@ -2801,7 +2943,7 @@ mod mid_step_stop_tests {
     use tokio::sync::Mutex;
 
     const MYADDR: &str = "hs1qmyaddr000000000000000000000000000000";
-    const SYNCED: &str = r#"{"result":{"chain":"main","blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#;
+    const SYNCED: &str = r#"{"result":{"chain":"main","blocks":1000,"headers":1000,"verificationprogress":1.0,"mediantime":4102444800},"error":null,"id":1}"#;
     const BEHIND: &str = r#"{"result":{"chain":"main","blocks":10,"headers":1000,"verificationprogress":0.01},"error":null,"id":1}"#;
     const NAME_INFO: &str =
         r#"{"name":"n","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#;

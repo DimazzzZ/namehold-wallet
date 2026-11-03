@@ -14,6 +14,7 @@
 use namehold_wallet_lib::daemon;
 
 fn main() {
+    namehold_wallet_lib::harden_process();
     // Resolve the DB path from the user's home directory.
     // Matches the path resolution used by the Tauri app (see `lib.rs`).
     let home = match dirs::home_dir() {
@@ -29,7 +30,7 @@ fn main() {
 
     // Ensure the DB directory exists (in case the user has never run the app).
     if let Some(parent) = db_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
+        if let Err(e) = namehold_wallet_lib::db::connection::secure_data_dir(parent) {
             eprintln!(
                 "namehold-syncd: could not create data directory {}: {}",
                 parent.display(),

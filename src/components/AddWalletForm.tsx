@@ -52,7 +52,7 @@ export function AddWalletForm({
     try {
       await createWallet.mutateAsync({ label: label.trim() || "Wallet", network });
       await onDone();
-      showToast("Wallet created. Back up your recovery phrase!", "success");
+      showToast("Wallet created", "success");
     } catch (e) {
       showToast(mapError(e), "error");
     }

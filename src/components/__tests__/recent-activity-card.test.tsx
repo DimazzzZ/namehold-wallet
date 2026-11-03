@@ -106,6 +106,57 @@ describe("RecentActivityCard", () => {
     expect(await screen.findByTestId("activity-page")).toBeInTheDocument();
   });
 
+  it.each(["draft", "signed", "failed", "dropped"])(
+    "a %s bid says nothing has moved instead of calling its lockup locked",
+    async (status) => {
+      const summary = {
+        action: "bid",
+        sendTotalDoos: 500_000_000,
+        feeDoos: 5_000,
+        changeDoos: 0,
+        inputTotalDoos: 500_005_000,
+        numInputs: 1,
+        recipientAddress: null,
+        txid: null,
+        warnings: [],
+        name: "foo",
+        nameList: null,
+      };
+      invokeMock.mockImplementation(routes([], [draft("d1", status, { action: "bid", summary })]));
+      render(<RecentActivityCard onNameClick={vi.fn()} />, { wrapper: wrapper() });
+      const value = await screen.findByTestId("activity-locked-value");
+      fireEvent.mouseEnter(value.parentElement!);
+      const tip = await screen.findByRole("tooltip");
+      expect(tip).toHaveTextContent("500.000000 HNS is the value this transaction would lock");
+      expect(tip).toHaveTextContent("nothing has moved");
+      expect(tip).not.toHaveTextContent(/locked until you reveal/);
+      expect(tip).not.toHaveTextContent(/forfeit/);
+    },
+  );
+
+  it("a bid a block included keeps the bid sentence even if its draft still says dropped", async () => {
+    invokeMock.mockImplementation(
+      routes(
+        [
+          chain("cc", {
+            action: "bid",
+            name: "foo",
+            valueDoos: 0,
+            nameValueDoos: 500_000_000,
+            direction: "send",
+          }),
+        ],
+        [draft("d1", "dropped", { action: "bid", txid: "cc" })],
+      ),
+    );
+    render(<RecentActivityCard onNameClick={vi.fn()} />, { wrapper: wrapper() });
+    const value = await screen.findByTestId("activity-locked-value");
+    fireEvent.mouseEnter(value.parentElement!);
+    const tip = await screen.findByRole("tooltip");
+    expect(tip).toHaveTextContent("this bid's lockup, locked until you reveal it.");
+    expect(tip).not.toHaveTextContent(/nothing has moved/);
+  });
+
   it("says so when there is nothing yet", async () => {
     invokeMock.mockImplementation(routes([], []));
     render(<RecentActivityCard onNameClick={vi.fn()} />, { wrapper: wrapper() });

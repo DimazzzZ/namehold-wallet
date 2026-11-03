@@ -28,6 +28,7 @@
 // readable and silence the lint.
 #![allow(clippy::doc_overindented_list_items)]
 
+use crate::error::AppError;
 use crate::noncustodial::tx::blake2b256;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -58,6 +59,91 @@ pub fn sign_handshake_message(secret: &SecretKey, text: &str) -> String {
     BASE64.encode(compact)
 }
 
+/// The longest message the wallet signs. A domain claim is one sentence.
+pub const MAX_SIGNED_MESSAGE_BYTES: usize = 4096;
+
+/// The longest run of whitespace in a signed message, and the most line
+/// breaks in such a run (one blank line).
+const MAX_WHITESPACE_RUN: usize = 16;
+const MAX_LINE_BREAKS_IN_A_RUN: usize = 2;
+
+/// Characters that show nothing, or change how the text around them shows:
+/// control characters other than a line break or tab, format characters
+/// (Unicode Cf: bidi overrides, zero-width, tags) and the other default-ignorable
+/// or blank-looking code points. Spelled out because std has no Cf table.
+fn is_hidden_char(c: char) -> bool {
+    if c == '\n' || c == '\t' {
+        return false;
+    }
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{034F}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061C}'
+                | '\u{06DD}'
+                | '\u{070F}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08E2}'
+                | '\u{115F}'..='\u{1160}'
+                | '\u{17B4}'..='\u{17B5}'
+                | '\u{180B}'..='\u{180F}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{2800}'
+                | '\u{3164}'
+                | '\u{FE00}'..='\u{FE0F}'
+                | '\u{FEFF}'
+                | '\u{FFA0}'
+                | '\u{FFF0}'..='\u{FFFB}'
+                | '\u{110BD}'
+                | '\u{110CD}'
+                | '\u{13430}'..='\u{1343F}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0000}'..='\u{E0FFF}'
+        )
+}
+
+/// Refuse a message the secure window could not show as it will be signed:
+/// too long to read, with an invisible character, or padded with enough blank
+/// space to push the rest of the text out of view. The renderer picks the
+/// text, so this is checked before the user is asked anything. Look-alike
+/// letters are not caught: the window shows them as they are.
+pub fn check_message_can_be_shown(text: &str) -> Result<(), AppError> {
+    if text.len() > MAX_SIGNED_MESSAGE_BYTES {
+        return Err(AppError::InvalidInput(format!(
+            "this message is {} bytes long; the wallet signs at most {MAX_SIGNED_MESSAGE_BYTES}",
+            text.len()
+        )));
+    }
+    if let Some(c) = text.chars().find(|c| is_hidden_char(*c)) {
+        return Err(AppError::InvalidInput(format!(
+            "this message contains an invisible character (U+{:04X}), so the secure window could \
+             not show exactly what is signed",
+            c as u32
+        )));
+    }
+    let (mut run, mut breaks) = (0, 0);
+    for c in text.chars() {
+        (run, breaks) = if c.is_whitespace() {
+            (run + 1, breaks + usize::from(c == '\n'))
+        } else {
+            (0, 0)
+        };
+        if run > MAX_WHITESPACE_RUN || breaks > MAX_LINE_BREAKS_IN_A_RUN {
+            return Err(AppError::InvalidInput(
+                "this message has a long run of blank space, which could hide text from the \
+                 secure window"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,6 +154,81 @@ mod tests {
         // BIP32 vector-1 seed, same known material used throughout the HD tests.
         let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
         ExtendedPrivKey::from_seed(&seed).unwrap().secret
+    }
+
+    /// What a claim message looks like passes: plain text, other scripts, a
+    /// single blank line, tabs, and the longest length allowed.
+    #[test]
+    fn a_readable_message_can_be_shown() {
+        for ok in [
+            "Namebase registry: I verify ownership of \"ecology\" for account #20544.",
+            "Я владелец этого имени",
+            "first line\nsecond line\n\nthird\tline",
+            "padded with sixteen   spaces: x                x",
+        ] {
+            check_message_can_be_shown(ok).unwrap_or_else(|e| panic!("{ok:?}: {e:?}"));
+        }
+        check_message_can_be_shown(&"x".repeat(MAX_SIGNED_MESSAGE_BYTES)).unwrap();
+    }
+
+    #[test]
+    fn a_message_over_the_limit_is_refused() {
+        let err = check_message_can_be_shown(&"x".repeat(MAX_SIGNED_MESSAGE_BYTES + 1));
+        assert!(matches!(err, Err(AppError::InvalidInput(_))), "{err:?}");
+    }
+
+    /// Each of these shows nothing or changes how its neighbours show.
+    #[test]
+    fn a_message_with_an_invisible_character_is_refused() {
+        for c in [
+            '\u{0}',
+            '\r',
+            '\u{1B}',
+            '\u{7F}',
+            '\u{85}',
+            '\u{AD}',
+            '\u{61C}',
+            '\u{200B}',
+            '\u{200D}',
+            '\u{200E}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{202E}',
+            '\u{2066}',
+            '\u{2069}',
+            '\u{2060}',
+            '\u{2800}',
+            '\u{3164}',
+            '\u{FE0F}',
+            '\u{FEFF}',
+            '\u{E0001}',
+            '\u{E0041}',
+        ] {
+            let err = check_message_can_be_shown(&format!("a{c}b"));
+            assert!(
+                matches!(err, Err(AppError::InvalidInput(_))),
+                "U+{:04X}: {err:?}",
+                c as u32
+            );
+        }
+    }
+
+    /// A run of blank space, in any form that wraps or breaks, is refused at
+    /// the first character past the limit.
+    #[test]
+    fn a_message_padded_with_blank_space_is_refused() {
+        let refused = |text: String| {
+            let err = check_message_can_be_shown(&text);
+            assert!(matches!(err, Err(AppError::InvalidInput(_))), "{err:?}");
+        };
+        refused(format!("a{}b", "\n".repeat(3)));
+        refused(format!("a{}b", "\n \t".repeat(3)));
+        refused(format!("a{}b", " ".repeat(17)));
+        refused(format!("a{}b", "\u{A0}".repeat(17)));
+        refused(format!("a{}b", "\u{3000}".repeat(17)));
+        refused(format!("{}b", "\n".repeat(3)));
+        // Short runs do not add up across the text between them.
+        check_message_can_be_shown(&format!("{}x", "a\n\nb".repeat(50))).unwrap();
     }
 
     /// Preimage / known-answer: the exact magic bytes concatenated with the
