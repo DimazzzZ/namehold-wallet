@@ -10,7 +10,7 @@ import { Dialog } from "./ui/Dialog";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
 import { AddWalletForm } from "./AddWalletForm";
-import { mapError } from "../lib/errors";
+import { isUserRejected, mapError } from "../lib/errors";
 import { walletKindLabel } from "../lib/walletKind";
 import { writeText } from "../lib/clipboard";
 import { Copy, Plus } from "lucide-react";
@@ -57,14 +57,11 @@ export function WalletManager({
     });
   };
 
-  const handleDelete = async (id: string, label: string, network: string, wasActive: boolean) => {
-    if (
-      !confirm(
-        `Remove wallet "${label}" (${network})? This deletes the local profile and its encrypted seed. Make sure you have its recovery phrase — this cannot be undone.`,
-      )
-    ) {
-      return;
-    }
+  // The backend asks for the confirmation in the secure window (a wallet
+  // whose recovery phrase is stored here also has its label typed there), so
+  // nothing on this page can delete a wallet by itself. Declining there is
+  // the user's answer and needs no toast.
+  const handleDelete = async (id: string, label: string, wasActive: boolean) => {
     try {
       await deleteProfile.mutateAsync(id);
       // The backend clears the active pointer when the active profile is
@@ -75,6 +72,7 @@ export function WalletManager({
       }
       showToast(`Removed "${label}"`, "success");
     } catch (e) {
+      if (isUserRejected(e)) return;
       showToast(mapError(e), "error");
     }
   };
@@ -147,7 +145,8 @@ export function WalletManager({
                     size="sm"
                     variant="danger"
                     disabled={deleteProfile.isPending}
-                    onClick={() => handleDelete(p.id, p.label, p.network, p.active)}
+                    onClick={() => handleDelete(p.id, p.label, p.active)}
+                    data-testid="wallet-delete"
                   >
                     Delete
                   </Button>

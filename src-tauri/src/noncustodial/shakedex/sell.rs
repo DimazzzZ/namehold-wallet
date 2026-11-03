@@ -439,6 +439,19 @@ pub const STEP_SIGNATURE_PERMANENCE: &str = "Each signature lets anyone buy the 
      price until the listing is cancelled and the cancel is mined. A price can be lowered \
      later, never raised.";
 
+/// Finalize & sign built a FINALIZE whose lock coin price steps were already
+/// stored over (`db::queries::lock_txid_was_signed_over`): an earlier
+/// Finalize & sign of this listing, its FINALIZE since discarded, at the
+/// same tip from the same coins and fee rate, which is the same transaction.
+/// A step signed then would be valid on that coin again, at its old price.
+/// The FINALIZE commits to the block 2 × renewal maturity below the tip
+/// (`commands::draft_ctx::renewal_block`), so a block later it has another
+/// txid; only a chain younger than that height (a fresh regtest or simnet)
+/// keeps committing to its genesis block.
+pub const LOCK_COIN_ALREADY_SIGNED: &str = "price steps were already signed over the lock coin \
+     this finalize would create, by an earlier Finalize & sign of this listing: nothing was \
+     signed; try again after the next block, when the finalize gets another txid";
+
 /// R18 at Finalize & sign: the confirmed lock TRANSFER does not commit to
 /// the lock this wallet derives for the name.
 pub const LOCK_COMMITMENT_MISMATCH: &str = "the lock transfer does not commit to this \
@@ -513,7 +526,9 @@ pub fn parse_schedule(
     Ok((start, floor))
 }
 
-/// One signed price step as `shakedex_listings.steps_json` stores it.
+/// One signed price step as `shakedex_listings.steps_json` stores it. It is
+/// never sent to the webview: a listing's summary carries
+/// `commands::shakedex::ListingStep`, its price and lock time.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredStep {
@@ -560,6 +575,9 @@ pub struct FinalizeAndSignRows<'a> {
     pub name: &'a str,
     pub finalize_fee: u64,
     pub lock_address: &'a str,
+    /// The lock coin every step is signed over, `txid:index`: the FINALIZE's
+    /// txid and the index of its FINALIZE output into the lock.
+    pub lock_coin: &'a str,
     pub payment_address: &'a str,
     /// `(price, lock time)` of every step about to be signed.
     pub steps: &'a [(u64, u64)],
@@ -573,8 +591,8 @@ pub struct FinalizeAndSignRows<'a> {
 /// summary.
 pub fn finalize_and_sign_rows(r: &FinalizeAndSignRows) -> serde_json::Value {
     let row = |label: String, value: String| serde_json::json!({ "label": label, "value": value });
-    // Three rows before the steps and three after.
-    let mut rows = Vec::with_capacity(r.steps.len() + 6);
+    // Three rows before the steps and four after.
+    let mut rows = Vec::with_capacity(r.steps.len() + 7);
     rows.push(row(
         "Action".into(),
         "Finalize into the lock and sign the price".into(),
@@ -593,6 +611,7 @@ pub fn finalize_and_sign_rows(r: &FinalizeAndSignRows) -> serde_json::Value {
     }
     rows.push(row("Paid to".into(), r.payment_address.into()));
     rows.push(row("Lock address".into(), r.lock_address.into()));
+    rows.push(row("Lock coin".into(), r.lock_coin.into()));
     rows.push(row("Warning".into(), STEP_SIGNATURE_PERMANENCE.into()));
     serde_json::json!({ "rows": rows })
 }
@@ -1777,6 +1796,7 @@ mod tests {
             name: "dexsale",
             finalize_fee: 12_345,
             lock_address: "rs1qlock",
+            lock_coin: "ab:1",
             payment_address: "rs1qpay",
             steps: &[
                 (5_000_000, buy_now_lock_time(mtp)),
@@ -1802,6 +1822,7 @@ mod tests {
         assert!(later.ends_with(" UTC"), "{later}");
         assert_eq!(get("Paid to"), ["rs1qpay"]);
         assert_eq!(get("Lock address"), ["rs1qlock"]);
+        assert_eq!(get("Lock coin"), ["ab:1"]);
         assert_eq!(get("Warning"), [STEP_SIGNATURE_PERMANENCE]);
         assert!(STEP_SIGNATURE_PERMANENCE.contains("anyone"));
         assert!(STEP_SIGNATURE_PERMANENCE.contains("cancel is mined"));
@@ -1820,6 +1841,7 @@ mod tests {
             name: "dexreviews",
             finalize_fee: 2_340,
             lock_address: "hs1qlock",
+            lock_coin: "cd:0",
             payment_address: "hs1qpay",
             steps: &steps,
             mtp,
@@ -1832,8 +1854,8 @@ mod tests {
         assert_eq!(step_rows.len(), 1_000);
         assert_eq!(
             rows.len(),
-            3 + 1_000 + 3,
-            "Action, Name, fee; the steps; Paid to, Lock address, Warning"
+            3 + 1_000 + 4,
+            "Action, Name, fee; the steps; Paid to, Lock address, Lock coin, Warning"
         );
         assert_eq!(step_rows[0]["label"], "Price step 1");
         assert!(step_rows[0]["value"]

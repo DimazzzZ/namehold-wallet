@@ -3,7 +3,7 @@ import { useSignNameMessage } from "../../queries/wallet";
 import { Button } from "../ui/Button";
 import { writeText } from "../../lib/clipboard";
 import { displayName } from "../../lib/idn";
-import { mapError } from "../../lib/errors";
+import { isUserRejected, mapError } from "../../lib/errors";
 import type { NameActionCapabilities, NameSignature } from "../../types";
 
 /**
@@ -47,6 +47,8 @@ export function NameSignMessage({
       const res = await sign.run(name, message, profileId);
       setResult(res);
     } catch (e) {
+      // Declining in the secure window is the user's answer, not a failure.
+      if (isUserRejected(e)) return;
       setError(mapError(e, "sign"));
     }
   };

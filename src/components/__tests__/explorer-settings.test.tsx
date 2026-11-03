@@ -83,11 +83,18 @@ describe("Settings — explorer base URL (Task 11 / S1)", () => {
     expect(saveButton).not.toBeDisabled();
     fireEvent.click(saveButton);
 
-    await waitFor(() => {
-      const call = invokeMock.mock.calls.find(
+    // The explorer is a protected setting: it is sent, normalized, to be
+    // confirmed in the secure window, and never through update_setting.
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("update_protected_settings", {
+        changes: [{ key: "explorer_api_url", value: "https://my.explorer.example" }],
+      }),
+    );
+    expect(
+      invokeMock.mock.calls.some(
         (c) => c[0] === "update_setting" && c[1]?.key === "explorer_api_url",
-      );
-      expect(call?.[1]?.value).toBe("https://my.explorer.example");
-    });
+      ),
+    ).toBe(false);
+    await waitFor(() => expect(screen.queryByTestId("settings-save")).toBeNull());
   });
 });

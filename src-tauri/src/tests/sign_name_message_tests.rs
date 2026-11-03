@@ -6,7 +6,8 @@
 //! fully-migrated in-memory DB, mirroring the harness in `tx_lifecycle_tests.rs`.
 //! The pure byte-level correctness (preimage + signature verification) is
 //! covered separately in `noncustodial::message::tests`; these tests prove the
-//! command-level plumbing: owner-only, unlock gate, per-wallet isolation.
+//! command-level plumbing: owner-only, unlock gate, per-wallet isolation, and
+//! the secure-window confirmation.
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -14,6 +15,9 @@ use rusqlite::params;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
+use crate::commands::secure_prompt::{
+    on_next_test_answer, push_test_answer, take_test_requests, SecurePromptResult,
+};
 use crate::commands::tx::sign_name_message;
 use crate::db;
 use crate::error::AppError;
@@ -156,14 +160,205 @@ fn unlock(app: &tauri::App<tauri::test::MockRuntime>, profile_id: &str, mnemonic
 
 const MSG: &str = "Namebase registry: I verify ownership of \"ecology\" for account #20544.";
 
+fn answer_confirm(confirmed: bool) {
+    push_test_answer(SecurePromptResult {
+        value: None,
+        confirmed,
+    });
+}
+
+/// The secure window shows exactly what is signed, in full, before the key is
+/// touched: the renderer picks the text, so a call alone must not sign it.
+#[tokio::test]
+async fn asks_the_secure_window_first_and_shows_the_full_message() {
+    let conn = seeded_conn();
+    let app = app_with(conn);
+    unlock(&app, PROFILE_A, MNEMONIC_A);
+    answer_confirm(true);
+    let long_message = format!("{MSG}\n{}", "x".repeat(3900));
+
+    sign_name_message(
+        app.handle().clone(),
+        NAME.to_string(),
+        long_message.clone(),
+        Some(PROFILE_A.to_string()),
+    )
+    .await
+    .unwrap();
+
+    let requests = take_test_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].mode, "confirm");
+    let (address, _, _) = leaf00(MNEMONIC_A);
+    assert_eq!(
+        requests[0].details.as_ref().unwrap()["rows"],
+        serde_json::json!([
+            { "label": "Action", "value": "Sign a message with a name you own" },
+            { "label": "Name", "value": NAME },
+            { "label": "Signing address", "value": address },
+            { "label": "Message", "value": long_message },
+        ])
+    );
+}
+
+/// A message the window could not show as signed never reaches the window:
+/// padded so the rest falls out of view, or reordered by a bidi override.
+#[tokio::test]
+async fn a_message_the_window_could_not_show_is_refused_before_any_prompt() {
+    let app = app_with(seeded_conn());
+    unlock(&app, PROFILE_A, MNEMONIC_A);
+    // Queued so a prompt that should not open shows up in the requests below.
+    answer_confirm(true);
+    for message in [
+        format!("{MSG}{}I give up this account", "\n".repeat(400)),
+        format!("{MSG}\u{202E}tnuocca siht pu evig I"),
+        "x".repeat(4097),
+    ] {
+        let err = sign_name_message(
+            app.handle().clone(),
+            NAME.to_string(),
+            message,
+            Some(PROFILE_A.to_string()),
+        )
+        .await;
+        assert!(matches!(err, Err(AppError::InvalidInput(_))), "{err:?}");
+    }
+    assert!(take_test_requests().is_empty());
+    crate::commands::secure_prompt::clear_test_answers();
+}
+
+/// Declined: no signature, and the session's expiry did not move, so a page
+/// cannot keep a session open by asking over and over.
+#[tokio::test]
+async fn declined_confirmation_signs_nothing() {
+    let conn = seeded_conn();
+    let app = app_with(conn);
+    unlock(&app, PROFILE_A, MNEMONIC_A);
+    let before = app
+        .state::<AppState>()
+        .signer
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .unlocked_until_ms();
+    answer_confirm(false);
+
+    let err = sign_name_message(
+        app.handle().clone(),
+        NAME.to_string(),
+        MSG.to_string(),
+        Some(PROFILE_A.to_string()),
+    )
+    .await
+    .expect_err("declined must not sign");
+
+    assert!(matches!(err, AppError::UserRejected), "got {err:?}");
+    assert_eq!(
+        app.state::<AppState>()
+            .signer
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .unlocked_until_ms(),
+        before
+    );
+}
+
+/// A signer that cannot sign is refused without asking the user a question
+/// whose answer would change nothing.
+#[tokio::test]
+async fn a_locked_or_foreign_signer_is_refused_before_any_prompt() {
+    let app = app_with(seeded_conn());
+    // Queued so a prompt that should not open shows up in the requests below.
+    answer_confirm(true);
+    answer_confirm(true);
+    let locked = sign_name_message(
+        app.handle().clone(),
+        NAME.to_string(),
+        MSG.to_string(),
+        Some(PROFILE_A.to_string()),
+    )
+    .await;
+    assert!(matches!(locked, Err(AppError::WalletLocked)), "{locked:?}");
+
+    unlock(&app, PROFILE_B, MNEMONIC_B);
+    let foreign = sign_name_message(
+        app.handle().clone(),
+        NAME.to_string(),
+        MSG.to_string(),
+        Some(PROFILE_A.to_string()),
+    )
+    .await;
+    assert!(
+        matches!(foreign, Err(AppError::InvalidInput(_))),
+        "{foreign:?}"
+    );
+    assert!(take_test_requests().is_empty());
+    crate::commands::secure_prompt::clear_test_answers();
+}
+
+/// The signer is checked again after the window closes: locked while the user
+/// was reading, nothing is signed even on a confirmation.
+#[tokio::test]
+async fn a_signer_locked_while_the_window_is_open_signs_nothing() {
+    let app = app_with(seeded_conn());
+    unlock(&app, PROFILE_A, MNEMONIC_A);
+    let handle = app.handle().clone();
+    on_next_test_answer(move || {
+        *handle.state::<AppState>().signer.lock().unwrap() = None;
+    });
+    answer_confirm(true);
+
+    let err = sign_name_message(
+        app.handle().clone(),
+        NAME.to_string(),
+        MSG.to_string(),
+        Some(PROFILE_A.to_string()),
+    )
+    .await
+    .expect_err("a locked signer must not sign");
+    assert!(matches!(err, AppError::WalletLocked), "got {err:?}");
+}
+
+/// The wallet was switched while the window was open: another profile's key
+/// must not sign at this profile's path and come back under this address.
+#[tokio::test]
+async fn a_signer_swapped_for_another_wallet_while_the_window_is_open_signs_nothing() {
+    let app = app_with(seeded_conn());
+    unlock(&app, PROFILE_A, MNEMONIC_A);
+    let handle = app.handle().clone();
+    on_next_test_answer(move || {
+        *handle.state::<AppState>().signer.lock().unwrap() = Some(SignerSession::unlock(
+            PROFILE_B.to_string(),
+            Network::Main,
+            master(MNEMONIC_B),
+            600_000,
+        ));
+    });
+    answer_confirm(true);
+
+    let err = sign_name_message(
+        app.handle().clone(),
+        NAME.to_string(),
+        MSG.to_string(),
+        Some(PROFILE_A.to_string()),
+    )
+    .await
+    .expect_err("another wallet's signer must not sign");
+    assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
+}
+
 #[tokio::test]
 async fn signs_and_returns_signature_pubkey_address_for_the_owning_key() {
     let conn = seeded_conn();
     let app = app_with(conn);
     unlock(&app, PROFILE_A, MNEMONIC_A);
+    answer_confirm(true);
 
     let result = sign_name_message(
-        app.state(),
+        app.handle().clone(),
         NAME.to_string(),
         MSG.to_string(),
         Some(PROFILE_A.to_string()),
@@ -201,7 +396,7 @@ async fn rejects_a_name_the_wallet_does_not_own() {
     unlock(&app, PROFILE_A, MNEMONIC_A);
 
     let err = sign_name_message(
-        app.state(),
+        app.handle().clone(),
         "somenamewedonotown".to_string(),
         MSG.to_string(),
         Some(PROFILE_A.to_string()),
@@ -224,7 +419,7 @@ async fn rejects_a_name_whose_owner_coin_is_still_a_reveal() {
     unlock(&app, PROFILE_A, MNEMONIC_A);
 
     let err = sign_name_message(
-        app.state(),
+        app.handle().clone(),
         NAME.to_string(),
         MSG.to_string(),
         Some(PROFILE_A.to_string()),
@@ -247,7 +442,7 @@ async fn rejects_when_the_signer_is_locked() {
     // No unlock() call — signer slot stays None.
 
     let err = sign_name_message(
-        app.state(),
+        app.handle().clone(),
         NAME.to_string(),
         MSG.to_string(),
         Some(PROFILE_A.to_string()),
@@ -266,7 +461,7 @@ async fn rejects_a_signer_unlocked_for_a_different_wallet_profile() {
     unlock(&app, PROFILE_B, MNEMONIC_B);
 
     let err = sign_name_message(
-        app.state(),
+        app.handle().clone(),
         NAME.to_string(),
         MSG.to_string(),
         Some(PROFILE_A.to_string()),
@@ -284,8 +479,13 @@ async fn rejects_when_no_wallet_profile_resolves() {
     db::migrations::run(&conn).unwrap();
     let app = app_with(conn);
 
-    let err = sign_name_message(app.state(), NAME.to_string(), MSG.to_string(), None)
-        .await
-        .expect_err("must reject with no resolvable profile");
+    let err = sign_name_message(
+        app.handle().clone(),
+        NAME.to_string(),
+        MSG.to_string(),
+        None,
+    )
+    .await
+    .expect_err("must reject with no resolvable profile");
     assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
 }

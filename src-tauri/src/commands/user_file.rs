@@ -1,8 +1,9 @@
-//! Writing a file at a path the renderer names (a native save dialog's
-//! answer). The path comes from the webview, which SECURITY.md §1 treats as
-//! possibly compromised, so the write refuses what a save dialog would never
-//! hand back for a new or replaced document: a symbolic link (whose target
-//! could be any file of the user's) and anything that is not a regular file.
+//! Writing or reading a file at a path the renderer names (a native save or
+//! open dialog's answer). The path comes from the webview, which SECURITY.md
+//! §1 treats as possibly compromised, so both refuse what a dialog would
+//! never hand back for a document: a symbolic link (whose target could be any
+//! file of the user's) and anything that is not a regular file; a read is
+//! also capped in size.
 
 use std::path::Path;
 
@@ -15,6 +16,70 @@ pub(crate) const SAVE_TO_SYMLINK: &str =
 /// Why a save is refused when its path is not a regular file.
 pub(crate) const SAVE_TO_NON_FILE: &str =
     "the chosen path is not a regular file: choose a regular file or a new name";
+
+/// Why an import is refused when its path is a symbolic link.
+pub(crate) const READ_FROM_SYMLINK: &str =
+    "the chosen file is a symbolic link: choose the file itself";
+
+/// Why an import is refused when its path is not a regular file.
+pub(crate) const READ_NON_FILE: &str = "the chosen path is not a regular file";
+
+/// The largest file an import reads: a watchlist, a name list or an account
+/// history is far smaller.
+pub(crate) const MAX_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Read the text file at `path` the user chose to import. A symbolic link and
+/// anything that is not a regular file are refused (on unix the open does
+/// not follow a link swapped in after the check, `O_NOFOLLOW`), as is a file
+/// over [`MAX_IMPORT_BYTES`] or one that is not UTF-8 text. Callers persist
+/// only rows that validate (a Handshake name) and never echo a refused row's
+/// text, so a compromised webview cannot use an import to read other files.
+pub(crate) fn read_chosen_file(path: &Path) -> Result<String, AppError> {
+    use std::io::Read;
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => {
+            return Err(AppError::InvalidInput(READ_FROM_SYMLINK.into()))
+        }
+        Ok(m) if !m.is_file() => return Err(AppError::InvalidInput(READ_NON_FILE.into())),
+        Ok(_) => {}
+        Err(e) => return Err(e.into()),
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = opts.open(path).map_err(|e| {
+        #[cfg(unix)]
+        if e.raw_os_error() == Some(libc::ELOOP) {
+            return AppError::InvalidInput(READ_FROM_SYMLINK.into());
+        }
+        AppError::from(e)
+    })?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(AppError::InvalidInput(READ_NON_FILE.into()));
+    }
+    if meta.len() > MAX_IMPORT_BYTES {
+        return Err(AppError::InvalidInput(format!(
+            "the chosen file is larger than {} MiB; nothing was imported",
+            MAX_IMPORT_BYTES / (1024 * 1024)
+        )));
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_IMPORT_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_IMPORT_BYTES {
+        return Err(AppError::InvalidInput(format!(
+            "the chosen file is larger than {} MiB; nothing was imported",
+            MAX_IMPORT_BYTES / (1024 * 1024)
+        )));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        AppError::InvalidInput("the chosen file is not text; nothing was imported".into())
+    })
+}
 
 /// Write `contents` to `path`, creating it or replacing a regular file
 /// there. A symbolic link at `path` is refused and its target left
@@ -160,6 +225,48 @@ mod tests {
     fn the_open_refuses_a_device_on_its_own() {
         let err = open_regular(Path::new("/dev/null"), false).unwrap_err();
         assert!(err.to_string().contains(SAVE_TO_NON_FILE), "{err:?}");
+    }
+
+    #[test]
+    fn reads_a_chosen_text_file() {
+        let d = dir("read");
+        let p = d.join("w.csv");
+        std::fs::write(&p, "name\nalice\n").unwrap();
+        let got = read_chosen_file(&p).unwrap();
+        std::fs::remove_dir_all(&d).unwrap();
+        assert_eq!(got, "name\nalice\n");
+    }
+
+    /// An import through a link would read whatever file it points at.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_refuses_a_symlink() {
+        let d = dir("readlink");
+        let target = d.join("hsd.conf");
+        std::fs::write(&target, "api-key: secret").unwrap();
+        let link = d.join("w.csv");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let err = read_chosen_file(&link).unwrap_err();
+        std::fs::remove_dir_all(&d).unwrap();
+        assert!(err.to_string().contains(READ_FROM_SYMLINK), "{err:?}");
+        assert!(!err.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn a_read_refuses_a_directory_a_huge_file_and_binary() {
+        let d = dir("readbad");
+        let err = read_chosen_file(&d).unwrap_err();
+        assert!(err.to_string().contains(READ_NON_FILE), "{err:?}");
+        let big = d.join("big.csv");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(MAX_IMPORT_BYTES + 1).unwrap();
+        let err = read_chosen_file(&big).unwrap_err();
+        assert!(err.to_string().contains("larger than 8 MiB"), "{err:?}");
+        let bin = d.join("bin.csv");
+        std::fs::write(&bin, [0xffu8, 0xfe, 0x00]).unwrap();
+        let err = read_chosen_file(&bin).unwrap_err();
+        std::fs::remove_dir_all(&d).unwrap();
+        assert!(err.to_string().contains("not text"), "{err:?}");
     }
 
     /// A lookup error other than "not found" is not a free pass.

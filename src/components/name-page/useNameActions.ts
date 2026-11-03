@@ -27,7 +27,7 @@ import {
   taskSummaryFromCapabilities,
   validateBidInputs,
 } from "../../lib/auction";
-import { hnsToDollarydoos } from "../../lib/utils";
+import { doosToHnsDigits, parseHnsAmount } from "../../lib/hnsAmount";
 import { rowsToRecords, recordsToRows, type DnsRow } from "../../lib/dnsRecords";
 import type { NameActionCapability } from "../../types";
 
@@ -107,10 +107,15 @@ export function useNameActions(name: string) {
   const lock = !!busy || !canWrite;
 
   const bidValidation = validateBidInputs(bidHns, lockupHns);
-  const bidNum = Number(bidHns);
-  const lockupNum = Number(lockupHns);
-  // The forfeit warning's "X": the raw lockup input as typed.
-  const forfeitLockupText = lockupHns.trim() || "0";
+  // The recover amount, read as exactly as a bid: the doos, or the sentence
+  // shown under the field (none while it is empty).
+  const recoverAmount = parseHnsAmount(recoverHns);
+  const recoverError = recoverHns.trim() && "error" in recoverAmount ? recoverAmount.error : null;
+  // The forfeit warning's "X": the lockup as read, "0" while the field is empty,
+  // and no figure at all for text the parser refuses.
+  const lockupAmount = parseHnsAmount(lockupHns);
+  const forfeitLockupText =
+    "doos" in lockupAmount ? doosToHnsDigits(lockupAmount.doos) : lockupHns.trim() ? null : "0";
 
   const badge = auctionPhase(info?.state);
   // While a transfer is pending the next thing to happen is Finalize, which
@@ -333,13 +338,13 @@ export function useNameActions(name: string) {
   // Recover a lost bid_commitments row from the on-chain BID coin + a
   // user-remembered amount. Needs only the xpub, so no unlock.
   const handleRecoverBid = async () => {
-    if (!recoverHns) return;
+    if (!("doos" in recoverAmount)) return;
     setBusy("RECOVER");
     try {
       await recoverBid.mutateAsync({
         walletProfileId: profile?.id ?? null,
         name,
-        bidValueDoos: hnsToDollarydoos(Number(recoverHns)),
+        bidValueDoos: recoverAmount.doos,
       });
       showToast("Bid commitment recovered — you can reveal now.", "success");
       setRecoverHns("");
@@ -404,15 +409,19 @@ export function useNameActions(name: string) {
   const removeRow = (i: number) =>
     setRows((rs) => (rs.length > 1 ? rs.filter((_, j) => j !== i) : rs));
 
-  const submitBid = () =>
+  const submitBid = () => {
+    // Bid is disabled until the form is valid; these are the doos it checked.
+    const { bidDoos, lockupDoos } = bidValidation;
+    if (bidDoos === null || lockupDoos === null) return;
     run("BID", () =>
       build.bid.mutateAsync({
         name,
-        bidValue: hnsToDollarydoos(bidNum),
-        lockup: hnsToDollarydoos(lockupNum),
+        bidValue: bidDoos,
+        lockup: lockupDoos,
         feeRate: parseFeeRateArg(bidFeeRate) ?? undefined,
       }),
     );
+  };
 
   return {
     name,
@@ -432,6 +441,7 @@ export function useNameActions(name: string) {
     setBidFeeRate,
     recoverHns,
     setRecoverHns,
+    recoverError,
     recipient,
     setRecipient,
     rows,

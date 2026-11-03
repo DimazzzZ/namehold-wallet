@@ -45,7 +45,12 @@ const baseProfile = {
   active: true,
 };
 
-function routeInvoke(opts: { broadcast: "ok" | "fail" } = { broadcast: "ok" }) {
+function routeInvoke(
+  opts: { broadcast: "ok" | "fail"; liquidDoos?: number; sendTotalDoos?: number } = {
+    broadcast: "ok",
+  },
+) {
+  const liquidDoos = opts.liquidDoos ?? 5_000_000;
   return (cmd: string) => {
     switch (cmd) {
       case "list_wallet_profiles":
@@ -65,12 +70,12 @@ function routeInvoke(opts: { broadcast: "ok" | "fail" } = { broadcast: "ok" }) {
         });
       case "get_wallet_balances":
         return Promise.resolve({
-          liquidDoos: 5_000_000,
+          liquidDoos,
           nameControlDoos: 0,
           nameLockupDoos: 0,
           immatureDoos: 0,
           immatureInBlocks: null,
-          totalDoos: 5_000_000,
+          totalDoos: liquidDoos,
         });
       case "list_tx_drafts":
         return Promise.resolve([]);
@@ -84,7 +89,7 @@ function routeInvoke(opts: { broadcast: "ok" | "fail" } = { broadcast: "ok" }) {
           status: "draft",
           summary: {
             action: "send_hns",
-            sendTotalDoos: 1_000_000,
+            sendTotalDoos: opts.sendTotalDoos ?? 1_000_000,
             feeDoos: 1410,
             changeDoos: 3_998_590,
             inputTotalDoos: 5_000_000,
@@ -281,6 +286,53 @@ describe("WalletView send flow (asset safety)", () => {
     expect(screen.getByRole("button", { name: /Review/i })).toBeDisabled();
   });
 
+  it("refuses a 7th decimal under the amount instead of rounding it, and builds nothing", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByTestId("receive-open");
+    fireEvent.click(screen.getByTestId("wallet-send"));
+    fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
+    fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "1.0000005" } });
+
+    expect(await screen.findByTestId("send-amount-error")).toHaveTextContent(
+      "HNS has at most 6 decimals",
+    );
+    const review = screen.getByRole("button", { name: /Review/i });
+    expect(review).toBeDisabled();
+    fireEvent.click(review);
+    expect(invokeMock.mock.calls.map((c) => c[0])).not.toContain("build_send_hns_draft");
+  });
+
+  it("says what is wrong with an amount that is not plain digits", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByTestId("receive-open");
+    fireEvent.click(screen.getByTestId("wallet-send"));
+    fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
+    fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "1,5" } });
+
+    expect(await screen.findByTestId("send-amount-error")).toHaveTextContent(
+      /greater than 0, in digits like 12\.5/,
+    );
+    expect(screen.getByRole("button", { name: /Review/i })).toBeDisabled();
+  });
+
+  it("sends 1234.567891 HNS as exactly 1,234,567,891 doos", async () => {
+    invokeMock.mockImplementation(routeInvoke({ broadcast: "ok", liquidDoos: 2_000_000_000 }));
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByTestId("receive-open");
+    fireEvent.click(screen.getByTestId("wallet-send"));
+    fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
+    fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "1234.567891" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Review/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /Review/i }));
+
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find((c) => c[0] === "build_send_hns_draft");
+      expect(call?.[1]).toMatchObject({ toAddress: RECIPIENT, valueDoos: 1_234_567_891 });
+    });
+  });
+
   it("Max fills the amount with everything but the fee and stays on the form", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
@@ -289,7 +341,7 @@ describe("WalletView send flow (asset safety)", () => {
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
     fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
 
-    await waitFor(() => expect(screen.getByLabelText(/Amount \(HNS\)/i)).toHaveValue(4.99859));
+    await waitFor(() => expect(screen.getByLabelText(/Amount \(HNS\)/i)).toHaveValue("4.99859"));
     const est = invokeMock.mock.calls.find((c) => c[0] === "estimate_tx_draft_fee");
     expect(est?.[1]).toMatchObject({ max: true });
     // Nothing is built (a draft would reserve the coins) and the form stays.
@@ -297,8 +349,8 @@ describe("WalletView send flow (asset safety)", () => {
     expect(screen.queryByTestId("send-recipient")).toBeNull();
   });
 
-  it("Max fills a balance of a thousand HNS or more (a number field drops thousands separators)", async () => {
-    const route = routeInvoke();
+  it("Max fills a balance of a thousand HNS or more as plain digits the field reads back", async () => {
+    const route = routeInvoke({ broadcast: "ok", liquidDoos: 2_043_661_410 });
     invokeMock.mockImplementation((cmd: string) =>
       cmd === "estimate_tx_draft_fee"
         ? Promise.resolve({
@@ -316,7 +368,8 @@ describe("WalletView send flow (asset safety)", () => {
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
     fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
 
-    await waitFor(() => expect(screen.getByLabelText(/Amount \(HNS\)/i)).toHaveValue(2043.66));
+    await waitFor(() => expect(screen.getByLabelText(/Amount \(HNS\)/i)).toHaveValue("2043.66"));
+    expect(screen.queryByTestId("send-amount-error")).toBeNull();
   });
 
   it("Max, then Review with the amount untouched, builds the sweep", async () => {
@@ -326,7 +379,7 @@ describe("WalletView send flow (asset safety)", () => {
     fireEvent.click(screen.getByTestId("wallet-send"));
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
     fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
-    await waitFor(() => expect(screen.getByLabelText(/Amount \(HNS\)/i)).toHaveValue(4.99859));
+    await waitFor(() => expect(screen.getByLabelText(/Amount \(HNS\)/i)).toHaveValue("4.99859"));
     fireEvent.click(screen.getByRole("button", { name: /^Review$/i }));
     await waitFor(() => {
       const call = invokeMock.mock.calls.find((c) => c[0] === "build_send_hns_draft");
@@ -341,7 +394,7 @@ describe("WalletView send flow (asset safety)", () => {
     fireEvent.click(screen.getByTestId("wallet-send"));
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
     fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
-    await waitFor(() => expect(screen.getByLabelText(/Amount \(HNS\)/i)).toHaveValue(4.99859));
+    await waitFor(() => expect(screen.getByLabelText(/Amount \(HNS\)/i)).toHaveValue("4.99859"));
     fireEvent.change(screen.getByLabelText(/Amount \(HNS\)/i), { target: { value: "3" } });
     fireEvent.click(screen.getByRole("button", { name: /^Review$/i }));
     await waitFor(() => {

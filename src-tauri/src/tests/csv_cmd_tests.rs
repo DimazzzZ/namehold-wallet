@@ -342,12 +342,10 @@ async fn test_export_csv_filter_by_status() {
 
 // --- coverage: CSV deserialize error path (lines 97-99 in csv.rs) ---
 
-/// Invalid UTF-8 bytes inside a CSV field cause a serde-level deserialize
-/// error → exercises the `Err(e) => errors.push(...)` branch.
+/// A file that is not UTF-8 text is refused as a whole (`read_chosen_file`),
+/// before any row is read: nothing is imported.
 #[tokio::test]
-async fn test_import_csv_deserialize_error_invalid_utf8() {
-    // Header + one valid row + one row with invalid UTF-8 (0xFF byte) in the
-    // name field. The csv crate's UTF-8 validation fails for the second row.
+async fn test_import_csv_refuses_a_file_that_is_not_text() {
     let mut content: Vec<u8> = b"Name,Staked\ngood,false\n".to_vec();
     content.extend_from_slice(b"bad");
     content.push(0xFF);
@@ -359,23 +357,18 @@ async fn test_import_csv_deserialize_error_invalid_utf8() {
     std::fs::write(&path, &content).unwrap();
     let path_str = path.to_str().unwrap().to_string();
 
-    let state = setup_state();
-    let app = mock_app_with(state);
-
-    let result = crate::commands::csv::import_csv(app.state(), path_str).await;
-    cleanup("imp_utf8");
-
-    let res = result.unwrap();
-    assert_eq!(res.imported, 1, "the good row should import");
-    assert!(
-        !res.errors.is_empty(),
-        "the invalid-utf8 row should produce an error"
-    );
-    assert!(
-        res.errors[0].contains("Row"),
-        "error message should reference the row: {:?}",
-        res.errors
-    );
+    let app = mock_app_with(setup_state());
+    let err = crate::commands::csv::import_csv(app.state(), path_str)
+        .await
+        .unwrap_err();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(err.to_string().contains("not text"), "{err}");
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM assets", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
 }
 
 // --- coverage: empty-TLD-after-normalize skip path (lines 113-114) ---
@@ -500,4 +493,70 @@ async fn export_csv_writes_hns_received_and_expiry_height_as_plain_numbers() {
     assert_eq!(&row("export_n")[exp], "250000");
     assert_eq!(&row("export_m")[hns], "");
     assert_eq!(&row("export_m")[exp], "");
+}
+
+// --- a compromised webview names the path (audit 2026-10) ---
+
+/// An import of a file that is not a name list stores nothing and never
+/// repeats its text: the rows the webview reads back cannot carry another
+/// file's lines.
+#[tokio::test]
+async fn import_csv_stores_only_handshake_names_and_never_echoes_a_refused_row() {
+    let csv_content = "Name,Notes\napi-key: hunter2 secret,x\nAlice,ok\nbad name,y\n";
+    let path = write_temp_csv(csv_content, "imp_names_only");
+    let app = mock_app_with(setup_state());
+    let result = crate::commands::csv::import_csv(app.state(), path)
+        .await
+        .unwrap();
+    cleanup("imp_names_only");
+    assert_eq!(result.imported, 1, "only `alice` is a name");
+    let errors = result.errors.join(" | ");
+    assert!(
+        !errors.contains("hunter2") && !errors.contains("bad name"),
+        "{errors}"
+    );
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().unwrap();
+    let tlds: Vec<String> = conn
+        .prepare("SELECT tld FROM assets ORDER BY tld")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(tlds, vec!["alice".to_string()]);
+}
+
+/// An import through a symbolic link is refused before anything is read.
+#[cfg(unix)]
+#[tokio::test]
+async fn import_csv_refuses_a_symlink() {
+    let target = write_temp_csv("Name\nalice\n", "imp_link");
+    let link = std::path::Path::new(&target).with_file_name("link.csv");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let app = mock_app_with(setup_state());
+    let err = crate::commands::csv::import_csv(app.state(), link.to_string_lossy().into())
+        .await
+        .unwrap_err();
+    cleanup("imp_link");
+    assert!(err.to_string().contains("symbolic link"), "{err}");
+}
+
+/// An export never writes through a symbolic link: its target (say
+/// `~/.hsd/hsd.conf`) is left as it was.
+#[cfg(unix)]
+#[tokio::test]
+async fn export_csv_refuses_a_symlink_and_leaves_its_target() {
+    let out = temp_out_path("exp_link");
+    let target = std::path::Path::new(&out).with_file_name("hsd.conf");
+    std::fs::write(&target, "api-key: keep").unwrap();
+    std::os::unix::fs::symlink(&target, &out).unwrap();
+    let app = mock_app_with(setup_state());
+    let err = crate::commands::csv::export_csv(app.state(), out.clone(), None, None, None)
+        .await
+        .unwrap_err();
+    let kept = std::fs::read_to_string(&target).unwrap();
+    cleanup("exp_link");
+    assert!(err.to_string().contains("symbolic link"), "{err}");
+    assert_eq!(kept, "api-key: keep");
 }

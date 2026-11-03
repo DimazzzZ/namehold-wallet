@@ -40,8 +40,10 @@ with the wallet's once a wallet exists and warns on a mismatch.
 **R1 — Onboarding opens with the connection choice.** `Onboarding.tsx` shows
 "How do you want to connect?" with three cards: Local Full Node (marked
 "(default)"), Remote node, SPV. Choosing persists `chain_source` + `node_mode`
-(and `node_rpc_url` / API key for remote) via `update_setting` before the
-wallet step. Pinned by `src/components/__tests__/onboarding-connection.test.tsx`.
+(and `node_rpc_url` / API key for remote) via `update_protected_settings`
+before the wallet step: the values that differ from the stored ones are shown
+in the secure window, and a declined confirmation saves nothing and keeps the
+connection step. Pinned by `src/components/__tests__/onboarding-connection.test.tsx`.
 
 **R2 — Onboarding shows only when no wallet profile exists.** `App.tsx`
 renders `<Onboarding />` iff `!onboardingComplete && !hasProfile`.

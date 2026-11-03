@@ -22,23 +22,61 @@ use bip39::Mnemonic;
 use hmac::{Hmac, Mac};
 use secp256k1::{PublicKey, Scalar, SecretKey, SECP256K1};
 use sha2::Sha512;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 type HmacSha512 = Hmac<Sha512>;
+
+/// The 64-byte HMAC-SHA512 output, in a buffer wiped when it is dropped: its
+/// left half is a private key or the tweak that makes one.
+fn hmac_output(mac: HmacSha512) -> Zeroizing<[u8; 64]> {
+    let mut out = Zeroizing::new([0u8; 64]);
+    let mut tag = mac.finalize().into_bytes();
+    out.copy_from_slice(&tag);
+    tag.as_mut_slice().zeroize();
+    out
+}
 
 pub const HARDENED_OFFSET: u32 = 0x8000_0000;
 
 /// An extended private key (BIP32). Holds the 32-byte key and 32-byte chain
-/// code. Secret material is zeroized on drop.
+/// code, both overwritten in place on drop ([`ExtendedPrivKey::wipe`]).
 pub struct ExtendedPrivKey {
     pub secret: SecretKey,
     pub chain_code: [u8; 32],
 }
 
+impl ExtendedPrivKey {
+    /// Overwrite the secret key and the chain code where they lie. secp256k1's
+    /// `SecretKey` is `Copy` and has no `Drop` of its own (0.31), so nothing
+    /// else wipes it: `non_secure_erase` replaces its bytes with a fixed
+    /// valid key through a volatile write. A `SecretKey` copied out of this
+    /// struct (`derive_address`, a Shakedex lock key) is not covered, nor are
+    /// the temporaries the compiler leaves on the stack while a key is used.
+    fn wipe(&mut self) {
+        self.secret.non_secure_erase();
+        self.chain_code.zeroize();
+        #[cfg(test)]
+        WIPES.with(|w| w.set(w.get() + 1));
+    }
+}
+
+// Test-only count of keys wiped on this thread, so a test can see that a
+// path which drops a key (a session lock) wiped it: once a key is dropped
+// its storage can be reused, and reading it back proves nothing.
+#[cfg(test)]
+thread_local! {
+    static WIPES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many `ExtendedPrivKey`s this thread has wiped so far.
+#[cfg(test)]
+pub(crate) fn wipes_on_this_thread() -> usize {
+    WIPES.with(|w| w.get())
+}
+
 impl Drop for ExtendedPrivKey {
     fn drop(&mut self) {
-        self.chain_code.zeroize();
-        // SecretKey from secp256k1 implements its own zeroization on drop.
+        self.wipe();
     }
 }
 
@@ -52,14 +90,14 @@ impl ExtendedPrivKey {
         let mut mac = HmacSha512::new_from_slice(b"Bitcoin seed")
             .map_err(|e| AppError::Crypto(format!("hmac init: {e}")))?;
         mac.update(seed);
-        let i = mac.finalize().into_bytes();
+        let i = hmac_output(mac);
 
-        let (il, ir) = i.split_at(32);
-        let il: [u8; 32] = il.try_into().expect("split_at(32) yields 32 bytes");
-        let secret = SecretKey::from_byte_array(il)
+        let mut il = Zeroizing::new([0u8; 32]);
+        il.copy_from_slice(&i[..32]);
+        let secret = SecretKey::from_byte_array(*il)
             .map_err(|e| AppError::Crypto(format!("invalid master key: {e}")))?;
         let mut chain_code = [0u8; 32];
-        chain_code.copy_from_slice(ir);
+        chain_code.copy_from_slice(&i[32..]);
         Ok(ExtendedPrivKey { secret, chain_code })
     }
 
@@ -72,29 +110,28 @@ impl ExtendedPrivKey {
         if index >= HARDENED_OFFSET {
             // Hardened: 0x00 || ser256(k_par) || ser32(index)
             mac.update(&[0u8]);
-            mac.update(&self.secret.secret_bytes());
+            // Borrowed, not `secret_bytes()`: that returns a copy nothing wipes.
+            mac.update(self.secret.as_ref());
         } else {
             // Normal: serP(point(k_par)) || ser32(index)
             let pubkey = PublicKey::from_secret_key(SECP256K1, &self.secret);
             mac.update(&pubkey.serialize());
         }
         mac.update(&index.to_be_bytes());
-        let i = mac.finalize().into_bytes();
+        let i = hmac_output(mac);
 
-        let (il, ir) = i.split_at(32);
+        let mut il = Zeroizing::new([0u8; 32]);
+        il.copy_from_slice(&i[..32]);
         // child secret = (parse256(il) + k_par) mod n
-        let tweak = secp256k1::Scalar::from_be_bytes(
-            il.try_into()
-                .map_err(|_| AppError::Crypto("tweak length".into()))?,
-        )
-        .map_err(|e| AppError::Crypto(format!("invalid tweak: {e}")))?;
+        let tweak = secp256k1::Scalar::from_be_bytes(*il)
+            .map_err(|e| AppError::Crypto(format!("invalid tweak: {e}")))?;
         let child_secret = self
             .secret
             .add_tweak(&tweak)
             .map_err(|e| AppError::Crypto(format!("key derivation overflow: {e}")))?;
 
         let mut chain_code = [0u8; 32];
-        chain_code.copy_from_slice(ir);
+        chain_code.copy_from_slice(&i[32..]);
         Ok(ExtendedPrivKey {
             secret: child_secret,
             chain_code,
@@ -378,6 +415,12 @@ pub fn bip44_path(network: Network, account: u32, change: u32, index: u32) -> [u
         index,
     ]
 }
+
+// bip39's `zeroize` feature is what wipes a parsed `Mnemonic`'s word indices.
+const _: fn() = || {
+    fn wiped_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+    wiped_on_drop::<Mnemonic>();
+};
 
 /// Derive a seed from a mnemonic phrase + optional passphrase using standard
 /// BIP39 (matches hsd `mnemonic.toSeed`).
@@ -742,6 +785,35 @@ mod tests {
     fn seed_from_mnemonic_rejects_invalid_phrase() {
         let err = seed_from_mnemonic("not a valid mnemonic phrase at all", "").unwrap_err();
         assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
+    }
+
+    /// A `SecretKey` is `Copy` and has no `Drop` of its own, so the key's
+    /// bytes outlive a dropped `ExtendedPrivKey` unless its own `Drop`
+    /// overwrites them. Read back through a raw pointer into storage that the
+    /// `ManuallyDrop` keeps alive after the drop.
+    #[test]
+    fn dropping_an_extended_priv_key_erases_the_secret() {
+        let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+        let mut key =
+            std::mem::ManuallyDrop::new(ExtendedPrivKey::from_seed(&seed).expect("master"));
+        let secret_before = key.secret.secret_bytes();
+        let chain_before = key.chain_code;
+        assert_ne!(chain_before, [0u8; 32]);
+        let p: *mut ExtendedPrivKey = &mut *key;
+        let wipes_before = wipes_on_this_thread();
+        // SAFETY: `p` points into the live `ManuallyDrop`, which never drops
+        // the value again; both fields are plain byte arrays, so reading them
+        // after the drop reads initialized bytes.
+        let (secret_after, chain_after) = unsafe {
+            std::ptr::drop_in_place(p);
+            ((*p).secret.secret_bytes(), (*p).chain_code)
+        };
+        assert_ne!(
+            secret_after, secret_before,
+            "the secret key survived the drop"
+        );
+        assert_eq!(chain_after, [0u8; 32], "the chain code survived the drop");
+        assert_eq!(wipes_on_this_thread(), wipes_before + 1);
     }
 
     /// `bip44_path` saturates an out-of-range account number defensively.

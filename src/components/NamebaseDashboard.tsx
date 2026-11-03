@@ -19,7 +19,8 @@ import { Dialog } from "./ui/Dialog";
 import { EmptyState } from "./ui/EmptyState";
 import { NamebaseHistoryImport } from "./NamebaseHistoryImport";
 import { mapError } from "../lib/errors";
-import { formatDate, formatCount, formatHnsAmount, truncate } from "../lib/utils";
+import { formatDate, formatCount, formatHns, formatHnsAmount, truncate } from "../lib/utils";
+import { doosToHnsDigits, parseHnsAmount } from "../lib/hnsAmount";
 import { displayName, nameMatches } from "../lib/idn";
 import { usePagination } from "../hooks/usePagination";
 import { openExternal } from "../lib/openExternal";
@@ -223,15 +224,22 @@ export function NamebaseDashboard() {
   // HNS withdrawal amounts are denominated in HNS (Namebase's create endpoint,
   // balance, fee, and minimum are all HNS — NOT dollarydoos). The user enters the
   // NET amount the recipient receives; Namebase's `amount` is the GROSS (debited
-  // from balance) with the fee deducted, so we send `net + fee`.
+  // from balance) with the fee deducted, so we send `net + fee`. The net is read
+  // exactly, as every money field is, and the sum is done in doos.
   const availableHns = account?.balance?.hns ?? 0;
   const feeHns = account?.withdrawalFeeHns ?? 0;
   const minHns = account?.minimums?.hns ?? 0;
-  const amountNet = parseFloat(withdrawAmount);
-  const grossHns = Number.isFinite(amountNet) ? Number((amountNet + feeHns).toFixed(6)) : 0;
-  const overBalance = Number.isFinite(amountNet) && amountNet > 0 && grossHns > availableHns;
-  const amountValid =
-    Number.isFinite(amountNet) && amountNet > 0 && grossHns <= availableHns && grossHns >= minHns;
+  // Namebase reports these as JSON numbers of HNS: the nearest doo is the amount
+  // the number stands for.
+  const availableDoos = Math.round(availableHns * 1_000_000);
+  const feeDoos = Math.round(feeHns * 1_000_000);
+  const minDoos = Math.round(minHns * 1_000_000);
+  const net = parseHnsAmount(withdrawAmount);
+  const netDoos = "doos" in net ? net.doos : null;
+  const withdrawAmountError = withdrawAmount.trim() && "error" in net ? net.error : null;
+  const grossDoos = netDoos === null ? null : netDoos + feeDoos;
+  const overBalance = grossDoos !== null && grossDoos > availableDoos;
+  const amountValid = grossDoos !== null && grossDoos <= availableDoos && grossDoos >= minDoos;
 
   return (
     <div className="space-y-6">
@@ -692,12 +700,17 @@ export function NamebaseDashboard() {
           <div>
             <Input
               label="Amount to send (HNS)"
-              type="number"
-              step="0.000001"
+              inputMode="decimal"
+              autoComplete="off"
               value={withdrawAmount}
               onChange={(e) => setWithdrawAmount(e.target.value)}
               placeholder="0.0"
             />
+            {withdrawAmountError && (
+              <div className="mt-1 text-xs text-red-600" data-testid="withdraw-amount-error">
+                {withdrawAmountError}
+              </div>
+            )}
             <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
               <span>
                 The recipient receives this amount; the {formatCount(feeHns)} HNS network fee is
@@ -707,7 +720,7 @@ export function NamebaseDashboard() {
                 type="button"
                 className="text-blue-600 hover:underline"
                 onClick={() =>
-                  setWithdrawAmount(String(Number(Math.max(availableHns - feeHns, 0).toFixed(6))))
+                  setWithdrawAmount(doosToHnsDigits(Math.max(availableDoos - feeDoos, 0)))
                 }
               >
                 Max
@@ -716,25 +729,25 @@ export function NamebaseDashboard() {
           </div>
 
           {/* Fee breakdown — make the fee explicit. */}
-          {Number.isFinite(amountNet) && amountNet > 0 && (
+          {netDoos !== null && grossDoos !== null && (
             <div className="bg-gray-50 border border-gray-200 rounded p-3 text-sm space-y-1">
               <div className="flex justify-between text-gray-600">
                 <span>Send to recipient</span>
-                <span className="font-mono">{formatHnsAmount(amountNet)} HNS</span>
+                <span className="font-mono">{formatHns(netDoos)} HNS</span>
               </div>
               <div className="flex justify-between text-gray-600">
                 <span>Network fee</span>
-                <span className="font-mono">+ {formatHnsAmount(feeHns)} HNS</span>
+                <span className="font-mono">+ {formatHns(feeDoos)} HNS</span>
               </div>
               <div className="flex justify-between font-semibold text-gray-900 border-t border-gray-200 pt-1">
                 <span>Total debited</span>
-                <span className="font-mono">{formatHnsAmount(grossHns)} HNS</span>
+                <span className="font-mono">{formatHns(grossDoos)} HNS</span>
               </div>
             </div>
           )}
           {overBalance && (
             <div className="bg-red-50 border border-red-300 rounded p-2 text-xs text-red-800">
-              Not enough balance — need {formatCount(grossHns)} HNS including the{" "}
+              Not enough balance — need {formatHns(grossDoos)} HNS including the{" "}
               {formatCount(feeHns)} HNS fee (available {formatCount(availableHns)} HNS).
             </div>
           )}
@@ -772,13 +785,16 @@ export function NamebaseDashboard() {
               variant="primary"
               disabled={!amountValid || !dest || withdrawHns.isPending}
               onClick={async () => {
-                if (!amountValid || !dest) return;
+                if (!amountValid || netDoos === null || grossDoos === null || !dest) return;
                 try {
                   // Namebase's `amount` is the GROSS (HNS) debited; recipient gets
                   // gross − fee. The user entered the net, so send net + fee.
-                  await withdrawHns.mutateAsync({ address: dest, amount: String(grossHns) });
+                  await withdrawHns.mutateAsync({
+                    address: dest,
+                    amount: doosToHnsDigits(grossDoos),
+                  });
                   showToast(
-                    `Withdrawal of ${formatHnsAmount(amountNet)} HNS requested (+${formatHnsAmount(feeHns)} HNS fee)`,
+                    `Withdrawal of ${formatHns(netDoos)} HNS requested (+${formatHns(feeDoos)} HNS fee)`,
                     "success",
                   );
                   setWithdrawOpen(false);

@@ -228,6 +228,7 @@ fn draft_status(conn: &Connection) -> (String, Option<String>) {
 
 fn tip(blocks: i64) -> BlockchainInfo {
     BlockchainInfo {
+        chain: Some("main".into()),
         blocks,
         mediantime: Some(LATE_MTP),
         ..Default::default()
@@ -620,6 +621,7 @@ async fn rebroadcast_waits_when_the_price_cannot_be_rechecked() {
     .unwrap();
     let rpc = missing_at(1006)
         .with_blockchain_info(BlockchainInfo {
+            chain: Some("main".into()),
             blocks: 1006,
             ..Default::default()
         })
@@ -659,6 +661,7 @@ async fn rebroadcast_waits_while_the_paid_step_is_not_valid_yet() {
             .unwrap();
             let rpc = missing_at(height)
                 .with_blockchain_info(BlockchainInfo {
+                    chain: Some("main".into()),
                     blocks: height,
                     mediantime: Some(mtp),
                     ..Default::default()

@@ -18,7 +18,7 @@ import {
   pendingBroadcastText,
   pendingBroadcastBadge,
 } from "./auction";
-import { hnsToDollarydoos } from "./utils";
+import { parseHnsAmount } from "./hnsAmount";
 import type { HsdNameStats } from "../types";
 
 describe("auctionPhase", () => {
@@ -171,11 +171,11 @@ describe("closedResultUnknown — a closed auction with a bid not settled yet", 
   });
 });
 
-describe("hnsToDollarydoos / doosToHns", () => {
+describe("parseHnsAmount / doosToHns", () => {
   it("converts HNS to doos (integer)", () => {
-    expect(hnsToDollarydoos(1)).toBe(1_000_000);
-    expect(hnsToDollarydoos(0.5)).toBe(500_000);
-    expect(hnsToDollarydoos(100)).toBe(100_000_000);
+    expect(parseHnsAmount("1")).toEqual({ doos: 1_000_000 });
+    expect(parseHnsAmount("0.5")).toEqual({ doos: 500_000 });
+    expect(parseHnsAmount("100")).toEqual({ doos: 100_000_000 });
   });
 
   it("converts doos to HNS", () => {
@@ -185,8 +185,8 @@ describe("hnsToDollarydoos / doosToHns", () => {
   });
 
   it("round-trips correctly", () => {
-    const hns = 12.345678;
-    expect(doosToHns(hnsToDollarydoos(hns))).toBeCloseTo(hns, 5);
+    const read = parseHnsAmount("12.345678");
+    expect("doos" in read && doosToHns(read.doos)).toBeCloseTo(12.345678, 5);
   });
 });
 
@@ -296,6 +296,42 @@ describe("validateBidInputs (Task 12 / F4 — client-side bid validation)", () =
     expect(v.lockupValid).toBe(false);
     expect(v.formValid).toBe(false);
     expect(v.lockupError).toMatch(/greater than 0/i);
+  });
+
+  it("returns the exact doos it checked, which the form sends", () => {
+    const v = validateBidInputs("1234.567891", "1234.567891");
+    expect(v.formValid).toBe(true);
+    expect(v.bidDoos).toBe(1_234_567_891);
+    expect(v.lockupDoos).toBe(1_234_567_891);
+  });
+
+  it("refuses a 7th decimal in the bid or the lockup instead of rounding it", () => {
+    const bid = validateBidInputs("10.0000005", "20");
+    expect(bid.formValid).toBe(false);
+    expect(bid.bidError).toBe("HNS has at most 6 decimals");
+    expect(bid.bidDoos).toBeNull();
+    const lockup = validateBidInputs("10", "20.0000005");
+    expect(lockup.formValid).toBe(false);
+    expect(lockup.lockupError).toBe("HNS has at most 6 decimals");
+    expect(lockup.lockupDoos).toBeNull();
+  });
+
+  it("refuses a bid below one doo instead of sending 0 doos", () => {
+    const v = validateBidInputs("0.0000004", "10");
+    expect(v.bidValid).toBe(false);
+    expect(v.formValid).toBe(false);
+  });
+
+  it("refuses exponent and hex notation the old Number() check took", () => {
+    expect(validateBidInputs("1e3", "2000").bidValid).toBe(false);
+    expect(validateBidInputs("0x10", "20").bidValid).toBe(false);
+  });
+
+  it("compares bid and lockup in doos: one doo over the lockup is refused", () => {
+    const over = validateBidInputs("1.000001", "1");
+    expect(over.formValid).toBe(false);
+    expect(over.lockupError).toMatch(/lockup must be at least/i);
+    expect(validateBidInputs("1.000001", "1.000001").formValid).toBe(true);
   });
 });
 

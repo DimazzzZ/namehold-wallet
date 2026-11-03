@@ -200,7 +200,7 @@ For a detailed threat model, attack surfaces, and mitigations, see [SECURITY.md]
   default, balance and name lookups query the public HNSFans explorer, which sees
   your wallet addresses and tracked names. Run your own hsd node (Settings) to keep
   all lookups fully local. No cloud, no telemetry.
-- **Auto-lock** — the unlocked signer times out after a configurable idle period.
+- **Auto-lock** — the unlocked signer locks after a configurable idle period (1 to 60 minutes) and at the latest an hour after it was unlocked; the decrypted master key is dropped, its bytes overwritten, within a second of the session expiring.
 - **Namebase migration (retired)** — the legacy Namebase it talked to shut down on 1 October 2026. A session cookie stored before then stays encrypted at rest and is never exposed to the web layer; disconnecting clears it. See [SECURITY.md](./SECURITY.md) for the threat model.
 
 ## Prerequisites

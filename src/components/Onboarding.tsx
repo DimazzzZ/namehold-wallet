@@ -61,7 +61,8 @@ export function Onboarding() {
 /**
  * First-run connection choice: "How do you want to connect?"
  * Three options: Local full node (default), Remote node, or SPV.
- * Persists chain_source, node_mode, and node_rpc_url, then advances to wallet creation.
+ * Persists chain_source and node_mode (and the node URL, API key and
+ * remote-send choice for a remote node), then advances to wallet creation.
  */
 function ConnectionChoice({
   network,
@@ -77,28 +78,35 @@ function ConnectionChoice({
   const [remoteApiKey, setRemoteApiKey] = useState("");
   const [allowRemoteBroadcast, setAllowRemoteBroadcast] = useState(false);
   const probe = useNodeConnectionCheck();
+  const [saveError, setSaveError] = useState<string | null>(null);
 
-  const selectLocal = async () => {
-    await saveAll(fromConnectionMode("local_full"));
-    onNext();
+  // The connection settings are protected (lib/protectedSettings.ts): a
+  // change is saved only once the user confirms it in the secure window. A
+  // declined confirmation saves nothing and keeps this step open. The backend
+  // can also refuse a value; this screen has no toast host, so it says why here.
+  const save = async (settings: Record<string, string>) => {
+    setSaveError(null);
+    try {
+      if (await saveAll(settings)) onNext();
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    }
   };
 
-  const selectSpv = async () => {
-    await saveAll(fromConnectionMode("local_spv"));
-    onNext();
-  };
+  const selectLocal = () => save(fromConnectionMode("local_full"));
+
+  const selectSpv = () => save(fromConnectionMode("local_spv"));
 
   const selectRemote = async () => {
     // The Continue button is disabled until a probe succeeds; this guard only
     // covers a programmatic click.
     if (!probe.ok) return;
-    await saveAll({
+    await save({
       ...fromConnectionMode("remote_node"),
       node_rpc_url: remoteUrl.trim(),
       node_rpc_api_key: remoteApiKey,
       allow_remote_broadcast: boolToSetting(allowRemoteBroadcast),
     });
-    onNext();
   };
 
   return (
@@ -128,6 +136,16 @@ function ConnectionChoice({
             className="max-w-xs"
           />
         </div>
+
+        {saveError && (
+          <div
+            className="text-sm text-red-600 mb-4"
+            role="alert"
+            data-testid="connection-save-error"
+          >
+            {saveError}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {/* Local full node */}

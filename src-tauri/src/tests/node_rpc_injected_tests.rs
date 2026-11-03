@@ -1075,45 +1075,42 @@ async fn broadcast_guard_refuses_a_node_on_another_chain() {
     assert!(msg.contains("mainnet"), "{msg}");
 }
 
-/// The guard only refuses a POSITIVE mismatch: a matching chain, a node that
-/// reports none, an unknown profile network, and an unreachable node all pass
-/// through to the existing broadcast error handling.
+/// A matching chain passes; hsd reports `main` for a `mainnet` profile.
 #[tokio::test]
-async fn broadcast_guard_allows_matching_unknown_and_unreachable() {
+async fn broadcast_guard_passes_a_node_that_confirms_our_chain() {
     let matching =
         MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), Some("main")));
-    assert!(
-        crate::noncustodial::rpc::broadcast_network_guard_with_client(&matching, Some("mainnet"))
-            .await
-            .is_ok(),
-        "hsd reports 'main' for a 'mainnet' profile"
-    );
+    crate::noncustodial::rpc::broadcast_network_guard_with_client(&matching, Some("mainnet"))
+        .await
+        .expect("hsd reports 'main' for a 'mainnet' profile");
+}
 
+/// The send path fails closed: a node that reports no chain, an unreachable
+/// node and a wallet with no network to compare all refuse the send, because
+/// the network could not be confirmed. Reads keep their "unknown goes on" rule.
+#[tokio::test]
+async fn broadcast_guard_refuses_when_the_network_cannot_be_confirmed() {
     let silent = MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), None));
-    assert!(
-        crate::noncustodial::rpc::broadcast_network_guard_with_client(&silent, Some("mainnet"))
-            .await
-            .is_ok()
-    );
-
+    let unreachable = MockNodeRpc::new().with_blockchain_info_err("no route");
     let regtest =
         MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), Some("regtest")));
-    assert!(
-        crate::noncustodial::rpc::broadcast_network_guard_with_client(&regtest, None)
+    for (case, node, expected) in [
+        ("reports no chain", &silent, Some("mainnet")),
+        ("unreachable", &unreachable, Some("mainnet")),
+        ("no wallet network", &regtest, None),
+    ] {
+        let err = crate::noncustodial::rpc::broadcast_network_guard_with_client(node, expected)
             .await
-            .is_ok(),
-        "no profile network to compare against"
-    );
-
-    let unreachable = MockNodeRpc::new().with_blockchain_info_err("no route");
+            .expect_err(case)
+            .to_string();
+        assert!(err.contains("could not confirm"), "{case}: {err}");
+        assert!(err.contains("was not sent"), "{case}: {err}");
+    }
     assert!(
-        crate::noncustodial::rpc::broadcast_network_guard_with_client(
-            &unreachable,
-            Some("mainnet")
-        )
-        .await
-        .is_ok(),
-        "a probe failure is not a mismatch"
+        silent
+            .calls_matching(|c| matches!(c, crate::tests::mock_node_rpc::RpcCall::BlockchainInfo))
+            .len()
+            == 1
     );
 }
 
@@ -1753,6 +1750,34 @@ async fn broadcast_gates_pass_a_local_node_and_an_approved_remote_on_our_chain()
     .unwrap();
 }
 
+/// The chain source is only a label. A node on another machine is remote even
+/// when labelled local, and the opt-in is what lets a send go to it.
+#[tokio::test]
+async fn broadcast_gates_ask_the_opt_in_for_a_node_off_this_machine_whatever_its_label() {
+    use crate::noncustodial::rpc::{broadcast_gates, ChainSource};
+    for url in [
+        "https://node.example:12037",
+        "http://10.0.0.5:12037",
+        "http://localhost.evil.example:12037",
+        "not a url",
+    ] {
+        let mut labelled_local = node(ChainSource::LocalNode, "main");
+        labelled_local.node_url = url.to_string();
+        let err = broadcast_gates(&labelled_local, &opt_in(false), Some("mainnet"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Allow sending via remote node"),
+            "{url}: {err}"
+        );
+    }
+    let mut labelled_local = node(ChainSource::LocalNode, "main");
+    labelled_local.node_url = "https://node.example:12037".to_string();
+    broadcast_gates(&labelled_local, &opt_in(true), Some("mainnet"))
+        .await
+        .unwrap();
+}
+
 // ------- noncustodial::tx_evidence --------------------------------------------
 
 use crate::noncustodial::tx_evidence::{
@@ -2061,4 +2086,51 @@ async fn history_status_error_surfaces_and_indexed_node_keeps_partial_reads() {
             .await
             .expect("per-address errors stay swallowed");
     assert!(rows.is_empty());
+}
+
+/// "Test connection" never sends a generated key to a URL the user typed, the
+/// running own node's address included; only the saved URL reads it, through the
+/// rule every client uses (the own node's address, the node running).
+#[test]
+fn probe_key_sends_the_generated_key_only_to_the_saved_url_of_the_running_own_node() {
+    use crate::noncustodial::network::Network;
+    let base = crate::tests::command_helpers::TempDir::new();
+    let mut s = std::collections::HashMap::new();
+    s.insert(
+        crate::noncustodial::rpc::managed_node_api_key_setting(Network::Main).to_string(),
+        "generated".to_string(),
+    );
+    s.insert(
+        "hsd_prefix".to_string(),
+        base.path().to_str().unwrap().to_string(),
+    );
+    crate::commands::local_node::write_pid_file(base.path(), std::process::id()).unwrap();
+
+    for typed in [
+        "http://127.0.0.1:12037",
+        "https://evil.example.com:12037",
+        "http://127.0.0.1:22037",
+    ] {
+        assert_eq!(resolve_probe_api_key(typed, None, &s), "", "{typed}");
+    }
+    s.insert(
+        "node_rpc_url".to_string(),
+        "http://127.0.0.1:12037".to_string(),
+    );
+    assert_eq!(
+        resolve_probe_api_key("http://127.0.0.1:12037/", None, &s),
+        "generated"
+    );
+    // The node is gone: the saved URL no longer earns the key either.
+    crate::commands::local_node::remove_pid_file(base.path());
+    assert_eq!(
+        resolve_probe_api_key("http://127.0.0.1:12037", None, &s),
+        ""
+    );
+    // The saved URL's own configured key still goes.
+    s.insert("node_rpc_api_key".to_string(), "configured".to_string());
+    assert_eq!(
+        resolve_probe_api_key("http://127.0.0.1:12037", None, &s),
+        "configured"
+    );
 }

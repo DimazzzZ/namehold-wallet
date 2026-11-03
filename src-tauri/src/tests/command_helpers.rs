@@ -123,3 +123,26 @@ pub fn insert_liquid_coin(
     )
     .unwrap();
 }
+
+/// A new directory under the system temp dir, removed on drop.
+pub(crate) struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    pub(crate) fn new() -> Self {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("namehold-test-{}-{seq}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}

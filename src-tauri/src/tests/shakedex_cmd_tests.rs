@@ -351,6 +351,22 @@ pub(crate) fn regtest_listing_with(lock_value: u64, steps: &[(u64, u64)]) -> Reg
 
 // --- build: gates -----------------------------------------------------------
 
+/// Refused before anything is signed, as `broadcast_gates` would refuse the
+/// send: a node off this machine needs the opt-in whatever its label.
+#[tokio::test]
+async fn build_purchase_refused_for_a_node_off_this_machine_labelled_local() {
+    let conn = mainnet("https://node.example:12037");
+    set(&conn, "chain_source", "local_node");
+    let app = app_with(conn);
+    let err = shakedex_build_purchase_draft(app.state(), LISTING_FILE.into(), None, false, None)
+        .await
+        .unwrap_err();
+    assert!(
+        err_text(err).contains(crate::commands::shakedex::NEEDS_SENDING_NODE),
+        "the sentence the UI shows on the disabled Buy"
+    );
+}
+
 #[tokio::test]
 async fn build_purchase_refused_without_write_capability() {
     let mut node = mockito::Server::new_async().await;
@@ -823,6 +839,113 @@ async fn published_market_fee_is_paid_when_chosen() {
     assert_eq!(paid[0]["value"], 4_350_000);
     assert_eq!(draft.summary["marketFeeDoos"], 4_350_000);
     assert_eq!(draft.summary["sendTotalDoos"], 435_000_000 + 4_350_000);
+    assert!(
+        market_fee_warnings(&draft.summary).is_empty(),
+        "the market's own fee carries no warning: {}",
+        draft.summary
+    );
+}
+
+/// The draft summary's "Market fee: …" warnings, which the secure window
+/// shows as rows.
+fn market_fee_warnings(summary: &Value) -> Vec<String> {
+    summary["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap().to_string())
+        .filter(|w| w.starts_with("Market fee: "))
+        .collect()
+}
+
+/// R11: a fee that is not the market's own, paid anyway because the user
+/// ticked the box, carries its line's warning into the secure window.
+#[tokio::test]
+async fn an_unpublished_fee_paid_anyway_carries_its_warning_row() {
+    let mut node = mockito::Server::new_async().await;
+    let _m = live_node(&mut node).await;
+    let mut market = mockito::Server::new_async().await;
+    let foreign = mainnet_addr(7);
+    let _f = mock_fee_info(&mut market, 100, &mainnet_addr(8)).await;
+    let conn = mainnet(&node.url());
+    set(&conn, "learnhns_base_url", &market.url());
+    let app = app_with(conn);
+    let listing = listing_with_fee(&foreign);
+    let preview = shakedex_preview_purchase(app.state(), listing.clone(), true, true, None)
+        .await
+        .expect("preview");
+    let warning = preview.market_fee.unwrap().warning.expect("unpublished");
+    let draft = shakedex_build_purchase_draft(app.state(), listing, Some(4_350_000), true, None)
+        .await
+        .expect("build");
+    assert_eq!(draft.summary["marketFeeDoos"], 4_350_000);
+    assert_eq!(
+        market_fee_warnings(&draft.summary),
+        [format!("Market fee: {warning}")]
+    );
+    assert!(warning.starts_with("not signed by the seller"), "{warning}");
+}
+
+/// shakedex-3: a market that publishes a 100% rate and its own address does
+/// not make a 10% fee its own: the preview shows it unpublished (so the box
+/// is not pre-ticked) with the over-the-cap warning, and a purchase that
+/// pays it anyway carries that warning into the secure window's rows.
+#[tokio::test]
+async fn a_market_fee_over_five_percent_shows_a_warning_row() {
+    let mut node = mockito::Server::new_async().await;
+    let _m = live_node(&mut node).await;
+    let mut market = mockito::Server::new_async().await;
+    let fee_addr = mainnet_addr(7);
+    let _f = mock_fee_info(&mut market, 10_000, &fee_addr).await;
+    let conn = mainnet(&node.url());
+    set(&conn, "learnhns_base_url", &market.url());
+    let app = app_with(conn);
+    let mut j: Value = serde_json::from_str(&listing_with_fee(&fee_addr)).unwrap();
+    let price = j["data"][0]["price"].as_u64().unwrap();
+    j["data"][0]["fee"] = (price / 10).into();
+    let listing = j.to_string();
+
+    let preview = shakedex_preview_purchase(app.state(), listing.clone(), true, true, None)
+        .await
+        .expect("preview");
+    let fee = preview.market_fee.as_ref().unwrap();
+    assert!(!fee.published, "not pre-ticked");
+    assert!(fee.payable);
+    assert_eq!(fee.percent_text.as_deref(), Some("10.00%"));
+    let warning = fee.warning.clone().expect("a warning");
+    assert!(warning.starts_with("over 5% of the price"), "{warning}");
+
+    let draft = shakedex_build_purchase_draft(app.state(), listing, Some(price / 10), true, None)
+        .await
+        .expect("build");
+    assert_eq!(draft.summary["marketFeeDoos"], price / 10);
+    assert_eq!(
+        market_fee_warnings(&draft.summary),
+        [format!("Market fee: {warning}")]
+    );
+}
+
+/// shakedex-3: a fee the user declined warns nobody in the secure window,
+/// however far over the cap it is.
+#[tokio::test]
+async fn a_declined_market_fee_adds_no_warning_row() {
+    let mut node = mockito::Server::new_async().await;
+    let _m = live_node(&mut node).await;
+    let mut market = mockito::Server::new_async().await;
+    let fee_addr = mainnet_addr(7);
+    let _f = mock_fee_info(&mut market, 10_000, &fee_addr).await;
+    let conn = mainnet(&node.url());
+    set(&conn, "learnhns_base_url", &market.url());
+    let app = app_with(conn);
+    let mut j: Value = serde_json::from_str(&listing_with_fee(&fee_addr)).unwrap();
+    let price = j["data"][0]["price"].as_u64().unwrap();
+    j["data"][0]["fee"] = (price / 10).into();
+
+    let draft = shakedex_build_purchase_draft(app.state(), j.to_string(), None, true, None)
+        .await
+        .expect("build");
+    assert_eq!(draft.summary["marketFeeDoos"], 0);
+    assert_eq!(market_fee_warnings(&draft.summary), Vec::<String>::new());
 }
 
 #[tokio::test]
@@ -1893,14 +2016,68 @@ async fn broadcast_refused_without_median_time() {
     assert_unsent_purchase_discarded(&app, &draft_id);
 }
 
+/// The chain probe every send starts with cannot confirm the network: nothing
+/// is sent, and the signed purchase stays as it was for a retry, as for a node
+/// on another chain.
+#[tokio::test]
+async fn broadcast_refused_when_the_chain_probe_gets_a_proxy_error_keeps_the_purchase() {
+    let mut node = mockito::Server::new_async().await;
+    let (app, draft_id, info) = signed_reverse_auction_purchase(&mut node).await;
+    info.remove_async().await;
+    let _proxy = node
+        .mock("POST", "/")
+        .match_body(Matcher::PartialJson(
+            json!({ "method": "getblockchaininfo" }),
+        ))
+        .with_status(502)
+        .with_body("<html><body>502 Bad Gateway</body></html>")
+        .create_async()
+        .await;
+    let send = mock_send(&mut node, 0).await;
+
+    let err = crate::commands::tx::broadcast_tx_draft(app.state(), draft_id.clone())
+        .await
+        .unwrap_err();
+    assert!(err_text(err).contains("could not confirm"));
+    send.assert_async().await;
+    with_db(&app, |c| {
+        let draft = crate::db::queries::get_tx_draft(c, &draft_id).unwrap();
+        assert_eq!(
+            draft.map(|d| d.status),
+            Some(db::queries::DraftStatus::Signed)
+        );
+        let purchases: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM shakedex_purchases WHERE purchase_draft_id = ?1",
+                params![draft_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(purchases, 1);
+    });
+}
+
 /// A proxy's error page where the node's answer should be, just before the
-/// send: the price cannot be re-checked, so nothing is sent and the purchase
-/// is discarded for the user to review again (R10, "or the node cannot say").
+/// send, after the chain probe passed: the price cannot be re-checked, so
+/// nothing is sent and the purchase is discarded for the user to review again
+/// (R10, "or the node cannot say").
 #[tokio::test]
 async fn broadcast_refused_when_the_node_answers_with_a_proxy_error() {
     let mut node = mockito::Server::new_async().await;
     let (app, draft_id, info) = signed_reverse_auction_purchase(&mut node).await;
     info.remove_async().await;
+    let _chain_probe = node
+        .mock("POST", "/")
+        .match_body(Matcher::PartialJson(
+            json!({ "method": "getblockchaininfo" }),
+        ))
+        .with_header("content-type", "application/json")
+        .with_body(rpc_ok(
+            json!({ "chain": "regtest", "blocks": REGTEST_TIP, "headers": REGTEST_TIP }),
+        ))
+        .expect(1)
+        .create_async()
+        .await;
     let _proxy = node
         .mock("POST", "/")
         .match_body(Matcher::PartialJson(

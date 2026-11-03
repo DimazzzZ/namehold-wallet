@@ -8,6 +8,7 @@
 
 import type { HsdName, HsdNameStats, AuctionTaskState, NameActionCapabilities } from "../types";
 import { formatHns } from "./utils";
+import { parseHnsAmount } from "./hnsAmount";
 
 export type AuctionPhase =
   "AVAILABLE" | "OPENING" | "BIDDING" | "REVEAL" | "CLOSED" | "REVOKED" | "TRANSFER" | "OTHER";
@@ -428,6 +429,16 @@ export function taskStateUrgencyRank(state: AuctionTaskState): number {
   }
 }
 
+/**
+ * The reveal rule every batch bid step states. hsd lets a BID coin be spent
+ * only by a REVEAL (`rules.js`), and a REVEAL only in the reveal period
+ * (`chain.js`, `bad-reveal-state`), so the lockup of a bid never revealed can
+ * never move again. The secure window says the same for every BID
+ * (`review.rs::BID_REVEAL_WARNING`).
+ */
+export const BID_FORFEIT_RULE =
+  "A bid you don't reveal during the reveal window forfeits its entire lockup.";
+
 /** Result of [`validateBidInputs`] — everything a bid form needs to render
  * inline errors and gate its submit button. */
 export interface BidInputValidation {
@@ -437,35 +448,39 @@ export interface BidInputValidation {
   formValid: boolean;
   bidError: string | null;
   lockupError: string | null;
+  /** The bid in doos, exactly as typed; null unless `bidValid`. */
+  bidDoos: number | null;
+  /** The lockup in doos, exactly as typed; null unless `lockupValid`. */
+  lockupDoos: number | null;
 }
 
 /**
- * Client-side bid-form validation (F4 fix): `0 < bid ≤ lockup`, and both
- * inputs must parse as finite numbers (an empty field, "abc", "-1", "NaN",
- * "Infinity", etc. are all rejected). An unrevealed/invalid bid forfeits real
- * locked funds, so this is fast UI feedback ahead of the backend's
- * authoritative check at build time.
+ * Client-side bid-form validation (F4 fix): each field is read by
+ * `parseHnsAmount` (plain digits, at most 6 decimals, above 0, within the
+ * money supply; never rounded), and `bid ≤ lockup` is compared in doos. An
+ * unrevealed/invalid bid forfeits real locked funds, so this is fast UI
+ * feedback ahead of the backend's authoritative check at build time.
  *
- * Pulled out as a pure function (rather than inlined per-component state) so
- * the guided and advanced bid forms — still duplicated until Task 13 — share
- * the exact same rule and can't drift, and so the rule is unit-testable
- * without going through an `<input type="number">`, whose own browser-level
- * sanitization would otherwise make some invalid strings unreachable via a
- * simulated DOM change event.
+ * The doos it returns are what the form sends, so the check and the amount
+ * built cannot disagree. Pulled out as a pure function so the single and the
+ * batch bid forms share the exact same rule, and so the rule is unit-testable
+ * without a DOM.
  */
 export function validateBidInputs(bidHns: string, lockupHns: string): BidInputValidation {
-  const bidNum = Number(bidHns);
-  const lockupNum = Number(lockupHns);
+  const bid = parseHnsAmount(bidHns);
+  const lockup = parseHnsAmount(lockupHns);
   const bidEntered = bidHns.trim() !== "";
   const lockupEntered = lockupHns.trim() !== "";
-  const bidValid = bidEntered && Number.isFinite(bidNum) && bidNum > 0;
-  const lockupValid = lockupEntered && Number.isFinite(lockupNum) && lockupNum > 0;
-  const bidExceedsLockup = bidValid && lockupValid && bidNum > lockupNum;
-  const bidError = bidEntered && !bidValid ? "Enter a bid amount greater than 0" : null;
+  const bidDoos = "doos" in bid ? bid.doos : null;
+  const lockupDoos = "doos" in lockup ? lockup.doos : null;
+  const bidValid = bidDoos !== null;
+  const lockupValid = lockupDoos !== null;
+  const bidExceedsLockup = bidDoos !== null && lockupDoos !== null && bidDoos > lockupDoos;
+  const bidError = bidEntered && "error" in bid ? bid.error : null;
   const lockupError = !lockupEntered
     ? null
-    : !lockupValid
-      ? "Enter a lockup amount greater than 0"
+    : "error" in lockup
+      ? lockup.error
       : bidExceedsLockup
         ? "Lockup must be at least the bid amount"
         : null;
@@ -475,6 +490,8 @@ export function validateBidInputs(bidHns: string, lockupHns: string): BidInputVa
     formValid: bidValid && lockupValid && !bidExceedsLockup,
     bidError,
     lockupError,
+    bidDoos,
+    lockupDoos,
   };
 }
 

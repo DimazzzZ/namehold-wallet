@@ -19,6 +19,7 @@ pub mod market;
 mod models;
 mod namebase;
 pub mod noncustodial;
+mod protected_settings;
 mod providers;
 mod security;
 pub mod shakedex_jobs;
@@ -96,9 +97,22 @@ pub(crate) fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
     tauri::generate_context!()
 }
 
+/// What a release build's process does before anything else: no core dumps
+/// ([`security::disable_core_dumps`]). A debug build keeps them for debugging.
+/// A failure is logged and the process goes on: it costs a hardening, not a key.
+pub fn harden_process() {
+    #[cfg(unix)]
+    if !cfg!(debug_assertions) {
+        if let Err(e) = security::disable_core_dumps() {
+            eprintln!("could not disable core dumps: {e}");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn run() {
+    harden_process();
     // macOS: claim the notification sender identity as Namehold BEFORE the
     // notification plugin initializes. `notify_rust::set_application` is
     // `Once`-guarded, so the first caller wins for the whole process. This
@@ -119,6 +133,7 @@ pub fn run() {
     // conditionally below); allow the unused-mut warning in debug builds.
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
+        .plugin(security::navigation_guard())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
@@ -170,7 +185,8 @@ pub fn run() {
                 .expect("failed to get home dir")
                 .join(".namehold")
                 .join("portfolio.db");
-            std::fs::create_dir_all(db_path.parent().unwrap()).expect("failed to create data dir");
+            db::connection::secure_data_dir(db_path.parent().unwrap())
+                .expect("failed to create data dir");
             let conn = db::connection::open(&db_path).expect("failed to open database");
             db::migrations::run(&conn).expect("failed to run migrations");
 
@@ -445,6 +461,19 @@ pub fn run() {
                 }
             });
 
+            // Signer expiry sweep: once a second, drop the signer session
+            // if its time box has elapsed, so the decrypted key leaves memory
+            // when the session expires, not at the next command that looks
+            // (the frontend's polling pauses when the window is hidden).
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+                loop {
+                    interval.tick().await;
+                    commands::secure_wallet::sweep_expired_signer(&handle.state::<AppState>());
+                }
+            });
+
             // Update checker (I2): on start + every ~4 hours, check for a new
             // app version and fire an OS notification if one is found (gated by
             // `update_notify_enabled` setting). Deduped by comparing against
@@ -625,6 +654,7 @@ pub fn run() {
             commands::batches::remove_from_batch,
             commands::settings::get_settings,
             commands::settings::update_setting,
+            commands::settings::update_protected_settings,
             commands::settings::get_audit_log,
             commands::settings::get_wallet_snapshots,
             commands::csv::import_csv,

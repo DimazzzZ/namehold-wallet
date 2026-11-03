@@ -122,7 +122,7 @@ fn test_secure_prompt_request_with_payload() {
         mode: "reveal".into(),
         title: "Reveal Mnemonic".into(),
         message: "Your recovery phrase".into(),
-        payload: Some("abandon abandon abandon...".into()),
+        payload: Some("abandon abandon abandon...".to_string().into()),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
@@ -166,7 +166,10 @@ fn test_secure_prompt_result_confirmed() {
     });
     let result: secure_prompt::SecurePromptResult = serde_json::from_value(json).unwrap();
     assert!(result.confirmed);
-    assert_eq!(result.value, Some("my-secret-passphrase".into()));
+    assert_eq!(
+        result.value,
+        Some("my-secret-passphrase".to_string().into())
+    );
 }
 
 #[test]
@@ -188,7 +191,7 @@ fn test_secure_prompt_result_empty_value() {
     });
     let result: secure_prompt::SecurePromptResult = serde_json::from_value(json).unwrap();
     assert!(result.confirmed);
-    assert_eq!(result.value, Some("".into()));
+    assert_eq!(result.value, Some("".to_string().into()));
 }
 
 // --- SecurePromptResult deserialization from string ---
@@ -198,7 +201,7 @@ fn test_secure_prompt_result_from_json_string() {
     let json_str = r#"{"value":"my-mnemonic-phrase","confirmed":true}"#;
     let result: secure_prompt::SecurePromptResult = serde_json::from_str(json_str).unwrap();
     assert!(result.confirmed);
-    assert_eq!(result.value, Some("my-mnemonic-phrase".into()));
+    assert_eq!(result.value, Some("my-mnemonic-phrase".to_string().into()));
 }
 
 #[test]
@@ -215,14 +218,14 @@ fn test_secure_prompt_result_cancelled_from_json_string() {
 fn test_oneshot_delivers_result() {
     let (tx, rx) = tokio::sync::oneshot::channel::<secure_prompt::SecurePromptResult>();
     let result = secure_prompt::SecurePromptResult {
-        value: Some("secret123".into()),
+        value: Some("secret123".to_string().into()),
         confirmed: true,
     };
     assert!(tx.send(result).is_ok());
     let rt = tokio::runtime::Runtime::new().unwrap();
     let received = rt.block_on(rx).unwrap();
     assert!(received.confirmed);
-    assert_eq!(received.value, Some("secret123".into()));
+    assert_eq!(received.value, Some("secret123".to_string().into()));
 }
 
 #[test]
@@ -238,14 +241,14 @@ fn test_oneshot_cancel_delivers_error() {
 fn test_oneshot_double_send_fails() {
     let (tx, rx) = tokio::sync::oneshot::channel::<secure_prompt::SecurePromptResult>();
     let result = secure_prompt::SecurePromptResult {
-        value: Some("first".into()),
+        value: Some("first".to_string().into()),
         confirmed: true,
     };
     assert!(tx.send(result).is_ok());
     let rt = tokio::runtime::Runtime::new().unwrap();
     let received = rt.block_on(rx).unwrap();
     assert!(received.confirmed);
-    assert_eq!(received.value, Some("first".into()));
+    assert_eq!(received.value, Some("first".to_string().into()));
 }
 
 // --- Window close simulation test ---
@@ -279,7 +282,7 @@ fn test_multiple_oneshot_channels() {
     // Send confirmed results on all channels
     for tx in senders {
         let _ = tx.send(secure_prompt::SecurePromptResult {
-            value: Some("answer".into()),
+            value: Some("answer".to_string().into()),
             confirmed: true,
         });
     }
@@ -287,7 +290,7 @@ fn test_multiple_oneshot_channels() {
     for rx in receivers {
         let result = rt.block_on(rx).unwrap();
         assert!(result.confirmed);
-        assert_eq!(result.value, Some("answer".into()));
+        assert_eq!(result.value, Some("answer".to_string().into()));
     }
 }
 
@@ -317,7 +320,7 @@ fn test_secure_prompt_request_clone() {
         mode: "reveal".into(),
         title: "Reveal".into(),
         message: "Your phrase".into(),
-        payload: Some("secret phrase".into()),
+        payload: Some("secret phrase".to_string().into()),
         ..Default::default()
     };
     let cloned = req.clone();
@@ -356,5 +359,21 @@ fn test_secure_prompt_result_unicode_value() {
     });
     let result: secure_prompt::SecurePromptResult = serde_json::from_value(json).unwrap();
     assert!(result.confirmed);
-    assert_eq!(result.value, Some("abandon abandon abandon".into()));
+    assert_eq!(
+        result.value,
+        Some("abandon abandon abandon".to_string().into())
+    );
+}
+
+/// A prompt's secret fields wipe themselves when dropped, on every path. A
+/// plain `String` here would not compile.
+#[test]
+fn secret_fields_of_a_prompt_are_wiped_on_drop() {
+    fn wiped_on_drop<T: zeroize::ZeroizeOnDrop>(_: &Option<T>) {}
+    let answer = secure_prompt::SecurePromptResult {
+        value: None,
+        confirmed: false,
+    };
+    wiped_on_drop(&answer.value);
+    wiped_on_drop(&secure_prompt::SecurePromptRequest::default().payload);
 }

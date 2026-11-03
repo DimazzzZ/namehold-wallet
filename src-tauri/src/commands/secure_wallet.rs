@@ -6,20 +6,18 @@
 //! React-invoked command. The frontend triggers a flow and receives a
 //! secret-free [`WalletProfileSummary`] / [`SignerSessionSummary`] or an error.
 //!
-//! COVERAGE: ~23% — every command in this module routes through
-//! `secure_prompt::prompt_secure` (which opens an interactive OS webview window)
-//! and/or a `LedgerSigner` (real USB-HID hardware device). Neither can be driven
-//! from a unit test: the secure window awaits a human typing into a native
-//! webview, and the Ledger path awaits APDU exchanges over HID. The pure,
-//! testable pieces of wallet lifecycle (key derivation, encryption, vault
-//! serialization, session state) live in `noncustodial::{hd,vault,session,
-//! derivation,cookie_vault}` and are covered there at ≥95%. What remains here is
-//! the interactive-prompt orchestration shell, which is structurally out of
-//! scope for unit tests.
+//! Tests drive these commands on the mock runtime through the canned answers
+//! of `secure_prompt::push_test_answer`. What they cannot reach is a real
+//! secure window (a human typing into a native webview) and a `LedgerSigner`
+//! (real USB-HID hardware). The pure pieces of wallet lifecycle (key
+//! derivation, encryption, vault serialization, session state) live in
+//! `noncustodial::{hd,vault,session,derivation,cookie_vault}`.
+
+use std::fmt::Write as _;
 
 use rand::RngCore;
-use tauri::{AppHandle, Manager};
-use zeroize::Zeroize;
+use tauri::{AppHandle, Manager, Runtime};
+use zeroize::Zeroizing;
 
 use crate::commands::secure_prompt::{prompt_secure, ImportInput, SecurePromptRequest};
 use crate::db;
@@ -62,7 +60,9 @@ pub(crate) fn fingerprint(account_xpub: &str) -> String {
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn read_settings(app: &AppHandle) -> Result<std::collections::HashMap<String, String>, AppError> {
+fn read_settings<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<std::collections::HashMap<String, String>, AppError> {
     let state = app.state::<AppState>();
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db::queries::get_settings(&conn)
@@ -173,16 +173,67 @@ pub(crate) fn provision_addresses(
 
 /// Device-local key used to encrypt the seed when the user opts out of a
 /// passphrase. The seed is still encrypted at rest (not plaintext), but offers
-/// NO protection against someone with read access to this device's files.
+/// NO protection against someone with read access to this device's files:
+/// this constant is in the public source. A new mainnet wallet therefore
+/// cannot opt out ([`resolve_secret_key`]); a wallet created before that rule
+/// keeps opening with it.
 const NO_PASSPHRASE_KEY: &str = "namehold::no-passphrase::v1";
 
+/// The shortest passphrase a new mainnet wallet accepts. The passphrase is
+/// all that stands between a copy of the database (a backup, another
+/// program running as the user) and the seed, and Argon2id slows each guess
+/// but cannot make a handful of characters hard to guess.
+pub(crate) const MIN_MAINNET_PASSPHRASE_CHARS: usize = 8;
+
+/// Why a new mainnet wallet's passphrase was refused, shown in the secure
+/// window when it asks again.
+pub(crate) const MAINNET_PASSPHRASE_RULE: &str = "A mainnet wallet needs a passphrase of at \
+     least 8 characters: without one, anyone who can read this computer's files could take its \
+     funds.";
+
 /// Map an entered passphrase to the (encryption key, `kdf` marker). An empty
-/// entry means "no passphrase": encrypt under the device-local key.
-pub(crate) fn resolve_secret_key(entered: &str) -> (String, &'static str) {
+/// entry means "no passphrase": encrypt under the device-local key, allowed
+/// on test networks only. A mainnet wallet needs a passphrase of at least
+/// [`MIN_MAINNET_PASSPHRASE_CHARS`] characters.
+pub(crate) fn resolve_secret_key(
+    entered: &str,
+    network: Network,
+) -> Result<(Zeroizing<String>, &'static str), AppError> {
+    if network == Network::Main && entered.chars().count() < MIN_MAINNET_PASSPHRASE_CHARS {
+        return Err(AppError::InvalidInput(MAINNET_PASSPHRASE_RULE.to_string()));
+    }
     if entered.is_empty() {
-        (NO_PASSPHRASE_KEY.to_string(), "none")
+        Ok((Zeroizing::new(NO_PASSPHRASE_KEY.to_string()), "none"))
     } else {
-        (entered.to_string(), "argon2id")
+        Ok((Zeroizing::new(entered.to_string()), "argon2id"))
+    }
+}
+
+/// The passphrase prompt's message for a new wallet on `network`.
+fn new_passphrase_message(network: Network) -> &'static str {
+    if network == Network::Main {
+        "Choose a passphrase to encrypt this wallet on this device (at least 8 characters). \
+         You will type it to unlock the wallet."
+    } else {
+        "Choose a passphrase to encrypt this wallet on this device, or leave blank for none \
+         (anyone who can read this device's files could then use this test wallet)."
+    }
+}
+
+/// Ask for a new wallet's passphrase until it meets [`resolve_secret_key`]'s
+/// rule for `network` or the user cancels.
+#[cfg_attr(coverage_nightly, coverage(off))]
+async fn ask_new_passphrase<R: Runtime>(
+    app: &AppHandle<R>,
+    network: Network,
+) -> Result<(Zeroizing<String>, &'static str), AppError> {
+    let mut message = new_passphrase_message(network).to_string();
+    loop {
+        let entered = ask_passphrase(app, true, &message).await?;
+        match resolve_secret_key(&entered, network) {
+            Ok(key) => return Ok(key),
+            Err(_) => message = MAINNET_PASSPHRASE_RULE.to_string(),
+        }
     }
 }
 
@@ -216,6 +267,17 @@ fn drop_signer_if(state: &AppState, drop_for: impl FnOnce(&str) -> bool) -> Resu
     Ok(())
 }
 
+/// Room for the longest 12-word phrase: BIP39 English words are at most 8
+/// letters, plus the spaces.
+const PHRASE_CAPACITY: usize = 12 * 9;
+
+/// A decrypted vault's recovery phrase, read in place so no second copy of it
+/// exists to wipe.
+fn stored_phrase(plaintext: &[u8]) -> Result<&str, AppError> {
+    std::str::from_utf8(plaintext)
+        .map_err(|_| AppError::Crypto("stored secret is not valid UTF-8".to_string()))
+}
+
 /// The secure prompt that asks for a recovery phrase to import.
 pub(crate) fn phrase_import_request() -> SecurePromptRequest {
     SecurePromptRequest {
@@ -243,7 +305,11 @@ pub(crate) fn xpub_import_request() -> SecurePromptRequest {
 /// field and ALLOWS an empty value (opt out of a passphrase); the unlock prompt
 /// (`new = false`) requires a non-empty value. Errors only on cancel.
 #[cfg_attr(coverage_nightly, coverage(off))]
-async fn ask_passphrase(app: &AppHandle, new: bool, message: &str) -> Result<String, AppError> {
+async fn ask_passphrase<R: Runtime>(
+    app: &AppHandle<R>,
+    new: bool,
+    message: &str,
+) -> Result<Zeroizing<String>, AppError> {
     let mode = if new { "passphrase_new" } else { "passphrase" };
     let res = prompt_secure(
         app,
@@ -264,19 +330,52 @@ async fn ask_passphrase(app: &AppHandle, new: bool, message: &str) -> Result<Str
     Ok(res.value.unwrap_or_default())
 }
 
+/// The key a stored recovery phrase was encrypted under: the fixed device key
+/// for a `kdf = "none"` wallet, otherwise what the user types when asked
+/// with `message`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+async fn stored_passphrase<R: Runtime>(
+    app: &AppHandle<R>,
+    kdf: &str,
+    message: &str,
+) -> Result<Zeroizing<String>, AppError> {
+    if kdf == "none" {
+        Ok(Zeroizing::new(NO_PASSPHRASE_KEY.to_string()))
+    } else {
+        ask_passphrase(app, false, message).await
+    }
+}
+
+/// What the reveal window says when it shows a stored recovery phrase.
+const REVEAL_MESSAGE: &str =
+    "Write these words down in order and keep them offline. Anyone with this phrase can spend \
+     your funds.";
+
+/// What the reveal window says when it shows a new wallet's recovery phrase.
+const CREATE_REVEAL_MESSAGE: &str =
+    "Write these words down in order and keep them offline. Anyone with this phrase can spend \
+     your funds. The wallet is created when you press Done; closing this window creates nothing.";
+
+/// Said when a new wallet's reveal window was closed without the user
+/// confirming that the phrase is written down.
+pub(crate) const CREATE_NOT_CONFIRMED: &str = "The wallet was not created: you did not confirm \
+     that the recovery phrase is written down. Nothing was saved.";
+
 /// Display a mnemonic in the secure window for backup. Returns whether the user
 /// confirmed they backed it up.
 #[cfg_attr(coverage_nightly, coverage(off))]
-async fn reveal_mnemonic(app: &AppHandle, phrase: &str) -> Result<bool, AppError> {
+async fn reveal_mnemonic<R: Runtime>(
+    app: &AppHandle<R>,
+    phrase: &str,
+    message: &str,
+) -> Result<bool, AppError> {
     let res = prompt_secure(
         app,
         SecurePromptRequest {
             mode: "reveal".to_string(),
             title: "Back up your recovery phrase".to_string(),
-            message: "Write these words down in order and keep them offline. \
-                      Anyone with this phrase can spend your funds."
-                .to_string(),
-            payload: Some(phrase.to_string()),
+            message: message.to_string(),
+            payload: Some(Zeroizing::new(phrase.to_string())),
             ..Default::default()
         },
     )
@@ -287,11 +386,13 @@ async fn reveal_mnemonic(app: &AppHandle, phrase: &str) -> Result<bool, AppError
 // --- commands --------------------------------------------------------------
 
 /// Create a brand-new hot wallet. The mnemonic is generated, used, and revealed
-/// entirely in the backend / secure window — React never sees it.
+/// entirely in the backend / secure window — React never sees it. Nothing is
+/// stored until the user confirmed in the reveal window that the phrase is
+/// written down; a reveal closed without that creates nothing and says so.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn secure_create_wallet(
-    app: AppHandle,
+pub async fn secure_create_wallet<R: Runtime>(
+    app: AppHandle<R>,
     label: String,
     network: String,
 ) -> Result<WalletProfileSummary, AppError> {
@@ -300,38 +401,45 @@ pub async fn secure_create_wallet(
     let gap = gap_limit(&settings);
 
     // 1. Collect a new passphrase (with confirmation) in the secure window.
-    //    Leaving it blank opts out of a passphrase (seed encrypted under a
-    //    device-local key; no prompt to unlock).
-    let entered = ask_passphrase(
-        &app,
-        true,
-        "Choose a passphrase to encrypt this wallet on this device, or leave blank for none.",
-    )
-    .await?;
-    let (enc_pass, kdf) = resolve_secret_key(&entered);
+    //    On a test network, leaving it blank opts out of a passphrase (seed
+    //    encrypted under a device-local key; no prompt to unlock); a mainnet
+    //    wallet must have one.
+    let (enc_pass, kdf) = ask_new_passphrase(&app, net).await?;
 
     // 2. Generate a 12-word mnemonic from fresh entropy.
-    let mut entropy = [0u8; 16];
-    rand::rng().fill_bytes(&mut entropy);
-    let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
+    let mut entropy = Zeroizing::new([0u8; 16]);
+    rand::rng().fill_bytes(&mut *entropy);
+    let mnemonic = bip39::Mnemonic::from_entropy(&*entropy)
         .map_err(|e| AppError::Crypto(format!("mnemonic generation: {e}")))?;
-    entropy.zeroize();
-    let mut phrase = mnemonic.to_string();
+    drop(entropy);
+    // Sized up front: a String that grew would leave its smaller buffers,
+    // with the first words in them, unwiped.
+    let mut phrase = Zeroizing::new(String::with_capacity(PHRASE_CAPACITY));
+    write!(phrase, "{mnemonic}").map_err(|e| AppError::Crypto(format!("mnemonic text: {e}")))?;
+    drop(mnemonic);
 
-    // 3. Derive the account xpub and encrypt the mnemonic at rest.
-    let mut seed = hd::seed_from_mnemonic(&phrase, "")?;
-    let account_xpub = account_xpub_from_seed(net, &seed, 0)?;
-    seed.zeroize();
+    // 3. Derive the account xpub.
+    let seed = Zeroizing::new(hd::seed_from_mnemonic(&phrase, "")?);
+    let account_xpub = account_xpub_from_seed(net, &seed[..], 0)?;
+    drop(seed);
+
+    // 4. Reveal for backup. Only the user's confirmation lets the wallet exist.
+    if !reveal_mnemonic(&app, &phrase, CREATE_REVEAL_MESSAGE).await? {
+        return Err(AppError::Other(CREATE_NOT_CONFIRMED.to_string()));
+    }
+
+    // 5. Encrypt the mnemonic at rest; persist profile + secret + initial
+    //    addresses, all or none, and set active.
     let fp = fingerprint(&account_xpub);
     let vault_blob = vault::encrypt(phrase.as_bytes(), &enc_pass)?;
-
-    // 4. Persist profile + secret + initial addresses, set active.
+    drop(phrase);
     let id = random_id();
     {
         let state = app.state::<AppState>();
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let tx = conn.unchecked_transaction()?;
         db::queries::insert_wallet_profile(
-            &conn,
+            &tx,
             &id,
             &label,
             "mnemonic_hot",
@@ -340,16 +448,13 @@ pub async fn secure_create_wallet(
             0,
             false,
         )?;
-        db::queries::insert_wallet_secret(&conn, &id, &vault_blob, kdf, &fp)?;
-        let receive_addr = provision_addresses(&conn, &id, net, &account_xpub, gap)?;
-        db::queries::update_profile_receive(&conn, &id, &receive_addr, gap as i64)?;
-        db::queries::update_profile_change_depth(&conn, &id, gap as i64)?;
+        db::queries::insert_wallet_secret(&tx, &id, &vault_blob, kdf, &fp)?;
+        let receive_addr = provision_addresses(&tx, &id, net, &account_xpub, gap)?;
+        db::queries::update_profile_receive(&tx, &id, &receive_addr, gap as i64)?;
+        db::queries::update_profile_change_depth(&tx, &id, gap as i64)?;
+        tx.commit()?;
     }
     activate_profile(&app.state::<AppState>(), &id)?;
-
-    // 5. Reveal for backup (display only), then wipe the plaintext.
-    let _ = reveal_mnemonic(&app, &phrase).await;
-    phrase.zeroize();
 
     load_profile(&app, &id)
 }
@@ -358,8 +463,8 @@ pub async fn secure_create_wallet(
 /// The mnemonic / xpub is entered in the secure window.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn secure_import_wallet(
-    app: AppHandle,
+pub async fn secure_import_wallet<R: Runtime>(
+    app: AppHandle<R>,
     label: String,
     network: String,
     kind: String,
@@ -373,25 +478,19 @@ pub async fn secure_import_wallet(
         "mnemonic_hot" => {
             // Enter the recovery phrase in the secure window.
             let res = prompt_secure(&app, phrase_import_request()).await?;
-            let mut phrase = match res.value {
+            let phrase = match res.value {
                 Some(v) if res.confirmed && !v.is_empty() => v,
                 _ => return Err(AppError::InvalidInput("import cancelled".to_string())),
             };
             // Validate by deriving the seed (parses the mnemonic).
-            let mut seed = hd::seed_from_mnemonic(&phrase, "")?;
-            let account_xpub = account_xpub_from_seed(net, &seed, 0)?;
-            seed.zeroize();
+            let seed = Zeroizing::new(hd::seed_from_mnemonic(&phrase, "")?);
+            let account_xpub = account_xpub_from_seed(net, &seed[..], 0)?;
+            drop(seed);
 
-            let entered = ask_passphrase(
-                &app,
-                true,
-                "Choose a passphrase to encrypt this wallet on this device, or leave blank for none.",
-            )
-            .await?;
-            let (enc_pass, kdf) = resolve_secret_key(&entered);
+            let (enc_pass, kdf) = ask_new_passphrase(&app, net).await?;
             let fp = fingerprint(&account_xpub);
             let vault_blob = vault::encrypt(phrase.as_bytes(), &enc_pass)?;
-            phrase.zeroize();
+            drop(phrase);
 
             let state = app.state::<AppState>();
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -518,8 +617,8 @@ pub async fn import_ledger_profile(
 /// Returns nothing — the phrase is shown only in the secure window.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn secure_reveal_backup_phrase(
-    app: AppHandle,
+pub async fn secure_reveal_backup_phrase<R: Runtime>(
+    app: AppHandle<R>,
     wallet_profile_id: String,
 ) -> Result<(), AppError> {
     // Load the encrypted blob + kdf marker (drop the lock before any prompt).
@@ -532,31 +631,24 @@ pub async fn secure_reveal_backup_phrase(
         AppError::InvalidInput("this profile has no recovery phrase (watch-only)".to_string())
     })?;
 
-    let passphrase = if kdf == "none" {
-        NO_PASSPHRASE_KEY.to_string()
-    } else {
-        ask_passphrase(
-            &app,
-            false,
-            "Enter your wallet passphrase to reveal the phrase.",
-        )
-        .await?
-    };
-    let mut plaintext = vault::decrypt(&blob, &passphrase)?;
-    let mut phrase = String::from_utf8(plaintext.clone())
-        .map_err(|_| AppError::Crypto("stored secret is not valid UTF-8".to_string()))?;
-    plaintext.zeroize();
+    let passphrase = stored_passphrase(
+        &app,
+        &kdf,
+        "Enter your wallet passphrase to reveal the phrase.",
+    )
+    .await?;
+    let plaintext = Zeroizing::new(vault::decrypt(&blob, &passphrase)?);
+    let phrase = stored_phrase(&plaintext)?;
 
-    let _ = reveal_mnemonic(&app, &phrase).await;
-    phrase.zeroize();
+    reveal_mnemonic(&app, phrase, REVEAL_MESSAGE).await?;
     Ok(())
 }
 
 /// Unlock the local signer for a profile by decrypting its seed into memory.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn unlock_local_signer(
-    app: AppHandle,
+pub async fn unlock_local_signer<R: Runtime>(
+    app: AppHandle<R>,
     wallet_profile_id: String,
 ) -> Result<SignerSessionSummary, AppError> {
     let settings = read_settings(&app)?;
@@ -581,21 +673,14 @@ pub async fn unlock_local_signer(
         AppError::InvalidInput(msg.to_string())
     })?;
 
-    let passphrase = if kdf == "none" {
-        NO_PASSPHRASE_KEY.to_string()
-    } else {
-        ask_passphrase(&app, false, "Enter your wallet passphrase to unlock.").await?
-    };
-    let mut plaintext = vault::decrypt(&blob, &passphrase)?;
-    let mut phrase = String::from_utf8(plaintext.clone())
-        .map_err(|_| AppError::Crypto("stored secret is not valid UTF-8".to_string()))?;
-    plaintext.zeroize();
-    let mut seed = hd::seed_from_mnemonic(&phrase, "")?;
-    phrase.zeroize();
-    let master = ExtendedPrivKey::from_seed(&seed)?;
-    seed.zeroize();
+    let passphrase =
+        stored_passphrase(&app, &kdf, "Enter your wallet passphrase to unlock.").await?;
+    let plaintext = Zeroizing::new(vault::decrypt(&blob, &passphrase)?);
+    let seed = Zeroizing::new(hd::seed_from_mnemonic(stored_phrase(&plaintext)?, "")?);
+    let master = ExtendedPrivKey::from_seed(&seed[..])?;
+    drop(seed);
 
-    let session = SignerSession::unlock(wallet_profile_id.clone(), network, master, ttl_ms);
+    let mut session = SignerSession::unlock(wallet_profile_id.clone(), network, master, ttl_ms);
     let summary = SignerSessionSummary {
         wallet_profile_id: Some(wallet_profile_id),
         unlocked: session.is_unlocked(),
@@ -612,7 +697,8 @@ pub async fn unlock_local_signer(
     Ok(summary)
 }
 
-/// Lock the local signer, zeroizing in-memory key material.
+/// Lock the local signer. Dropping the session drops the key in place,
+/// which overwrites its secret key and chain code.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn lock_local_signer(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
@@ -620,27 +706,45 @@ pub async fn lock_local_signer(state: tauri::State<'_, AppState>) -> Result<(), 
         .signer
         .lock()
         .map_err(|e| AppError::Lock(e.to_string()))?;
-    *slot = None; // Drop zeroizes the key material.
+    *slot = None;
     Ok(())
 }
 
-/// Current signer session state (secret-free).
+/// Drop the signer session once it has expired, so its key does not stay in
+/// memory until the next command looks at it. `lib.rs` runs this every
+/// second. It never waits: while a command holds the signer (signing), this
+/// tick is skipped. Returns whether a session was dropped.
+pub(crate) fn sweep_expired_signer(state: &AppState) -> bool {
+    match state.signer.try_lock() {
+        Ok(mut slot) => crate::noncustodial::session::expire_slot(&mut slot),
+        // Why: a command is using the signer and checks the expiry itself.
+        Err(std::sync::TryLockError::WouldBlock) => false,
+        // Why: a poisoned lock stays poisoned, so no command can use or lock
+        // this signer again; only this drops the key before the app exits.
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner().take().is_some(),
+    }
+}
+
+/// Current signer session state (secret-free). An expired session is
+/// dropped here, key and all.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn get_signer_session(
     state: tauri::State<'_, AppState>,
 ) -> Result<SignerSessionSummary, AppError> {
-    let slot = state
+    let mut slot = state
         .signer
         .lock()
         .map_err(|e| AppError::Lock(e.to_string()))?;
+    // A session `expire_slot` leaves in the slot is an unlocked one.
+    crate::noncustodial::session::expire_slot(&mut slot);
     match slot.as_ref() {
-        Some(s) if s.is_unlocked() => Ok(SignerSessionSummary {
+        Some(s) => Ok(SignerSessionSummary {
             wallet_profile_id: Some(s.wallet_profile_id().to_string()),
             unlocked: true,
             unlocked_until_epoch_ms: s.unlocked_until_ms() as i64,
         }),
-        _ => Ok(SignerSessionSummary::locked()),
+        None => Ok(SignerSessionSummary::locked()),
     }
 }
 
@@ -674,16 +778,117 @@ pub async fn set_active_wallet_profile(
     })
 }
 
-/// Delete a wallet profile and all its data. If it was the active profile, the
-/// active selection is cleared and the signer is locked.
+/// The Warning row of a delete that erases a stored recovery phrase.
+pub(crate) const DELETE_SEED_WARNING: &str = "This erases the encrypted recovery phrase stored on \
+     this device. Without the recovery phrase written down, this wallet's funds and names are lost \
+     for good.";
+
+/// Said when a profile gained or lost its stored recovery phrase while the
+/// delete was being confirmed: what the user confirmed is no longer what
+/// would be deleted.
+pub(crate) const DELETE_PROFILE_CHANGED: &str =
+    "This wallet changed while you were asked to confirm. Nothing was deleted; try again.";
+
+/// A profile's kind in the words the wallet list uses (`walletKindLabel`).
+fn kind_label(profile: &WalletProfileSummary) -> &'static str {
+    if profile.kind == "ledger_hardware" {
+        "Ledger"
+    } else if profile.watch_only {
+        "Watch-only"
+    } else {
+        "Hot"
+    }
+}
+
+/// What the secure window shows before `profile` is deleted, as `details`
+/// for a `confirm` prompt: its label, network, kind and fingerprint, and
+/// "Delete wallet" on the button. A profile whose encrypted recovery phrase
+/// is stored on this device (`has_stored_seed`) also gets a Warning and asks
+/// for its label to be typed (`confirmText`; its fingerprint when the label
+/// is blank), because deleting it erases the only copy the device holds. A
+/// watch-only or Ledger profile holds no secret and is confirmed with a click.
+pub(crate) fn delete_profile_details(
+    profile: &WalletProfileSummary,
+    has_stored_seed: bool,
+) -> serde_json::Value {
+    let fp = fingerprint(&profile.account_xpub);
+    let mut rows = vec![
+        serde_json::json!({ "label": "Action", "value": "Delete this wallet from this device" }),
+        serde_json::json!({ "label": "Wallet", "value": profile.label }),
+        serde_json::json!({ "label": "Network", "value": profile.network }),
+        serde_json::json!({ "label": "Kind", "value": kind_label(profile) }),
+        serde_json::json!({ "label": "Fingerprint", "value": fp }),
+    ];
+    if has_stored_seed {
+        rows.push(serde_json::json!({ "label": "Warning", "value": DELETE_SEED_WARNING }));
+    }
+    let mut details = serde_json::json!({ "rows": rows, "confirmLabel": "Delete wallet" });
+    if has_stored_seed {
+        let label = profile.label.trim();
+        let typed = if label.is_empty() {
+            fp
+        } else {
+            label.to_string()
+        };
+        details["confirmText"] = serde_json::json!(typed);
+    }
+    details
+}
+
+/// Delete a wallet profile and all its data, once the user has confirmed it
+/// in the secure window ([`delete_profile_details`]); a compromised webview
+/// cannot erase a stored recovery phrase with a call. Declined, closed, or
+/// confirmed without the typed label it asks for: `UserRejected`, nothing
+/// deleted. If it was the active profile, the active selection is cleared
+/// and the signer is locked.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn delete_wallet_profile(
-    state: tauri::State<'_, AppState>,
+pub async fn delete_wallet_profile<R: Runtime>(
+    app: AppHandle<R>,
     wallet_profile_id: String,
 ) -> Result<(), AppError> {
+    let state = app.state::<AppState>();
+    // Read what the window shows; the lock is dropped before the prompt.
+    let (profile, has_stored_seed) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let profile = db::queries::get_wallet_profile(&conn, &wallet_profile_id)?
+            .ok_or_else(|| AppError::NotFound(format!("wallet profile {wallet_profile_id}")))?;
+        let has_stored_seed =
+            db::queries::get_wallet_secret_meta(&conn, &wallet_profile_id)?.is_some();
+        (profile, has_stored_seed)
+    };
+    let details = delete_profile_details(&profile, has_stored_seed);
+    let typed = details
+        .get("confirmText")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let answer = prompt_secure(
+        &app,
+        SecurePromptRequest {
+            mode: "confirm".to_string(),
+            title: "Delete wallet".to_string(),
+            message: "Check that this is the wallet to delete. This cannot be undone.".to_string(),
+            details: Some(details),
+            ..Default::default()
+        },
+    )
+    .await?;
+    if !answer.confirmed {
+        return Err(AppError::UserRejected);
+    }
+    // The backend checks what was typed, not only the window's own check.
+    if let Some(expected) = typed {
+        if answer.value.as_ref().map(|v| v.trim()) != Some(expected.as_str()) {
+            return Err(AppError::UserRejected);
+        }
+    }
     {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        if db::queries::get_wallet_secret_meta(&conn, &wallet_profile_id)?.is_some()
+            != has_stored_seed
+        {
+            return Err(AppError::Other(DELETE_PROFILE_CHANGED.to_string()));
+        }
         let active = db::queries::get_active_profile_id(&conn)?;
         db::queries::delete_wallet_profile(&conn, &wallet_profile_id)?;
         if active == wallet_profile_id {
@@ -695,7 +900,10 @@ pub async fn delete_wallet_profile(
 
 /// Read a profile summary by id (helper for command returns).
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn load_profile(app: &AppHandle, id: &str) -> Result<WalletProfileSummary, AppError> {
+fn load_profile<R: Runtime>(
+    app: &AppHandle<R>,
+    id: &str,
+) -> Result<WalletProfileSummary, AppError> {
     let state = app.state::<AppState>();
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db::queries::get_wallet_profile(&conn, id)?

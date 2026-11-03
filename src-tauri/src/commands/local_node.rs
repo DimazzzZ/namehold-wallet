@@ -50,6 +50,46 @@ pub(crate) fn process_start_time(_pid: u32) -> Option<u64> {
     None
 }
 
+/// The file name of the executable process `pid` runs. `None` when there is no
+/// such process, or it cannot be read.
+#[cfg(target_os = "macos")]
+pub(crate) fn process_executable_name(pid: u32) -> Option<String> {
+    let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let n = unsafe {
+        libc::proc_pidpath(
+            pid as libc::c_int,
+            path.as_mut_ptr().cast(),
+            path.len() as u32,
+        )
+    };
+    if n <= 0 {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&path[..n as usize]);
+    Some(path.rsplit('/').next()?.to_string())
+}
+
+/// The file name of `/proc/<pid>/exe`, without the ` (deleted)` an update of a
+/// running binary leaves on it. A release build's process is not dumpable, which
+/// makes its `exe` link unreadable to its own user, so `comm` (the name, readable
+/// by everyone, cut at 15 bytes) answers then.
+#[cfg(target_os = "linux")]
+pub(crate) fn process_executable_name(pid: u32) -> Option<String> {
+    match std::fs::read_link(format!("/proc/{pid}/exe")) {
+        Ok(path) => {
+            let path = path.to_string_lossy();
+            let path = path.strip_suffix(" (deleted)").unwrap_or(&path);
+            Some(path.rsplit('/').next()?.to_string())
+        }
+        Err(_) => Some(
+            std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                .ok()?
+                .trim_end()
+                .to_string(),
+        ),
+    }
+}
+
 /// The pid file's name inside a network's data directory.
 pub(crate) const PID_FILE: &str = "namehold-hsd.pid";
 
@@ -141,19 +181,18 @@ pub(crate) fn network_scoped_data_dir(base: &str, network: Network) -> String {
 /// Split out from [`resolve_data_dir_for_network`] so the migration can reason
 /// about the base independent of the network scoping.
 pub(crate) fn resolve_configured_base(state: &AppState) -> Result<String, AppError> {
-    let configured = {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::get_settings(&db)?
-            .get("hsd_prefix")
-            .cloned()
-            .unwrap_or_default()
-    };
-    let configured = configured.trim();
+    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    Ok(configured_base(&db::queries::get_settings(&db)?))
+}
+
+/// [`resolve_configured_base`] from a settings map.
+pub(crate) fn configured_base(settings: &std::collections::HashMap<String, String>) -> String {
+    let configured = settings.get("hsd_prefix").map_or("", |p| p.trim());
     if !configured.is_empty() {
-        return Ok(configured.to_string());
+        return configured.to_string();
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    Ok(format!("{home}/.hsd"))
+    format!("{home}/.hsd")
 }
 
 /// The pid of `network`'s own node an earlier session left, if any (R6).

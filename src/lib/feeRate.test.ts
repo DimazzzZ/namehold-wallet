@@ -5,6 +5,7 @@ import {
   doosPerKvbToSatsPerByte,
   formatDoosPerKvb,
   parseDoosPerKvb,
+  MAX_FEE_RATE_DOOS_PER_KVB,
   parseFeeRateArg,
 } from "./feeRate";
 
@@ -25,6 +26,12 @@ describe("parseDoosPerKvb", () => {
     expect(parseDoosPerKvb("1")).toBe(MIN_FEE_RATE_DOOS_PER_KVB);
     expect(parseDoosPerKvb("500")).toBe(MIN_FEE_RATE_DOOS_PER_KVB);
     expect(parseDoosPerKvb("999")).toBe(MIN_FEE_RATE_DOOS_PER_KVB);
+  });
+
+  it("refuses a rate above the wallet's cap, as the backend does", () => {
+    expect(parseDoosPerKvb(String(MAX_FEE_RATE_DOOS_PER_KVB))).toBe(1_000_000);
+    expect(parseDoosPerKvb(String(MAX_FEE_RATE_DOOS_PER_KVB + 1))).toBeNull();
+    expect(parseDoosPerKvb("1e12")).toBeNull();
   });
 
   it("passes through values at or above the minimum", () => {

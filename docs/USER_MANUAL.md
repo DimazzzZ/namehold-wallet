@@ -80,7 +80,7 @@ never sees it. Confirm the backup before continuing.
 
 From the account bar at the top of the Wallet page, use **Add wallet** and
 **Manage wallets** to switch between wallets, reveal a wallet's phrase in the
-secure window, or delete one you no longer need.
+secure window, or delete one you no longer need. Delete wallet opens the secure window; for a wallet with a stored recovery phrase, type its label to enable Delete wallet. Cancel deletes nothing. Creating a wallet: it exists only after you tick "I have written down my recovery phrase" and press Done; closing the window saves nothing. The reveal window's clipboard clears when you press Done, or about 30 s after copying.
 
 ### Background sync (enabled by default)
 
@@ -170,11 +170,9 @@ wallet passphrase.
 - **Unlock**: click **Unlock** on the account bar. If the wallet has a
   passphrase, the secure window opens for entry. If not, it unlocks directly.
 - **Lock**: click **Lock** to zero the signer immediately.
-- **Auto-lock**: after a configurable idle timeout (Settings → Advanced → "Signer
-  session timeout", default 900 s), the signer auto-locks.
+- **Auto-lock**: after a configurable idle timeout (Settings → Advanced → "Signer session timeout", 60 to 3600 s, empty means 900 s), the signer auto-locks, and at the latest one hour after unlock, however often it is used. Saving a change asks you to confirm it in the secure window.
 
-The passphrase is **never** stored on disk — you re-enter it each session (or
-leave it blank at creation for wallets with no passphrase).
+The passphrase is **never** stored on disk — you re-enter it each session. A mainnet wallet needs a passphrase of at least 8 characters: it is what keeps the recovery phrase safe in a copy of the wallet's files (a backup, another program on this computer). A testnet or regtest wallet may be created without one; its phrase is then encrypted under a key that is part of the app, which protects nothing, and it unlocks without a prompt. A mainnet wallet created without a passphrase by an earlier version keeps working, but is just as exposed: move its funds to a new wallet with a passphrase.
 
 ---
 
@@ -208,7 +206,7 @@ On the Wallet page, click **Send HNS**. The Send dialog has:
 
 1. **Address** — the recipient's Handshake address. Format validated on the fly
    (`hs1…` mainnet, `ts1…` testnet, `rs1…` regtest).
-2. **Amount** in HNS, with a **Max** button to sweep the wallet.
+2. **Amount** in HNS, with a **Max** button to sweep the wallet. Amount fields accept plain digits with at most 6 decimals (for example 12.5). Commas, exponents and signs get a message under the field, and the button stays disabled.
 3. **Review** button — builds a draft (`build_send_draft`) and shows Amount,
    Fee, Change, Inputs, and destination. **No key is touched yet.**
 4. **Sign & Broadcast** — unlocks the signer (secure window if locked), signs
@@ -378,6 +376,10 @@ In the Name Actions modal for an owned name, click **Show all actions**:
 
 All of these need the signer unlocked and a synced node.
 
+### Signing a message with a name
+
+Sign message opens the secure window with the full text. Cancel signs nothing. The wallet refuses a message longer than 4096 bytes, one with an invisible character (including emoji built with joiners), or one with more than a single blank line or 16 blank characters in a row, and says why. If a confirmation's details do not fit the secure window, scroll to the end; Confirm stays disabled until then, and a line above the buttons says so.
+
 ### Batch operations
 
 Select multiple names in the Owned Names table using the checkboxes (or the
@@ -396,7 +398,7 @@ Each batch action opens a **confirmation modal** showing the count, the amount
 the transaction moves (every output except change — a batch reveal or redeem
 carries one per bid), the estimated fee, and a collapsible list of the
 selected names. Cancel closes without
-broadcasting; Confirm signs + broadcasts the draft in one step.
+broadcasting; Confirm signs + broadcasts the draft in one step. Batch Bid also shows "Locked until you reveal: N x L HNS = T HNS" and a forfeit warning on the check and confirm steps.
 
 A batch is built in the wallet as one transaction with one txid, so it either
 all lands or none of it does. There is no chunking and no `createbatch` RPC in
@@ -421,7 +423,7 @@ You can also buy a listing that is not on the market. Import listing…, at the 
 
 Buying needs a local node, or a remote node with "Allow sending via remote node" turned on in Settings, and a wallet created or restored from a recovery phrase: with a Ledger, a watch-only wallet or one imported from an extended private key, the panel says "Shakedex works with a recovery-phrase wallet for now." and Buy stays disabled. On mainnet, buying also needs "Allow buying and selling names on mainnet through Shakedex (experimental)" ticked in Settings. Until it is, a banner at the top of the Market says buying on mainnet is off, and both its "Turn on buying" button and the panel's button in place of Buy tick that setting; nothing is bought until you then press Buy. Testnet and regtest are always allowed, and Finalize is never gated.
 
-The panel prices the purchase before you buy: the price to the seller, the LearnHNS fee with its share of the price, the network fee and the total, to six decimals. The address the market fee is paid to is shown in the secure confirmation window, not in the panel. A listing whose fee address is unusable on this network still verifies; its fee line says it names no valid fee address, and no market fee is paid. The fee is ticked for you only when it is the fee LearnHNS itself publishes; for any other fee it starts unticked with a warning, and you decide whether to pay it. Your choice is kept for that listing while the app is open. "Fee rate" opens a field for this purchase's fee rate in doos/kvB (empty uses your default; a whole number of at least 1,000). When Buy cannot be pressed, the line above it says why: for example that you have less available than the total, by how much, and for a reverse auction when the price drops next. Buy names the name and the total ("Buy .coffee for 255 HNS"). It opens the secure window, where you unlock the signer as for any other spend. Just before the purchase is sent, the wallet checks the price step against your node's median time again. If a cheaper step has become valid meanwhile, nothing is sent: the panel says the price changed, the prepared transaction is discarded, and the panel shows the new figures for you to buy again. The same happens if your node does not report a median time at that moment. Cancelling the secure window also discards the prepared purchase, and the listing can be bought again straight away. Once the purchase is sent, the panel reads "Purchase sent", the row is tagged "Bought", and the purchase appears under Your purchases.
+The panel prices the purchase before you buy: the price to the seller, the LearnHNS fee with its share of the price, the network fee and the total, to six decimals. The address the market fee is paid to is shown in the secure confirmation window, not in the panel. A listing whose fee address is unusable on this network still verifies; its fee line says it names no valid fee address, and no market fee is paid. The fee is ticked for you only when it is the fee LearnHNS itself publishes; for any other fee it starts unticked with a warning, and you decide whether to pay it. A fee over 5% of the price is never ticked for you, even when LearnHNS publishes it, and carries its own warning; if you pay it anyway, the warning also appears in the secure window. Your choice is kept for that listing while the app is open. "Fee rate" opens a field for this purchase's fee rate in doos/kvB (empty uses your default; a whole number of at least 1,000). When Buy cannot be pressed, the line above it says why: for example that you have less available than the total, by how much, and for a reverse auction when the price drops next. Buy names the name and the total ("Buy .coffee for 255 HNS"). It opens the secure window, where you unlock the signer as for any other spend. Just before the purchase is sent, the wallet checks the price step against your node's median time again. If a cheaper step has become valid meanwhile, nothing is sent: the panel says the price changed, the prepared transaction is discarded, and the panel shows the new figures for you to buy again. The same happens if your node does not report a median time at that moment. Cancelling the secure window also discards the prepared purchase, and the listing can be bought again straight away. Once the purchase is sent, the panel reads "Purchase sent", the row is tagged "Bought", and the purchase appears under Your purchases.
 
 Your purchases, a card at the top of Browse, lists every purchase bought and not yet finalized: the price paid, how far its transfer lockup is (288 blocks, about two days, on mainnet and testnet; 10 on regtest), how many blocks are left (with roughly how long that is on mainnet and testnet; regtest mines on demand, so no time is given), and Finalize once it is over. Finalize there works whatever the mainnet setting says, and a purchase leaves the card once its finalize is sent. A purchase still waiting to be mined shows Speed up instead, which pays a higher fee for it through a second transaction that spends its change ([Speed up a sent transaction](#speed-up-a-sent-transaction)); until the purchase confirms, that child's output, like the purchase's change, is not spent by ordinary sends.
 
@@ -465,7 +467,7 @@ Another device or profile with the same recovery phrase can hold the same listin
 
 #### Finalize & sign
 
-Once the transfer lockup is over the row reads Ready to Finalize & sign, and Finalize & sign opens the form where the price is chosen, the last chance to change it before anything is signed. A Buy Now asks for its one price in HNS. A reverse auction asks for its schedule: a start price, a floor price below it, the number of prices (2 to 1000) and the minutes between them (at least 15); the form then sums it up ("6 prices from 10 to 5 HNS, one every 60 min; the last becomes valid ~5 h after the first"). Until every field of the schedule is filled the form says "a reverse auction needs its schedule: a start price, a floor, the number of steps and the time between them". A price or a schedule the wallet would refuse is refused in the form, in the same words, before anything is asked: a price of 0, below the dust limit of 0.001 HNS, above the money supply or with more than 6 decimals; fewer than 2 or more than 1000 prices, prices less than 15 minutes apart, a floor not below the start, or prices that would not strictly fall. No price becomes valid before its time: every price after the first is rounded up to the chain's 512-second unit, so it can become valid up to about eight and a half minutes after its nominal time. A schedule whose last price comes more than a year after the first is allowed, with the warning "The last price comes more than a year after the first, past the listing file's expiry date." The form says that each signature lets anyone buy the name at its price until the listing is cancelled and the cancel is mined, and that a price can be lowered later, never raised. Finalize & sign then shows the secure window, which lists the finalize fee and every price, with when it becomes valid, before anything is signed; the form itself lists no prices. Confirmed, the wallet signs the finalize into the lock and every price at once and sends the finalize; the listing becomes Listed for sale once it is mined. If the send fails, the error says when the signed finalize stays in My listings to be sent from its row. Finalize & sign needs the same wallet and node as the other signing actions, but not the mainnet selling setting, since the listing exists already.
+Once the transfer lockup is over the row reads Ready to Finalize & sign, and Finalize & sign opens the form where the price is chosen, the last chance to change it before anything is signed. A Buy Now asks for its one price in HNS. A reverse auction asks for its schedule: a start price, a floor price below it, the number of prices (2 to 1000) and the minutes between them (at least 15); the form then sums it up ("6 prices from 10 to 5 HNS, one every 60 min; the last becomes valid ~5 h after the first"). Until every field of the schedule is filled the form says "a reverse auction needs its schedule: a start price, a floor, the number of steps and the time between them". A price or a schedule the wallet would refuse is refused in the form, in the same words, before anything is asked: a price of 0, below the dust limit of 0.001 HNS, above the money supply or with more than 6 decimals; fewer than 2 or more than 1000 prices, prices less than 15 minutes apart, a floor not below the start, or prices that would not strictly fall. No price becomes valid before its time: every price after the first is rounded up to the chain's 512-second unit, so it can become valid up to about eight and a half minutes after its nominal time. A schedule whose last price comes more than a year after the first is allowed, with the warning "The last price comes more than a year after the first, past the listing file's expiry date." The form says that each signature lets anyone buy the name at its price until the listing is cancelled and the cancel is mined, and that a price can be lowered later, never raised. Finalize & sign then shows the secure window, which lists the finalize fee, the lock coin and every price, with when it becomes valid, before anything is signed; the form itself lists no prices. If you discard a signed finalize and sign again before the next block, the wallet refuses and asks you to try after the next block: the finalize would create the same coin that the discarded prices were signed over. That record stays on this device even after the wallet is deleted (public transaction ids, no keys), so the same seed imported again never signs over them. Confirmed, the wallet signs the finalize into the lock and every price at once and sends the finalize; the listing becomes Listed for sale once it is mined. If the send fails, the error says when the signed finalize stays in My listings to be sent from its row. Finalize & sign needs the same wallet and node as the other signing actions, but not the mainnet selling setting, since the listing exists already.
 
 #### Find my locks and Restore a lock by name
 
@@ -578,14 +580,16 @@ All node settings live under **Settings → Connections**.
 |-------|---------|-------|
 | **Chain source** | **Local full node** | Which node the wallet sends through: **Local full node** (hsd on this device, full indexes), **SPV — lightweight, read-only** (headers only, explorer for data), **Remote node** (someone else's hsd RPC), or **Read-only (never send)**. Reads are not routed by this selector: they come from the node whenever it is synced and on your wallet's network, and from the explorer otherwise. |
 | **Node RPC URL** | `http://127.0.0.1:12037` | When chain source is Local full node or Remote node. Mainnet 12037, testnet 13037, regtest 14037. |
-| **Node RPC API key** | (empty) | For remote nodes: match the remote hsd's `--api-key`. Ignored for local nodes. |
+| **Node RPC API key** | (empty) | For remote nodes: match the remote hsd's `--api-key`. For a node the app starts it is that node's key; left empty, the app generates a new one at every start and never shows it. With no key configured, that node answers 401 to keyless `hsd-cli` and `hsw-cli` and on its wallet API (12039): to use them, set a key here, then stop and start the node. On Windows, set a key before starting a node from the app. |
 | **Allow sending via remote node** | **off** | When chain source is Remote node, enable this to broadcast signed transactions to the remote node. Off by default for safety. |
 | **Explorer base URL** | (network-dependent) | Mainnet: `https://e.hnsfans.com`. Testnet/regtest have no default explorer — set one explicitly if you have one. |
 | **Explorer fallback URL** | (empty) | When the primary explorer is unreachable, automatically tries this URL. Leave empty to disable failover. |
 | **Node data directory (`hsd --prefix`)** | (system default) | Use **Browse…** to pick. Local hsd only. |
-| **hsd binary path** | (auto) | Only needed if hsd isn't on PATH. Local hsd only. |
+| **hsd binary path** | (auto) | Only needed if hsd isn't on PATH. Local hsd only. Must be the full path of an executable file that only its owner can change, owned by you or by root; a link is stored as the file it leads to, so for Homebrew leave the path empty, or confirm it again after an upgrade. |
 | **Start the mainnet node automatically** (names the active wallet's network) | **on** | Starts that network's hsd when one of its wallets becomes active, and at launch. Each network has its own setting; toggle off to keep that network's hsd manual. Local hsd only. |
 | **Sync in background** | **on** | When enabled, a background daemon syncs your wallet every 60 seconds, even when the app is closed. Local full node only. |
+
+Saving a change to the node URL or API key, chain source, node mode, "Allow sending via remote node", explorer URLs, hsd program path, hsd data directory or signer session timeout opens the secure window with one line per change. Cancel saves nothing. If a new node host would receive your stored API key, the window adds a warning naming that host; clear or replace the key in the same save to avoid that. URLs must be https, or http only for this computer, written plainly: no user name or password, no percent-encoding or numeric host spelling such as 127.1, and an international host name in its xn-- form. A node on your local network therefore needs https too. A URL saved earlier keeps working until you change it. A node on another machine needs Remote node and "Allow sending via remote node" selected; until then sending shows as unavailable. "Test connection" on a newly typed URL sends no stored key.
 
 ### Background sync
 
@@ -638,7 +642,7 @@ Below the settings, the **NodeControl** panel shows a live status dot
 (Connected · Starting · Stopped · Syncing %), the read source (**Local** or
 **Explorer**), the data directory and hsd version. Buttons:
 
-- **Start mainnet node** (named for the active wallet's network) — spawns that network's hsd with the required flags (`--index-address --index-tx`). If a node already answers on that network's port, it uses it instead. Another network's node keeps running: each network has its own.
+- **Start mainnet node** (named for the active wallet's network) — spawns that network's hsd with the required flags (`--index-address --index-tx`), listening on 127.0.0.1 only: an `http-host` setting in `hsd.conf` does not apply to a node the app starts. If a node already answers on that network's port, it uses it instead. If something else holds the port, Start refuses and says which port: stop what holds it, or, if it is your own hsd, set its key in Settings. Another network's node keeps running: each network has its own.
 - **Stop mainnet node** — stops the active wallet's network's node, if Namehold started it. A node you started yourself is never stopped by Namehold; the button is disabled and says so.
 - **Re-sync node data** — appears only when the app detects an
   **index mismatch** (hsd's existing chain was synced without `--index-address`).
@@ -755,10 +759,8 @@ Then open the app normally.
   device. By default, balance/name lookups go to the public HNSFans explorer,
   which therefore sees your wallet addresses and the names you track; running
   your own hsd node keeps those lookups fully local. The only other outbound HTTP is to your configured node and, when you use the Market, to LearnHNS Market (browsing and buying, and publishing a listing you chose to publish on mainnet).
-- **Localhost-first.** Namehold connects to hsd on `127.0.0.1` by default;
-  non-localhost URLs are allowed but warned about.
-- **Auto-lock.** The unlocked signer times out after a configurable idle
-  period (Settings → Advanced → Signer session timeout, default 15 min).
+- **Localhost-first.** Namehold connects to hsd on `127.0.0.1` by default; another host needs https and your confirmation in the secure window, and sending through it needs "Allow sending via remote node".
+- **Auto-lock.** The unlocked signer times out after a configurable idle period (Settings → Advanced → Signer session timeout, default 15 min) and at the latest one hour after unlock.
 - **Background sync never signs or sends.** The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market. When "Sync in background" is enabled, the `namehold-syncd` daemon reads from hsd and writes sync data to the local database; it never has access to key material. Your keys stay locked in the encrypted vault.
 - **What Namehold never does.** Never asks for or transmits your seed phrase,
   never logs passphrases or private keys, never talks to a remote wallet
@@ -811,6 +813,14 @@ A freshly imported wallet won't show any HNS until:
 1. The node is synced,
 2. The address index has caught up,
 3. **Sync** has been clicked (or the auto-sync loop has run once).
+
+### The wallet says the node is still syncing and its coins do not refresh
+
+While the node is syncing or has been behind for more than about 12 hours, the wallet's coins are not refreshed from it. During a long first sync the "last sync" time does not advance, even when explorer reads succeed, because such a run does not count as clean. It clears once the node catches up.
+
+### Send stops with "could not confirm the node's network"
+
+The node did not answer or did not name its chain. The signed draft stays and can be retried.
 
 ### Send fails with "Not sent"
 

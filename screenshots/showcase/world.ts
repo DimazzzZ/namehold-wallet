@@ -30,7 +30,7 @@ import type {
 import type { NamebaseHistoryRow, NamebaseHistorySummary } from "../../src/queries/namebase";
 import LISTING_ACTIONS from "../../src/test/fixtures/listing-actions.json";
 
-/** `hnsToDollarydoos` (src/lib/utils.ts), kept local: importing utils pulls in the IDN encoder. */
+/** A fixture's HNS figure (at most 6 decimals) in doos; the nearest doo undoes the float. */
 const hns = (n: number) => Math.round(n * 1_000_000);
 
 /** A plausible mainnet tip: about 6.7 years of 10-minute blocks since launch. */

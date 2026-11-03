@@ -1,18 +1,14 @@
 use crate::db;
 use crate::error::AppError;
+use crate::protected_settings::{self, SettingChange};
 use crate::security;
 use crate::AppState;
-use tauri::State;
+use tauri::{AppHandle, Runtime, State};
 
-// COVERAGE: 89.02% line / 60.00% region — realistic ceiling (~89%). Cannot
-// cross 95% without invoking commands through real Tauri IPC dispatch. All 9
-// uncovered lines are `#[tauri::command]` macro-attribute lines + macro-expanded
-// IPC wrapper code (lines 7, 22, 52, 81 flagged directly; 4 more expanded
-// inside the macro), plus one closing brace inside `get_audit_log`'s nested
-// `.map` closure — all region-boundary artifacts. All 4 `AppError::Lock`
-// closures ARE hit on the happy path. Reaching 95% would need ~100+ lines of
-// `MockRuntime` IPC-dispatch harness for ~4 lines of coverage — diminishing
-// returns. Test harness in `src/tests/settings_cmd_tests.rs`.
+// COVERAGE: the `#[tauri::command]` wrappers are IPC shells (coverage off);
+// their bodies are driven directly in `src/tests/settings_cmd_tests.rs` and,
+// for the secure-window flow (`update_protected_settings_confirmed`), in
+// `src/tests/protected_settings_tests.rs`.
 
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -30,6 +26,11 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<serde_json::Valu
     Ok(serde_json::to_value(&settings)?)
 }
 
+/// Write one setting the renderer may change ([`security::RENDERER_SETTING_KEYS`]).
+/// Every other key is refused before the database is touched: a trust-root
+/// key goes through [`update_protected_settings`], and the rest are written
+/// only by backend flows. An allowlist, so a key added later is refused until
+/// it is listed.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn update_setting(
@@ -37,28 +38,96 @@ pub async fn update_setting(
     key: String,
     value: String,
 ) -> Result<(), AppError> {
-    // Reject renderer writes to security-critical keys (e.g. host overrides
-    // that could redirect authenticated requests, or secrets that should only
-    // be written by dedicated backend flows).
-    if security::is_renderer_write_denied(&key) {
-        return Err(AppError::InvalidInput(format!(
-            "setting '{key}' cannot be changed from the UI"
-        )));
+    if !security::is_renderer_writable(&key) {
+        return Err(AppError::InvalidInput(
+            if security::is_protected_setting(&key) {
+                format!(
+                    "setting '{key}' is a connection setting: it is saved only after you confirm \
+                 it in the secure window"
+                )
+            } else {
+                format!("setting '{key}' cannot be changed from the UI")
+            },
+        ));
     }
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db::queries::set_setting(&db, &key, &value)?;
-    // Redact sensitive values in the audit log so secrets are never persisted
-    // in plaintext outside the settings row itself.
-    let logged_value = if security::is_sensitive_key(&key) {
-        "***".to_string()
+    log_setting_change(&db, &key, &value)
+}
+
+/// Record a setting change in the audit log, with a sensitive value redacted
+/// so secrets are never persisted in plaintext outside the settings row.
+fn log_setting_change(conn: &rusqlite::Connection, key: &str, value: &str) -> Result<(), AppError> {
+    let logged_value = if security::is_sensitive_key(key) {
+        "***"
     } else {
         value
     };
-    db.execute(
+    conn.execute(
         "INSERT INTO audit_log (action, detail) VALUES ('setting_change', ?1)",
         [serde_json::json!({"key": key, "value": logged_value}).to_string()],
     )?;
     Ok(())
+}
+
+/// Change trust-root settings ([`security::PROTECTED_SETTING_KEYS`]): which
+/// program runs as hsd, which node and explorer are trusted, where a node
+/// api-key goes. See [`update_protected_settings_confirmed`].
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn update_protected_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    changes: Vec<SettingChange>,
+) -> Result<Vec<String>, AppError> {
+    update_protected_settings_confirmed(&app, &state, &changes).await
+}
+
+/// Validate every requested change ([`protected_settings::plan_changes`]);
+/// when one changes the value in effect, show one row per change in the
+/// secure window and, once the user confirms, write them all in one
+/// transaction with an audit entry each. Returns the keys written: none, and
+/// no prompt, when every value equals the one in effect. A declined prompt
+/// is `UserRejected` and writes nothing; so is a request with any invalid
+/// value. If the stored values change while the window is open, nothing is
+/// written, since the rows the user confirmed no longer describe the change.
+pub(crate) async fn update_protected_settings_confirmed<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    changes: &[SettingChange],
+) -> Result<Vec<String>, AppError> {
+    let stored = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::get_settings(&db)?
+    };
+    let planned = protected_settings::plan_changes(changes, &stored)?;
+    if planned.is_empty() {
+        return Ok(Vec::new());
+    }
+    crate::commands::secure_confirm::confirm_rows(
+        app,
+        protected_settings::CONFIRM_TITLE,
+        protected_settings::CONFIRM_MESSAGE,
+        protected_settings::confirmation_rows(&planned, &stored),
+    )
+    .await?;
+
+    let mut db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let now = db::queries::get_settings(&db)?;
+    if protected_settings::plan_changes(changes, &now)? != planned {
+        return Err(AppError::InvalidInput(
+            "these settings changed while the confirmation was open, so nothing was saved; \
+             save again to see the change as it is now"
+                .to_string(),
+        ));
+    }
+    let tx = db.transaction()?;
+    for c in &planned {
+        db::queries::set_setting(&tx, &c.key, &c.new)?;
+        log_setting_change(&tx, &c.key, &c.new)?;
+    }
+    tx.commit()?;
+    Ok(planned.into_iter().map(|c| c.key).collect())
 }
 
 #[tauri::command]
@@ -100,16 +169,4 @@ pub async fn get_wallet_snapshots(
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let snapshots = db::queries::get_wallet_snapshots(&db, limit.unwrap_or(10))?;
     Ok(serde_json::to_value(&snapshots)?)
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::security;
-
-    #[test]
-    fn write_denylist_covers_namebase_base_url() {
-        assert!(security::is_renderer_write_denied("namebase_base_url"));
-        assert!(security::is_renderer_write_denied("namebase_cookie"));
-        assert!(!security::is_renderer_write_denied("node_rpc_api_key"));
-    }
 }

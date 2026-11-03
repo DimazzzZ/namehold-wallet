@@ -271,6 +271,59 @@ describe("Namebase Withdraw HNS", () => {
     expect(screen.getByText("120,001.000000 HNS")).toBeInTheDocument();
   });
 
+  it("refuses a 7th decimal in the amount instead of rounding it, and withdraws nothing", async () => {
+    await openWithdraw();
+    fireEvent.change(screen.getByPlaceholderText("0.0"), { target: { value: "2.0000005" } });
+
+    expect(screen.getByTestId("withdraw-amount-error")).toHaveTextContent(
+      "HNS has at most 6 decimals",
+    );
+    const withdraw = screen.getByRole("button", { name: /^Withdraw$/i });
+    expect(withdraw).toBeDisabled();
+    fireEvent.click(withdraw);
+    expect(invokeMock.mock.calls.map((c) => c[0])).not.toContain("namebase_withdraw_hns");
+  });
+
+  it("withdraws 1234.567891 HNS exactly: the gross with the 1 HNS fee is 1235.567891", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_namebase_status") {
+        return Promise.resolve({
+          connected: true,
+          has_cookie: true,
+          account: {
+            balance: { hns: 2000, btc: 0 },
+            has2fa: false,
+            withdrawalFeeHns: 1,
+            minimums: { hns: 1 },
+          },
+        });
+      }
+      return routeInvoke(cmd);
+    });
+    await openWithdraw();
+    fireEvent.change(screen.getByPlaceholderText("0.0"), { target: { value: "1234.567891" } });
+    expect(screen.getByText("1,234.567891 HNS")).toBeInTheDocument();
+    expect(screen.getByText("1,235.567891 HNS")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Withdraw$/i }));
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find((c) => c[0] === "namebase_withdraw_hns");
+      expect(call?.[1]).toEqual({ address: WALLET, amount: "1235.567891" });
+    });
+  });
+
+  it("Max fills the balance minus the fee as plain digits and withdraws the whole balance", async () => {
+    await openWithdraw();
+    fireEvent.click(screen.getByRole("button", { name: /^Max$/ }));
+    expect((screen.getByPlaceholderText("0.0") as HTMLInputElement).value).toBe("99");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Withdraw$/i }));
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find((c) => c[0] === "namebase_withdraw_hns");
+      expect(call?.[1]).toEqual({ address: WALLET, amount: "100" });
+    });
+  });
+
   it("blocks a gross amount below the Namebase minimum", async () => {
     // Override the account so the minimum (5 HNS) exceeds net+fee, exercising the
     // min-amount gate (not the balance gate).

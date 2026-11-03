@@ -64,6 +64,7 @@ pub enum RpcCall {
 /// passing the mock to the function under test.
 pub struct MockNodeRpc {
     pub source: ChainSource,
+    pub node_url: String,
     blockchain_info: ResponseFn<BlockchainInfo>,
     info: ResponseFn<serde_json::Value>,
     node_status: ResponseFn<serde_json::Value>,
@@ -148,6 +149,7 @@ impl MockNodeRpc {
     pub fn new() -> Self {
         Self {
             source: ChainSource::LocalNode,
+            node_url: "http://127.0.0.1:12037".to_string(),
             blockchain_info: err("not configured"),
             info: err("not configured"),
             node_status: err("not configured"),
@@ -501,6 +503,10 @@ impl Default for MockNodeRpc {
 impl NodeRpc for MockNodeRpc {
     fn source(&self) -> ChainSource {
         self.source
+    }
+
+    fn node_url(&self) -> &str {
+        &self.node_url
     }
 
     async fn get_blockchain_info(&self) -> Result<BlockchainInfo, AppError> {

@@ -63,6 +63,21 @@ beforeEach(() => {
 });
 
 describe("Settings — the active wallet's network node", () => {
+  it("a save that leaves the node mode alone asks no confirmation for it", async () => {
+    route("mainnet");
+    // No node_mode.main stored: the form shows the app-wide mode, and an
+    // unedited save must not turn that into a change of the network's key.
+    loadSettings({ node_mode: "full", autostart_hsd: "true" });
+    renderSettings();
+
+    fireEvent.click(await screen.findByTestId("settings-section-node"));
+    fireEvent.click(await screen.findByTestId("autostart-hsd-checkbox"));
+    fireEvent.click(await screen.findByTestId("settings-save"));
+
+    await waitFor(() => expect(savedSetting("autostart_hsd.main")).toBeDefined());
+    expect(invokeMock.mock.calls.some((c) => c[0] === "update_protected_settings")).toBe(false);
+  });
+
   it("shows and saves mode and autostart as settings of the wallet's network", async () => {
     route("mainnet");
     loadSettings({ node_mode: "full", autostart_hsd: "true", "node_mode.main": "spv" });
@@ -84,8 +99,29 @@ describe("Settings — the active wallet's network node", () => {
         value: "false",
       }),
     );
-    expect(savedSetting("node_mode.main")).toEqual({ key: "node_mode.main", value: "spv" });
     expect(savedSetting("autostart_hsd")).toBeUndefined();
+    // The node mode is protected and was left as it was: it is sent nowhere.
+    expect(savedSetting("node_mode.main")).toBeUndefined();
+    expect(savedSetting("node_mode")).toBeUndefined();
+    expect(invokeMock).not.toHaveBeenCalledWith("update_protected_settings", expect.anything());
+  });
+
+  it("sends a changed mode as the wallet's network's own, to be confirmed", async () => {
+    route("mainnet");
+    loadSettings({ node_mode: "full", "node_mode.main": "spv" });
+    renderSettings();
+
+    const select = (await screen.findByTestId("chain-source-select")) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("local_spv"));
+    fireEvent.change(select, { target: { value: "local_full" } });
+    fireEvent.click(await screen.findByTestId("settings-save"));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("update_protected_settings", {
+        changes: [{ key: "node_mode.main", value: "full" }],
+      }),
+    );
+    expect(savedSetting("node_mode.main")).toBeUndefined();
     expect(savedSetting("node_mode")).toBeUndefined();
   });
 

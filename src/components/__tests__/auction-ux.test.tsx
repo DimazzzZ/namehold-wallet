@@ -755,6 +755,39 @@ describe("Name page — recover bid commitment (Task 2 / C2)", () => {
     expect(captured.recover?.bidValueDoos).toBe(10_000_000);
   });
 
+  it("refuses a 7th decimal in the recover amount instead of rounding it, and recovers nothing", async () => {
+    const captured: { recover?: Record<string, unknown> } = {};
+    invokeMock.mockImplementation(routeReveal(captured, false));
+    render(<NamePageAt path="/names/lostbidname" />, { wrapper: pageWrapper() });
+
+    await screen.findByTestId("recover-bid");
+    fireEvent.change(screen.getByLabelText("Your bid amount (HNS)"), {
+      target: { value: "10.0000005" },
+    });
+
+    expect(screen.getByTestId("recover-bid-error")).toHaveTextContent("HNS has at most 6 decimals");
+    const submit = screen.getByTestId("recover-bid-submit");
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(invokeMock.mock.calls.map((c) => c[0])).not.toContain("recover_bid_commitment");
+    expect(captured.recover).toBeUndefined();
+  });
+
+  it("recovers a bid of 1234.567891 HNS as exactly 1,234,567,891 doos", async () => {
+    const captured: { recover?: Record<string, unknown> } = {};
+    invokeMock.mockImplementation(routeReveal(captured, false));
+    render(<NamePageAt path="/names/lostbidname" />, { wrapper: pageWrapper() });
+
+    await screen.findByTestId("recover-bid");
+    fireEvent.change(screen.getByLabelText("Your bid amount (HNS)"), {
+      target: { value: "1234.567891" },
+    });
+    expect(screen.queryByTestId("recover-bid-error")).toBeNull();
+    fireEvent.click(screen.getByTestId("recover-bid-submit"));
+
+    await waitFor(() => expect(captured.recover?.bidValueDoos).toBe(1_234_567_891));
+  });
+
   it("does not render the recover-bid input once a commitment already exists", async () => {
     invokeMock.mockImplementation(routeReveal({}, true));
     render(<NamePageAt path="/names/lostbidname" />, { wrapper: pageWrapper() });

@@ -24,7 +24,7 @@
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Runtime, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::commands::draft_ctx::active_profile;
 use crate::commands::draft_ctx::LockSend;
@@ -33,6 +33,7 @@ use crate::db;
 use crate::db::queries::DraftStatus;
 use crate::error::AppError;
 use crate::noncustodial::network::Network;
+use crate::noncustodial::review::{self, BidOnRecord, DraftClaims};
 use crate::noncustodial::rpc::{cross_network_refusal, ChainSource, NodeRpcClient};
 use crate::noncustodial::send;
 use crate::noncustodial::session::session_ttl_ms;
@@ -125,8 +126,21 @@ fn compute_send_summary(
 /// verbatim so the user confirms the real on-chain intent, not whatever the
 /// (possibly compromised) main webview claims. A draft whose summary cannot
 /// be read is refused: the window must not show a fee or a price as zero.
+///
+/// A bid's value cannot be shown without the wallet's record of it, so this
+/// form refuses a BID; signing reads the record through
+/// [`confirm_details_with`].
 pub(crate) fn confirm_details_for_draft(
     draft: &db::queries::TxDraftRow,
+) -> Result<serde_json::Value, AppError> {
+    confirm_details_with(draft, &|_| None)
+}
+
+/// [`confirm_details_for_draft`], with `bids` answering the wallet's record
+/// of the bid whose blind is the given hex.
+pub(crate) fn confirm_details_with(
+    draft: &db::queries::TxDraftRow,
+    bids: &dyn Fn(&str) -> Option<BidOnRecord>,
 ) -> Result<serde_json::Value, AppError> {
     if draft.action == PURCHASE_ACTION {
         return Ok(confirm_details_for_purchase(&read_summary(
@@ -143,33 +157,127 @@ pub(crate) fn confirm_details_for_draft(
             &draft.summary_json,
         )?));
     }
-    // The fee and amounts the user checks before signing: a summary that
-    // cannot be read is refused, never shown as zeros (fail closed).
-    let summary: TxSummary = read_summary(&draft.summary_json)?;
-    let mut rows: Vec<serde_json::Value> = Vec::new();
-    let action_label = match draft.action.as_str() {
-        "send_hns" => "Send HNS".to_string(),
-        other => format!("Name action: {other}"),
-    };
-    rows.push(serde_json::json!({ "label": "Action", "value": action_label }));
     if draft.action == "send_hns" {
-        if let Some(to) = &summary.recipient_address {
-            rows.push(serde_json::json!({ "label": "To", "value": to }));
-        }
-        rows.push(serde_json::json!({
+        return confirm_details_for_send(draft);
+    }
+    confirm_details_for_name_action(draft, bids)
+}
+
+/// Rows for a plain send. Its recipient, amount and fee come from the
+/// summary written beside the plan at build time; signing refuses unless the
+/// transaction it signs has the txid shown here (`ensure_reviewed`), which
+/// commits to every input and output, so the rows are those of the
+/// transaction signed.
+fn confirm_details_for_send(
+    draft: &db::queries::TxDraftRow,
+) -> Result<serde_json::Value, AppError> {
+    let summary: TxSummary = read_summary(&draft.summary_json)?;
+    let params: SendBuildParams = serde_json::from_str(&draft.signing_inputs_json)
+        .map_err(|e| AppError::Other(format!("corrupted draft: unreadable send plan: {e}")))?;
+    let to = summary
+        .recipient_address
+        .as_deref()
+        .ok_or_else(|| AppError::Other("corrupted draft: a send without its recipient".into()))?;
+    let txid = summary
+        .txid
+        .as_deref()
+        .ok_or_else(|| AppError::Other("corrupted draft: a send without its txid".into()))?;
+    let mut rows: Vec<serde_json::Value> = vec![
+        serde_json::json!({ "label": "Action", "value": "Send HNS" }),
+        serde_json::json!({ "label": "To", "value": to }),
+        serde_json::json!({
             "label": "Amount",
             "value": doos_to_hns_string(summary.send_total_doos),
+        }),
+        serde_json::json!({
+            "label": "Fee",
+            "value": doos_to_hns_string(summary.fee_doos),
+        }),
+        serde_json::json!({
+            "label": "Total leaving this wallet",
+            "value": doos_to_hns_string(
+                i128::from(summary.send_total_doos) + i128::from(summary.fee_doos)
+            ),
+        }),
+        serde_json::json!({ "label": "Txid", "value": txid }),
+    ];
+    if params.max {
+        rows.push(serde_json::json!({
+            "label": "Warning",
+            "value": format!(
+                "This sends everything this wallet can spend: all {} of its coins, less the fee.",
+                summary.num_inputs
+            ),
         }));
-    }
-    rows.push(serde_json::json!({
-        "label": "Fee",
-        "value": doos_to_hns_string(summary.fee_doos),
-    }));
-    if let Some(txid) = &summary.txid {
-        rows.push(serde_json::json!({ "label": "Txid", "value": txid }));
     }
     push_warning_rows(&mut rows, &summary.warnings);
     Ok(serde_json::json!({ "rows": rows }))
+}
+
+/// What a name action's summary says about itself (`draft_ctx::ActionSummary`
+/// as written), read for the rows the plan alone cannot give: the spelling of
+/// its names, the recipient it was built for and its warnings.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NameActionClaims {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    name_list: Option<Vec<String>>,
+    #[serde(default)]
+    recipient_address: Option<String>,
+    txid: String,
+    #[serde(default)]
+    warnings: Vec<String>,
+}
+
+impl NameActionClaims {
+    fn names(&self) -> Vec<String> {
+        match &self.name_list {
+            Some(list) if !list.is_empty() => list.clone(),
+            _ => vec![self.name.clone()],
+        }
+    }
+}
+
+/// Rows for a name action (and a Shakedex lock, cancel or their finalize),
+/// computed from the plan that is signed (`noncustodial::review`). A REVOKE
+/// also asks the user to type the name (`confirmText`).
+fn confirm_details_for_name_action(
+    draft: &db::queries::TxDraftRow,
+    bids: &dyn Fn(&str) -> Option<BidOnRecord>,
+) -> Result<serde_json::Value, AppError> {
+    let claims: NameActionClaims = read_summary(&draft.summary_json)?;
+    let plan: crate::noncustodial::actions::DraftPlan =
+        serde_json::from_str(&draft.signing_inputs_json)
+            .map_err(|e| AppError::Other(format!("corrupted draft: unreadable plan: {e}")))?;
+    let names = claims.names();
+    let rows = review::covenant_rows(
+        &DraftClaims {
+            action: &draft.action,
+            names: &names,
+            recipient: claims.recipient_address.as_deref(),
+            summary_txid: Some(&claims.txid),
+            warnings: &claims.warnings,
+        },
+        &plan,
+        bids,
+    )?;
+    let rows: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| serde_json::json!({ "label": r.label, "value": r.value }))
+        .collect();
+    let mut details = serde_json::json!({ "rows": rows });
+    if draft.action == "revoke" {
+        details["confirmText"] = serde_json::json!(names[0]);
+    }
+    Ok(details)
+}
+
+/// The name a REVOKE asks the user to type before it is signed, `None` for
+/// any other draft.
+fn typed_confirmation(details: &serde_json::Value) -> Option<&str> {
+    details.get("confirmText").and_then(|v| v.as_str())
 }
 
 /// A draft's summary as the type `T` it was stored as (a plain `TxSummary`
@@ -303,7 +411,17 @@ fn confirm_details_for_purchase_finalize(s: &PurchaseFinalizeSummary) -> serde_j
 /// to get doos/byte, floored at the relay-minimum), else the node's
 /// `estimatesmartfee`, else the fixed relay-floor default. Never errors.
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub(crate) async fn resolve_fee_rate(state: &State<'_, AppState>, fee_rate: Option<u64>) -> u64 {
+/// The fee rate a send is built at, refused above
+/// [`send::MAX_FEE_RATE_PER_BYTE`] whichever source gave it: the caller's
+/// argument, the setting, or the node's estimate.
+pub(crate) async fn resolve_fee_rate(
+    state: &State<'_, AppState>,
+    fee_rate: Option<u64>,
+) -> Result<u64, AppError> {
+    send::checked_fee_rate(resolve_fee_rate_unchecked(state, fee_rate).await)
+}
+
+async fn resolve_fee_rate_unchecked(state: &State<'_, AppState>, fee_rate: Option<u64>) -> u64 {
     if let Some(r) = fee_rate {
         return r;
     }
@@ -435,6 +553,14 @@ pub async fn sync_wallet_state(
                     &profile_network,
                     &format!("refusing to sync; point the wallet at a {profile_network} node"),
                 ));
+            }
+            // A node behind the tip has not seen the coins above its height:
+            // applied, its list would mark them spent.
+            if !info.is_current(&profile_network, crate::noncustodial::rpc::unix_now_secs()) {
+                return Err(AppError::Rpc(format!(
+                    "{}: the wallet's coins were not synced, and nothing was marked spent",
+                    crate::commands::sync::node_still_syncing(info.blocks)
+                )));
             }
             info.blocks
         }
@@ -591,7 +717,7 @@ pub async fn build_send_hns_draft(
             "amount must be positive".to_string(),
         ));
     }
-    let rate = resolve_fee_rate(&state, fee_rate).await;
+    let rate = resolve_fee_rate(&state, fee_rate).await?;
 
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let profile = active_profile(&conn)?;
@@ -700,7 +826,7 @@ pub async fn estimate_tx_draft_fee(
     // `build_send_hns_draft` makes with `max`, without building a draft (a
     // draft reserves its coins). The form shows it for the user to adjust.
     if max.unwrap_or(false) {
-        let rate = resolve_fee_rate(&state, fee_rate).await;
+        let rate = resolve_fee_rate(&state, fee_rate).await?;
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let profile = active_profile(&conn)?;
         let network = derivation::network_from_profile(&profile.network)?;
@@ -719,7 +845,7 @@ pub async fn estimate_tx_draft_fee(
             "amount must be positive".to_string(),
         ));
     }
-    let rate = resolve_fee_rate(&state, fee_rate).await;
+    let rate = resolve_fee_rate(&state, fee_rate).await?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let profile = active_profile(&conn)?;
     let network = derivation::network_from_profile(&profile.network)?;
@@ -760,12 +886,27 @@ pub(crate) async fn sign_tx_draft_confirmed<R: Runtime>(
     app: &AppHandle<R>,
     draft_id: &str,
 ) -> Result<TxDraftSummary, AppError> {
-    let draft = {
+    let details = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::get_tx_draft(&conn, draft_id)?
-            .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?
+        let draft = db::queries::get_tx_draft(&conn, draft_id)?
+            .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
+        refuse_unless_sendable(draft.status)?;
+        // Refuse before asking: a draft that would no longer sign the
+        // transaction it was built as is not shown for confirmation.
+        let profile = db::queries::get_wallet_profile(&conn, &draft.wallet_profile_id)?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("wallet profile {}", draft.wallet_profile_id))
+            })?;
+        let reserved = reserved_send_coins(&conn, &draft)?;
+        ensure_reviewed(&draft, &profile, &reserved)?;
+        let profile_id = draft.wallet_profile_id.clone();
+        confirm_details_with(&draft, &|blind| {
+            db::queries::get_bid_by_blind(&conn, &profile_id, blind)
+                .ok()
+                .flatten()
+        })?
     };
-    let details = confirm_details_for_draft(&draft)?;
+    let confirm_text = typed_confirmation(&details).map(str::to_string);
     let confirm = prompt_secure(
         app,
         SecurePromptRequest {
@@ -781,7 +922,130 @@ pub(crate) async fn sign_tx_draft_confirmed<R: Runtime>(
     if !confirm.confirmed {
         return Err(AppError::UserRejected);
     }
+    // A REVOKE burns the name: it is signed only once the user has typed the
+    // name in the secure window, and the backend checks what was typed, not
+    // just the window's own check.
+    if let Some(expected) = confirm_text {
+        if confirm.value.as_ref().map(|v| v.trim()) != Some(expected.as_str()) {
+            return Err(AppError::UserRejected);
+        }
+    }
     sign_tx_draft_inner(state, draft_id).await
+}
+
+/// A send's coins: exactly those it reserved when it was built (I3). A send
+/// is never re-selected over the wallet's other coins at sign time: a Max
+/// send would then sweep coins that arrived after it was reviewed, and any
+/// send could sign a transaction other than the one the user confirmed. A
+/// send whose reservation is gone (released, or expired and taken by another
+/// draft) is refused by [`ensure_reviewed`] and has to be built again.
+/// Empty for every other action.
+fn reserved_send_coins(
+    conn: &rusqlite::Connection,
+    draft: &db::queries::TxDraftRow,
+) -> Result<Vec<send::SpendableCoin>, AppError> {
+    if draft.action == "send_hns" {
+        send::load_reserved_coins(conn, &draft.wallet_profile_id, &draft.id)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+/// Said when a draft no longer builds the transaction it was reviewed as.
+pub(crate) const NOT_THE_REVIEWED_TX: &str = "This draft no longer builds the transaction you \
+     reviewed (its coins were released, spent or taken by another draft). Nothing was signed; \
+     build it again.";
+
+/// Refuse unless the transaction this draft would sign now is the one it was
+/// built and reviewed as: rebuilt from what the draft holds (a send from the
+/// coins it reserved, any other draft from its stored plan), it must have the
+/// txid of the draft's summary, which is the txid the secure window shows,
+/// and any change it returns must go to the account's own change address,
+/// re-derived from the profile's xpub rather than read from the draft. Holds
+/// for every signer; the Ledger path checks the txid again after the device
+/// signs.
+fn ensure_reviewed(
+    draft: &db::queries::TxDraftRow,
+    profile: &crate::noncustodial::types::WalletProfileSummary,
+    reserved: &[send::SpendableCoin],
+) -> Result<(), AppError> {
+    let network = derivation::network_from_profile(&profile.network)?;
+    let own_change = change_address(network, &profile.account_xpub)?;
+    let account = u32::try_from(profile.account_index)
+        .map_err(|_| AppError::Other("corrupted profile: account index".into()))?;
+    let reviewed = local_txid_from_summary(&draft.summary_json)
+        .ok_or_else(|| AppError::Other("corrupted draft: no txid to review".into()))?;
+    let now = if draft.action == "send_hns" {
+        let params: SendBuildParams = serde_json::from_str(&draft.signing_inputs_json)?;
+        if Network::from_str_opt(&params.network) != Some(network) || params.account != account {
+            return Err(AppError::Other(
+                "corrupted draft: the send is not for this wallet's network and account".into(),
+            ));
+        }
+        if params.change_address != own_change {
+            return Err(AppError::Other(
+                "refusing to sign: this send's change does not go to this wallet's own change \
+                 address"
+                    .into(),
+            ));
+        }
+        if reserved.is_empty() {
+            return Err(AppError::InvalidInput(NOT_THE_REVIEWED_TX.into()));
+        }
+        let plan = send::build_send_plan(
+            network,
+            params.account,
+            reserved,
+            &params.to_address,
+            params.amount_doos,
+            &params.change_address,
+            params.rate_per_byte,
+            params.max,
+        )
+        .map_err(|_| AppError::InvalidInput(NOT_THE_REVIEWED_TX.into()))?;
+        crate::noncustodial::actions::rebuild_unsigned(&plan, network)?.txid()
+    } else {
+        let plan: crate::noncustodial::actions::DraftPlan =
+            serde_json::from_str(&draft.signing_inputs_json)?;
+        if Network::from_str_opt(&plan.network) != Some(network) || plan.account != account {
+            return Err(AppError::Other(
+                "corrupted draft: the plan is not for this wallet's network and account".into(),
+            ));
+        }
+        if let Some(idx) = plan.change_output_index {
+            let out = plan.outputs.get(idx).ok_or_else(|| {
+                AppError::Other("corrupted draft: change output index out of bounds".into())
+            })?;
+            if out.address != own_change {
+                return Err(AppError::Other(
+                    "refusing to sign: the plan's change does not go to this wallet's own \
+                     change address"
+                        .into(),
+                ));
+            }
+        }
+        crate::noncustodial::actions::rebuild_unsigned(&plan, network)?.txid()
+    };
+    if now != reviewed {
+        return Err(AppError::InvalidInput(NOT_THE_REVIEWED_TX.into()));
+    }
+    Ok(())
+}
+
+/// Refuse a signed transaction whose txid is not the one the draft was
+/// reviewed as. Nothing is stored or sent when this fails.
+fn ensure_signed_is_reviewed(signed_hex: &str, summary_json: &str) -> Result<(), AppError> {
+    let reviewed = local_txid_from_summary(summary_json)
+        .ok_or_else(|| AppError::Other("corrupted draft: no txid to review".into()))?;
+    let raw = hex::decode(signed_hex)
+        .map_err(|e| AppError::Other(format!("signed transaction is not hex: {e}")))?;
+    let signed = crate::noncustodial::tx::Transaction::decode(&raw)?.txid();
+    if signed != reviewed {
+        return Err(AppError::Other(
+            "the signed transaction is not the one you reviewed; nothing was saved or sent".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// The signing core, WITHOUT the secure-window confirmation. Not a Tauri
@@ -811,31 +1075,10 @@ pub(crate) async fn sign_tx_draft_inner(
         // the Ledger (`resolve_covenant_names` below parses it too).
         refuse_unsupported_ledger_plan(&profile_kind, &draft.action, &draft.signing_inputs_json)?;
         let account_xpub = profile.account_xpub.clone();
-        let coins = if draft.action == "send_hns" {
-            // Prefer the exact coin set this draft reserved at build time (I3):
-            // re-selecting over the full pool could drift onto a larger coin
-            // that synced in after the build — an input that was never
-            // reserved and that another draft could claim before this one
-            // broadcasts. Selecting over the reserved set alone is
-            // deterministic and reproduces the previewed inputs. Fall back to
-            // the general pool (still excluding other drafts' reservations)
-            // for drafts holding no reservation rows — e.g. drafts created
-            // before migration 015, or whose reservation TTL-expired.
-            let reserved = send::load_reserved_coins(&conn, &draft.wallet_profile_id, draft_id)?;
-            if reserved.is_empty() {
-                let network = derivation::network_from_profile(&profile.network)?;
-                send::load_spendable_coins(
-                    &conn,
-                    &draft.wallet_profile_id,
-                    Some(draft_id),
-                    network,
-                )?
-            } else {
-                reserved
-            }
-        } else {
-            Vec::new()
-        };
+        // Exactly the coins this draft reserved (a send) and the transaction
+        // it was reviewed as, or nothing is signed.
+        let coins = reserved_send_coins(&conn, &draft)?;
+        ensure_reviewed(&draft, &profile, &coins)?;
         let settings = db::queries::get_settings(&conn)?;
         // For Ledger covenant actions, resolve names by hash from tracked_name_states.
         let covenant_names = if profile_kind == "ledger_hardware" && draft.action != "send_hns" {
@@ -880,7 +1123,11 @@ pub(crate) async fn sign_tx_draft_inner(
         )?;
     }
 
-    // 3. Persist the signed tx and status.
+    // 3. The signed transaction must be the one reviewed: its txid is the
+    //    one the secure window showed (every signer, every action).
+    ensure_signed_is_reviewed(&signed_hex, &draft.summary_json)?;
+
+    // 4. Persist the signed tx and status.
     persist_signed_draft(state, draft_id, &signed_hex, &summary_json)?;
 
     load_draft_summary(state, draft_id)
@@ -964,15 +1211,11 @@ fn sign_via_hot_session(
             let plan: crate::noncustodial::actions::DraftPlan =
                 serde_json::from_str(&draft.signing_inputs_json)?;
             let (hex, txid) = crate::noncustodial::actions::sign_plan(session, &plan)?;
-            // The build-time summary already carries the txid (Handshake txids
-            // hash only the non-witness serialization, so signing can't change
-            // it) — sign_plan's recomputation must agree, or the stored txid
-            // the confirmation tracker polls for would be wrong.
-            debug_assert_eq!(
-                local_txid_from_summary(&draft.summary_json).as_deref(),
-                Some(txid.as_str()),
-                "covenant draft summary txid diverged from the signed tx's txid"
-            );
+            // The build-time summary carries the txid (Handshake txids hash
+            // only the non-witness serialization, so signing can't change
+            // it); `ensure_signed_is_reviewed` refuses a signed tx whose txid
+            // differs, in release builds too.
+            let _ = txid;
             Ok((hex, draft.summary_json.clone()))
         }
     }
@@ -1531,14 +1774,20 @@ fn load_draft_summary(
 ///
 /// Not a spend: builds and broadcasts nothing. Requires the signer to be
 /// unlocked for the SAME wallet profile that owns `name` — the private key
-/// never leaves this function.
+/// never leaves this function — and the user's confirmation in the secure
+/// window, which shows the message in full: the renderer picks the text, and
+/// the signature is a claim made in the name's owner's name. A message the
+/// window could not show faithfully is refused before anyone is asked
+/// (`check_message_can_be_shown`). Declined: `UserRejected`, nothing signed.
 #[tauri::command]
-pub async fn sign_name_message(
-    state: State<'_, AppState>,
+pub async fn sign_name_message<R: Runtime>(
+    app: AppHandle<R>,
     name: String,
     message: String,
     wallet_profile_id: Option<String>,
 ) -> Result<serde_json::Value, AppError> {
+    crate::noncustodial::message::check_message_can_be_shown(&message)?;
+    let state = app.state::<AppState>();
     let id = crate::commands::read::resolve_profile(&state, wallet_profile_id)?
         .ok_or_else(|| AppError::InvalidInput("no wallet profile selected".to_string()))?;
 
@@ -1572,10 +1821,35 @@ pub async fn sign_name_message(
         )
     };
 
-    // 2. Signer: mirror `sign_tx_draft`'s unlock + per-profile gate — the
+    // 2. A signer that could not sign is refused before the user is asked
+    // anything (a locked wallet unlocks first, then this runs again).
+    {
+        let mut slot = state
+            .signer
+            .lock()
+            .map_err(|e| AppError::Lock(e.to_string()))?;
+        slot.as_mut()
+            .ok_or(AppError::WalletLocked)?
+            .ensure_for(&id)?;
+    }
+    crate::commands::secure_confirm::confirm_rows(
+        &app,
+        "Sign message",
+        "Check the message. Whoever receives the signature can show that the owner of this name \
+         said this.",
+        serde_json::json!({ "rows": [
+            { "label": "Action", "value": "Sign a message with a name you own" },
+            { "label": "Name", "value": name },
+            { "label": "Signing address", "value": coin.address },
+            { "label": "Message", "value": message },
+        ]}),
+    )
+    .await?;
+
+    // 3. Signer: mirror `sign_tx_draft`'s unlock + per-profile gate — the
     // unlocked session must belong to the SAME profile the coin was resolved
     // under, so one wallet's unlocked signer can never sign on another's
-    // behalf.
+    // behalf. Checked again: the window may have stayed open past the expiry.
     let (signature, pubkey) = {
         let mut slot = state
             .signer
@@ -2463,9 +2737,10 @@ pub async fn get_wallet_balances(
 }
 
 /// Whether `session` is unlocked AND belongs to `active_id`: one wallet's
-/// unlocked signer never counts for another profile.
+/// unlocked signer never counts for another profile. An expired session is
+/// locked by the check (its key dropped).
 pub(crate) fn signer_unlocked_for(
-    session: Option<&crate::noncustodial::session::SignerSession>,
+    session: Option<&mut crate::noncustodial::session::SignerSession>,
     active_id: &str,
 ) -> bool {
     session.is_some_and(|s| s.is_unlocked() && s.wallet_profile_id() == active_id)
@@ -2475,7 +2750,7 @@ pub(crate) fn signer_unlocked_for(
 /// local signer session to unlock — the device signs each transaction on
 /// demand — so it is always ready; every other kind needs its session.
 pub(crate) fn signer_ready_for(
-    session: Option<&crate::noncustodial::session::SignerSession>,
+    session: Option<&mut crate::noncustodial::session::SignerSession>,
     active_id: &str,
     profile_kind: Option<&str>,
 ) -> bool {
@@ -2496,11 +2771,11 @@ pub async fn get_write_capability(
         (id, kind)
     };
     let signer_unlocked = {
-        let slot = state
+        let mut slot = state
             .signer
             .lock()
             .map_err(|e| AppError::Lock(e.to_string()))?;
-        signer_ready_for(slot.as_ref(), &active_id, active_kind.as_deref())
+        signer_ready_for(slot.as_mut(), &active_id, active_kind.as_deref())
     };
     let (source, allow_remote, settings, expected_network, effective_url, client_opt) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -2546,8 +2821,16 @@ pub async fn get_write_capability(
             client_opt,
         )
     };
-    let mut cap =
-        crate::providers::WriteCapability::evaluate(signer_unlocked, source, allow_remote);
+    // Use the client resolved from the active profile's effective config if
+    // available; otherwise fall back to global settings.
+    let client = client_opt.unwrap_or_else(|| NodeRpcClient::from_settings(&settings));
+    // The same question `rpc::broadcast_gates` asks, so a send it would refuse
+    // is not offered for signing first.
+    let mut cap = crate::providers::WriteCapability::evaluate(
+        signer_unlocked,
+        crate::noncustodial::rpc::send_source(source, client.node_url()),
+        allow_remote,
+    );
 
     // SPV mode is explicitly read-only — override whatever the signer evaluated
     // with a clear SPV-specific message. This must run before the generic
@@ -2570,9 +2853,6 @@ pub async fn get_write_capability(
     // wallet learns its spendable + name-owner coins via getcoinsbyaddress). If
     // any is missing, downgrade to read-only with a precise, actionable reason.
     if cap.can_write {
-        // Use the client resolved from the active profile's effective config if
-        // available; otherwise fall back to global settings.
-        let client = client_opt.unwrap_or_else(|| NodeRpcClient::from_settings(&settings));
         let node_url = effective_url.as_str();
         apply_node_write_probe_with_client(
             &client,
@@ -2732,8 +3012,23 @@ pub async fn list_tx_drafts(
 mod confirm_tests {
     use super::*;
 
-    /// Build a `TxDraftRow` with the given action + summary; other fields are
-    /// placeholder values the confirmation payload never reads.
+    /// The plan a send draft stores, Max or not.
+    fn send_params(max: bool) -> String {
+        serde_json::to_string(&SendBuildParams {
+            to_address: "hs1qexampleaddr".into(),
+            amount_doos: 2_500_000,
+            change_address: "hs1qchange".into(),
+            rate_per_byte: 1,
+            account: 0,
+            network: "main".into(),
+            max,
+        })
+        .unwrap()
+    }
+
+    /// Build a `TxDraftRow` with the given action + summary; a send carries
+    /// its send plan, other fields are placeholder values the confirmation
+    /// payload never reads.
     fn draft(action: &str, summary_json: &str) -> db::queries::TxDraftRow {
         db::queries::TxDraftRow {
             id: "d1".to_string(),
@@ -2741,7 +3036,11 @@ mod confirm_tests {
             action: action.to_string(),
             unsigned_tx_hex: String::new(),
             signed_tx_hex: None,
-            signing_inputs_json: "{}".to_string(),
+            signing_inputs_json: if action == "send_hns" {
+                send_params(false)
+            } else {
+                "{}".to_string()
+            },
             summary_json: summary_json.to_string(),
             status: DraftStatus::Draft,
             error_message: None,
@@ -2780,7 +3079,7 @@ mod confirm_tests {
     }
 
     #[test]
-    fn confirm_details_for_send_hns_shows_to_amount_fee_txid() {
+    fn confirm_details_for_send_hns_shows_to_amount_fee_total_txid() {
         let mut s = base_summary("send_hns");
         s.send_total_doos = 2_500_000;
         s.fee_doos = 10_000;
@@ -2792,20 +3091,47 @@ mod confirm_tests {
         assert_eq!(value_for(&details, "To"), Some("hs1qexampleaddr"));
         assert_eq!(value_for(&details, "Amount"), Some("2.500000 HNS"));
         assert_eq!(value_for(&details, "Fee"), Some("0.010000 HNS"));
+        assert_eq!(
+            value_for(&details, "Total leaving this wallet"),
+            Some("2.510000 HNS")
+        );
         assert_eq!(value_for(&details, "Txid"), Some("abc123"));
+        assert_eq!(value_for(&details, "Warning"), None);
     }
 
+    /// A Max send says it sweeps the wallet, with the number of coins it
+    /// spends: the amount alone does not tell the user that.
     #[test]
-    fn confirm_details_for_covenant_action_labels_action_and_omits_recipient() {
+    fn confirm_details_for_a_max_send_says_it_sends_everything() {
+        let mut s = base_summary("send_hns");
+        s.send_total_doos = 7_000_000;
+        s.num_inputs = 3;
+        s.recipient_address = Some("hs1qexampleaddr".to_string());
+        s.txid = Some("abc123".to_string());
+        let mut d = draft("send_hns", &summary_json(&s));
+        d.signing_inputs_json = send_params(true);
+        let details = confirm_details_for_draft(&d).unwrap();
+        assert_eq!(
+            value_for(&details, "Warning"),
+            Some("This sends everything this wallet can spend: all 3 of its coins, less the fee.")
+        );
+    }
+
+    /// A name action's rows come from its plan: a draft without a readable
+    /// plan is refused, never shown with the summary's numbers alone.
+    #[test]
+    fn confirm_details_refuses_a_name_action_without_its_plan() {
         let mut s = base_summary("register");
         s.fee_doos = 5_000;
-        let details = confirm_details_for_draft(&draft("register", &summary_json(&s))).unwrap();
-
-        assert_eq!(value_for(&details, "Action"), Some("Name action: register"));
-        // Covenant actions don't show a "To" or "Amount" row.
-        assert_eq!(value_for(&details, "To"), None);
-        assert_eq!(value_for(&details, "Amount"), None);
-        assert_eq!(value_for(&details, "Fee"), Some("0.005000 HNS"));
+        s.txid = Some("abc".into());
+        let mut json: serde_json::Value = serde_json::to_value(&s).unwrap();
+        json["name"] = serde_json::json!("alice");
+        let err = confirm_details_for_draft(&draft("register", &json.to_string())).unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("corrupted draft: unreadable plan"),
+            "{err}"
+        );
     }
 
     /// The secure window is where the user checks the fee before signing:
@@ -2823,6 +3149,8 @@ mod confirm_tests {
     #[test]
     fn confirm_details_includes_warnings_as_rows() {
         let mut s = base_summary("send_hns");
+        s.recipient_address = Some("hs1qexampleaddr".to_string());
+        s.txid = Some("abc123".to_string());
         s.warnings = vec!["dust output".to_string(), "high fee".to_string()];
         let details = confirm_details_for_draft(&draft("send_hns", &summary_json(&s))).unwrap();
         let warnings: Vec<&str> = details["rows"]
@@ -3117,31 +3445,61 @@ mod pure_helper_tests {
         }
     }
 
+    /// A send whose summary lacks its recipient or its txid is refused: the
+    /// window never shows a send without saying where it goes and which
+    /// transaction is signed.
     #[test]
-    fn confirm_details_omits_to_row_when_recipient_missing_on_send_hns() {
-        // send_hns action but summary lacks recipient_address — the "To" row
-        // is skipped (the `if let Some(to)` branch takes the None path) but
-        // Amount + Fee still appear.
-        let s = TxSummary {
-            action: "send_hns".to_string(),
-            send_total_doos: 1_500_000,
-            fee_doos: 2_000,
-            change_doos: 0,
-            input_total_doos: 0,
-            num_inputs: 0,
-            recipient_address: None,
-            txid: None,
-            warnings: Vec::new(),
-        };
-        let json = serde_json::to_string(&s).unwrap();
-        let details = confirm_details_for_draft(&draft_with("send_hns", &json)).unwrap();
-        let rows = details["rows"].as_array().unwrap();
-        let labels: Vec<&str> = rows.iter().map(|r| r["label"].as_str().unwrap()).collect();
-        assert!(labels.contains(&"Action"));
-        assert!(!labels.contains(&"To"));
-        assert!(labels.contains(&"Amount"));
-        assert!(labels.contains(&"Fee"));
-        assert!(!labels.contains(&"Txid"));
+    fn confirm_details_refuses_a_send_without_its_recipient_or_txid() {
+        let params = serde_json::to_string(&SendBuildParams {
+            to_address: "hs1qexampleaddr".into(),
+            amount_doos: 1_500_000,
+            change_address: "hs1qchange".into(),
+            rate_per_byte: 1,
+            account: 0,
+            network: "main".into(),
+            max: false,
+        })
+        .unwrap();
+        for (to, txid) in [(None, Some("abc")), (Some("hs1qexampleaddr"), None)] {
+            let s = TxSummary {
+                action: "send_hns".to_string(),
+                send_total_doos: 1_500_000,
+                fee_doos: 2_000,
+                change_doos: 0,
+                input_total_doos: 0,
+                num_inputs: 0,
+                recipient_address: to.map(str::to_string),
+                txid: txid.map(str::to_string),
+                warnings: Vec::new(),
+            };
+            let mut d = draft_with("send_hns", &serde_json::to_string(&s).unwrap());
+            d.signing_inputs_json = params.clone();
+            let err = confirm_details_for_draft(&d).unwrap_err();
+            assert!(
+                err.to_string()
+                    .starts_with("corrupted draft: a send without its"),
+                "{err}"
+            );
+        }
+    }
+
+    /// The last check before a signed transaction is stored: its txid must be
+    /// the reviewed one, whatever the signer returned.
+    #[test]
+    fn ensure_signed_is_reviewed_refuses_a_transaction_of_another_txid() {
+        let mut tx = crate::noncustodial::tx::Transaction::new();
+        tx.locktime = 7;
+        let hex_tx = hex::encode(tx.serialize());
+        let ok = serde_json::json!({ "txid": tx.txid() }).to_string();
+        assert!(ensure_signed_is_reviewed(&hex_tx, &ok).is_ok());
+        let other = serde_json::json!({ "txid": "00".repeat(32) }).to_string();
+        let err = ensure_signed_is_reviewed(&hex_tx, &other).unwrap_err();
+        assert!(
+            err.to_string().contains("not the one you reviewed"),
+            "{err}"
+        );
+        assert!(ensure_signed_is_reviewed(&hex_tx, "{}").is_err());
+        assert!(ensure_signed_is_reviewed("zz", &ok).is_err());
     }
 
     // ---------- local_txid_from_summary -----------------------------------

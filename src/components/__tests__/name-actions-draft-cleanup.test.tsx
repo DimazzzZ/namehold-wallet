@@ -198,8 +198,8 @@ describe("Name page — built-but-not-broadcast draft cleanup", () => {
     expect(deleteDraftCalls()).toHaveLength(0);
     expect(invokedCommands()).toContain("broadcast_tx_draft");
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(".bidname");
-    // The bid inputs are cleared for the next bid.
-    expect(screen.getByLabelText(/^Bid \(HNS\)/i)).toHaveValue(null);
+    // The bid inputs are cleared for the next bid (a text field: "", not null).
+    expect(screen.getByLabelText(/^Bid \(HNS\)/i)).toHaveValue("");
   });
 
   it("makes no delete call when the page is left idle", async () => {

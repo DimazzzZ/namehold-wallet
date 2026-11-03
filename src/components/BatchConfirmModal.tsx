@@ -5,6 +5,7 @@ import { Dialog } from "./ui/Dialog";
 import { Button } from "./ui/Button";
 import { formatHns } from "../lib/utils";
 import { displayName } from "../lib/idn";
+import { BID_FORFEIT_RULE } from "../lib/auction";
 
 export interface BatchConfirmModalProps {
   open: boolean;
@@ -107,6 +108,14 @@ export function BatchConfirmModal({
               {batches > 1 ? " for all transactions" : null}
             </span>
           </div>
+          {action === "bid" && (
+            <div
+              className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2"
+              data-testid="batch-bid-confirm-forfeit-warning"
+            >
+              {formatHns(amountDoos)} HNS is locked until you reveal. {BID_FORFEIT_RULE}
+            </div>
+          )}
           {action === "transfer" && recipient && (
             <div data-testid="batch-transfer-recipient">
               <span className="text-gray-700">

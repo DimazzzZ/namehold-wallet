@@ -80,13 +80,14 @@ pub async fn import_csv(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<ImportResult, AppError> {
+    let content = super::user_file::read_chosen_file(std::path::Path::new(&path))?;
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
 
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(true)
         .flexible(true)
         .trim(csv::Trim::All)
-        .from_path(&path)?;
+        .from_reader(content.as_bytes());
 
     let mut imported = 0usize;
     let mut skipped = 0usize;
@@ -112,6 +113,14 @@ pub async fn import_csv(
         let tld = normalize_tld(&raw_tld);
         if tld.is_empty() {
             skipped += 1;
+            continue;
+        }
+        // Only a Handshake name is stored, and a refused row's text is never
+        // repeated: an import must not copy another file's lines into rows
+        // the webview reads back.
+        if !crate::noncustodial::names::verify_name(&tld) {
+            skipped += 1;
+            errors.push(format!("Row {}: not a Handshake name", i + 2));
             continue;
         }
 
@@ -194,7 +203,7 @@ pub async fn export_csv(
         None,
     )?;
 
-    let mut wtr = csv::WriterBuilder::new().from_path(&path)?;
+    let mut wtr = csv::WriterBuilder::new().from_writer(Vec::new());
 
     wtr.write_record([
         "Name",
@@ -239,7 +248,10 @@ pub async fn export_csv(
         wtr.write_record(&record)?;
     }
 
-    wtr.flush()?;
+    let bytes = wtr
+        .into_inner()
+        .map_err(|e| AppError::Other(format!("csv export: {e}")))?;
+    super::user_file::write_chosen_file(std::path::Path::new(&path), &bytes, false)?;
 
     db.execute(
         "INSERT INTO audit_log (action, detail) VALUES ('export_csv', ?1)",

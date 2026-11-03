@@ -166,6 +166,7 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] Balance shows confirmed/unconfirmed/spendable
 - [ ] Send HNS: address validation (mainnet `hs1…`, regtest `rs1…`, testnet `ts1…`)
 - [ ] Send HNS: amount validation, fee display, review step
+- [ ] Every HNS amount field (Send, Bid, Lockup, Batch bid, Recover bid, Namebase withdrawal) refuses a 7th decimal with "HNS has at most 6 decimals" and anything but plain digits with one point (`1,5`, `1e3`, `-1`) with "Enter an amount greater than 0, in digits like 12.5"; 1234.567891 reaches the review as exactly 1,234.567891 HNS
 - [ ] Send HNS: build → sign → broadcast draft lifecycle
 - [ ] Signer lock/unlock toggle
 - [ ] Wallet switching via dropdown
@@ -221,7 +222,8 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 ### I. Batch operations
 - [ ] Multi-select checkboxes appear on the Owned Names table
 - [ ] Selecting 2+ names shows the batch action bar
-- [ ] "Renew Selected" opens BatchConfirmModal with count + amount + estimated fee + name list
+- [ ] "Renew Selected" opens BatchConfirmModal with count + amount + estimated fee + name list; the fee reads as the secure window's, in HNS (e.g. ~0.001410, never ~0.000000)
+- [ ] Batch Bid's check step shows "Locked until you reveal: N × L HNS = T HNS" and the amber warning that a bid you don't reveal forfeits its entire lockup; the confirm repeats the warning with the total; nothing says only the fee is spent
 - [ ] Confirming broadcasts a single batch transaction
 - [ ] "Reveal Selected" / "Redeem Selected" / "Finalize Selected" work similarly
 - [ ] "Transfer Selected…" asks for one recipient in a dialog after it is pressed and repeats it in the confirmation
@@ -305,8 +307,8 @@ Selling (regtest: node `http://127.0.0.1:14037`, key `test`; never a mainnet pro
 
 - 1 HNS = 1,000,000 doos (dollarydoos)
 - Backend covenant builders expect **integer doos**
-- UI should let users enter **HNS values** and convert internally
-- Bid = visible bid amount; Lockup = additional hidden amount (total commitment = bid + lockup)
+- UI lets users enter **HNS values** with at most 6 decimals and converts them to doos exactly (`src/lib/hnsAmount.ts`); a 7th decimal is refused, never rounded
+- Bid = the most you will pay (a win pays the second-highest bid); Lockup = what the BID coin holds, at least the bid, the part above it hiding the bid. The whole lockup is the commitment: it stays locked until the bid is revealed and is forfeited if it is not; at reveal the part above the bid comes back
 
 ## Auction Lifecycle Reference
 

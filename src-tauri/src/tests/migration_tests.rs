@@ -78,7 +78,10 @@ fn test_schema_version_tracking() {
     // 038 (shakedex_market_step: the step the market was last sent).
     // 039 (shakedex_lock_search: whether the own-lock search after a restore
     //      is done).
-    assert_eq!(count, 40);
+    // 040 (shakedex_managed_elsewhere: a listing another device manages).
+    // 041 (shakedex_signed_lock_txids: every FINALIZE price steps were
+    //      signed over).
+    assert_eq!(count, 41);
 }
 
 #[test]

@@ -13,7 +13,10 @@
 //! 2026-10-24 R1).
 
 use crate::error::AppError;
-use crate::noncustodial::rpc::{resolve_node_api_key, ChainSource};
+use crate::noncustodial::network::Network;
+use crate::noncustodial::rpc::{
+    managed_node_api_key_setting, resolve_node_api_key_for_url, ChainSource,
+};
 
 /// The built-in default node RPC URL when neither an override nor a global
 /// setting supplies one: mainnet's default hsd port, from
@@ -121,7 +124,9 @@ pub fn effective_node_config_for_profile(
             .map(str::to_string)
             .unwrap_or_else(default_node_rpc_url),
     };
-    let node_rpc_api_key = resolve_node_api_key(&merged);
+    // The configured key, else hsd.conf's, else, when the URL is the address of
+    // the app's own running node, the key generated for that node.
+    let node_rpc_api_key = resolve_node_api_key_for_url(&merged, &node_rpc_url);
     // Full or SPV is the profile's network's (spec 2026-10-24 R10), so the
     // chain source reads that network's mode rather than the app-wide one.
     let mode = crate::noncustodial::rpc::resolve_node_mode_for(&merged, profile_network);
@@ -135,4 +140,62 @@ pub fn effective_node_config_for_profile(
         from_override: NODE_CONFIG_KEYS.iter().any(|k| chosen_here(k)),
         local_node,
     })
+}
+
+/// The api-key of the hsd Namehold is about to start on `network`, when no key
+/// is configured for it: 32 new random bytes, hex, stored as that network's key
+/// ([`managed_node_api_key_setting`]). Once that node runs, profiles reaching
+/// its address read the key back through [`effective_node_config_for_profile`],
+/// the app and the background daemon alike, so the node and the wallet agree.
+///
+/// New at every start, never reused: whatever took the node's port during an
+/// earlier start was sent that start's key, and must not hold the next node's.
+/// `start_hsd` refuses while this network's own node runs, so no node of ours
+/// still answers to the key this replaces.
+pub fn new_managed_node_api_key(
+    conn: &rusqlite::Connection,
+    network: Network,
+) -> Result<String, AppError> {
+    let setting = managed_node_api_key_setting(network);
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    let key = hex::encode(bytes);
+    crate::db::queries::set_setting(conn, setting, &key)?;
+    Ok(key)
+}
+
+/// The key `start_hsd` hands the node it starts on `network` for `profile_id`:
+/// the profile's configured key as it is, else a new generated key for `network`. The
+/// profile's effective key does not count when it is a generated one: a URL
+/// pointing at another network's running own node reads that network's key, and
+/// this node must not share it.
+pub fn api_key_for_started_node(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    network: Network,
+) -> Result<String, AppError> {
+    let effective = effective_node_config_for_profile(conn, profile_id)?;
+    let key = effective.node_rpc_api_key.trim();
+    let settings = crate::db::queries::get_settings(conn)?;
+    let generated = Network::ALL.into_iter().any(|n| {
+        settings
+            .get(managed_node_api_key_setting(n))
+            .is_some_and(|k| k.trim() == key)
+    });
+    if key.is_empty() || generated {
+        // No start-time record on this platform means the wallet could never
+        // tell its own node from whatever else holds the port, so it could
+        // never send a generated key. Say so rather than start a node the
+        // wallet cannot talk to.
+        if crate::commands::local_node::process_start_time(std::process::id()).is_none() {
+            return Err(AppError::InvalidInput(
+                "set a Node RPC API key in Settings first: on this system Namehold cannot \
+                 generate one for the node it starts"
+                    .to_string(),
+            ));
+        }
+        return new_managed_node_api_key(conn, network);
+    }
+    Ok(key.to_string())
 }

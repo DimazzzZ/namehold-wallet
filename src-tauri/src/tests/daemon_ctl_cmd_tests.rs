@@ -1,11 +1,10 @@
 //! Command-layer tests for `commands::daemon_ctl`.
 //!
-//! Safety note: `stop_daemon()` reads `~/.namehold/syncd.pid` from the real
-//! home directory and, if present, signals that PID. If a developer has a
-//! live `namehold-syncd` running while running tests, calling `stop_daemon`
-//! (directly or via `set_background_sync_enabled(false)`) would SIGTERM
-//! their real daemon. This test file deliberately AVOIDS every code path
-//! that reaches `stop_daemon()` for that reason.
+//! Safety note: `stop_daemon()` reads `~/.namehold/syncd.pid` from the home
+//! directory and signals that PID. If a developer has a live `namehold-syncd`
+//! running while running tests, reaching `stop_daemon` against the real home
+//! would SIGTERM their real daemon. The tests that call it first point `HOME`
+//! at a temporary directory ([`TempHome`]); nothing else here reaches it.
 //!
 //! What we DO exercise safely:
 //! - `is_background_sync_enabled` — pure DB settings read.
@@ -116,6 +115,136 @@ async fn is_daemon_alive_returns_bool_without_panic() {
 fn check_daemon_alive_returns_bool_without_panic() {
     let alive = check_daemon_alive();
     let _: bool = alive;
+}
+
+// --- which process syncd.pid names ----------------------------------------
+
+/// `HOME` pointed at a new directory, with `.namehold/` in it, until dropped.
+#[cfg(unix)]
+struct TempHome {
+    dir: crate::tests::command_helpers::TempDir,
+    saved: Option<std::ffi::OsString>,
+}
+
+#[cfg(unix)]
+impl TempHome {
+    fn new() -> Self {
+        let dir = crate::tests::command_helpers::TempDir::new();
+        std::fs::create_dir_all(dir.path().join(".namehold")).unwrap();
+        let saved = std::env::var_os("HOME");
+        std::env::set_var("HOME", dir.path());
+        Self { dir, saved }
+    }
+
+    fn write_pid(&self, pid: u32) {
+        std::fs::write(self.pid_file(), format!("{pid}\n")).unwrap();
+    }
+
+    fn pid_file(&self) -> std::path::PathBuf {
+        self.dir.path().join(".namehold").join("syncd.pid")
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TempHome {
+    fn drop(&mut self) {
+        match &self.saved {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+}
+
+/// A live process is told apart by the executable it runs.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn a_pid_is_told_apart_by_its_executable() {
+    use crate::commands::daemon_ctl::pid_runs_executable;
+    let me = std::process::id();
+    let my_name = std::env::current_exe().unwrap();
+    let my_name = my_name.file_name().unwrap().to_str().unwrap();
+    assert!(pid_runs_executable(me, my_name));
+    assert!(!pid_runs_executable(me, &daemon_bin_name()));
+}
+
+/// Pid 0 and a pid that wraps to a negative `kill` target (-1: every process of
+/// the user) name no process, whatever the executable asked for.
+#[test]
+fn a_pid_out_of_range_names_no_process() {
+    use crate::commands::daemon_ctl::{pid_can_name_a_process, pid_runs_executable};
+    let my_name = std::env::current_exe().unwrap();
+    let my_name = my_name.file_name().unwrap().to_str().unwrap().to_string();
+    for pid in [0, u32::MAX, i32::MAX as u32 + 1] {
+        assert!(!pid_can_name_a_process(pid), "{pid}");
+        assert!(!pid_runs_executable(pid, &my_name), "{pid}");
+    }
+    assert!(pid_can_name_a_process(i32::MAX as u32));
+}
+
+/// A process that has exited names nothing.
+#[cfg(unix)]
+#[test]
+fn a_pid_with_no_process_is_not_alive() {
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    assert!(!crate::commands::daemon_ctl::pid_runs_executable(
+        pid, "true"
+    ));
+}
+
+/// `syncd.pid` naming a reused pid: not the daemon, so it is not reported alive,
+/// a start is not skipped, and turning background sync off sends it no signal.
+#[cfg(unix)]
+#[test]
+#[serial(hsd_home)]
+fn a_reused_pid_is_stale_and_gets_no_signal() {
+    let home = TempHome::new();
+    let mut stranger = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    home.write_pid(stranger.id());
+
+    let alive = check_daemon_alive();
+    crate::commands::daemon_ctl::stop_daemon().unwrap();
+    let stranger_lived = stranger.try_wait().unwrap().is_none();
+    let record_kept = home.pid_file().exists();
+    let _ = stranger.kill();
+    let _ = stranger.wait();
+
+    assert!(!alive, "another process is not the daemon");
+    assert!(stranger_lived, "it was not signalled");
+    assert!(!record_kept, "the stale record is removed");
+}
+
+/// `syncd.pid` naming a process that does run `namehold-syncd`: alive, and
+/// stopped. A copy of `sleep` under that name stands in for the daemon.
+#[cfg(unix)]
+#[test]
+#[serial(hsd_home)]
+fn the_real_daemon_is_alive_and_gets_stopped() {
+    let home = TempHome::new();
+    let stand_in = home.dir.path().join(daemon_bin_name());
+    let sleep = ["/bin/sleep", "/usr/bin/sleep"]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .unwrap();
+    std::fs::copy(sleep, &stand_in).unwrap();
+    let mut daemon = std::process::Command::new(&stand_in)
+        .arg("30")
+        .spawn()
+        .unwrap();
+    home.write_pid(daemon.id());
+
+    let alive = check_daemon_alive();
+    crate::commands::daemon_ctl::stop_daemon().unwrap();
+    let status = daemon.wait().unwrap();
+
+    assert!(alive, "the daemon is recognised");
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
+    assert!(!home.pid_file().exists());
 }
 
 // --- ensure_daemon_if_enabled --------------------------------------------

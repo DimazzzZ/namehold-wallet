@@ -8,7 +8,14 @@ import { amountTone, formatDateShort, formatHns, formatHnsShort } from "../../li
 import { shortTxid } from "../SpeedUp";
 import { Badge } from "../ui/Badge";
 import { Tooltip } from "../ui/Tooltip";
-import { ACTION_META, FALLBACK_META, rowBadge, rowIso, showsNameValue } from "./activityText";
+import {
+  ACTION_META,
+  FALLBACK_META,
+  lockedValueTail,
+  rowBadge,
+  rowIso,
+  showsNameValue,
+} from "./activityText";
 
 const NAME_BUTTON =
   "font-mono text-gray-900 hover:text-blue-700 hover:underline cursor-pointer text-left";
@@ -130,9 +137,6 @@ export function DateCell({ row }: { row: MergedRow }) {
   return <>{row.sortTs > 0 ? formatDateShort(rowIso(row)) : "Pending"}</>;
 }
 
-const LOCKED_VALUE_TAIL =
-  "is the name's locked value, carried onto your own new coin — not spent. Only the network fee leaves your wallet.";
-
 /** Signed short amount with the exact value on hover; a covenant row's locked value. */
 export function AmountCell({ row }: { row: MergedRow }) {
   if (showsNameValue(row)) {
@@ -141,7 +145,7 @@ export function AmountCell({ row }: { row: MergedRow }) {
         content={
           <>
             <span className="font-medium">{formatHns(row.nameValueDoos!)} HNS</span>{" "}
-            {LOCKED_VALUE_TAIL}
+            {lockedValueTail(row)}
           </>
         }
         className="inline-flex"
@@ -204,5 +208,3 @@ export function TxLink({
     </Tooltip>
   );
 }
-
-export { LOCKED_VALUE_TAIL };

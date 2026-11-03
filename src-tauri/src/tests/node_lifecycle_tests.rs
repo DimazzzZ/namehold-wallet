@@ -4,8 +4,8 @@
 //! move chain files on disk.
 //!
 //! The seam: `node.rs` resolves the hsd binary from the `hsd_path` setting
-//! (verbatim, via `configured_hsd_path` → `find_hsd_binary`) and the data dir
-//! from `hsd_prefix`. We point `hsd_path` at a **fake hsd** shell script we
+//! (`configured_hsd_path` → `hsd_binary_to_run`, which accepts an absolute
+//! path to an executable file) and the data dir from `hsd_prefix`. We point `hsd_path` at a **fake hsd** shell script we
 //! generate into a tempdir and `hsd_prefix` at that same tempdir. The fake
 //! answers `--version` (so the minimum-version gate passes) and, when spawned
 //! as the node, behaves per a baked-in mode:
@@ -97,6 +97,11 @@ impl Harness {
              \techo '{version}'\n\
              \texit 0\n\
              fi\n\
+             # Record the HSD_* environment of a node spawn (where the api-key\n\
+             # goes), BEFORE the argv: a test that has seen the argv reads a\n\
+             # finished env record.\n\
+             env | grep '^HSD_' > \"$(dirname \"$0\")/fake-hsd-env.log\"\n\
+             umask > \"$(dirname \"$0\")/fake-hsd-umask.log\"\n\
              # Record the full argv of a node spawn so tests can assert which\n\
              # network flag (--regtest/--testnet/...) and --prefix hsd was told\n\
              # to use. Written next to the binary; one line, space-joined.\n\
@@ -136,6 +141,37 @@ impl Harness {
             return None;
         }
         Some(s)
+    }
+
+    /// Wait for the argv of the node spawn (see [`Self::recorded_argv`]).
+    fn wait_for_argv(&self) -> String {
+        for _ in 0..100 {
+            if let Some(s) = self.recorded_argv() {
+                return s;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("fake hsd should have recorded its argv");
+    }
+
+    /// The umask the fake hsd ran with on its last node spawn. Written before
+    /// the argv, like [`Self::recorded_hsd_env`].
+    fn recorded_umask(&self) -> u32 {
+        let s = std::fs::read_to_string(self.dir.join("fake-hsd-umask.log")).unwrap();
+        u32::from_str_radix(s.trim(), 8).unwrap()
+    }
+
+    /// The `HSD_*` variables the fake hsd saw on its last node spawn, as
+    /// `NAME=value` pairs. The fake writes them before its argv, so read this
+    /// once [`Self::wait_for_argv`] returned: an empty record then means the
+    /// node got no such variable.
+    fn recorded_hsd_env(&self) -> std::collections::HashMap<String, String> {
+        std::fs::read_to_string(self.dir.join("fake-hsd-env.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 }
 
@@ -1312,5 +1348,406 @@ async fn a_start_while_one_is_under_way_is_refused() {
     assert!(
         !h.data_dir().join("namehold-hsd.log").exists(),
         "nothing touched"
+    );
+}
+
+// ===========================================================================
+// The api-key of the node the app starts.
+// ===========================================================================
+
+/// A node started with no key configured gets one: the app generates it,
+/// stores it as its own node's key and hands it to hsd through the
+/// environment, never the command line. hsd turns authentication off by
+/// itself on a loopback host when it has no key, so a keyless start was a
+/// node anyone on the machine could drive.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn start_hsd_never_spawns_a_node_without_an_api_key() {
+    let (server, _fail, _up) = spawn_then_up_server(5).await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let app = app_with(conn_for(&h, &server.url()));
+    let state = app.state::<AppState>();
+
+    start_hsd(app.state()).await.expect("start_hsd ok");
+    let argv = h.wait_for_argv();
+    let env = h.recorded_hsd_env();
+    stop_hsd(app.state()).await.expect("stop ok");
+
+    let stored = {
+        let db = state.db.lock().unwrap();
+        db::queries::get_settings(&db)
+            .unwrap()
+            .get(crate::noncustodial::rpc::managed_node_api_key_setting(
+                Network::Main,
+            ))
+            .cloned()
+    }
+    .expect("the generated key is stored");
+    assert_eq!(stored.len(), 64, "32 random bytes, hex");
+    assert_eq!(
+        env.get("HSD_API_KEY"),
+        Some(&stored),
+        "hsd got the stored key through its environment"
+    );
+    assert!(!argv.contains("api-key"), "no key on argv: {argv}");
+    assert!(!argv.contains(&stored), "no key on argv: {argv}");
+    assert!(
+        argv.split_whitespace().any(|a| a == "--no-auth=false"),
+        "{argv}"
+    );
+    assert!(
+        argv.split_whitespace()
+            .any(|a| a == "--http-host=127.0.0.1"),
+        "the key is sent to 127.0.0.1, so the node listens there: {argv}"
+    );
+}
+
+/// A configured key is the one the node is started with, through the
+/// environment as well; no key is generated then.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn start_hsd_hands_a_configured_key_to_hsd_through_the_environment() {
+    let (server, _fail, _up) = spawn_then_up_server(5).await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let conn = conn_for(&h, &server.url());
+    db::queries::set_setting(&conn, "node_rpc_api_key", "configured-node-key").unwrap();
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+
+    start_hsd(app.state()).await.expect("start_hsd ok");
+    let argv = h.wait_for_argv();
+    let env = h.recorded_hsd_env();
+    stop_hsd(app.state()).await.expect("stop ok");
+
+    assert_eq!(
+        env.get("HSD_API_KEY").map(String::as_str),
+        Some("configured-node-key")
+    );
+    assert!(!argv.contains("configured-node-key"), "{argv}");
+    let db = state.db.lock().unwrap();
+    assert!(
+        !db::queries::get_settings(&db).unwrap().contains_key(
+            crate::noncustodial::rpc::managed_node_api_key_setting(Network::Main,)
+        ),
+        "no key is generated when one is configured"
+    );
+}
+
+/// A node on testnet's default port that answers `getblockchaininfo` and keeps
+/// every request's `authorization` header. mockito cannot release a fixed port
+/// between tests, so this holds it only as long as the test does.
+struct NodeOnDefaultPort {
+    auth_seen: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    accept_loop: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for NodeOnDefaultPort {
+    fn drop(&mut self) {
+        self.accept_loop.abort();
+    }
+}
+
+impl NodeOnDefaultPort {
+    /// `accepts` decides from the `authorization` header: answer, or 401.
+    async fn start(accepts: fn(Option<&str>) -> bool) -> Self {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let port = Network::Testnet.default_rpc_port();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("testnet's default port is free");
+        let auth_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = auth_seen.clone();
+        let accept_loop = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = vec![0u8; 16 * 1024];
+                let n = socket.read(&mut request).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&request[..n]).to_string();
+                let auth = request.lines().find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .starts_with("authorization:")
+                        .then(|| l["authorization:".len()..].trim().to_string())
+                });
+                let (status, body) = if accepts(auth.as_deref()) {
+                    (
+                        "200 OK",
+                        r#"{"result":{"chain":"testnet","blocks":5,"headers":5,"verificationprogress":1.0},"error":null,"id":1}"#,
+                    )
+                } else {
+                    ("401 Unauthorized", "")
+                };
+                seen.lock().unwrap().push(auth);
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(reply.as_bytes()).await;
+            }
+        });
+        Self {
+            auth_seen,
+            accept_loop,
+        }
+    }
+
+    fn auth_seen(&self) -> Vec<Option<String>> {
+        self.auth_seen.lock().unwrap().clone()
+    }
+}
+
+/// A wallet on testnet's default address, with testnet's generated key stored.
+fn testnet_wallet_with_a_generated_key(h: &Harness) -> rusqlite::Connection {
+    let conn = conn_for(h, &Network::Testnet.default_rpc_url());
+    db::queries::insert_wallet_profile(
+        &conn,
+        "testnet-wallet",
+        "Testnet",
+        "watch_only_xpub",
+        "testnet",
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "testnet-wallet").unwrap();
+    db::queries::set_setting(
+        &conn,
+        crate::noncustodial::rpc::managed_node_api_key_setting(Network::Testnet),
+        "testnet-generated-key",
+    )
+    .unwrap();
+    conn
+}
+
+/// The `authorization` header that carries testnet's generated key.
+const GENERATED_KEY_AUTH: &str = "Basic eDp0ZXN0bmV0LWdlbmVyYXRlZC1rZXk=";
+
+/// The adoption probe sends an outside node no generated key: whatever answers
+/// on the port before this app started anything is not the app's node. It is
+/// adopted over a keyless probe, and nothing is spawned.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn the_adoption_probe_sends_an_outside_node_no_generated_key() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let node = NodeOnDefaultPort::start(|_| true).await;
+    let app = app_with(testnet_wallet_with_a_generated_key(&h));
+
+    let reply = start_hsd(app.state()).await.expect("adopted");
+
+    assert_eq!(reply["connected"], serde_json::json!(true), "{reply}");
+    let seen = node.auth_seen();
+    assert!(!seen.is_empty());
+    assert!(
+        !seen.iter().flatten().any(|a| a == GENERATED_KEY_AUTH),
+        "{seen:?}"
+    );
+    assert!(
+        !h.dir.join("fake-hsd-argv.log").exists(),
+        "an adopted node spawns nothing"
+    );
+}
+
+/// The `authorization` header that carries `key`.
+fn auth_header(key: &str) -> String {
+    use base64::Engine;
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("x:{key}"))
+    )
+}
+
+/// The node the app started gets the key hsd was handed, through the pid record
+/// the start writes. The listener comes up after the spawn, as hsd's does: one
+/// already there stops the start (below).
+#[tokio::test]
+#[serial(hsd_home)]
+async fn the_started_node_is_the_one_that_gets_the_generated_key() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let app = app_with(testnet_wallet_with_a_generated_key(&h));
+
+    let (reply, node) = tokio::join!(start_hsd(app.state()), async {
+        for _ in 0..500 {
+            if h.dir.join("fake-hsd-argv.log").exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        NodeOnDefaultPort::start(|_| true).await
+    });
+    let reply = reply.expect("started");
+    let env = h.recorded_hsd_env();
+    stop_hsd(app.state()).await.expect("stop ok");
+
+    assert_eq!(reply["connected"], serde_json::json!(true), "{reply}");
+    let key = env.get("HSD_API_KEY").expect("hsd got a key");
+    assert_ne!(key, "testnet-generated-key", "a new key for this start");
+    let seen = node.auth_seen();
+    assert_eq!(seen.last().unwrap().as_ref(), Some(&auth_header(key)));
+}
+
+/// Something on the node's port that does not answer as a usable node stops the
+/// start: hsd would die on its bind only after the wallet had sent the holder
+/// the new key. Nothing is spawned, no key is sent, none is generated.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn a_port_held_by_something_else_stops_the_start_and_gets_no_key() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let holder = NodeOnDefaultPort::start(|_| false).await;
+    let app = app_with(testnet_wallet_with_a_generated_key(&h));
+    let state = app.state::<AppState>();
+
+    let err = start_hsd(app.state())
+        .await
+        .expect_err("refused")
+        .to_string();
+
+    assert!(err.contains("13037"), "{err}");
+    assert!(
+        !h.dir.join("fake-hsd-argv.log").exists(),
+        "nothing is spawned"
+    );
+    let seen = holder.auth_seen();
+    assert!(!seen.is_empty(), "the probe before the spawn reached it");
+    assert!(
+        !seen.iter().flatten().any(|a| a == GENERATED_KEY_AUTH),
+        "{seen:?}"
+    );
+    let db = state.db.lock().unwrap();
+    assert_eq!(
+        db::queries::get_settings(&db).unwrap()
+            [crate::noncustodial::rpc::managed_node_api_key_setting(Network::Testnet)],
+        "testnet-generated-key",
+        "no key is generated for a start that does not happen"
+    );
+}
+
+/// A start that fails leaves its key with whatever heard it, so the next start
+/// has another one: hsd is handed a new key every time.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn every_start_hands_hsd_a_new_generated_key() {
+    let h = Harness::new(FakeMode::DieError, "8.5.0");
+    let app = app_with(conn_for(&h, NO_RPC));
+
+    let mut keys = Vec::new();
+    for _ in 0..2 {
+        start_hsd(app.state()).await.expect_err("the child dies");
+        h.wait_for_argv();
+        keys.push(h.recorded_hsd_env()["HSD_API_KEY"].clone());
+    }
+
+    assert_eq!(keys[0].len(), 64);
+    assert_ne!(keys[0], keys[1]);
+}
+
+/// What holds a port: a listener on loopback, one on every address, and a socket
+/// bound but not listening yet. (That a free port reads free, every start on
+/// testnet's port here shows.)
+#[tokio::test]
+async fn a_held_port_is_seen_however_it_is_held() {
+    use crate::commands::node::loopback_port_is_free;
+    let loopback = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = loopback.local_addr().unwrap().port();
+    assert!(!loopback_port_is_free(port), "a loopback listener");
+
+    let anywhere = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap();
+    let port = anywhere.local_addr().unwrap().port();
+    assert!(!loopback_port_is_free(port), "a listener on 0.0.0.0");
+    drop(anywhere);
+
+    let bound = tokio::net::TcpSocket::new_v4().unwrap();
+    bound.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = bound.local_addr().unwrap().port();
+    assert!(!loopback_port_is_free(port), "bound, not listening");
+}
+
+/// `create_hsd_log` opens an existing log too: it comes out owner-only, whatever
+/// its mode was.
+#[test]
+fn the_hsd_log_is_owner_only_when_it_already_existed() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let path = h.dir.join("namehold-hsd.log");
+    std::fs::write(&path, "old").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    crate::commands::node::create_hsd_log(&path).unwrap();
+
+    assert_eq!(mode_of(&path), 0o600);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+}
+
+// ===========================================================================
+// What the started hsd writes is its owner's alone, and logs no addresses.
+// ===========================================================================
+
+fn mode_of(path: &Path) -> u32 {
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+/// hsd runs with umask 077 (its `debug.log`, chain and key are created
+/// owner-only), at log level info (no `/coin/address/<address>` paths, no
+/// RPC parameters), its stdout log is 0600, and the logs an earlier node left
+/// at 0644 are tightened.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn the_started_hsd_writes_owner_only_files_and_logs_at_info() {
+    let (server, _fail, _up) = spawn_then_up_server(5).await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    // Logs an earlier node left, world-readable (mainnet: data dir = base).
+    for name in ["debug.log", "debug_1.log", "namehold-hsd.log"] {
+        let p = h.data_dir().join(name);
+        std::fs::write(
+            &p,
+            "[debug] (http) Request for method=GET path=/coin/address/x\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let app = app_with(conn_for(&h, &server.url()));
+
+    start_hsd(app.state()).await.expect("start_hsd ok");
+    let argv = h.wait_for_argv();
+    let umask = h.recorded_umask();
+    stop_hsd(app.state()).await.expect("stop ok");
+
+    assert_eq!(umask, 0o077, "hsd's own files are created owner-only");
+    assert!(
+        argv.split_whitespace().any(|a| a == "--log-level=info"),
+        "{argv}"
+    );
+    assert_eq!(mode_of(&h.data_dir().join("namehold-hsd.log")), 0o600);
+    for name in ["debug.log", "debug_1.log", "namehold-hsd.log.1"] {
+        assert_eq!(mode_of(&h.data_dir().join(name)), 0o600, "{name}");
+    }
+}
+
+/// A network's data directory the start creates is 0700.
+#[tokio::test]
+#[serial(hsd_home)]
+async fn a_data_dir_the_start_creates_is_owner_only() {
+    let (server, _fail, _up) = spawn_then_up_server(5).await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let conn = conn_for(&h, &server.url());
+    db::queries::insert_wallet_profile(
+        &conn,
+        "p-regtest",
+        "Regtest",
+        "watch_only_xpub",
+        "regtest",
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "p-regtest").unwrap();
+    let app = app_with(conn);
+
+    start_hsd(app.state()).await.expect("start_hsd ok");
+    h.wait_for_argv();
+    stop_hsd(app.state()).await.expect("stop ok");
+
+    assert_eq!(mode_of(&h.data_dir().join("regtest")), 0o700);
+    assert_eq!(
+        mode_of(&h.data_dir().join("regtest").join("namehold-hsd.log")),
+        0o600
     );
 }

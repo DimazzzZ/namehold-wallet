@@ -417,3 +417,198 @@ fn a_profiles_chain_source_follows_its_networks_mode() {
     let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
     assert_eq!(cfg.chain_source, ChainSource::LocalNode);
 }
+
+// ---------------------------------------------------------------------------
+// The key the app generated for the hsd it starts (`managed_node_api_key.<net>`)
+// ---------------------------------------------------------------------------
+
+use crate::commands::local_node::{network_scoped_data_dir, write_pid_file, PID_FILE};
+use crate::noncustodial::network::Network;
+use crate::noncustodial::node_config::{api_key_for_started_node, new_managed_node_api_key};
+use crate::noncustodial::rpc::managed_node_api_key_setting;
+
+/// Point `hsd_prefix` at a new directory and record this test process as
+/// `network`'s own node there: a live pid with its real start time. Returns
+/// that network's data dir, held by the returned guard.
+fn own_node_running(
+    conn: &Connection,
+    network: Network,
+) -> (crate::tests::command_helpers::TempDir, std::path::PathBuf) {
+    let base = crate::tests::command_helpers::TempDir::new();
+    set_global(conn, "hsd_prefix", base.path().to_str().unwrap());
+    let dir = std::path::PathBuf::from(network_scoped_data_dir(
+        base.path().to_str().unwrap(),
+        network,
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    write_pid_file(&dir, std::process::id()).unwrap();
+    (base, dir)
+}
+
+/// With no key configured, a profile that reaches the address of its network's
+/// running own node talks to it with that network's generated key, the app and
+/// the daemon alike (both read it here).
+#[test]
+fn a_profile_on_its_running_own_nodes_address_reads_the_generated_key() {
+    let conn = db_with_profile(); // regtest, no URL: http://127.0.0.1:14037
+    let key = new_managed_node_api_key(&conn, Network::Regtest).unwrap();
+    let _own = own_node_running(&conn, Network::Regtest);
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert_eq!(cfg.node_rpc_url, "http://127.0.0.1:14037");
+    assert_eq!(cfg.node_rpc_api_key, key);
+    let client = crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, "p1").unwrap();
+    assert_eq!(client.api_key(), key);
+    // `localhost` is the same address: the client pins it to 127.0.0.1.
+    set_override(&conn, "p1", "node_rpc_url", "http://localhost:14037");
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert_eq!(cfg.node_rpc_api_key, key);
+}
+
+/// The generated key goes to that node's address and nowhere else, with the
+/// node running: not to a remote node, another port, TLS or another loopback
+/// address on that port, which hsd does not bind and another process can.
+#[test]
+fn the_generated_key_is_never_sent_to_another_address() {
+    for url in [
+        "https://node.example.com:14037",
+        "http://127.0.0.1:24037",
+        "http://192.168.1.5:14037",
+        "http://[::1]:14037",
+        "http://127.0.0.2:14037",
+        "https://127.0.0.1:14037",
+        "http://localhost.evil.example:14037",
+    ] {
+        let conn = db_with_profile();
+        new_managed_node_api_key(&conn, Network::Regtest).unwrap();
+        let _own = own_node_running(&conn, Network::Regtest);
+        set_override(&conn, "p1", "node_rpc_url", url);
+        let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+        assert_eq!(cfg.node_rpc_api_key, "", "{url}");
+    }
+}
+
+/// A stored key is no reason to send it: with no pid record, whatever answers
+/// on the port is not the app's node (a node being adopted, a process that took
+/// the port first).
+#[test]
+fn the_generated_key_is_not_sent_when_the_app_has_no_node_running() {
+    let conn = db_with_profile();
+    new_managed_node_api_key(&conn, Network::Regtest).unwrap();
+    let base = crate::tests::command_helpers::TempDir::new();
+    set_global(&conn, "hsd_prefix", base.path().to_str().unwrap());
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert_eq!(cfg.node_rpc_url, "http://127.0.0.1:14037");
+    assert_eq!(cfg.node_rpc_api_key, "");
+}
+
+/// A record whose start time is another's (a reused pid, or a node long gone)
+/// names nothing, so it earns no key.
+#[test]
+fn the_generated_key_is_not_sent_on_a_stale_pid_record() {
+    let conn = db_with_profile();
+    new_managed_node_api_key(&conn, Network::Regtest).unwrap();
+    let (_base, dir) = own_node_running(&conn, Network::Regtest);
+    std::fs::write(dir.join(PID_FILE), format!("{} 1\n", std::process::id())).unwrap();
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert_eq!(cfg.node_rpc_api_key, "");
+}
+
+/// One key per network: each network generates its own, and a URL on one
+/// network's port never reads another's, whichever own node runs.
+#[test]
+fn each_network_has_its_own_generated_key() {
+    let conn = db_with_profile();
+    let keys: Vec<String> = Network::ALL
+        .into_iter()
+        .map(|n| new_managed_node_api_key(&conn, n).unwrap())
+        .collect();
+    let distinct: std::collections::HashSet<&String> = keys.iter().collect();
+    assert_eq!(distinct.len(), keys.len());
+
+    // The regtest node runs; a URL on mainnet's port has no running own node.
+    let _own = own_node_running(&conn, Network::Regtest);
+    set_override(&conn, "p1", "node_rpc_url", "http://127.0.0.1:12037");
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert_eq!(cfg.node_rpc_api_key, "");
+}
+
+/// The mainnet node's key stays home even when a mainnet node runs and only
+/// regtest has no key: regtest's address never reads mainnet's.
+#[test]
+fn a_network_without_a_key_does_not_read_anothers() {
+    let conn = db_with_profile();
+    new_managed_node_api_key(&conn, Network::Main).unwrap();
+    let (_base, dir) = own_node_running(&conn, Network::Main);
+    // Regtest's own record too: the record alone must not unlock another's key.
+    let regtest = dir.join("regtest");
+    std::fs::create_dir_all(&regtest).unwrap();
+    write_pid_file(&regtest, std::process::id()).unwrap();
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert_eq!(cfg.node_rpc_url, "http://127.0.0.1:14037");
+    assert_eq!(cfg.node_rpc_api_key, "");
+}
+
+/// A configured key wins over the generated one: it is the key the node is
+/// started with too.
+#[test]
+fn a_configured_key_wins_over_the_generated_one() {
+    let conn = db_with_profile();
+    new_managed_node_api_key(&conn, Network::Regtest).unwrap();
+    let _own = own_node_running(&conn, Network::Regtest);
+    set_global(&conn, "node_rpc_api_key", "configured");
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert_eq!(cfg.node_rpc_api_key, "configured");
+}
+
+/// A key is 32 random bytes, hex, stored as the network's key, and each call makes
+/// another: whatever heard an earlier start's key must not hold the next node's.
+#[test]
+fn every_managed_key_is_new_and_replaces_the_stored_one() {
+    let conn = db_with_profile();
+    let first = new_managed_node_api_key(&conn, Network::Regtest).unwrap();
+    assert_eq!(first.len(), 64, "{first}");
+    assert!(first.chars().all(|c| c.is_ascii_hexdigit()), "{first}");
+    let second = new_managed_node_api_key(&conn, Network::Regtest).unwrap();
+    assert_ne!(second, first);
+    let stored = crate::db::queries::get_settings(&conn).unwrap()
+        [managed_node_api_key_setting(Network::Regtest)]
+    .clone();
+    assert_eq!(stored, second);
+}
+
+/// A started node gets its own network's key, even when the profile's URL
+/// points at another network's running own node and reads that one's key.
+#[test]
+fn a_started_node_never_shares_another_networks_generated_key() {
+    let conn = db_with_profile();
+    let simnet = new_managed_node_api_key(&conn, Network::Simnet).unwrap();
+    let _own = own_node_running(&conn, Network::Simnet);
+    set_override(&conn, "p1", "node_rpc_url", "http://127.0.0.1:15037");
+    assert_eq!(
+        effective_node_config_for_profile(&conn, "p1")
+            .unwrap()
+            .node_rpc_api_key,
+        simnet
+    );
+    let started = api_key_for_started_node(&conn, "p1", Network::Regtest).unwrap();
+    assert_ne!(started, simnet);
+    assert_eq!(
+        started,
+        crate::db::queries::get_settings(&conn).unwrap()
+            [managed_node_api_key_setting(Network::Regtest)]
+    );
+}
+
+/// A configured key is the one a started node gets; none is generated.
+#[test]
+fn a_started_node_gets_the_configured_key() {
+    let conn = db_with_profile();
+    set_global(&conn, "node_rpc_api_key", "configured");
+    assert_eq!(
+        api_key_for_started_node(&conn, "p1", Network::Regtest).unwrap(),
+        "configured"
+    );
+    assert!(!crate::db::queries::get_settings(&conn)
+        .unwrap()
+        .contains_key(managed_node_api_key_setting(Network::Regtest)));
+}

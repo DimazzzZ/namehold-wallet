@@ -53,6 +53,24 @@ pub struct HnsFansClient {
     fallback_url: Option<String>,
 }
 
+/// The largest explorer reply read. Every request the app makes is one record
+/// or a page of at most a few dozen transactions; relay policy caps a
+/// transaction at 100 KB (`MAX_TX_SIZE`), so 16 MiB holds a full page of the
+/// largest ones as JSON.
+pub(crate) const EXPLORER_REPLY_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// An explorer reply's body as JSON, at most [`EXPLORER_REPLY_MAX_BYTES`] of it.
+async fn read_explorer_json(resp: reqwest::Response) -> Result<serde_json::Value, AppError> {
+    let body = crate::http::read_capped(resp, EXPLORER_REPLY_MAX_BYTES)
+        .await
+        .map_err(|e| match e {
+            crate::http::BodyError::Transport(e) => AppError::Http(e),
+            too_large => AppError::Other(format!("explorer {too_large}")),
+        })?;
+    serde_json::from_slice(&body)
+        .map_err(|e| AppError::Other(format!("explorer returned invalid JSON: {e}")))
+}
+
 impl HnsFansClient {
     /// Build a client for a concrete explorer base URL. The URL must be
     /// non-empty and network-appropriate — resolution and the network gate
@@ -63,7 +81,11 @@ impl HnsFansClient {
     pub fn new(base_url: &str) -> Self {
         let base = base_url.trim_end_matches('/').to_string();
         Self {
-            http: crate::http::client_builder()
+            // shortcut: a loopback fallback behind a remote primary still goes
+            // through a system proxy; it carries no secret and fails there,
+            // which the failover reports. Upgrade to one client per URL if a
+            // local fallback explorer becomes a real setup.
+            http: crate::http::chain_source_client_builder(base_url)
                 .timeout(Duration::from_secs(30))
                 .build()
                 .expect("failed to build HTTP client"),
@@ -193,10 +215,10 @@ impl HnsFansClient {
                     continue;
                 }
             };
-            let body: serde_json::Value = match resp.json().await {
+            let body = match read_explorer_json(resp).await {
                 Ok(b) => b,
                 Err(e) => {
-                    last_error = Some(format!("{}: invalid JSON: {}", addr, e));
+                    last_error = Some(format!("{}: {}", addr, e));
                     continue;
                 }
             };
@@ -260,7 +282,7 @@ impl HnsFansClient {
     pub async fn get_name_info(&self, name: &str) -> Result<HsdName, AppError> {
         let path = format!("/api/names/{}", name.trim());
         let resp = self.get_with_fallback(&path).await?;
-        let body: serde_json::Value = resp.json().await?;
+        let body = read_explorer_json(resp).await?;
         normalize_name(&body).ok_or_else(|| {
             AppError::ExplorerFormat(format!(
                 "HNSFans returned an unrecognized name payload for {} (200 OK, no `name` field)",
@@ -287,7 +309,7 @@ impl HnsFansClient {
                 resp.status()
             )));
         }
-        let body: serde_json::Value = resp.json().await?;
+        let body = read_explorer_json(resp).await?;
         match normalize_name(&body) {
             Some(n) => Ok(Some(n)),
             None => {
@@ -352,7 +374,7 @@ impl HnsFansClient {
             offset
         );
         let resp = self.get_with_fallback(&path).await?;
-        let body: serde_json::Value = resp.json().await?;
+        let body = read_explorer_json(resp).await?;
         // The recognized shape always carries a `result` array (empty when the
         // address has no txs). Its total absence on a 200 means the explorer's
         // contract drifted — loud error, not a silent "0 transactions".
@@ -385,7 +407,7 @@ impl HnsFansClient {
     pub async fn get_tx_named_outputs(&self, hash: &str) -> Result<Vec<NamedOutput>, AppError> {
         let path = format!("/api/txs/{}", hash.trim());
         let resp = self.get_with_fallback(&path).await?;
-        let body: serde_json::Value = resp.json().await?;
+        let body = read_explorer_json(resp).await?;
         // The recognized shape always carries an `outputs` array (empty for a
         // tx with no name-bearing outputs). Its total absence on a 200 means
         // the explorer's contract drifted — loud error, not a silent "no
@@ -409,7 +431,7 @@ impl HnsFansClient {
     ) -> Result<Option<(String, u32)>, AppError> {
         let path = format!("/api/names/{}/history", name.trim());
         let resp = self.get_with_fallback(&path).await?;
-        let body: serde_json::Value = resp.json().await?;
+        let body = read_explorer_json(resp).await?;
         // Recognized shapes: `{ "result": [...] }` (possibly empty) or a bare
         // `[...]` array. Anything else on a 200 is a format drift — loud
         // error, not a silent "no owner history" (which would make repair

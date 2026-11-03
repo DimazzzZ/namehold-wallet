@@ -30,6 +30,8 @@ hsd --index-address --index-tx --api-key=<your-key>
   (it moves the old `blocks/`, `chain/`, `tree/` aside and re-syncs).
 - **Autostart is on by default, per network.** When a wallet that uses a local node becomes active (at launch, or when you switch to it), the app starts that network's hsd for you. Turn it off for the active wallet's network under Settings → Connections → "Start the mainnet node automatically" (each network keeps its own setting; a network you never set follows the app-wide one). If a node already answers on that network's port on the right chain, the app uses it instead of spawning a new one. A node you stopped stays stopped until the active wallet changes.
 - **Background sync:** When "Sync in background" is enabled in Settings → Connections (default ON), every node the app started stays running after the app closes, one per network. A background daemon (`namehold-syncd`) wakes every 60 seconds to sync wallet data from those nodes into the local database; it never starts or stops a node itself. On macOS and Linux the next app launch recognises those nodes as its own from `namehold-hsd.pid` in each network's data directory (the pid and the process start time); on Windows it does not, so a node left running is used but not stopped by the app after a restart. With "Sync in background" off, closing the app stops every node it started, including, on macOS and Linux, ones left from an earlier session. To stop a network's node by hand, switch to one of its wallets and click **Stop mainnet node** (or the network you are on) in Settings → Connections or in the status bar.
+- **The node the app starts always has an API key.** The app starts hsd with the key configured in Settings → Connections (or the `api-key` of `hsd.conf` in the configured data directory). With neither, it generates a new random key for each start of a network's node and keeps it in its own database (never shown in Settings). The key reaches hsd through the `HSD_API_KEY` environment variable, never the command line, and `--no-auth=false` keeps it in force even if `hsd.conf` says `no-auth`. The generated key is sent only to that network's default RPC port on `127.0.0.1` (or `localhost`), and only while the node the app started is running, by the pid and start time the app recorded when it started it: never to a remote node, another port, or a node on that port that the app did not start. On a system where the app cannot read a process's start time (Windows), it cannot tell these apart, so it does not generate a key: set one in Settings → Connections before starting a node. hsd's own wallet, which the started node also runs, takes the same key unless your `hsw.conf` sets one of its own. To use the started node from `hsd-cli` or `hsw-cli`, set your own key in Settings → Connections, then stop and start the node: it then runs with yours. The started node listens on `127.0.0.1` whatever `hsd.conf` says (`--http-host=127.0.0.1`). If something else holds the network's RPC port and does not answer as a usable node, the app refuses to start one and says so: stop what holds the port, or, if it is your own hsd, set its key in Settings.
+- **Logs of the node the app starts.** hsd runs at log level `info` (its default is `debug`, which records every address the wallet looks up and every raw transaction it sends), with umask 077, so the files it creates (its `debug.log`, chain, key) are readable by your account only. Its output goes to `namehold-hsd.log` in the network's data directory (0600); at each start the previous one becomes `namehold-hsd.log.1`, and logs an earlier node left there (`debug*.log`, `namehold-hsd.log.1`) are made 0600 too. A data directory the app creates is 0700; an existing one keeps its mode.
 - Then in the app: **Settings → Node RPC** → URL `http://127.0.0.1:12037`, API key
   `<your-key>`; click **Sync** to pull your UTXOs; **Send** is now enabled.
 
@@ -47,28 +49,38 @@ Instead of running hsd locally, you can point the wallet at an existing hsd RPC:
   and API key, and click "Test connection" to verify.
 - **Stored API key:** the Settings API-key field is write-only (a stored key is never shown
   back), so "Test connection" reuses your stored key when the URL you probe matches the
-  saved node. A freshly typed URL is probed without the stored key — the secret is never
-  sent to an endpoint you just typed.
+  saved node. A freshly typed URL is probed without any stored or generated key — the secret
+  is never sent to an endpoint you just typed.
 - **Network mismatch:** "Test connection" compares the node's reported network with the
   wallet's and flags a mismatch (e.g. a testnet node for a mainnet wallet). A mismatched
   node is refused everywhere: the app will not read from it, will not sync from it, reports
   it as unable to send, and refuses to broadcast through it — the signed transaction never
-  leaves your device. Settings will not save one either. This applies during first-run
+  leaves your device. A send also stops when the node's network cannot be confirmed (the node
+  does not answer, or does not name its chain). Settings will not save a mismatched node either. This applies during first-run
   onboarding too: there is no wallet profile yet, so the comparison uses the network you
   picked on the previous step.
 - **To send:** enable "Allow sending via remote node" (off by default for safety; shown in
   the onboarding Remote step and in Settings → Connections). This sets the
   `allow_remote_broadcast` flag, which gates the broadcast path. Your recovery phrase
   never leaves this device — remote is a privacy/trust tradeoff, not custody.
+- **Any node off this machine counts as remote:** the opt-in is asked for whenever the node URL's host is not this computer, even if the chain source says local node. Sending shows as unavailable, and a send is refused at broadcast, until you choose Remote node and enable the opt-in.
 - **A full node, not SPV:** the remote hsd must be a full node with the same indexes as a local one (`--index-tx --index-address`). An hsd started with `--spv` keeps no name state and no coins: it answers `getnameinfo` with no state for every name and cannot answer a coin lookup, so the wallet sees no auction on any name and cannot confirm a stranded lockup, an unrevealed bid or a balance against it.
 - **Plaintext-key guard:** the app refuses to send an API key over plaintext HTTP to a
-  non-loopback host (e.g., `http://example.com`). Use `https://` for remote nodes or
-  `http://127.0.0.1` for local testing.
+  non-loopback host (e.g., `http://example.com`). A remote node must use `https://`, with or without a key; `http://` is for `127.0.0.1` and other loopback addresses.
 
 Remote nodes are ideal for:
 - Quick setup without syncing 15GB locally.
 - Running the wallet on a low-power device (phone, tablet, old laptop).
 - Trusting a node operator you know (family, friend, business partner).
+
+## Changing connection settings
+
+The settings that decide which node and explorers the wallet trusts, which program it runs and how long an unlocked wallet stays unlocked are saved only after you confirm them in Namehold's secure window: the node RPC URL and API key, the chain source and node mode (each network's own mode too), "Allow sending via remote node", the explorer URL and its fallback, the hsd program path, the hsd data directory, and the signer session timeout. Saving opens the window with one line per change, old value → new value; an API key is never shown, only whether it is set, changed or cleared. Cancel there and nothing is saved. Saving values that equal the stored ones asks nothing.
+
+- **hsd program path:** empty means auto-detect. Otherwise it must be the full path of an executable file that only its owner can change, owned by you or by root; the window shows, and the app keeps, the file the path leads to (a link is followed). A stored path that does not meet this is not run: the node card says why, and Start refuses. Because the file itself is kept, a Homebrew path such as `/opt/homebrew/bin/hsd` is stored under one `Cellar/hsd/<version>` directory and stops working after `brew upgrade hsd`: leave the path empty for Homebrew, or confirm it again after an upgrade.
+- **hsd data directory:** empty means hsd's default (`~/.hsd`). Otherwise a full path to a directory (it may not exist yet), not a file, and not on a network share.
+- **URLs:** `https://`, or `http://` only for this computer (`127.0.0.1`, `::1`, `localhost`). Write the host plainly, with no user name or password in the URL, no percent-encoding and no numeric spelling such as `127.1`, so the line you confirm names the host the app connects to; an international host name goes in its `xn--` form. The plaintext-key guard above applies when you save, too. A URL saved before this rule keeps working until you change it.
+- **API key and a new host:** the stored key goes to whatever host the node URL names. When a new host would receive it, the window adds a warning that names the host; to avoid that, clear or replace the key in the same save.
 
 ## Regtest (for testing the full send/name flows)
 

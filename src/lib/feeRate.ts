@@ -23,8 +23,20 @@ export const MIN_FEE_RATE_DOOS_PER_KVB = 1000;
 export const DEFAULT_FEE_RATE_DOOS_PER_KVB = 1000;
 
 /**
- * Parse a user-typed doos/kvB string. Returns null on empty/invalid, otherwise
- * the integer value floored at the minimum. Callers decide whether "empty"
+ * Highest fee rate the wallet builds at, in doos/kvB: 1 HNS per kB. Mirrors
+ * Rust `noncustodial::send::MAX_FEE_RATE_PER_BYTE` (1,000 doos per byte),
+ * which refuses any rate above it whatever its source.
+ */
+export const MAX_FEE_RATE_DOOS_PER_KVB = 1_000_000;
+
+/** What a fee-rate field says when its value is not accepted. */
+export const FEE_RATE_RULE =
+  "Fee rate must be a whole number of doos/kvB, at most 1,000,000 (1 HNS per kB)";
+
+/**
+ * Parse a user-typed doos/kvB string. Returns null on empty/invalid or above
+ * [`MAX_FEE_RATE_DOOS_PER_KVB`], otherwise the integer value floored at the
+ * minimum. Callers decide whether "empty"
  * means "fall back to setting default" (per-tx override) or "reject".
  */
 export function parseDoosPerKvb(raw: string): number | null {
@@ -32,6 +44,7 @@ export function parseDoosPerKvb(raw: string): number | null {
   if (!trimmed) return null;
   const n = Number(trimmed);
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return null;
+  if (n > MAX_FEE_RATE_DOOS_PER_KVB) return null;
   return Math.max(n, MIN_FEE_RATE_DOOS_PER_KVB);
 }
 

@@ -8,8 +8,8 @@ import { Dialog } from "./ui/Dialog";
 import { BatchConfirmModal } from "./BatchConfirmModal";
 import { Button } from "./ui/Button";
 import { Input } from "./ui/Input";
-import { validateBidInputs } from "../lib/auction";
-import { hnsToDollarydoos } from "../lib/utils";
+import { BID_FORFEIT_RULE, validateBidInputs } from "../lib/auction";
+import { formatHns } from "../lib/utils";
 import { mapError, unwrapStaged } from "../lib/errors";
 import { useUiStore } from "../stores/ui";
 import { FeeRateOverride } from "./ui/FeeRateOverride";
@@ -56,7 +56,7 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
     .filter((n) => n.length > 0);
 
   const bidValidation = validateBidInputs(bidHns, lockupHns);
-  const { formValid: bidFormValid } = bidValidation;
+  const { formValid: bidFormValid, bidDoos, lockupDoos } = bidValidation;
 
   // Preflight: fetch capabilities for all pasted names to show biddability.
   // Only fires when the user advances to the preflight step.
@@ -81,13 +81,15 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
   };
 
   const handleBuildDraft = async () => {
-    if (biddableNames.length === 0 || !bidFormValid) return;
+    if (biddableNames.length === 0 || bidDoos === null || lockupDoos === null || !bidFormValid) {
+      return;
+    }
     try {
       showToast(`Building batch bid draft for ${biddableNames.length} names…`, "info");
       const draft = await batchBidMutation.mutateAsync({
         names: biddableNames,
-        bidValue: hnsToDollarydoos(bidHns),
-        lockup: hnsToDollarydoos(lockupHns),
+        bidValue: bidDoos,
+        lockup: lockupDoos,
         feeRate: parseFeeRateArg(feeRateOverride) ?? undefined,
       });
       setPendingDraft({
@@ -201,16 +203,8 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
                 </div>
               )}
 
-              {biddableNames.length > 0 && (
-                <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm space-y-1">
-                  <div>
-                    <strong>Total commitment:</strong> {biddableNames.length} ×{" "}
-                    {lockupHns || bidHns} HNS lockup
-                  </div>
-                  <div className="text-xs text-gray-600">
-                    (Lockup is returned as change after reveal; only the fee is spent.)
-                  </div>
-                </div>
+              {biddableNames.length > 0 && lockupDoos !== null && (
+                <BatchBidLockupNote count={biddableNames.length} lockupDoos={lockupDoos} />
               )}
             </>
           )}
@@ -267,29 +261,33 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
           <div>
             <label className="block text-sm font-medium mb-1">Bid (HNS)</label>
             <Input
-              type="number"
+              inputMode="decimal"
+              autoComplete="off"
               value={bidHns}
               onChange={(e) => setBidHns(e.target.value)}
               placeholder="0.00"
-              step="0.01"
               data-testid="batch-bid-value-input"
             />
             {bidValidation.bidError && (
-              <div className="text-xs text-red-600 mt-1">{bidValidation.bidError}</div>
+              <div className="text-xs text-red-600 mt-1" data-testid="batch-bid-value-error">
+                {bidValidation.bidError}
+              </div>
             )}
           </div>
           <div>
             <label className="block text-sm font-medium mb-1">Lockup (HNS)</label>
             <Input
-              type="number"
+              inputMode="decimal"
+              autoComplete="off"
               value={lockupHns}
               onChange={(e) => setLockupHns(e.target.value)}
               placeholder="0.00"
-              step="0.01"
               data-testid="batch-bid-lockup-input"
             />
             {bidValidation.lockupError && (
-              <div className="text-xs text-red-600 mt-1">{bidValidation.lockupError}</div>
+              <div className="text-xs text-red-600 mt-1" data-testid="batch-bid-lockup-error">
+                {bidValidation.lockupError}
+              </div>
             )}
           </div>
         </div>
@@ -315,5 +313,40 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
         </div>
       </div>
     </Dialog>
+  );
+}
+
+/**
+ * What a batch bid locks and what comes back, under the names it will bid on.
+ * Each name's BID coin holds the whole lockup until it is revealed; a REVEAL
+ * keeps the bid in a coin and returns the rest; the revealed bid then stays in
+ * the name at the second-highest bid (a win) or comes back through a REDEEM
+ * (a loss). An unrevealed bid forfeits its lockup (`BID_FORFEIT_RULE`).
+ */
+function BatchBidLockupNote({ count, lockupDoos }: { count: number; lockupDoos: number }) {
+  const totalDoos = count * lockupDoos;
+  return (
+    <div className="space-y-2">
+      <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm space-y-1">
+        <div data-testid="batch-bid-total-lockup">
+          <strong>Locked until you reveal:</strong> {count} × {formatHns(lockupDoos)} HNS ={" "}
+          {formatHns(totalDoos)} HNS
+        </div>
+        <div className="text-xs text-gray-600">
+          At reveal, the part of each lockup above its bid comes back to you. The bid stays locked
+          until the auction closes: if you win, the second-highest bid stays locked in the name; if
+          you lose, Redeem gives it back.
+        </div>
+      </div>
+      <div
+        className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2"
+        data-testid="batch-bid-forfeit-warning"
+      >
+        Reveal every bid. {BID_FORFEIT_RULE}{" "}
+        {count === 1
+          ? `That is ${formatHns(lockupDoos)} HNS.`
+          : `That is ${formatHns(lockupDoos)} HNS a name, ${formatHns(totalDoos)} HNS for all ${count}.`}
+      </div>
+    </div>
   );
 }

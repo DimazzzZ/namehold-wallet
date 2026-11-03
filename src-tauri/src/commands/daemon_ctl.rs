@@ -5,11 +5,9 @@
 //! spawn short-circuit — is covered by `daemon_ctl_cmd_tests`. The remaining
 //! uncovered lines fall into two buckets:
 //!   1. Genuine IO shells: `spawn_detached` (launches a real OS process),
-//!      `send_terminate`/`send_kill` (send real POSIX signals), and
-//!      `stop_daemon`'s signal-and-wait loop. These are DELIBERATELY not
-//!      exercised — a unit test hitting them would SIGTERM/SIGKILL a
-//!      developer's live `namehold-syncd` (it reads the real
-//!      `~/.namehold/syncd.pid`) or spawn a stray daemon. Untestable by design.
+//!      `send_kill` (sends a real POSIX signal). Not exercised:
+//!      `stop_daemon` and the signals before it run only against a temporary
+//!      `HOME` in the tests, where nothing outlives the 5-second wait.
 //!   2. Branches suppressed on any dev machine that has a live daemon: when
 //!      `check_daemon_alive()` returns true, the no-PID-file path, the full
 //!      `find_daemon_binary` fallback chain, and the spawn-attempt inside
@@ -105,8 +103,8 @@ pub fn stop_daemon() -> Result<(), AppError> {
         None => return Ok(()), // No PID file → daemon not running.
     };
 
-    if !is_process_alive(pid) {
-        // Process is already dead; clean up stale PID file.
+    if !pid_is_daemon(pid) {
+        // Gone, or the pid now belongs to another process: never signalled.
         let _ = std::fs::remove_file(pid_file_path());
         return Ok(());
     }
@@ -116,7 +114,7 @@ pub fn stop_daemon() -> Result<(), AppError> {
     // Wait up to 5 seconds for the daemon to exit.
     for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if !is_process_alive(pid) {
+        if !pid_is_daemon(pid) {
             let _ = std::fs::remove_file(pid_file_path());
             eprintln!("daemon_ctl: stopped daemon (PID {})", pid);
             return Ok(());
@@ -188,12 +186,39 @@ fn read_pid_file() -> Option<u32> {
     content.trim().parse().ok()
 }
 
-/// Check if the daemon is alive using the PID file.
-#[cfg_attr(coverage_nightly, coverage(off))]
+/// Check if the daemon is alive using the PID file. A pid another process has
+/// since been given does not count.
 pub fn check_daemon_alive() -> bool {
-    match read_pid_file() {
-        Some(pid) => is_process_alive(pid),
-        None => false,
+    read_pid_file().is_some_and(pid_is_daemon)
+}
+
+/// Whether `pid` is a live `namehold-syncd`. What every signal and every
+/// "already running" answer rests on: `syncd.pid` outlives a daemon that did not
+/// get to clean up, and the OS hands its pid to the next process.
+fn pid_is_daemon(pid: u32) -> bool {
+    pid_runs_executable(pid, &daemon_bin_name())
+}
+
+/// Pid 0 and a pid over `i32::MAX` name no process: as a `kill` target they mean
+/// a process group, or every process the user owns.
+pub(crate) fn pid_can_name_a_process(pid: u32) -> bool {
+    pid != 0 && pid <= i32::MAX as u32
+}
+
+/// Whether `pid` is a live process running the executable `name`. On a platform
+/// with no way to read the executable (Windows) a live pid is taken as it is.
+pub(crate) fn pid_runs_executable(pid: u32, name: &str) -> bool {
+    if !pid_can_name_a_process(pid) || !is_process_alive(pid) {
+        return false;
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        crate::commands::local_node::process_executable_name(pid).as_deref() == Some(name)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = name;
+        true
     }
 }
 
@@ -345,7 +370,6 @@ fn spawn_detached(path: &PathBuf) -> Result<(), AppError> {
 
 /// Check if a process with the given PID is alive.
 #[cfg(unix)]
-#[cfg_attr(coverage_nightly, coverage(off))]
 fn is_process_alive(pid: u32) -> bool {
     // kill(pid, 0) checks if the process exists without sending a signal.
     unsafe { libc::kill(pid as i32, 0) == 0 }

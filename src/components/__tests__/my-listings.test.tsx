@@ -531,8 +531,8 @@ describe("MyListings", () => {
         listing: makeListing({
           mode: "reverseAuction",
           steps: [
-            { price: 5_000_000, lockTime: 1, signature: "00" },
-            { price: 4_000_000, lockTime: 2, signature: "00" },
+            { price: 5_000_000, lockTime: 1 },
+            { price: 4_000_000, lockTime: 2 },
           ],
         }),
         prices: { kind: "unverified" },

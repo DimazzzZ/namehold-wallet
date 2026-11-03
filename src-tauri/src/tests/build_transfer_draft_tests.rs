@@ -290,3 +290,27 @@ fn build_transfer_draft_fails_with_insufficient_funds() {
         "no draft persisted when the plan can't be funded"
     );
 }
+
+/// A name is transferred only to a single-key address: this wallet's
+/// FINALIZE could not pay a 32-byte (multisig, script) target, and the name
+/// would sit in transfer until it is cancelled. Nothing is written.
+#[test]
+fn build_transfer_draft_refuses_a_script_address_recipient() {
+    let (conn, ctx, coin, _recipient) = setup(5_000_000, 10_000_000);
+    let p2wsh = crate::noncustodial::address::encode_p2wsh(ctx.network, &[7; 32]).unwrap();
+    let err = build_transfer_draft_inner(
+        &conn,
+        &ctx,
+        NAME,
+        &p2wsh,
+        Some(10),
+        &closed_name_state(),
+        &coin,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("single-key address"), "{err}");
+    let drafts: i64 = conn
+        .query_row("SELECT COUNT(*) FROM wallet_tx_drafts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(drafts, 0);
+}

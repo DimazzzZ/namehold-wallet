@@ -68,6 +68,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "040",
         include_str!("../sql/040_shakedex_managed_elsewhere.sql"),
     ),
+    (
+        "041",
+        include_str!("../sql/041_shakedex_signed_lock_txids.sql"),
+    ),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -109,7 +113,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 40, "expected 40 migrations, got {count}");
+        assert_eq!(count, 41, "expected 41 migrations, got {count}");
     }
 
     /// An in-memory database with every migration before `version` applied
@@ -342,6 +346,44 @@ mod tests {
         assert_at_last_migration(&conn);
     }
 
+    /// A database already at 040 takes 041 on top: every listing that holds
+    /// a lock outpoint has its txid recorded as signed over, lowercased, and
+    /// one without an outpoint has none.
+    #[test]
+    fn migration_041_records_the_lock_txid_of_every_listing_that_has_one() {
+        let conn = db_before("041");
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub, account_index, watch_only)
+             VALUES ('p', 'P', 'mnemonic_hot', 'mainnet', 'xpub', 0, 0)",
+            [],
+        )
+        .unwrap();
+        let upper = "AB".repeat(32);
+        conn.execute(
+            "INSERT INTO shakedex_listings
+                 (id, wallet_profile_id, name, mode, state, lock_pubkey_hex, lock_txid, lock_vout)
+             VALUES ('fin', 'p', 'dexsale', 'buy_now', 'finalizing', '02', ?1, 0)",
+            [&upper],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO shakedex_listings (id, wallet_profile_id, name, mode, state, lock_pubkey_hex)
+             VALUES ('ready', 'p', 'other', 'buy_now', 'ready_to_finalize', '02')",
+            [],
+        )
+        .unwrap();
+        run(&conn).unwrap();
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT lock_txid, listing_id FROM shakedex_signed_lock_txids")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, [("ab".repeat(32), "fin".to_string())]);
+        assert_at_last_migration(&conn);
+    }
+
     /// Every row a release before 012 could hold (008's CHECK: five
     /// statuses) comes through the migrations readable as the same
     /// `DraftStatus`, and the table the migrations leave refuses any other
@@ -388,7 +430,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 40);
+        assert_eq!(count, 41);
     }
 
     #[test]

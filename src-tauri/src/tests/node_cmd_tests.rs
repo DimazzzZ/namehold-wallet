@@ -307,3 +307,75 @@ fn activating_a_remote_node_or_explorer_wallet_names_no_node() {
         );
     }
 }
+
+// --- hsd_command: what the started hsd is told ------------------------------
+
+fn args_of(cmd: &std::process::Command) -> Vec<String> {
+    cmd.get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// The api-key reaches hsd through its environment, never the command line:
+/// `ps` shows another account the command line of every process until hsd
+/// rewrites its title, and the environment to no one but the owner.
+#[test]
+fn hsd_command_puts_the_api_key_in_the_environment_not_on_the_command_line() {
+    let cmd = node::hsd_command(
+        "/bin/hsd",
+        "/data",
+        "  node-key  ",
+        crate::noncustodial::rpc::NodeMode::Full,
+        Network::Regtest,
+    )
+    .expect("a key was given");
+    let args = args_of(&cmd);
+    assert!(
+        args.iter()
+            .all(|a| !a.contains("api-key") && !a.contains("node-key")),
+        "{args:?}"
+    );
+    let envs: Vec<(String, Option<String>)> = cmd
+        .get_envs()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.map(|v| v.to_string_lossy().into_owned()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        envs,
+        vec![(
+            node::HSD_API_KEY_ENV.to_string(),
+            Some("node-key".to_string())
+        )],
+        "the trimmed key, and nothing else, is set"
+    );
+    assert_eq!(node::HSD_API_KEY_ENV, "HSD_API_KEY");
+    // hsd.conf or an inherited HSD_NO_AUTH cannot switch the key off: the
+    // command line outranks both.
+    assert!(args.contains(&"--no-auth=false".to_string()), "{args:?}");
+    // Info, not hsd's default debug: no address paths or RPC parameters in
+    // its logs.
+    assert!(args.contains(&"--log-level=info".to_string()), "{args:?}");
+    assert!(args.contains(&"--network=regtest".to_string()), "{args:?}");
+    assert!(args.contains(&"--prefix=/data".to_string()), "{args:?}");
+}
+
+/// No key, no node: hsd turns authentication off by itself on a loopback
+/// host when it has no key.
+#[test]
+fn hsd_command_refuses_to_start_a_node_without_an_api_key() {
+    for key in ["", "   "] {
+        let err = node::hsd_command(
+            "/bin/hsd",
+            "/data",
+            key,
+            crate::noncustodial::rpc::NodeMode::Spv,
+            Network::Main,
+        )
+        .expect_err("no key");
+        assert!(err.to_string().contains("without an api-key"), "{err}");
+    }
+}

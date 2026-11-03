@@ -118,6 +118,7 @@ export function OverviewTab({ a, onTab }: { a: NameActions; onTab: (tab: NameTab
               onBid={a.submitBid}
               recoverHns={a.recoverHns}
               onRecoverHnsChange={a.setRecoverHns}
+              recoverError={a.recoverError}
               onRecoverBid={a.handleRecoverBid}
               onBruteForceRecover={a.handleBruteForceRecover}
               revealConfirming={a.revealConfirming}

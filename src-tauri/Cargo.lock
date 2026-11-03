@@ -27,6 +27,7 @@ dependencies = [
  "cfg-if",
  "cipher",
  "cpufeatures",
+ "zeroize",
 ]
 
 [[package]]
@@ -122,6 +123,7 @@ dependencies = [
  "blake2",
  "cpufeatures",
  "password-hash",
+ "zeroize",
 ]
 
 [[package]]
@@ -350,6 +352,7 @@ dependencies = [
  "bitcoin_hashes",
  "serde",
  "unicode-normalization",
+ "zeroize",
 ]
 
 [[package]]
@@ -2735,6 +2738,7 @@ dependencies = [
 name = "namehold-wallet"
 version = "0.6.1"
 dependencies = [
+ "aes",
  "aes-gcm",
  "argon2",
  "async-trait",
@@ -6902,6 +6906,7 @@ version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
 dependencies = [
+ "serde",
  "zeroize_derive",
 ]
 

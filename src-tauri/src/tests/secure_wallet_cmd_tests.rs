@@ -1,4 +1,8 @@
+use crate::commands::secure_prompt::{
+    push_test_answer, take_test_requests, SecurePromptRequest, SecurePromptResult,
+};
 use crate::commands::secure_wallet;
+use crate::error::AppError;
 use crate::AppState;
 use tauri::Manager;
 
@@ -43,13 +47,20 @@ fn test_xpub() -> crate::noncustodial::hd::ExtendedPubKey {
 /// `get_signer_session`, `set_active_wallet_profile`, and
 /// `delete_wallet_profile` without going through the interactive unlock flow.
 fn seed_unlocked_signer(state: &AppState, wallet_profile_id: &str) {
+    // 60s TTL — comfortably unexpired during the test.
+    seed_signer_with_ttl(state, wallet_profile_id, 60_000);
+}
+
+/// As [`seed_unlocked_signer`], with the session's TTL spelled out (0 is a
+/// session whose time box has already elapsed).
+fn seed_signer_with_ttl(state: &AppState, wallet_profile_id: &str, ttl_ms: u128) {
     let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
     let master = crate::noncustodial::hd::ExtendedPrivKey::from_seed(&seed).unwrap();
     let session = crate::noncustodial::session::SignerSession::unlock(
         wallet_profile_id.to_string(),
         crate::noncustodial::network::Network::Main,
         master,
-        60_000, // 60s TTL — comfortably unexpired during the test.
+        ttl_ms,
     );
     let mut slot = state.signer.lock().unwrap();
     *slot = Some(session);
@@ -280,25 +291,50 @@ fn test_session_ttl_ms_invalid_falls_back() {
 
 // --- resolve_secret_key tests ---
 
+use crate::noncustodial::network::Network;
+
+/// A test-network wallet may opt out of a passphrase: its seed is then
+/// encrypted under the device-local key.
 #[test]
-fn test_resolve_secret_key_empty() {
-    let (key, kdf) = secure_wallet::resolve_secret_key("");
-    assert_eq!(kdf, "none");
-    assert_eq!(key, "namehold::no-passphrase::v1");
+fn a_test_network_wallet_may_have_no_passphrase() {
+    for net in [Network::Testnet, Network::Regtest] {
+        let (key, kdf) = secure_wallet::resolve_secret_key("", net).unwrap();
+        assert_eq!(kdf, "none");
+        assert!(!key.is_empty());
+    }
+}
+
+/// A mainnet wallet cannot opt out, nor take a passphrase too short to stand
+/// between a copy of the database and its seed (the device-local key is in
+/// the public source).
+#[test]
+fn a_mainnet_wallet_needs_a_passphrase_of_at_least_eight_characters() {
+    for weak in ["", " ", "a", "1234567", "seven77"] {
+        let err = secure_wallet::resolve_secret_key(weak, Network::Main).unwrap_err();
+        assert!(
+            err.to_string().contains("at least 8 characters"),
+            "{weak:?}: {err}"
+        );
+    }
+    let (key, kdf) = secure_wallet::resolve_secret_key("eight888", Network::Main).unwrap();
+    assert_eq!((key.as_str(), kdf), ("eight888", "argon2id"));
+    // Characters, not bytes: eight non-ASCII characters are enough.
+    assert!(secure_wallet::resolve_secret_key("пароль12", Network::Main).is_ok());
 }
 
 #[test]
 fn test_resolve_secret_key_with_passphrase() {
-    let (key, kdf) = secure_wallet::resolve_secret_key("my-secret");
+    let (key, kdf) = secure_wallet::resolve_secret_key("my-secret", Network::Regtest).unwrap();
+    assert_eq!(key.as_str(), "my-secret");
     assert_eq!(kdf, "argon2id");
-    assert_eq!(key, "my-secret");
 }
 
 #[test]
 fn test_resolve_secret_key_whitespace() {
-    let (key, kdf) = secure_wallet::resolve_secret_key(" ");
+    // A single space is a passphrase (not "none") on a test network.
+    let (key, kdf) = secure_wallet::resolve_secret_key(" ", Network::Regtest).unwrap();
+    assert_eq!(key.as_str(), " ");
     assert_eq!(kdf, "argon2id");
-    assert_eq!(key, " ");
 }
 
 // --- DB-backed command tests ---
@@ -370,13 +406,13 @@ fn test_activate_profile_drops_another_profiles_signer() {
 fn test_write_capability_signer_counts_only_for_its_own_profile() {
     let state = create_full_test_state();
     seed_unlocked_signer(&state, "a");
-    let slot = state.signer.lock().unwrap();
-    assert!(crate::commands::tx::signer_unlocked_for(slot.as_ref(), "a"));
+    let mut slot = state.signer.lock().unwrap();
+    assert!(crate::commands::tx::signer_unlocked_for(slot.as_mut(), "a"));
     assert!(!crate::commands::tx::signer_unlocked_for(
-        slot.as_ref(),
+        slot.as_mut(),
         "b"
     ));
-    assert!(!crate::commands::tx::signer_unlocked_for(slot.as_ref(), ""));
+    assert!(!crate::commands::tx::signer_unlocked_for(slot.as_mut(), ""));
     assert!(!crate::commands::tx::signer_unlocked_for(None, "a"));
 }
 
@@ -391,9 +427,9 @@ fn test_write_capability_ledger_is_ready_without_a_session() {
     assert!(!signer_ready_for(None, "h", None));
     let state = create_full_test_state();
     seed_unlocked_signer(&state, "h");
-    let slot = state.signer.lock().unwrap();
-    assert!(signer_ready_for(slot.as_ref(), "h", Some("mnemonic_hot")));
-    assert!(!signer_ready_for(slot.as_ref(), "other", Some("xpriv_hot")));
+    let mut slot = state.signer.lock().unwrap();
+    assert!(signer_ready_for(slot.as_mut(), "h", Some("mnemonic_hot")));
+    assert!(!signer_ready_for(slot.as_mut(), "other", Some("xpriv_hot")));
 }
 
 #[test]
@@ -425,26 +461,310 @@ async fn test_set_active_wallet_profile_not_found() {
     assert!(msg.contains("not found") || msg.contains("wallet profile"));
 }
 
-#[tokio::test]
-async fn test_delete_wallet_profile() {
-    let state = create_full_test_state();
-    {
-        let conn = state.db.lock().unwrap();
-        conn.execute(
-            "INSERT INTO wallet_profiles (id, label, kind, network, account_index, account_xpub, watch_only, created_at)
-             VALUES ('wp1', 'Test', 'watch_only_xpub', 'mainnet', 0, 'xpub_test', 1, datetime('now'))",
-            [],
-        ).unwrap();
+/// The secure window's answer to a `confirm` prompt: confirmed or not, and
+/// what was typed into it.
+fn confirm_answer(confirmed: bool, typed: Option<&str>) -> SecurePromptResult {
+    SecurePromptResult {
+        value: typed.map(|t| t.to_string().into()),
+        confirmed,
     }
-    let app = mock_app_with(state);
-    let result = secure_wallet::delete_wallet_profile(app.state(), "wp1".into()).await;
-    assert!(result.is_ok());
+}
 
-    // Verify it's gone
-    let profiles = secure_wallet::list_wallet_profiles(app.state())
+/// A recovery-phrase profile `id` labelled `label`, with its encrypted
+/// recovery phrase stored (a `wallet_secrets` row).
+fn insert_hot_profile_with_seed(state: &AppState, id: &str, label: &str) {
+    let conn = state.db.lock().unwrap();
+    crate::db::queries::insert_wallet_profile(
+        &conn,
+        id,
+        label,
+        "mnemonic_hot",
+        "mainnet",
+        &format!("xpub_{id}"),
+        0,
+        false,
+    )
+    .unwrap();
+    crate::db::queries::insert_wallet_secret(
+        &conn,
+        id,
+        b"encrypted-vault-blob",
+        "argon2id",
+        &secure_wallet::fingerprint(&format!("xpub_{id}")),
+    )
+    .unwrap();
+}
+
+fn insert_profile_of_kind(state: &AppState, id: &str, label: &str, kind: &str, watch_only: bool) {
+    let conn = state.db.lock().unwrap();
+    crate::db::queries::insert_wallet_profile(
+        &conn,
+        id,
+        label,
+        kind,
+        "mainnet",
+        &format!("xpub_{id}"),
+        0,
+        watch_only,
+    )
+    .unwrap();
+}
+
+fn has_seed(app: &tauri::App<tauri::test::MockRuntime>, id: &str) -> bool {
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().unwrap();
+    crate::db::queries::get_wallet_secret_meta(&conn, id)
+        .unwrap()
+        .is_some()
+}
+
+fn has_profile(app: &tauri::App<tauri::test::MockRuntime>, id: &str) -> bool {
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().unwrap();
+    crate::db::queries::get_wallet_profile(&conn, id)
+        .unwrap()
+        .is_some()
+}
+
+/// The rows of a `confirm` request as (label, value) pairs.
+fn rows_of(request: &SecurePromptRequest) -> Vec<(String, String)> {
+    request.details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["label"].as_str().unwrap().to_string(),
+                r["value"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn row<'a>(rows: &'a [(String, String)], label: &str) -> Option<&'a str> {
+    rows.iter()
+        .find(|(l, _)| l == label)
+        .map(|(_, v)| v.as_str())
+}
+
+/// A watch-only profile holds no secret: one click in the secure window
+/// deletes it, after it showed which wallet it is.
+#[tokio::test]
+async fn deleting_a_watch_only_profile_asks_the_secure_window_without_typed_text() {
+    let state = create_full_test_state();
+    insert_profile_of_kind(&state, "wp1", "Watcher", "watch_only_xpub", true);
+    let app = mock_app_with(state);
+    push_test_answer(confirm_answer(true, None));
+
+    secure_wallet::delete_wallet_profile(app.handle().clone(), "wp1".into())
         .await
         .unwrap();
-    assert!(profiles.is_empty());
+
+    assert!(!has_profile(&app, "wp1"));
+    let requests = take_test_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].mode, "confirm");
+    let details = requests[0].details.as_ref().unwrap();
+    assert!(details.get("confirmText").is_none(), "{details}");
+    assert_eq!(details["confirmLabel"], "Delete wallet");
+    let rows = rows_of(&requests[0]);
+    assert_eq!(row(&rows, "Wallet"), Some("Watcher"));
+    assert_eq!(row(&rows, "Network"), Some("mainnet"));
+    assert_eq!(row(&rows, "Kind"), Some("Watch-only"));
+    assert_eq!(
+        row(&rows, "Fingerprint"),
+        Some(secure_wallet::fingerprint("xpub_wp1").as_str())
+    );
+    assert_eq!(row(&rows, "Warning"), None);
+}
+
+#[tokio::test]
+async fn deleting_a_watch_only_profile_declined_keeps_it() {
+    let state = create_full_test_state();
+    insert_profile_of_kind(&state, "wp1", "Watcher", "watch_only_xpub", true);
+    let app = mock_app_with(state);
+    push_test_answer(confirm_answer(false, None));
+
+    let err = secure_wallet::delete_wallet_profile(app.handle().clone(), "wp1".into())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, AppError::UserRejected), "{err:?}");
+    assert!(has_profile(&app, "wp1"));
+}
+
+#[tokio::test]
+async fn deleting_a_ledger_profile_asks_without_typed_text() {
+    let state = create_full_test_state();
+    insert_profile_of_kind(&state, "led", "Nano", "ledger_hardware", false);
+    let app = mock_app_with(state);
+    push_test_answer(confirm_answer(true, None));
+
+    secure_wallet::delete_wallet_profile(app.handle().clone(), "led".into())
+        .await
+        .unwrap();
+
+    assert!(!has_profile(&app, "led"));
+    let requests = take_test_requests();
+    assert!(requests[0]
+        .details
+        .as_ref()
+        .unwrap()
+        .get("confirmText")
+        .is_none());
+    assert_eq!(row(&rows_of(&requests[0]), "Kind"), Some("Ledger"));
+}
+
+/// The only copy of a hot wallet's encrypted recovery phrase on this device
+/// is never erased by a call alone: a declined secure window deletes nothing.
+#[tokio::test]
+async fn delete_hot_profile_refused_when_the_secure_window_declines() {
+    let state = create_full_test_state();
+    insert_hot_profile_with_seed(&state, "hot", "Savings");
+    let app = mock_app_with(state);
+    push_test_answer(confirm_answer(false, None));
+
+    let err = secure_wallet::delete_wallet_profile(app.handle().clone(), "hot".into())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, AppError::UserRejected), "{err:?}");
+    assert!(has_profile(&app, "hot"));
+    assert!(has_seed(&app, "hot"));
+    let requests = take_test_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].mode, "confirm");
+    let rows = rows_of(&requests[0]);
+    assert_eq!(row(&rows, "Wallet"), Some("Savings"));
+    assert_eq!(row(&rows, "Kind"), Some("Hot"));
+    assert_eq!(
+        row(&rows, "Fingerprint"),
+        Some(secure_wallet::fingerprint("xpub_hot").as_str())
+    );
+    assert_eq!(
+        row(&rows, "Warning"),
+        Some(secure_wallet::DELETE_SEED_WARNING)
+    );
+    assert_eq!(
+        requests[0].details.as_ref().unwrap()["confirmText"],
+        "Savings"
+    );
+}
+
+/// Confirm alone is not enough for a stored seed: the label must be typed,
+/// and the backend checks the typed text itself.
+#[tokio::test]
+async fn delete_hot_profile_refused_without_the_typed_label() {
+    for typed in [None, Some(""), Some("savings"), Some("Saving")] {
+        let state = create_full_test_state();
+        insert_hot_profile_with_seed(&state, "hot", "Savings");
+        let app = mock_app_with(state);
+        push_test_answer(confirm_answer(true, typed));
+
+        let err = secure_wallet::delete_wallet_profile(app.handle().clone(), "hot".into())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AppError::UserRejected), "{typed:?}: {err:?}");
+        assert!(has_profile(&app, "hot"), "{typed:?}");
+        assert!(has_seed(&app, "hot"), "{typed:?}");
+    }
+}
+
+#[tokio::test]
+async fn delete_hot_profile_proceeds_after_confirmation_with_the_typed_label() {
+    let state = create_full_test_state();
+    insert_hot_profile_with_seed(&state, "hot", "Savings");
+    insert_profile_of_kind(&state, "other", "Other", "watch_only_xpub", true);
+    let app = mock_app_with(state);
+    push_test_answer(confirm_answer(true, Some(" Savings ")));
+
+    secure_wallet::delete_wallet_profile(app.handle().clone(), "hot".into())
+        .await
+        .unwrap();
+
+    assert!(!has_profile(&app, "hot"));
+    assert!(!has_seed(&app, "hot"));
+    assert!(has_profile(&app, "other"));
+}
+
+/// A blank label cannot be typed back; the fingerprint shown in the rows is
+/// asked for instead, so such a wallet can still be deleted.
+#[tokio::test]
+async fn delete_hot_profile_with_a_blank_label_asks_for_its_fingerprint() {
+    let state = create_full_test_state();
+    insert_hot_profile_with_seed(&state, "hot", "  ");
+    let app = mock_app_with(state);
+    let fp = secure_wallet::fingerprint("xpub_hot");
+    push_test_answer(confirm_answer(true, Some(&fp)));
+
+    secure_wallet::delete_wallet_profile(app.handle().clone(), "hot".into())
+        .await
+        .unwrap();
+
+    assert!(!has_profile(&app, "hot"));
+    assert_eq!(
+        take_test_requests()[0].details.as_ref().unwrap()["confirmText"],
+        fp.as_str()
+    );
+}
+
+/// What was confirmed is what is deleted: a profile that gained a stored
+/// recovery phrase while the window was open is not deleted on a one-click
+/// confirmation meant for a watch-only wallet.
+#[tokio::test]
+async fn delete_refused_when_the_profile_gains_a_seed_while_the_window_is_open() {
+    let state = create_full_test_state();
+    insert_profile_of_kind(&state, "wp1", "Watcher", "watch_only_xpub", true);
+    let app = mock_app_with(state);
+    let handle = app.handle().clone();
+    crate::commands::secure_prompt::on_next_test_answer(move || {
+        let state = handle.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        crate::db::queries::insert_wallet_secret(&conn, "wp1", b"blob", "argon2id", "fp").unwrap();
+    });
+    push_test_answer(confirm_answer(true, None));
+
+    let err = secure_wallet::delete_wallet_profile(app.handle().clone(), "wp1".into())
+        .await
+        .unwrap_err();
+
+    match err {
+        AppError::Other(m) => assert_eq!(m, secure_wallet::DELETE_PROFILE_CHANGED),
+        other => panic!("{other:?}"),
+    }
+    assert!(has_profile(&app, "wp1"));
+    assert!(has_seed(&app, "wp1"));
+}
+
+/// The other direction: the seed the user was warned about is already gone,
+/// so what they confirmed is not what would be deleted.
+#[tokio::test]
+async fn delete_refused_when_the_profile_loses_its_seed_while_the_window_is_open() {
+    let state = create_full_test_state();
+    insert_hot_profile_with_seed(&state, "hot", "Savings");
+    let app = mock_app_with(state);
+    let handle = app.handle().clone();
+    crate::commands::secure_prompt::on_next_test_answer(move || {
+        let state = handle.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        conn.execute(
+            "DELETE FROM wallet_secrets WHERE wallet_profile_id = 'hot'",
+            [],
+        )
+        .unwrap();
+    });
+    push_test_answer(confirm_answer(true, Some("Savings")));
+
+    let err = secure_wallet::delete_wallet_profile(app.handle().clone(), "hot".into())
+        .await
+        .unwrap_err();
+
+    match err {
+        AppError::Other(m) => assert_eq!(m, secure_wallet::DELETE_PROFILE_CHANGED),
+        other => panic!("{other:?}"),
+    }
+    assert!(has_profile(&app, "hot"));
 }
 
 #[tokio::test]
@@ -460,7 +780,8 @@ async fn test_delete_wallet_profile_clears_active() {
         crate::db::queries::set_active_profile(&conn, "wp1").unwrap();
     }
     let app = mock_app_with(state);
-    secure_wallet::delete_wallet_profile(app.state(), "wp1".into())
+    push_test_answer(confirm_answer(true, None));
+    secure_wallet::delete_wallet_profile(app.handle().clone(), "wp1".into())
         .await
         .unwrap();
 
@@ -471,13 +792,16 @@ async fn test_delete_wallet_profile_clears_active() {
     assert_eq!(active, "");
 }
 
+/// There is nothing to show for a profile that does not exist, so nothing is
+/// asked and the call fails.
 #[tokio::test]
-async fn test_delete_nonexistent_profile() {
+async fn deleting_an_unknown_profile_is_not_found_and_asks_nothing() {
     let state = create_full_test_state();
     let app = mock_app_with(state);
-    let result = secure_wallet::delete_wallet_profile(app.state(), "nonexistent".into()).await;
-    // delete_wallet_profile doesn't check existence first, it just deletes (0 rows affected is OK)
-    assert!(result.is_ok());
+    let result =
+        secure_wallet::delete_wallet_profile(app.handle().clone(), "nonexistent".into()).await;
+    assert!(matches!(result, Err(AppError::NotFound(_))), "{result:?}");
+    assert!(take_test_requests().is_empty());
 }
 
 // --- signer session tests ---
@@ -490,6 +814,110 @@ async fn test_get_signer_session_locked() {
     assert!(result.is_ok());
     let summary = result.unwrap();
     assert!(!summary.unlocked);
+}
+
+/// An expired session is dropped, key and all, by the first look at it: the
+/// UI's poll of the session state, not the next signing attempt.
+#[tokio::test]
+async fn get_signer_session_wipes_an_expired_slot() {
+    let state = create_full_test_state();
+    seed_signer_with_ttl(&state, "wp1", 0);
+    let app = mock_app_with(state);
+
+    let summary = secure_wallet::get_signer_session(app.state())
+        .await
+        .unwrap();
+
+    assert!(!summary.unlocked);
+    assert!(app.state::<AppState>().signer.lock().unwrap().is_none());
+}
+
+/// The once-a-second sweep `lib.rs` runs drops an expired session and
+/// leaves a live one alone.
+#[test]
+fn sweep_expired_signer_drops_only_an_expired_session() {
+    let state = create_full_test_state();
+    assert!(!secure_wallet::sweep_expired_signer(&state));
+
+    seed_unlocked_signer(&state, "live");
+    assert!(!secure_wallet::sweep_expired_signer(&state));
+    assert!(state.signer.lock().unwrap().is_some());
+
+    seed_signer_with_ttl(&state, "expired", 0);
+    assert!(secure_wallet::sweep_expired_signer(&state));
+    assert!(state.signer.lock().unwrap().is_none());
+}
+
+/// While a command holds the signer (signing), the sweep skips its tick
+/// rather than wait on the lock.
+#[test]
+fn sweep_expired_signer_skips_a_busy_slot() {
+    let state = create_full_test_state();
+    seed_signer_with_ttl(&state, "expired", 0);
+    let held = state.signer.lock().unwrap();
+    assert!(!secure_wallet::sweep_expired_signer(&state));
+    drop(held);
+    assert!(secure_wallet::sweep_expired_signer(&state));
+}
+
+/// A panic while holding the signer poisons its lock for good, so no command
+/// can reach the key again: the sweep empties the slot, expired or not.
+#[test]
+fn sweep_expired_signer_drops_the_key_behind_a_poisoned_lock() {
+    let state = create_full_test_state();
+    seed_unlocked_signer(&state, "live");
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _held = state.signer.lock().unwrap();
+        panic!("poison the signer lock");
+    }));
+    assert!(state.signer.is_poisoned());
+
+    assert!(secure_wallet::sweep_expired_signer(&state));
+    assert!(state.signer.lock().err().unwrap().into_inner().is_none());
+    assert!(!secure_wallet::sweep_expired_signer(&state));
+}
+
+/// README promises the key goes within a second of expiry even with the window
+/// hidden. Nothing can run the app's setup hook under test, so the wiring is
+/// read from the source (as `shakedex_layering_tests` does).
+#[test]
+fn the_app_runs_the_expiry_sweep_on_a_timer() {
+    let lib_rs = include_str!("../lib.rs");
+    let run = &lib_rs[lib_rs.find("pub fn run()").expect("lib.rs has run()")..];
+    let code: Vec<&str> = run
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| !l.starts_with("//"))
+        .collect();
+    let at = code
+        .iter()
+        .position(|l| l.contains("commands::secure_wallet::sweep_expired_signer("))
+        .expect("run() calls sweep_expired_signer");
+    assert!(
+        code[at - 3..at].iter().any(|l| l.contains("loop {")),
+        "the sweep runs in a loop"
+    );
+    assert!(
+        code[at - 4..at]
+            .iter()
+            .any(|l| l.contains("Duration::from_secs(1)")),
+        "the sweep runs every second"
+    );
+}
+
+/// Lock drops the unlocked key through its wiping `Drop`, not only empties
+/// the slot.
+#[tokio::test]
+async fn lock_local_signer_wipes_the_unlocked_key() {
+    let state = create_full_test_state();
+    seed_unlocked_signer(&state, "wp1");
+    let app = mock_app_with(state);
+    let before = crate::noncustodial::hd::wipes_on_this_thread();
+
+    secure_wallet::lock_local_signer(app.state()).await.unwrap();
+
+    assert!(app.state::<AppState>().signer.lock().unwrap().is_none());
+    assert_eq!(crate::noncustodial::hd::wipes_on_this_thread(), before + 1);
 }
 
 #[tokio::test]
@@ -949,8 +1377,9 @@ async fn delete_wallet_profile_clears_signer_when_deleting_active_unlocked_profi
     }
     seed_unlocked_signer(&state, "wp1");
     let app = mock_app_with(state);
+    push_test_answer(confirm_answer(true, None));
 
-    secure_wallet::delete_wallet_profile(app.state(), "wp1".into())
+    secure_wallet::delete_wallet_profile(app.handle().clone(), "wp1".into())
         .await
         .expect("delete_wallet_profile should succeed");
 
@@ -986,8 +1415,9 @@ async fn delete_wallet_profile_preserves_signer_when_deleting_a_different_profil
     // returning `false`, so the `*slot = None` line inside the `if` is skipped.
     seed_unlocked_signer(&state, "wp1");
     let app = mock_app_with(state);
+    push_test_answer(confirm_answer(true, None));
 
-    secure_wallet::delete_wallet_profile(app.state(), "wp2".into())
+    secure_wallet::delete_wallet_profile(app.handle().clone(), "wp2".into())
         .await
         .expect("delete_wallet_profile should succeed");
 
@@ -1001,5 +1431,260 @@ async fn delete_wallet_profile_preserves_signer_when_deleting_a_different_profil
         slot.as_ref().unwrap().wallet_profile_id(),
         "wp1",
         "the preserved session must still belong to wp1"
+    );
+}
+
+// --- wallet creation: nothing exists until the phrase is confirmed ---
+
+const NEW_PASSPHRASE: &str = "correct horse";
+
+fn wallet_row_counts(app: &tauri::App<tauri::test::MockRuntime>) -> (i64, i64, i64) {
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().unwrap();
+    let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+    (
+        count("SELECT COUNT(*) FROM wallet_profiles"),
+        count("SELECT COUNT(*) FROM wallet_secrets"),
+        count("SELECT COUNT(*) FROM derived_addresses"),
+    )
+}
+
+fn active_profile(app: &tauri::App<tauri::test::MockRuntime>) -> String {
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().unwrap();
+    crate::db::queries::get_active_profile_id(&conn).unwrap()
+}
+
+/// Order: passphrase, reveal, then persist. What is stored is what was shown:
+/// the vault holds the revealed phrase and the xpub comes from it.
+#[tokio::test]
+async fn create_wallet_persists_and_activates_after_the_reveal_is_confirmed() {
+    let app = mock_app_with(create_full_test_state());
+    push_test_answer(confirm_answer(true, Some(NEW_PASSPHRASE)));
+    push_test_answer(confirm_answer(true, None));
+
+    let summary =
+        secure_wallet::secure_create_wallet(app.handle().clone(), "New".into(), "regtest".into())
+            .await
+            .unwrap();
+
+    let requests = take_test_requests();
+    let modes: Vec<&str> = requests.iter().map(|r| r.mode.as_str()).collect();
+    assert_eq!(modes, ["passphrase_new", "reveal"]);
+    let revealed = requests[1].payload.as_ref().unwrap();
+    assert_eq!(revealed.split(' ').count(), 12);
+
+    assert_eq!(active_profile(&app), summary.id);
+    let (blob, kdf) = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        crate::db::queries::get_wallet_secret_meta(&conn, &summary.id)
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(kdf, "argon2id");
+    let stored = crate::noncustodial::vault::decrypt(&blob, NEW_PASSPHRASE).unwrap();
+    assert_eq!(stored, revealed.as_bytes());
+    let seed = crate::noncustodial::hd::seed_from_mnemonic(revealed, "").unwrap();
+    assert_eq!(
+        summary.account_xpub,
+        secure_wallet::account_xpub_from_seed(Network::Regtest, &seed, 0).unwrap()
+    );
+}
+
+/// A reveal closed or declined leaves no trace: no profile, no secret, no
+/// addresses, the active wallet unchanged, and the error says so.
+#[tokio::test]
+async fn create_wallet_declined_reveal_creates_nothing_and_says_so() {
+    let state = create_full_test_state();
+    insert_profile_of_kind(&state, "old", "Old", "watch_only_xpub", true);
+    {
+        let conn = state.db.lock().unwrap();
+        crate::db::queries::set_active_profile(&conn, "old").unwrap();
+    }
+    let app = mock_app_with(state);
+    let before = wallet_row_counts(&app);
+    push_test_answer(confirm_answer(true, Some(NEW_PASSPHRASE)));
+    push_test_answer(confirm_answer(false, None));
+
+    let err =
+        secure_wallet::secure_create_wallet(app.handle().clone(), "New".into(), "regtest".into())
+            .await
+            .unwrap_err();
+
+    match err {
+        AppError::Other(m) => assert_eq!(m, secure_wallet::CREATE_NOT_CONFIRMED),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(wallet_row_counts(&app), before);
+    assert_eq!(active_profile(&app), "old");
+}
+
+/// A reveal window that cannot open is not a reveal: nothing is saved and the
+/// failure is reported.
+#[tokio::test]
+async fn create_wallet_with_a_reveal_window_that_cannot_open_creates_nothing() {
+    let app = mock_app_with(create_full_test_state());
+    let before = wallet_row_counts(&app);
+    push_test_answer(confirm_answer(true, Some(NEW_PASSPHRASE)));
+    crate::commands::secure_prompt::push_test_prompt_failure();
+
+    let result =
+        secure_wallet::secure_create_wallet(app.handle().clone(), "New".into(), "regtest".into())
+            .await;
+
+    assert!(matches!(result, Err(AppError::Other(_))), "{result:?}");
+    assert_eq!(wallet_row_counts(&app), before);
+}
+
+/// Cancelling the passphrase ends it before a phrase is generated or shown.
+#[tokio::test]
+async fn create_wallet_cancelled_passphrase_generates_and_shows_nothing() {
+    let app = mock_app_with(create_full_test_state());
+    push_test_answer(confirm_answer(false, None));
+
+    let result =
+        secure_wallet::secure_create_wallet(app.handle().clone(), "New".into(), "regtest".into())
+            .await;
+
+    assert!(
+        matches!(result, Err(AppError::InvalidInput(_))),
+        "{result:?}"
+    );
+    assert_eq!(take_test_requests().len(), 1);
+    assert_eq!(wallet_row_counts(&app), (0, 0, 0));
+}
+
+/// A database failure after the confirmation does not leave half a wallet: a
+/// profile without its secret would read as a wallet the user cannot unlock.
+#[tokio::test]
+async fn create_wallet_failing_to_store_the_secret_leaves_no_profile() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER no_secret BEFORE INSERT ON wallet_secrets
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .unwrap();
+    }
+    let app = mock_app_with(state);
+    push_test_answer(confirm_answer(true, Some(NEW_PASSPHRASE)));
+    push_test_answer(confirm_answer(true, None));
+
+    let result =
+        secure_wallet::secure_create_wallet(app.handle().clone(), "New".into(), "regtest".into())
+            .await;
+
+    assert!(result.is_err());
+    assert_eq!(wallet_row_counts(&app), (0, 0, 0));
+    assert_eq!(active_profile(&app), "");
+}
+
+// --- the secret paths still work now that they hold Zeroizing values ---
+
+/// A wallet with a real vault, created through the command.
+async fn created_wallet(app: &tauri::App<tauri::test::MockRuntime>) -> (String, String) {
+    push_test_answer(confirm_answer(true, Some(NEW_PASSPHRASE)));
+    push_test_answer(confirm_answer(true, None));
+    let id =
+        secure_wallet::secure_create_wallet(app.handle().clone(), "New".into(), "regtest".into())
+            .await
+            .unwrap()
+            .id;
+    let requests = take_test_requests();
+    let phrase = requests[1].payload.as_ref().unwrap().to_string();
+    (id, phrase)
+}
+
+#[tokio::test]
+async fn unlock_opens_the_vault_with_the_right_passphrase_only() {
+    let app = mock_app_with(create_full_test_state());
+    let (id, _) = created_wallet(&app).await;
+
+    push_test_answer(confirm_answer(true, Some("wrong passphrase")));
+    let err = secure_wallet::unlock_local_signer(app.handle().clone(), id.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Crypto(_)), "{err:?}");
+    assert!(app.state::<AppState>().signer.lock().unwrap().is_none());
+
+    push_test_answer(confirm_answer(true, Some(NEW_PASSPHRASE)));
+    let summary = secure_wallet::unlock_local_signer(app.handle().clone(), id.clone())
+        .await
+        .unwrap();
+    assert!(summary.unlocked);
+    assert_eq!(summary.wallet_profile_id.as_deref(), Some(id.as_str()));
+}
+
+#[tokio::test]
+async fn reveal_backup_phrase_shows_the_stored_phrase_after_the_passphrase() {
+    let app = mock_app_with(create_full_test_state());
+    let (id, phrase) = created_wallet(&app).await;
+
+    push_test_answer(confirm_answer(true, Some(NEW_PASSPHRASE)));
+    push_test_answer(confirm_answer(false, None));
+    secure_wallet::secure_reveal_backup_phrase(app.handle().clone(), id)
+        .await
+        .unwrap();
+
+    let requests = take_test_requests();
+    assert_eq!(requests[0].mode, "passphrase");
+    assert_eq!(requests[1].mode, "reveal");
+    assert_eq!(requests[1].payload.as_ref().unwrap().as_str(), phrase);
+}
+
+/// "Show recovery phrase" must not look like it worked when the window could
+/// not open.
+#[tokio::test]
+async fn reveal_backup_phrase_reports_a_window_that_cannot_open() {
+    let app = mock_app_with(create_full_test_state());
+    let (id, _phrase) = created_wallet(&app).await;
+
+    push_test_answer(confirm_answer(true, Some(NEW_PASSPHRASE)));
+    crate::commands::secure_prompt::push_test_prompt_failure();
+    let result = secure_wallet::secure_reveal_backup_phrase(app.handle().clone(), id).await;
+
+    assert!(matches!(result, Err(AppError::Other(_))), "{result:?}");
+}
+
+/// Import reaches the vault with the typed phrase; a bad phrase or a cancelled
+/// passphrase stores nothing.
+#[tokio::test]
+async fn import_stores_the_typed_phrase_and_nothing_on_failure() {
+    // A throwaway phrase from fixed entropy; nothing holds funds under it.
+    let phrase = bip39::Mnemonic::from_entropy(&[7u8; 16])
+        .unwrap()
+        .to_string();
+    let app = mock_app_with(create_full_test_state());
+    let import = || {
+        secure_wallet::secure_import_wallet(
+            app.handle().clone(),
+            "Imported".into(),
+            "regtest".into(),
+            "mnemonic_hot".into(),
+        )
+    };
+
+    push_test_answer(confirm_answer(true, Some("not a recovery phrase")));
+    assert!(matches!(import().await, Err(AppError::InvalidInput(_))));
+    push_test_answer(confirm_answer(true, Some(&phrase)));
+    push_test_answer(confirm_answer(false, None));
+    assert!(matches!(import().await, Err(AppError::InvalidInput(_))));
+    assert_eq!(wallet_row_counts(&app), (0, 0, 0));
+
+    push_test_answer(confirm_answer(true, Some(&phrase)));
+    push_test_answer(confirm_answer(true, Some(NEW_PASSPHRASE)));
+    let id = import().await.unwrap().id;
+    let (blob, _) = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        crate::db::queries::get_wallet_secret_meta(&conn, &id)
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(
+        crate::noncustodial::vault::decrypt(&blob, NEW_PASSPHRASE).unwrap(),
+        phrase.as_bytes()
     );
 }

@@ -1032,7 +1032,7 @@ async fn signing_refuses_a_child_whose_plan_pays_elsewhere_than_our_change() {
     let err = crate::commands::tx::sign_tx_draft_inner(&app.state(), &id)
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("not your change address"), "{err}");
+    assert!(err.to_string().contains("change address"), "{err}");
     assert_eq!(app_status(&app, &id).status, queries::DraftStatus::Draft);
 }
 

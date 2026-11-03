@@ -2,6 +2,7 @@ import { SECS_PER_BLOCK } from "../../lib/auction";
 import { settingToBool } from "../../lib/settingsBool";
 import { MIN_FEE_RATE_DOOS_PER_KVB, parseDoosPerKvb } from "../../lib/feeRate";
 import { formatDate, formatHns, formatHnsShort } from "../../lib/utils";
+import { hnsDigitsToDoos, MAX_MONEY_DOOS } from "../../lib/hnsAmount";
 import type {
   MarketRow,
   ShakedexHidden,
@@ -476,9 +477,8 @@ export const SCHEDULE_PAST_A_YEAR =
 /** `sell.rs::LISTING_LIFETIME_SECS` (365 days), pinned by `refusal_sentences_match_the_uis_word_for_word`. */
 const LISTING_LIFETIME_SECS = 31536000;
 
-/** `noncustodial/send.rs::DUST_THRESHOLD` and `purchase.rs::MAX_MONEY`, in doos. */
+/** `noncustodial/send.rs::DUST_THRESHOLD`, in doos. */
 const DUST_DOOS = 1000n;
-const MAX_MONEY_DOOS = 2_040_000_000_000_000n;
 
 /** `sell.rs::{REVERSE_MIN_STEPS, REVERSE_MAX_STEPS, REVERSE_MIN_INTERVAL_SECS}` (R24). */
 const REVERSE_MIN_STEPS = 2;
@@ -537,16 +537,10 @@ export function parseStepPrice(text: string): { doos: bigint } | { error: string
   const bad = (why: string) => ({ error: `price ${rustDebug(text)}: ${why}` });
   const t = text.replace(RUST_TRIM, "");
   if (t === "") return bad("enter a price in HNS");
-  // No '.' is a whole number of HNS; a second '.' lands in `frac` and is not a digit.
-  const dot = t.indexOf(".");
-  const whole = dot < 0 ? t : t.slice(0, dot);
-  const frac = dot < 0 ? "" : t.slice(dot + 1);
-  const digits = (s: string) => /^[0-9]*$/.test(s);
-  if ((whole === "" && frac === "") || !digits(whole) || !digits(frac)) {
-    return bad("not a number of HNS");
-  }
-  if (frac.length > 6) return bad("HNS has at most 6 decimals");
-  const doos = BigInt(whole === "" ? "0" : whole) * 1_000_000n + BigInt(frac.padEnd(6, "0"));
+  // The digits are read as every money field reads them (`lib/hnsAmount`).
+  const read = hnsDigitsToDoos(t);
+  if ("error" in read) return bad(read.error);
+  const { doos } = read;
   if (doos === 0n) return bad("a price must be above 0");
   if (doos < DUST_DOOS) return bad(`below the dust limit of ${doosText(DUST_DOOS)}`);
   if (doos > MAX_MONEY_DOOS) return bad("above the money supply");

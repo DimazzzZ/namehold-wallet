@@ -3,9 +3,10 @@
 //! Reads are node-free (explorer); a node is needed only to broadcast/sync. The
 //! app can start hsd against a user-chosen data directory (`hsd_prefix` setting)
 //! so a large chain lands on, say, an external volume instead of `~/.hsd`. The
-//! `--api-key` and network are kept in sync with the RPC the app itself uses
-//! (`node_rpc_api_key` + the active profile's network), so "the node the app
-//! starts" and "the node the app talks to" are the same node.
+//! api-key and network are kept in sync with the RPC the app itself uses (the
+//! active profile's effective key, else the key the app generated for its own
+//! node, and the active profile's network), so "the node the app starts" and
+//! "the node the app talks to" are the same node.
 
 use crate::commands::active_profile::{active_profile_network, active_profile_network_opt};
 use crate::commands::local_node::{
@@ -21,9 +22,10 @@ use tauri::State;
 use tokio::time::{sleep, Duration};
 
 /// First usable hsd path given an explicit override and an ordered candidate
-/// list. An explicit `hsd_path` is honored verbatim (trust the user — the binary
-/// may not exist yet at lookup time); otherwise the first existing candidate
-/// wins. Returns `None` if nothing matches (caller falls back to `which`/PATH).
+/// list. An explicit override is returned verbatim; otherwise the first
+/// existing candidate wins. The app's own callers pass no override: a
+/// configured `hsd_path` goes through [`hsd_binary_to_run`], which checks it.
+/// Returns `None` if nothing matches (caller falls back to `which`/PATH).
 /// Pure (no env reads) so it's unit-testable.
 pub(crate) fn pick_hsd_path(override_path: Option<&str>, candidates: &[String]) -> Option<String> {
     if let Some(p) = override_path {
@@ -83,7 +85,12 @@ pub(crate) fn find_hsd_binary(override_path: Option<&str>) -> String {
     "hsd".to_string()
 }
 
-/// The explicit `hsd_path` setting, if set and non-empty.
+/// The explicit `hsd_path` setting, if set and non-empty. Only
+/// `update_protected_settings` writes it, after the user confirmed the path in
+/// the secure window; `update_setting` refuses it.
+// Best effort: settings that cannot be read leave no path chosen, and the
+// program is then auto-detected among the usual install locations, never a
+// path anyone typed.
 fn configured_hsd_path(state: &AppState) -> Option<String> {
     let db = state.db.lock().ok()?;
     let settings = db::queries::get_settings(&db).ok()?;
@@ -91,6 +98,21 @@ fn configured_hsd_path(state: &AppState) -> Option<String> {
         .get("hsd_path")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// The hsd program to run. A configured path is checked again with the rule
+/// it was confirmed under (`protected_settings::validate_hsd_path`: an
+/// absolute path to a regular, executable file) and its canonical path is
+/// run; one that fails it, such as a path stored before the rule existed, is
+/// refused rather than run or swapped for another program. With no path
+/// configured the program is auto-detected ([`find_hsd_binary`]).
+// IO shell: auto-detection reads the system PATH (see `find_hsd_binary`).
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn hsd_binary_to_run(configured: Option<&str>) -> Result<String, AppError> {
+    match configured {
+        Some(path) => crate::protected_settings::validate_hsd_path(path.trim()),
+        None => Ok(find_hsd_binary(None)),
+    }
 }
 
 /// `hsd --version`, if the binary runs.
@@ -258,8 +280,9 @@ async fn probe_with(client: &NodeRpcClient) -> Option<NodeProbe> {
 /// the authoritative signal; `process_alive` only reflects the child we spawned.
 #[tauri::command]
 pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    let binary = find_hsd_binary(configured_hsd_path(&state).as_deref());
-    let version = get_hsd_version(&binary);
+    let configured = configured_hsd_path(&state);
+    let binary = hsd_binary_to_run(configured.as_deref());
+    let version = binary.as_deref().ok().and_then(get_hsd_version);
     let data_dir = resolve_data_dir(&state)?;
     let process_alive = match active_profile_network_opt(&state) {
         Some(network) => is_running(&state, network)?,
@@ -295,10 +318,11 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     // When the RPC isn't answering, surface WHY the last start failed (the hsd log
     // persists past `start_hsd`'s short watch window), so a failed start never
     // shows as a silent "Starting…/Stopped".
-    let err = if probe.is_none() {
-        node_start_error(&data_dir)
-    } else {
-        None
+    // A configured program that is refused is why no start can succeed.
+    let err = match (&probe, &binary) {
+        (Some(_), _) => None,
+        (None, Err(refused)) => Some((refused.to_string(), false)),
+        (None, Ok(_)) => node_start_error(&data_dir),
     };
     let (last_error, index_mismatch) = match err {
         Some((msg, mismatch)) => (Some(msg), mismatch),
@@ -339,7 +363,8 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     };
 
     Ok(serde_json::json!({
-        "binary": binary,
+        // The program that runs, or the refused configured path.
+        "binary": binary.as_deref().ok().or(configured.as_deref()).unwrap_or_default(),
         "binary_found": version.is_some(),
         "version": version,
         "data_dir": data_dir,
@@ -440,9 +465,197 @@ pub(crate) fn node_start_error(data_dir: &str) -> Option<(String, bool)> {
     }
 }
 
+/// The environment variable hsd reads its api-key from. hsd's config reader
+/// (bcfg, `parseEnv`) maps `HSD_<NAME>` to the option `<name>` and ranks the
+/// environment above hsd.conf and below the command line.
+pub(crate) const HSD_API_KEY_ENV: &str = "HSD_API_KEY";
+
+/// The hsd command `start_hsd` spawns, all but its stdio.
+///
+/// - `--prefix` is the un-scoped base and `--network=<name>` scopes it (see
+///   the comment at the spawn in [`start_hsd`]).
+/// - The api-key reaches hsd through its environment ([`HSD_API_KEY_ENV`]),
+///   never the command line: `ps` shows another account the command line of
+///   every process until hsd rewrites its title, and the environment to no
+///   one but the owner. An empty key is refused, so Namehold never starts a
+///   node that answers without one (hsd turns authentication off by itself
+///   on a loopback host when it has no key).
+/// - `--no-auth=false` keeps the key in force whatever hsd.conf or an
+///   inherited `HSD_NO_AUTH` says: the command line outranks both.
+/// - `--log-level=info`: hsd logs at debug by default (`bin/node`), which
+///   writes every REST path (`/coin/address/<address>` among them) and every
+///   RPC's parameters (raw transactions among them) to `namehold-hsd.log` and
+///   to its own `debug.log`. Info keeps what the app and a user read there:
+///   the fatal startup lines [`node_start_error`] looks for and the reason a
+///   broadcast was refused (hsd logs both at error or warning).
+/// - On unix the child runs with umask 077, so every file and directory hsd
+///   creates (its `debug.log`, the chain, `hsd.conf`, the node key) is its
+///   owner's alone.
+pub(crate) fn hsd_command(
+    binary: &str,
+    prefix: &str,
+    api_key: &str,
+    node_mode: crate::noncustodial::rpc::NodeMode,
+    network: Network,
+) -> Result<Command, AppError> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        return Err(AppError::Other(
+            "refusing to start hsd without an api-key: it would answer anyone on this machine"
+                .to_string(),
+        ));
+    }
+    let mut cmd = Command::new(binary);
+    cmd.arg(format!("--prefix={prefix}"));
+    cmd.env(HSD_API_KEY_ENV, api_key);
+    cmd.arg("--no-auth=false");
+    // Argv outranks hsd.conf and the environment: the wallet sends the node's
+    // generated key to 127.0.0.1 alone, so the node listens nowhere else.
+    cmd.arg("--http-host=127.0.0.1");
+    // The wallet learns its spendable + name-owner coins via `getcoinsbyaddress`
+    // (ADDRESS index); `getrawtransaction` (TX index) backs the transaction-history
+    // cache AND the pending→confirmed tracking that looks a sent tx up by id.
+    //
+    // IMPORTANT: hsd cannot retroactively enable an index on an already-synced
+    // chain (chaindb.js `verifyFlags` throws "Cannot retroactively enable …
+    // indexing"). A chain synced without these must be re-synced from genesis with
+    // them — there is no in-place reindex.
+    if node_mode.is_spv() {
+        // SPV mode: download only block headers, no address/tx indexing.
+        // Faster sync, less disk usage. Data reads fall back to explorer.
+        cmd.arg("--spv");
+    } else {
+        cmd.arg("--index-address");
+        cmd.arg("--index-tx");
+    }
+    // Select the network with the canonical `--network=<name>` form. hsd 8.x
+    // treats bare positional flags like `--regtest` as unknown and SILENTLY
+    // falls back to mainnet — which caused mainnet chains to be written into
+    // regtest-scoped data dirs (repeated `_mainnet-contamination-*` quarantines).
+    // `--network=` is honored for every network, so we pass it unconditionally,
+    // mainnet included, rather than relying on omission.
+    cmd.arg(format!("--network={}", network.as_str()));
+    cmd.arg("--log-level=info");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: runs in the forked child before exec; umask is
+        // async-signal-safe and changes nothing but the child's mask.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::umask(0o077);
+                Ok(())
+            });
+        }
+    }
+    Ok(cmd)
+}
+
+/// Whether nothing on this machine holds `port` on the loopback address. Both
+/// checks count: a connection finds a listener on any address that takes
+/// loopback traffic, which a bind can miss (with `SO_REUSEADDR`, which std sets,
+/// BSD and macOS let 127.0.0.1 be bound under a listener on 0.0.0.0), and a bind
+/// finds a socket that holds the port without listening yet.
+pub(crate) fn loopback_port_is_free(port: u16) -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_err()
+        && std::net::TcpListener::bind(addr).is_ok()
+}
+
+/// Refuse a start while something holds the port the node would listen on. The
+/// probe before this found no usable node there, and hsd only reaches its bind
+/// after opening its stores, so the wallet's probes, carrying the new key, would
+/// go to the holder first.
+fn refuse_a_held_rpc_port(network: Network) -> Result<(), AppError> {
+    // The suite's own port is testnet's: a developer's real node on another
+    // network must not decide the outcome of a lifecycle test.
+    #[cfg(test)]
+    if network != Network::Testnet {
+        return Ok(());
+    }
+    let port = network.default_rpc_port();
+    if loopback_port_is_free(port) {
+        return Ok(());
+    }
+    Err(AppError::Other(format!(
+        "Port {port} on this machine is taken by something that did not answer as a usable {} \
+         node, so no node was started. If it is your own hsd, set its Node RPC API key in \
+         Settings; otherwise stop whatever holds the port.",
+        network.display_name()
+    )))
+}
+
+/// Create `dir` and any missing parent, each new directory its owner's alone
+/// (0700 on unix): the chain, hsd's `debug.log` and its key live there. A
+/// directory that already exists keeps its mode; it may be the user's own.
+pub(crate) fn create_owner_only_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir)
+}
+
+/// Make the logs an earlier hsd left in `data_dir` readable by their owner
+/// only (0600 on unix): hsd's `debug.log` and its rotated `debug_*.log`, and
+/// the previous `namehold-hsd.log.1`. Written at debug level before
+/// `--log-level=info`, they map the wallet's addresses and transactions, and
+/// hsd created them under the default umask. Best-effort: a file that is not
+/// a regular file (a link, say) or not the user's is left alone.
+pub(crate) fn tighten_old_hsd_logs(data_dir: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(entries) = std::fs::read_dir(data_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let is_log = (name.starts_with("debug") && name.ends_with(".log"))
+                || name == "namehold-hsd.log.1";
+            // `DirEntry::file_type` does not follow a link.
+            if is_log && entry.file_type().is_ok_and(|t| t.is_file()) {
+                // Why ignored: tightening is best-effort, a start never
+                // fails over an old log.
+                let _ =
+                    std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = data_dir;
+}
+
+/// Open a fresh `namehold-hsd.log` (truncated), readable by its owner only
+/// (0600 on unix): it is the started hsd's stdout and stderr.
+pub(crate) fn create_hsd_log(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        opts.mode(0o600);
+        let file = opts.open(path)?;
+        // `mode` applies to a new file only; one left from before is
+        // tightened too.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    opts.open(path)
+}
+
 /// Start hsd against the configured data directory. The data dir comes from the
-/// `hsd_prefix` setting (default `~/.hsd`); the API key mirrors `node_rpc_api_key`
-/// and the network mirrors the active profile, so the app talks to exactly the
+/// `hsd_prefix` setting (default `~/.hsd`); the api-key is the active profile's
+/// effective key, or, when none is configured, a key generated for this start
+/// ([`crate::noncustodial::node_config::api_key_for_started_node`]);
+/// the network mirrors the active profile, so the app talks to exactly the
 /// node it started.
 // Command::spawn(), Stdio wiring, child.try_wait(), and the startup wait-loop
 // require a real hsd binary. The RPC-probe "adopt" path at the top is
@@ -527,6 +740,8 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         }));
     }
 
+    refuse_a_held_rpc_port(network)?;
+
     // Derived from the network resolved above, not re-read: `resolve_data_dir`
     // asks again through a reader that degrades to mainnet, and this is the
     // directory the chain gets written into. Refusing to guess and then
@@ -543,24 +758,27 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // active profile (per-profile override -> global -> hsd.conf) so the node
     // we start and the node we talk to agree. Reading global settings here
     // handed a profile with its own key a node started with somebody else's.
+    // With no key configured, the node gets a key generated for this start,
+    // which every profile reaching that node's address reads back once the
+    // node's pid record is written below: hsd never runs without one.
     // The mode is the started network's own (spec 2026-10-24 R10).
     let (api_key, node_mode) = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let effective =
-            crate::noncustodial::node_config::effective_node_config_for_profile(&db, &profile_id)?;
         let settings = db::queries::get_settings(&db)?;
         let node_mode = crate::noncustodial::rpc::resolve_node_mode_for(&settings, Some(network));
+        let api_key =
+            crate::noncustodial::node_config::api_key_for_started_node(&db, &profile_id, network)?;
 
         // No URL is written here: a local-node profile reaches its own
         // network's port at resolution (spec 2026-10-24 R1), and the global
         // URL is every other profile's too (R2).
-        (effective.node_rpc_api_key, node_mode)
+        (api_key, node_mode)
     };
 
-    std::fs::create_dir_all(&data_dir)
+    create_owner_only_dir(std::path::Path::new(&data_dir))
         .map_err(|e| AppError::Other(format!("cannot create data dir {data_dir}: {e}")))?;
 
-    let binary = find_hsd_binary(configured_hsd_path(&state).as_deref());
+    let binary = hsd_binary_to_run(configured_hsd_path(&state).as_deref())?;
 
     // Refuse to spawn a too-old hsd: it may silently lack the index flags or
     // RPC fields this wallet relies on. If the version can't be determined at
@@ -591,7 +809,6 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         }
     }
 
-    let mut cmd = Command::new(&binary);
     // hsd derives the *chain* location from `--prefix` **plus** `--network`:
     // given `--prefix=<base> --network=regtest` it writes the chain to
     // `<base>/regtest`. So we hand hsd the un-scoped *base* as the prefix and
@@ -601,33 +818,7 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // app's `data_dir` (`<base>/regtest`), which the log, RPC, and migration all
     // assume. Mainnet's base *is* its data dir, so this is a no-op there.
     let spawn_prefix = resolve_configured_base(&state)?;
-    cmd.arg(format!("--prefix={spawn_prefix}"));
-    if !api_key.trim().is_empty() {
-        cmd.arg(format!("--api-key={}", api_key.trim()));
-    }
-    // The wallet learns its spendable + name-owner coins via `getcoinsbyaddress`
-    // (ADDRESS index); `getrawtransaction` (TX index) backs the transaction-history
-    // cache AND the pending→confirmed tracking that looks a sent tx up by id.
-    //
-    // IMPORTANT: hsd cannot retroactively enable an index on an already-synced
-    // chain (chaindb.js `verifyFlags` throws "Cannot retroactively enable …
-    // indexing"). A chain synced without these must be re-synced from genesis with
-    // them — there is no in-place reindex.
-    if node_mode.is_spv() {
-        // SPV mode: download only block headers, no address/tx indexing.
-        // Faster sync, less disk usage. Data reads fall back to explorer.
-        cmd.arg("--spv");
-    } else {
-        cmd.arg("--index-address");
-        cmd.arg("--index-tx");
-    }
-    // Select the network with the canonical `--network=<name>` form. hsd 8.x
-    // treats bare positional flags like `--regtest` as unknown and SILENTLY
-    // falls back to mainnet — which caused mainnet chains to be written into
-    // regtest-scoped data dirs (repeated `_mainnet-contamination-*` quarantines).
-    // `--network=` is honored for every network, so we pass it unconditionally,
-    // mainnet included, rather than relying on omission.
-    cmd.arg(format!("--network={}", network.as_str()));
+    let mut cmd = hsd_command(&binary, &spawn_prefix, &api_key, node_mode, network)?;
     // Capture hsd's output to a log file so a failed start has a visible reason
     // (port busy, bad data dir, network mismatch) instead of vanishing into null.
     let log_path = std::path::Path::new(&data_dir).join("namehold-hsd.log");
@@ -637,7 +828,8 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // LOCK error then read as a bare "exited on startup" under the old node's
     // sync lines. The old node keeps writing into the moved file.
     let _ = std::fs::rename(&log_path, log_path.with_extension("log.1"));
-    let log = std::fs::File::create(&log_path)
+    tighten_old_hsd_logs(std::path::Path::new(&data_dir));
+    let log = create_hsd_log(&log_path)
         .map_err(|e| AppError::Other(format!("cannot open hsd log {}: {e}", log_path.display())))?;
     let log_err = log
         .try_clone()
@@ -672,8 +864,9 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         children.insert(network, child);
     }
     // Record the child as this network's own node, so a later session still
-    // knows it started it (spec 2026-10-24 R6). Best-effort: without the
-    // record the node only counts as outside later, which stops nothing.
+    // knows it started it (spec 2026-10-24 R6), and so that the wallet may send
+    // it a generated key. Best-effort: without the record the node counts as
+    // outside later, which stops nothing and gets it no generated key.
     if let Err(e) =
         crate::commands::local_node::write_pid_file(std::path::Path::new(&data_dir), child_pid)
     {
@@ -977,7 +1170,7 @@ pub(crate) fn migrate_network_prefix(
     match plan {
         PrefixMigration::None => Ok(()),
         PrefixMigration::CreateScopedRoot => {
-            std::fs::create_dir_all(scoped).map_err(|e| {
+            create_owner_only_dir(scoped).map_err(|e| {
                 AppError::Other(format!("cannot create data dir {scoped_dir}: {e}"))
             })?;
             Ok(())
@@ -987,7 +1180,7 @@ pub(crate) fn migrate_network_prefix(
             // scoped root. Only reached when the scoped root has no chain, so
             // there is nothing to clobber.
             let from = legacy_subdir.expect("AdoptLegacySubdir implies a non-mainnet subdir");
-            std::fs::create_dir_all(scoped).map_err(|e| {
+            create_owner_only_dir(scoped).map_err(|e| {
                 AppError::Other(format!("cannot create data dir {scoped_dir}: {e}"))
             })?;
             for entry in std::fs::read_dir(&from)
@@ -1214,8 +1407,8 @@ pub(crate) async fn check_node_connection_with_client(
 /// `resolve_node_api_key`) is reused ONLY when the probed URL is the saved
 /// `node_rpc_url` — the Settings API-key field is write-only, so "Test
 /// connection" against the saved node would otherwise always fail auth. Any
-/// other URL gets no key: the stored secret must never be sent to an
-/// endpoint the user just typed.
+/// other URL gets no key, generated keys included: the stored secret must never
+/// be sent to an endpoint the user just typed.
 pub(crate) fn resolve_probe_api_key(
     url: &str,
     explicit: Option<&str>,
@@ -1230,7 +1423,7 @@ pub(crate) fn resolve_probe_api_key(
         .map(|s| normalize(s))
         .unwrap_or_default();
     if !saved.is_empty() && saved == normalize(url) {
-        return crate::noncustodial::rpc::resolve_node_api_key(settings);
+        return crate::noncustodial::rpc::resolve_node_api_key_for_url(settings, url);
     }
     String::new()
 }

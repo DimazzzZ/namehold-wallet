@@ -55,7 +55,7 @@ dirs = "6"
 # Signal handler for daemon graceful shutdown (SIGINT/SIGTERM on Unix,
 # console/close events on Windows). Used only by the `namehold-syncd` binary
 # but declared as a normal dep so it's built with the main workspace.
-ctrlc = "3"
+ctrlc = { version = "3", features = ["termination"] }
 libc = "0.2"
 # OS notifications from the headless `namehold-syncd` daemon (which has no
 # Tauri AppHandle, so it can't use tauri-plugin-notification). Cross-platform:
@@ -66,7 +66,7 @@ notify-rust = "4"
 # secp256k1 for ECDSA signing on the Handshake curve.
 secp256k1 = { version = "0.31", features = ["rand", "global-context"] }
 # BIP39 mnemonic <-> seed.
-bip39 = "2"
+bip39 = { version = "2", features = ["zeroize"] }
 # Hashing primitives used across HD derivation, address encoding, and sighash.
 hmac = "0.12"
 sha2 = "0.10"
@@ -76,12 +76,16 @@ blake2 = "0.10"
 # Bech32 for Handshake (hs1...) address encoding.
 bech32 = "0.11"
 # Secret-at-rest encryption.
-argon2 = "0.5"
+# zeroize: Argon2's hash state and its memory blocks (`Block: Zeroize`); aes:
+# the expanded AES key inside `Aes256Gcm`. aes-gcm's own feature adds nothing
+# here (it wipes one temporary), so it is the aes crate that carries it.
+argon2 = { version = "0.5", features = ["zeroize"] }
 aes-gcm = "0.10"
+aes = { version = "0.8", features = ["zeroize"] }
 rand = "0.9"
 hex = "0.4"
 # Zeroize secrets in memory.
-zeroize = { version = "1", features = ["derive"] }
+zeroize = { version = "1", features = ["derive", "serde"] }
 # base64 encoding for hsd-compatible signed-message output (signmessagewithname parity).
 base64 = "0.22"
 url = "2.5.8"

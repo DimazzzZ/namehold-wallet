@@ -5,7 +5,9 @@
  * `__has_node_rpc_api_key: "true"` presence marker. The Settings UI must:
  *   - render a masked placeholder when a key is stored,
  *   - NOT clobber the stored secret when the user Saves with the field blank,
- *   - persist a new value when the user actually types one.
+ *   - send a new value, when the user actually types one, to
+ *     `update_protected_settings` (confirmed in the secure window), and
+ *     treat a declined confirmation as "not saved" rather than an error.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
@@ -31,6 +33,7 @@ vi.mock("@tauri-apps/plugin-autostart", () => ({
 import { loadSettings } from "../../test/fixtures/settings";
 import { renderSettings } from "../../test/fixtures/renderSettings";
 import { routeSettingsCommand } from "../../test/fixtures/settingsRoute";
+import { useUiStore } from "../../stores/ui";
 
 // Load a settings map that mirrors what `get_settings` returns AFTER redaction:
 // no `node_rpc_api_key` value, only the `__has_node_rpc_api_key` marker.
@@ -53,6 +56,7 @@ function apiKeyInput(): HTMLInputElement {
 beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockImplementation(routeSettingsCommand);
+  useUiStore.setState({ toastQueue: [], toastMessage: null });
 });
 
 describe("Settings — Node RPC api-key (write-only)", () => {
@@ -71,14 +75,16 @@ describe("Settings — Node RPC api-key (write-only)", () => {
       expect(invokeMock.mock.calls.some((c) => c[0] === "update_setting")).toBe(true);
     });
 
-    // None of the update_setting calls should be for the api-key key.
+    // Nothing protected changed, so nothing goes to the secure window, and
+    // the key is never written through the plain command.
+    expect(invokeMock).not.toHaveBeenCalledWith("update_protected_settings", expect.anything());
     const apiKeyCall = invokeMock.mock.calls.find(
       (c) => c[0] === "update_setting" && (c[1] as { key?: string })?.key === "node_rpc_api_key",
     );
     expect(apiKeyCall).toBeUndefined();
   });
 
-  it("sends node_rpc_api_key on save when user typed a new value", async () => {
+  it("sends a typed node_rpc_api_key to be confirmed in the secure window", async () => {
     loadWithStoredKey();
     renderSettings();
 
@@ -87,20 +93,20 @@ describe("Settings — Node RPC api-key (write-only)", () => {
     const save = await screen.findByTestId("settings-save");
     fireEvent.click(save);
 
-    await waitFor(() => {
-      const apiKeyCall = invokeMock.mock.calls.find(
-        (c) => c[0] === "update_setting" && (c[1] as { key?: string })?.key === "node_rpc_api_key",
-      );
-      expect(apiKeyCall?.[1]).toEqual({
-        key: "node_rpc_api_key",
-        value: "new-secret",
-      });
-    });
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("update_protected_settings", {
+        changes: [{ key: "node_rpc_api_key", value: "new-secret" }],
+      }),
+    );
+    const apiKeyCall = invokeMock.mock.calls.find(
+      (c) => c[0] === "update_setting" && (c[1] as { key?: string })?.key === "node_rpc_api_key",
+    );
+    expect(apiKeyCall).toBeUndefined();
   });
 
-  it("sends node_rpc_api_key on save when no key is stored yet (empty field, no marker)", async () => {
-    // When neither the value nor the marker are set, the field submits the
-    // current empty value (baseline; no drop-on-blank logic applies).
+  it("does not send an API key field left empty when none is stored", async () => {
+    // Unchanged from what is stored (an empty key), so there is nothing to
+    // confirm: the key is not sent at all.
     loadWithoutStoredKey();
     renderSettings();
     // Trigger dirty state without touching the api-key field.
@@ -109,12 +115,55 @@ describe("Settings — Node RPC api-key (write-only)", () => {
     const save = await screen.findByTestId("settings-save");
     fireEvent.click(save);
 
-    await waitFor(() => {
-      const apiKeyCall = invokeMock.mock.calls.find(
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some((c) => c[0] === "update_setting")).toBe(true),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith("update_protected_settings", expect.anything());
+    expect(
+      invokeMock.mock.calls.some(
         (c) => c[0] === "update_setting" && (c[1] as { key?: string })?.key === "node_rpc_api_key",
-      );
-      expect(apiKeyCall?.[1]).toEqual({ key: "node_rpc_api_key", value: "" });
-    });
+      ),
+    ).toBe(false);
+  });
+
+  it("a declined confirmation saves nothing, shows no error and keeps the form unsaved", async () => {
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "update_protected_settings"
+        ? Promise.reject("Confirmation declined")
+        : routeSettingsCommand(cmd),
+    );
+    loadWithStoredKey();
+    renderSettings();
+
+    fireEvent.change(apiKeyInput(), { target: { value: "new-secret" } });
+    fireEvent.click(await screen.findByTestId("settings-save"));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("update_protected_settings", expect.anything()),
+    );
+    await waitFor(() => expect(screen.getByTestId("settings-save")).not.toBeDisabled());
+    expect(invokeMock).not.toHaveBeenCalledWith("update_setting", expect.anything());
+    expect(useUiStore.getState().toastQueue.map((t) => t.message)).toEqual([]);
+  });
+
+  it("any other refusal is shown as an error and saves nothing else", async () => {
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "update_protected_settings"
+        ? Promise.reject("Invalid input: setting 'node_rpc_url' must be an http:// or https:// URL")
+        : routeSettingsCommand(cmd),
+    );
+    loadWithStoredKey();
+    renderSettings();
+
+    fireEvent.change(apiKeyInput(), { target: { value: "new-secret" } });
+    fireEvent.click(await screen.findByTestId("settings-save"));
+
+    await waitFor(() =>
+      expect(useUiStore.getState().toastQueue.map((t) => t.message)).toEqual([
+        "Failed to save: Invalid input: setting 'node_rpc_url' must be an http:// or https:// URL",
+      ]),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith("update_setting", expect.anything());
   });
 
   it("renders masked placeholder when key is stored", async () => {

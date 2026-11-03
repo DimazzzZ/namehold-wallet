@@ -23,7 +23,7 @@ import type {
   ShakedexMyListing,
   ShakedexNameListing,
   ShakedexPendingSend,
-  ShakedexStoredStep,
+  ShakedexListingStep,
 } from "../types";
 
 type Handler = (args?: Record<string, unknown>) => unknown;
@@ -454,7 +454,7 @@ interface MockListing {
   mode: ShakedexListingMode;
   state: ShakedexListingState;
   publish: boolean;
-  steps: ShakedexStoredStep[];
+  steps: ShakedexListingStep[];
   /** Our own listing file: written at Finalize & sign or imported. */
   hasFile: boolean;
   expiresAt: number | null;
@@ -518,8 +518,8 @@ function hnsText(doos: number): string {
   return `${Math.floor(doos / DOOS_PER_HNS)}.${String(doos % DOOS_PER_HNS).padStart(6, "0")} HNS`;
 }
 
-function mockStep(price: number, lockTime: number): ShakedexStoredStep {
-  return { price, lockTime, signature: "00".repeat(65) };
+function mockStep(price: number, lockTime: number): ShakedexListingStep {
+  return { price, lockTime };
 }
 
 function stageListingDraft(l: MockListing, kind: ListingDraftKind, signed: boolean): string {
@@ -708,8 +708,8 @@ function listingSummary(l: MockListing): ShakedexListingSummary {
 function listingPrices(l: MockListing): ShakedexListingPrices {
   if (l.steps.length === 0) return { kind: "noSteps" };
   const mtp = mockMtp();
-  const cheapest = (steps: ShakedexStoredStep[]) =>
-    steps.reduce<ShakedexStoredStep | null>((m, s) => (m && m.price <= s.price ? m : s), null);
+  const cheapest = (steps: ShakedexListingStep[]) =>
+    steps.reduce<ShakedexListingStep | null>((m, s) => (m && m.price <= s.price ? m : s), null);
   const current = cheapest(l.steps.filter((s) => s.lockTime < mtp));
   const ahead = l.steps.filter(
     (s) => s.lockTime >= mtp && (current === null || s.price < current.price),
@@ -1154,6 +1154,12 @@ const handlers: Record<string, Handler> = {
   update_setting: (args) => {
     savedSettings[String(args?.key)] = String(args?.value);
     return null;
+  },
+  // Browser QA has no secure window: the change is taken as confirmed.
+  update_protected_settings: (args) => {
+    const changes = (args?.changes ?? []) as { key: string; value: string }[];
+    for (const c of changes) savedSettings[c.key] = c.value;
+    return changes.map((c) => c.key);
   },
 
   // Browser QA has no node to probe. Answer as a reachable, synced, matching

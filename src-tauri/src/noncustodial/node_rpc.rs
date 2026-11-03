@@ -111,6 +111,10 @@ pub trait NodeRpc: Send + Sync {
     /// broadcast attempts against a read-only source.
     fn source(&self) -> ChainSource;
 
+    /// The URL requests go to. `rpc::broadcast_gates` decides by it whether a
+    /// send leaves this machine.
+    fn node_url(&self) -> &str;
+
     // --- Chain reads -------------------------------------------------------
 
     async fn get_blockchain_info(&self) -> Result<BlockchainInfo, AppError>;
@@ -183,6 +187,10 @@ pub trait NodeRpc: Send + Sync {
 impl NodeRpc for NodeRpcClient {
     fn source(&self) -> ChainSource {
         NodeRpcClient::source(self)
+    }
+
+    fn node_url(&self) -> &str {
+        NodeRpcClient::node_url(self)
     }
 
     async fn get_blockchain_info(&self) -> Result<BlockchainInfo, AppError> {

@@ -260,7 +260,7 @@ pub fn export_watchlist_csv(state: State<'_, AppState>, path: String) -> Result<
         ));
         count += 1;
     }
-    std::fs::write(&path, out)?;
+    super::user_file::write_chosen_file(std::path::Path::new(&path), out.as_bytes(), false)?;
     Ok(count)
 }
 
@@ -274,7 +274,7 @@ pub fn import_watchlist_csv(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<WatchlistImportResult, AppError> {
-    let content = std::fs::read_to_string(&path)?;
+    let content = super::user_file::read_chosen_file(std::path::Path::new(&path))?;
     let mut lines = content.lines();
     // Skip header row if present.
     let header = lines.next().unwrap_or("");
@@ -295,22 +295,41 @@ pub fn import_watchlist_csv(
         Box::new(std::iter::once(header).chain(lines))
     };
 
-    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    // Every row is checked before any is stored: a file whose first column
+    // is not Handshake names (any other file of the user's, named by a
+    // compromised webview) imports nothing, and the refusal never repeats a
+    // row's text, so an import cannot be used to read other files.
+    let mut rows: Vec<(String, String, String)> = Vec::new();
     for (idx, line) in data_iter.enumerate() {
         if line.trim().is_empty() {
             continue;
         }
         let fields = csv_split_row(line);
-        let name = fields.first().map(|s| s.trim()).unwrap_or("");
+        let name = fields
+            .first()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .unwrap_or_default();
         if name.is_empty() {
             result.errors.push(format!("row {}: empty name", idx + 1));
             continue;
         }
-        let tags = fields.get(1).map(|s| s.trim()).unwrap_or("");
-        let notes = fields.get(2).map(|s| s.trim()).unwrap_or("");
+        if !crate::noncustodial::names::verify_name(&name) {
+            return Err(AppError::InvalidInput(format!(
+                "row {} is not a Handshake name; nothing was imported",
+                idx + 1
+            )));
+        }
+        let tags = fields.get(1).map(|s| s.trim()).unwrap_or("").to_string();
+        let notes = fields.get(2).map(|s| s.trim()).unwrap_or("").to_string();
+        rows.push((name, tags, notes));
+    }
+
+    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let tx = db.unchecked_transaction()?;
+    for (name, tags, notes) in &rows {
         // INSERT OR IGNORE preserves existing rows; check rows-affected to
         // count imported vs skipped.
-        let inserted = db.execute(
+        let inserted = tx.execute(
             "INSERT OR IGNORE INTO watched_names (name, notes, tags) VALUES (?1, ?2, ?3)",
             params![name, notes, tags],
         )?;
@@ -320,6 +339,7 @@ pub fn import_watchlist_csv(
             result.skipped += 1;
         }
     }
+    tx.commit()?;
     Ok(result)
 }
 

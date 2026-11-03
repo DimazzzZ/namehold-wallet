@@ -204,6 +204,43 @@ fn ts_listing_summary_lists_every_field() {
     }
 }
 
+/// shakedex-2: a listing's step as the webview reads it is its price and
+/// lock time, on both sides of the bridge: `ListingStep` serializes exactly
+/// those keys and the TS mirror declares exactly them, with no signature.
+#[test]
+fn ts_listing_step_lists_every_field_and_no_signature() {
+    let ts = include_str!("../../../src/types/index.ts");
+    let start = ts
+        .find("export interface ShakedexListingStep {")
+        .expect("the TS interface");
+    let block = &ts[start..start + ts[start..].find("\n}").expect("end of the interface")];
+    let mut in_ts: Vec<&str> = block
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, _)| k.trim())
+        .collect();
+    in_ts.sort_unstable();
+    let step = crate::commands::shakedex::ListingStep::from(
+        &crate::noncustodial::shakedex::sell::StoredStep {
+            price: 1,
+            lock_time: 2,
+            signature: "84".repeat(65),
+        },
+    );
+    let json = serde_json::to_value(&step).unwrap();
+    let mut in_rust: Vec<&str> = json
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    in_rust.sort_unstable();
+    assert_eq!(in_rust, ["lockTime", "price"]);
+    assert_eq!(in_ts, in_rust);
+}
+
 #[test]
 fn an_unknown_listing_state_is_refused_when_read() {
     assert!("owned".parse::<ListingState>().is_err());
@@ -2574,7 +2611,7 @@ async fn replaced_cancel_aborts_the_listing() {
     let a_txid = a.summary["txid"].as_str().unwrap().to_string();
     with_db(&app, |c| queries::delete_tx_draft(c, &a.id).unwrap());
     // Another fee rate, so another transaction.
-    let b = build_cancel_draft(app.state(), NAME.into(), Some(7_777))
+    let b = build_cancel_draft(app.state(), NAME.into(), Some(777))
         .await
         .unwrap();
     let l = open_listing(&app).unwrap();
@@ -2874,6 +2911,9 @@ struct Ready {
     app: App,
     listing_id: String,
     lock_txid: String,
+    /// The block hash `getblockhash` answers with (the FINALIZE's renewal
+    /// block), RENEWAL_BLOCK unless a test moves the chain on.
+    renewal: &'static str,
 }
 
 impl Ready {
@@ -2891,7 +2931,7 @@ impl Ready {
         }
         for (method, result) in [
             ("getblockchaininfo", chain),
-            ("getblockhash", json!(RENEWAL_BLOCK)),
+            ("getblockhash", json!(self.renewal)),
         ] {
             let m = self
                 .node
@@ -2971,6 +3011,7 @@ async fn ready_fixture(network: &str) -> Ready {
         app,
         listing_id,
         lock_txid,
+        renewal: RENEWAL_BLOCK,
     };
     let (info, coin) = (r.info(), r.coin());
     r.node(ready_tip(net), Some(SIGN_MTP), info, Some(coin))
@@ -3544,7 +3585,13 @@ async fn reverse_schedule_signs_every_step() {
         l.payment_address.as_deref().unwrap(),
     )
     .unwrap();
-    for step in &s.steps {
+    let stored: Vec<sell::StoredStep> = serde_json::from_str(&l.steps_json).unwrap();
+    assert_eq!(
+        s.steps,
+        stored.iter().map(ListingStep::from).collect::<Vec<_>>(),
+        "the summary carries the stored steps without their signatures"
+    );
+    for step in &stored {
         let sig: [u8; 65] = hex::decode(&step.signature).unwrap().try_into().unwrap();
         verify_step_signature(
             &StepTemplate {
@@ -3565,8 +3612,6 @@ async fn reverse_schedule_signs_every_step() {
         file.expires_at,
         Some(SIGN_MTP + sell::LISTING_LIFETIME_SECS)
     );
-    let stored: Vec<sell::StoredStep> = serde_json::from_str(&l.steps_json).unwrap();
-    assert_eq!(stored, s.steps);
     for (mtp, want) in [
         (SIGN_MTP, 5_000_000),
         (valid_from_mtp(up(l0 + 900)), 4_000_000),
@@ -3798,7 +3843,7 @@ async fn finalize_and_sign_refused_without_the_median_time() {
 
 use crate::commands::secure_prompt::{push_test_answer, take_test_requests, SecurePromptResult};
 use crate::commands::shakedex::{
-    export_listing_file_from_conn, finalize_and_sign_confirmed, ListingSummary,
+    export_listing_file_from_conn, finalize_and_sign_confirmed, ListingStep, ListingSummary,
 };
 use crate::noncustodial::shakedex::listing_file::ListingFile;
 use crate::noncustodial::shakedex::template::{
@@ -3806,6 +3851,16 @@ use crate::noncustodial::shakedex::template::{
     StepTemplate,
 };
 use crate::noncustodial::sync::COV_FINALIZE;
+
+/// The signed steps stored on `l` (`steps_json`).
+fn stored_of(l: &ShakedexListing) -> Vec<sell::StoredStep> {
+    serde_json::from_str(&l.steps_json).unwrap()
+}
+
+/// What a `ListingSummary` carries of `stored`: prices and lock times.
+fn summary_steps(stored: &[sell::StoredStep]) -> Vec<ListingStep> {
+    stored.iter().map(ListingStep::from).collect()
+}
 
 /// Clear the request record and queue the answer to the next prompt.
 fn answer(confirmed: bool) {
@@ -3946,8 +4001,15 @@ async fn lock_then_finalize_and_sign() {
         (s.lock_txid.clone(), s.lock_vout),
         (l.lock_txid.clone(), l.lock_vout)
     );
-    assert_eq!(s.steps.len(), 1);
-    let step = &s.steps[0];
+    // The summary goes to the webview: prices and lock times only. The
+    // signatures are read back from the listing's stored steps.
+    let stored: Vec<sell::StoredStep> = serde_json::from_str(&l.steps_json).unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(
+        s.steps,
+        stored.iter().map(ListingStep::from).collect::<Vec<_>>()
+    );
+    let step = &stored[0];
     assert_eq!(step.price, 5_000_000);
     let mut outpoint = [0u8; 32];
     hex::decode_to_slice(&finalize_txid, &mut outpoint).unwrap();
@@ -4008,8 +4070,6 @@ async fn lock_then_finalize_and_sign() {
         Some((SIGN_MTP + sell::LISTING_LIFETIME_SECS) as i64)
     );
     assert_eq!(s.expires_at, l.expires_at);
-    let stored: Vec<sell::StoredStep> = serde_json::from_str(&l.steps_json).unwrap();
-    assert_eq!(stored, s.steps);
 
     // Once is enough: the listing is no longer ReadyToFinalize.
     answer(true);
@@ -4019,6 +4079,234 @@ async fn lock_then_finalize_and_sign() {
             .expect_err("second run"),
     );
     assert!(e.contains("already finalized into its lock"), "{e}");
+}
+
+/// shakedex-1: a Finalize & sign whose signed FINALIZE was discarded unsent
+/// (the renderer's `delete_tx_draft`, no prompt) leaves the listing
+/// ReadyToFinalize; run again at the same tip from the same coins and fee
+/// rate it builds the same FINALIZE, whose lock coin is the one the first
+/// run's steps were signed over, so a step at the old price would be valid
+/// on it. That run is refused before its prompt and signs and writes
+/// nothing. A block later the FINALIZE commits to another renewal block and
+/// has another txid: it is signed, and a step of the first run does not
+/// verify over its lock coin.
+#[tokio::test]
+async fn a_resigned_finalize_never_reuses_a_lock_coin_steps_were_signed_over() {
+    let mut r = ready_fixture("regtest").await;
+    answer(true);
+    let first = finalize_and_sign(&r, &price("3"))
+        .await
+        .expect("first finalize & sign");
+    let first_txid = first.lock_txid.clone().expect("lock txid");
+    let old_step = stored_of(&r.listing())[0].clone();
+    crate::commands::tx::delete_tx_draft(
+        r.app.state(),
+        first.finalize_draft_id.clone().expect("the FINALIZE draft"),
+    )
+    .await
+    .expect("an unsent FINALIZE is discarded");
+    assert_nothing_finalized(&r, 1);
+    assert!(with_db(&r.app, |c| queries::lock_txid_was_signed_over(
+        c,
+        &first_txid
+    )
+    .unwrap()));
+
+    answer(true);
+    let e = finalize_and_sign(&r, &price("7"))
+        .await
+        .expect_err("the same lock coin");
+    assert!(
+        matches!(&e, crate::error::AppError::InvalidInput(m) if m == sell::LOCK_COIN_ALREADY_SIGNED),
+        "{e:?}"
+    );
+    assert!(take_test_requests().is_empty(), "refused before the prompt");
+    crate::commands::secure_prompt::clear_test_answers();
+    assert_nothing_finalized(&r, 1);
+
+    // The next block: another renewal block, another FINALIZE.
+    r.renewal = "bb00000000000000000000000000000000000000000000000000000000000000";
+    let (info, coin) = (r.info(), r.coin());
+    r.node(ready_tip(r.net) + 1, Some(SIGN_MTP), info, Some(coin))
+        .await;
+    answer(true);
+    let second = finalize_and_sign(&r, &price("7"))
+        .await
+        .expect("a block later");
+    let second_txid = second.lock_txid.clone().expect("lock txid");
+    assert_ne!(second_txid, first_txid);
+    let rows = take_test_requests()[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let lock_vout = second.lock_vout.unwrap();
+    assert!(
+        rows.iter().any(|x| x["label"] == "Lock coin"
+            && x["value"] == format!("{second_txid}:{lock_vout}").as_str()),
+        "the prompt names the lock coin: {rows:?}"
+    );
+    let mut outpoint = [0u8; 32];
+    hex::decode_to_slice(&second_txid, &mut outpoint).unwrap();
+    let l = r.listing();
+    let old_sig: [u8; 65] = hex::decode(&old_step.signature)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert!(
+        verify_step_signature(
+            &StepTemplate {
+                lock_outpoint: (outpoint, u32::try_from(lock_vout).unwrap()),
+                lock_value: NAME_VALUE,
+                lock_pubkey: &r.key().pubkey,
+                payment: crate::noncustodial::tx::output_address_from_string(
+                    r.net,
+                    l.payment_address.as_deref().unwrap(),
+                )
+                .unwrap(),
+                price: old_step.price,
+                lock_time_secs: old_step.lock_time,
+            },
+            &old_sig,
+        )
+        .is_err(),
+        "the first run's step is worthless on the new lock coin"
+    );
+    assert_eq!(stored_of(&l)[0].price, 7_000_000);
+}
+
+/// shakedex-1, the sync's route: a dead FINALIZE takes the listing back to
+/// ReadyToFinalize with its steps dropped, and its txid stays recorded, so a
+/// re-run at the same tip is refused before its prompt.
+#[tokio::test]
+async fn a_finalize_the_sync_reverted_stays_refused_at_the_same_tip() {
+    let r = ready_fixture("regtest").await;
+    let (txid, _) = finalized(&r).await;
+    take_test_requests();
+    let draft = r.listing().lock_finalize_draft_id.unwrap();
+    with_db(&r.app, |c| {
+        queries::update_tx_draft_status(
+            c,
+            &draft,
+            queries::DraftStatus::Dropped,
+            None,
+            Some(&txid),
+        )
+        .unwrap();
+        queries::release_reserved_utxos_for_draft(c, &draft).unwrap();
+    });
+    run_listing_step(
+        &r.app,
+        &chain_at(
+            r.info(),
+            ready_tip(Network::Regtest) + 1,
+            vec![lock_transfer_at(&r.lock_txid, TRANSFER_HEIGHT)],
+        ),
+    )
+    .await;
+    assert_eq!(r.listing().state, ListingState::ReadyToFinalize);
+    assert!(with_db(&r.app, |c| queries::lock_txid_was_signed_over(
+        c, &txid
+    )
+    .unwrap()));
+    answer(true);
+    let e = finalize_and_sign(&r, &price("5"))
+        .await
+        .expect_err("the same lock coin");
+    assert!(
+        matches!(&e, crate::error::AppError::InvalidInput(m) if m == sell::LOCK_COIN_ALREADY_SIGNED),
+        "{e:?}"
+    );
+    assert!(take_test_requests().is_empty(), "refused before the prompt");
+    crate::commands::secure_prompt::clear_test_answers();
+}
+
+/// shakedex-1: deleting the wallet keeps the record, so the same seed
+/// imported again never signs over a recorded lock coin.
+#[tokio::test]
+async fn deleting_the_wallet_keeps_the_signed_lock_record() {
+    let r = ready_fixture("regtest").await;
+    let (txid, _) = finalized(&r).await;
+    take_test_requests();
+    with_db(&r.app, |c| {
+        queries::delete_wallet_profile(c, PROFILE).unwrap();
+        assert!(queries::get_shakedex_listing(c, &r.listing_id)
+            .unwrap()
+            .is_none());
+        assert!(queries::lock_txid_was_signed_over(c, &txid).unwrap());
+    });
+}
+
+/// shakedex-1, the store: steps are kept only under a lock coin no steps
+/// were stored over. When another run stores steps over the same FINALIZE
+/// while this run's prompt is open, this run's steps are dropped: no
+/// FINALIZE draft, no steps, no file, the listing still ReadyToFinalize, and
+/// the record left as the other run wrote it.
+#[tokio::test]
+async fn steps_signed_over_a_lock_coin_recorded_while_the_prompt_was_open_are_not_stored() {
+    let r = ready_fixture("regtest").await;
+    let txid = prepare(&r, &price("5")).await.expect("prepare").plan.txid;
+    let handle = r.app.handle().clone();
+    let recorded = txid.clone();
+    crate::commands::secure_prompt::on_next_test_answer(move || {
+        handle
+            .state::<AppState>()
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO shakedex_signed_lock_txids (lock_txid, listing_id) VALUES (?1, 'other')",
+                [&recorded],
+            )
+            .unwrap();
+    });
+    answer(true);
+    let e = finalize_and_sign(&r, &price("5"))
+        .await
+        .expect_err("recorded meanwhile");
+    assert!(
+        matches!(&e, crate::error::AppError::InvalidInput(m) if m == sell::LOCK_COIN_ALREADY_SIGNED),
+        "{e:?}"
+    );
+    assert_eq!(take_test_requests().len(), 1, "it was asked");
+    assert_nothing_finalized(&r, 1);
+    assert_eq!(r.listing().listing_file_json, None);
+    let owner: String = with_db(&r.app, |c| {
+        c.query_row(
+            "SELECT listing_id FROM shakedex_signed_lock_txids WHERE lock_txid = ?1",
+            [&txid],
+            |x| x.get(0),
+        )
+        .unwrap()
+    });
+    assert_eq!(owner, "other");
+}
+
+/// shakedex-2: Finalize & sign answers the main webview while its FINALIZE
+/// is not even sent, so the summary it returns carries each step's price
+/// and lock time and never a signature; the signed steps are stored for the
+/// listing file, which leaves the wallet once that FINALIZE is mined.
+#[tokio::test]
+async fn finalize_and_sign_returns_no_step_signatures() {
+    let r = ready_fixture("regtest").await;
+    as_reverse_auction(&r);
+    answer(true);
+    let s = finalize_and_sign_schedule(&r, &schedule("5", "3", 3, 900))
+        .await
+        .expect("finalize & sign");
+    assert_eq!(s.state, ListingState::Finalizing);
+    let stored = stored_of(&r.listing());
+    assert_eq!(stored.len(), 3);
+    assert_eq!(s.steps, summary_steps(&stored));
+    let json = serde_json::to_value(&s).unwrap();
+    assert!(
+        !super::shakedex_my_listings_tests::has_key(&json, "signature"),
+        "{json}"
+    );
+    let text = json.to_string();
+    for step in &stored {
+        assert_eq!(step.signature.len(), 130, "a stored 65-byte signature");
+        assert!(!text.contains(&step.signature), "{text}");
+    }
 }
 
 /// R19: a Buy Now is valid in the next block at the MTP it was signed at,
@@ -6242,6 +6530,13 @@ async fn own_listing_file_upgrades_a_restored_lock() {
         ListingFile::parse(&exported, Network::Regtest).unwrap(),
         ListingFile::parse(&file, Network::Regtest).unwrap(),
     );
+    // shakedex-1: a reorg could bring this FINALIZE back, and these steps
+    // would be valid on it.
+    assert!(with_db(&app, |c| queries::lock_txid_was_signed_over(
+        c,
+        &hex::encode(a.lock_txid)
+    )
+    .unwrap()));
     assert_eq!(
         (a.lock_txid, a.lock_vout, a.public_key, a.payment_addr),
         (b.lock_txid, b.lock_vout, b.public_key, b.payment_addr)
@@ -8428,9 +8723,15 @@ async fn lower_price_becomes_current() {
     assert_eq!(row("Current price"), "5.000000 HNS");
     assert_eq!(row("New price"), "3.000000 HNS, valid at once");
     assert_eq!(s.state, ListingState::Listed);
-    assert_eq!(s.steps.len(), 2);
-    assert_eq!(s.steps[0], first[0], "the first step is kept as signed");
-    let new = &s.steps[1];
+    let stored = stored_of(&l.r.listing());
+    assert_eq!(
+        s.steps,
+        summary_steps(&stored),
+        "no signature in the summary"
+    );
+    assert_eq!(stored.len(), 2);
+    assert_eq!(stored[0], first[0], "the first step is kept as signed");
+    let new = &stored[1];
     assert_eq!(
         (new.price, new.lock_time),
         (3_000_000, sell::buy_now_lock_time(LISTED_MTP))
@@ -8820,10 +9121,16 @@ async fn lower_price_on_a_schedule_continues_below_it() {
          1 later step never lowers the price"
     );
     assert_eq!(s.state, ListingState::Listed);
-    assert_eq!(s.steps.len(), 10);
-    assert_eq!(&s.steps[..9], &signed[..], "the schedule is kept as signed");
+    let stored = stored_of(&l.r.listing());
     assert_eq!(
-        (s.steps[9].price, s.steps[9].lock_time),
+        s.steps,
+        summary_steps(&stored),
+        "no signature in the summary"
+    );
+    assert_eq!(stored.len(), 10);
+    assert_eq!(&stored[..9], &signed[..], "the schedule is kept as signed");
+    assert_eq!(
+        (stored[9].price, stored[9].lock_time),
         (4_500_000, sell::buy_now_lock_time(LISTED_MTP))
     );
     let at = |i: usize| valid_from_mtp(signed[i].lock_time);
@@ -8834,7 +9141,7 @@ async fn lower_price_on_a_schedule_continues_below_it() {
         (at(8), 2_000_000, "down to the floor"),
     ] {
         assert_eq!(
-            sell::current_step_price(&s.steps, mtp).unwrap(),
+            sell::current_step_price(&stored, mtp).unwrap(),
             Some(want),
             "{why}"
         );
@@ -9262,11 +9569,17 @@ async fn manage_here_adopts_the_other_devices_step_and_clears_the_mark() {
         take_test_requests().is_empty(),
         "nothing asked: nothing signed"
     );
-    assert_eq!(s.steps.len(), 2);
-    let first: Vec<sell::StoredStep> = serde_json::from_str(&before.steps_json).unwrap();
-    assert_eq!(s.steps[0], first[0]);
+    let stored = stored_of(&l.r.listing());
     assert_eq!(
-        s.steps[1],
+        s.steps,
+        summary_steps(&stored),
+        "no signature in the summary"
+    );
+    assert_eq!(stored.len(), 2);
+    let first: Vec<sell::StoredStep> = serde_json::from_str(&before.steps_json).unwrap();
+    assert_eq!(stored[0], first[0]);
+    assert_eq!(
+        stored[1],
         sell::StoredStep {
             price: step.price,
             lock_time: step.lock_time,
