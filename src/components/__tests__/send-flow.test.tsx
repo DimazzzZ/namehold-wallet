@@ -25,7 +25,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 import { WalletView } from "../WalletView";
 
 // A full-length recipient address; the confirm screen must render it verbatim.
-const RECIPIENT = "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2";
+const RECIPIENT = "rs1qpmy37srkkwr9psxgka4vyqkcuyqzmcx4v3r44t";
 const NODE_TXID = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 
 const baseProfile = {

@@ -170,7 +170,7 @@ function routeInvoke(o: Overrides = {}) {
               changeDoos: 3_998_590,
               inputTotalDoos: 5_000_000,
               numInputs: 1,
-              recipientAddress: "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2",
+              recipientAddress: "rs1qpmy37srkkwr9psxgka4vyqkcuyqzmcx4v3r44t",
               txid: null,
               warnings: [],
             },
@@ -300,7 +300,7 @@ describe("WalletView (non-custodial)", () => {
     await screen.findByTestId("receive-open");
     fireEvent.click(screen.getByTestId("wallet-send"));
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), {
-      target: { value: "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2" },
+      target: { value: "rs1qpmy37srkkwr9psxgka4vyqkcuyqzmcx4v3r44t" },
     });
     fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: /Review/i }));
@@ -440,7 +440,7 @@ describe("WalletView (non-custodial)", () => {
           changeDoos: 0,
           inputTotalDoos: 1_001_410,
           numInputs: 1,
-          recipientAddress: "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2",
+          recipientAddress: "rs1qpmy37srkkwr9psxgka4vyqkcuyqzmcx4v3r44t",
           txid: null,
           warnings: [],
           name: null,

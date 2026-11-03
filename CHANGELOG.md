@@ -46,6 +46,10 @@
 - **A CI check holds the release jobs as written.** It also refuses the updater signing secrets outside the signing step, however they are written.
 - **Fewer install scripts.** The test vector generator has a tracked lockfile, and developer harnesses no longer run dependencies' install scripts, except leveldown for the shakedex CLI.
 - **`.har` files are ignored by git,** since a capture of a logged-in session holds its cookies.
+- **The secret gate runs earlier.** The repository's gate now runs before a commit, a merge commit and a push, and `pnpm lint:secrets` fails in a clone without the hooks.
+- **It reads more formats.** It recognises recovery phrases in lists, tables, comments, HTML, joined tokens, JSON objects and base64, hex seeds and keys beside a key word, and private keys of every Handshake network.
+- **Nothing slips past in a ref.** A push of a ref to a blob or tree is refused, and tag messages, authors, file names and ref names are scanned.
+- **CI scans everything pushed.** A new workflow scans every branch, tag and pull request, including commits whose secret was removed again.
 
 ### Fixed
 - **A wallet with more than 200 names had no name actions at all.** The capability check was asked for every name in one call, which the backend refuses above 200; names showed their bare phase and every batch button stayed grey. It is now asked in chunks of 100, and polled every five minutes instead of every thirty seconds on wallets with more than 100 names.

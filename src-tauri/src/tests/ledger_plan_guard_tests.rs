@@ -115,7 +115,7 @@ async fn signing_a_ledger_draft_with_an_unreadable_plan_is_refused() {
     assert!(matches!(err, AppError::Other(m) if m.contains("unreadable signing plan")));
 }
 
-const CHANGE: &str = "hs1qdhtaj7ws7chd2z2tulrmakqww428myx08d6w3v";
+const CHANGE: &str = "hs1q88hzgdw24zda5lk9aaj8uv7ahu6nu8ua3yve9k";
 const PAY: &str = "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx";
 
 fn coin(txid_byte: u8, child: u32) -> crate::noncustodial::send::SpendableCoin {

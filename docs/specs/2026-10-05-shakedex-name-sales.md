@@ -109,8 +109,8 @@ A mined purchase whose TRANSFER is spent on chain is never lost: only our FINALI
 
 | Network | Path | Lock address |
 |---|---|---|
-| main | `m/44'/5353'/0'/2'/1433607229'` | `hs1qkq6yytu0c4puw0xlrdwedylkk5a04yrgecgz9wgyu2sua3mzh4jqt74rdj` |
-| regtest | `m/44'/5355'/0'/2'/1433607229'` | `rs1qr3mxw2n44nxqf43jqr69d42nmypn84jgzxtxeafpxn4nq58tylzsrz9ec5` |
+| main | `m/44'/5353'/0'/2'/1433607229'` | `hs1q9vha4e8w0ht4mve3hvh4h0v5q6vul5v04vfm9zmafw2e5m6fpd4qakpz04` |
+| regtest | `m/44'/5355'/0'/2'/1433607229'` | `rs1qdu8pwcjwrpxp7vn2j0cx84flts4r03d3p6k9eqvthuzqdfllxvaqplnwp8` |
 
 *Enforced:* `noncustodial/shakedex/lock_key.rs` on `ExtendedPrivKey::derive_path`; `noncustodial/actions.rs::sign_plan` derives a lock key only at sign time and signs only a cancel with it, checked by `noncustodial/shakedex/cancel.rs::check_lock_key_input` (an input that is both foreign and lock-key is refused in `sign_plan_tx`): sighash `0x83` into the output at the input's index, which must be a TRANSFER of that name at the key's lock address committing to the version-0 address of ours the input's `branch`/`child_index` derive (the receive branch, an unhardened index), with a final sequence and no lock time. `commands/shakedex.rs::shakedex_build_lock_draft` derives it at Lock as well, only for its public key and the R18 self-check (a test signature over a zero outpoint, dropped).
 *Pinned:* `shakedex_lock_key_tests::{lock_key_matches_the_r17_golden_vector, every_level_is_hardened, lock_key_is_not_derivable_from_the_account_xpub, coins_at_a_lock_address_are_not_spendable, lock_key_of_an_invalid_name_is_refused}`; `noncustodial::actions` unit tests `{sign_plan_signs_a_lock_key_input_with_the_lock_key, sign_plan_refuses_a_lock_key_input_that_is_not_a_cancel, own_inputs_leave_out_a_lock_key_input_and_the_ledger_refuses_it}`.

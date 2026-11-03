@@ -14,9 +14,14 @@ code-smell heuristics a reviewer might otherwise apply.
 | Frontend | `npx tsc -b && npx vite build` (repo root)                  |
 | Frontend | `npx vitest run` (repo root)                                |
 | Frontend | `npm run lint:format` (prettier), `npm run lint:secure-imports` and `npm run lint:native-title` |
+| Secrets  | `npm run lint:secrets` (repo root): no recovery phrase or private key in any tracked file, and the scanner's own tests |
 
 Locally `cargo test` is enough; CI uses nextest for its two-lane split (see
 `src-tauri/.config/nextest.toml`).
+
+`pnpm install` points git at `.githooks/` (`scripts/install-git-hooks.mjs`, the `prepare` script), so `scripts/check-secrets.mjs` also runs on the staged blobs before a commit or a merge commit, and on every commit the remote does not have before a push: files, file names, messages and authors, plus annotated tags and ref names. A push of a ref to a blob or a tree is refused. A secret is refused while it is still only on this machine; the `Secret scan` workflow, on every branch, tag and pull request, sees it only after it is public. `npm run lint:secrets` fails outside CI when the hooks are not installed, because pnpm skips `prepare` when nothing needs installing; `node scripts/install-git-hooks.mjs` fixes that. Never bypass the hooks with `--no-verify` to get a commit through: a test that needs a phrase uses the public BIP39 test phrase or generates one at run time. A test that needs fixed hex key material beside a word like `seed` lists its SHA-256 in `scripts/secret-scan-allow.txt`, and only when it is public or made up.
+
+The hooks do not run on a branch that predates them (rebase it on main before pushing), and a cherry-pick runs no commit hook, so only the push scan covers it.
 
 ## Rust layering
 

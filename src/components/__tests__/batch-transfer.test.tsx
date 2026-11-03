@@ -21,7 +21,7 @@ vi.mock("../../lib/clipboard", () => ({
 
 import { NamesView } from "../NamesView";
 
-const RECIPIENT = "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2";
+const RECIPIENT = "rs1qpmy37srkkwr9psxgka4vyqkcuyqzmcx4v3r44t";
 
 const profile = {
   id: "p1",

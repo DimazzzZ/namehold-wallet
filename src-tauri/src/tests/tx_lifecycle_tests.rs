@@ -28,9 +28,9 @@ use crate::noncustodial::session::SignerSession;
 use crate::noncustodial::types::TxSummary;
 use crate::AppState;
 
-const MNEMONIC: &str = "april coyote civil finger crane uncle situate moon choice wrong \
-                        goose client purse deer funny hobby shrug give anxiety truly rack \
-                        stand salad coach";
+const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                        abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                        abandon abandon art";
 const PROFILE: &str = "life1";
 const COIN_TXID: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 

@@ -20,7 +20,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 
 import { NamebaseDashboard } from "../NamebaseDashboard";
 
-const WALLET = "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8";
+const WALLET = "hs1q7atmw033dxvpuzz0cjwzuqx4dpm3qee496vz74";
 const THIRD_PARTY = "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx";
 
 const profile = {

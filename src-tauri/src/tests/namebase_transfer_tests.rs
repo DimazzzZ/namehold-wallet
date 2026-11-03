@@ -90,7 +90,7 @@ async fn rejects_wrong_network_destination() {
     let err = namebase_transfer_domain(
         app.state::<AppState>(),
         "exampletld".into(),
-        "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2".into(),
+        "rs1qpmy37srkkwr9psxgka4vyqkcuyqzmcx4v3r44t".into(),
     )
     .await
     .expect_err("wrong-network address must be rejected");
@@ -110,7 +110,7 @@ async fn accepts_valid_mainnet_address_past_validation() {
     let res = namebase_transfer_domain(
         app.state::<AppState>(),
         "exampletld".into(),
-        "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8".into(),
+        "hs1q7atmw033dxvpuzz0cjwzuqx4dpm3qee496vz74".into(),
     )
     .await;
     match res {
@@ -150,7 +150,7 @@ async fn withdraw_rejects_wrong_network_destination() {
     let app = app_with(seeded_conn());
     let err = namebase_withdraw_hns(
         app.state::<AppState>(),
-        "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2".into(),
+        "rs1qpmy37srkkwr9psxgka4vyqkcuyqzmcx4v3r44t".into(),
         "1000000".into(),
     )
     .await
@@ -163,7 +163,7 @@ async fn withdraw_rejects_wrong_network_destination() {
 async fn withdraw_rejects_nonpositive_amount() {
     // Valid mainnet address, but amount 0 / non-numeric → rejected before the call.
     let app = app_with(seeded_conn());
-    let good_addr = "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8";
+    let good_addr = "hs1q7atmw033dxvpuzz0cjwzuqx4dpm3qee496vz74";
     for bad in ["0", "-5", "abc", ""] {
         let err = namebase_withdraw_hns(app.state::<AppState>(), good_addr.into(), bad.into())
             .await
@@ -177,7 +177,7 @@ async fn withdraw_rejects_nonpositive_amount() {
 
 // --- execution against a mock Namebase API ---------------------------------
 
-const GOOD_ADDR: &str = "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8";
+const GOOD_ADDR: &str = "hs1q7atmw033dxvpuzz0cjwzuqx4dpm3qee496vz74";
 
 #[tokio::test]
 #[serial(cookie_vault)]
@@ -283,7 +283,7 @@ async fn withdraw_accepts_decimal_hns_amount_past_validation() {
     // HNS amounts are decimal — "1.5" must pass validation (it then fails later
     // at the Namebase call since there's no cookie, which is fine here).
     let app = app_with(seeded_conn());
-    let good_addr = "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8";
+    let good_addr = "hs1q7atmw033dxvpuzz0cjwzuqx4dpm3qee496vz74";
     let res = namebase_withdraw_hns(app.state::<AppState>(), good_addr.into(), "1.5".into()).await;
     match res {
         Ok(()) => {}

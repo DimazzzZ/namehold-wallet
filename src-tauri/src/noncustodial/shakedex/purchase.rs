@@ -386,7 +386,7 @@ mod tests {
     use crate::noncustodial::tx::Transaction;
 
     const PAYMENT: &str = "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx";
-    const CHANGE: &str = "hs1qdhtaj7ws7chd2z2tulrmakqww428myx08d6w3v";
+    const CHANGE: &str = "hs1q88hzgdw24zda5lk9aaj8uv7ahu6nu8ua3yve9k";
     const PUBKEY: [u8; 33] = [2u8; 33];
     const PRICE: u64 = 250_000_000;
     const LOCK_TIME: u64 = 1_783_696_480;

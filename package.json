@@ -12,6 +12,8 @@
     "test": "vitest",
     "lint:secure-imports": "node scripts/lint-secure-imports.mjs",
     "lint:native-title": "node scripts/lint-native-title.mjs",
+    "lint:secrets": "node scripts/install-git-hooks.mjs --check && node scripts/check-secrets.mjs && node --test scripts/check-secrets.node-test.mjs",
+    "prepare": "node scripts/install-git-hooks.mjs",
     "lint:format": "prettier --check .",
     "lint:supply-chain": "node scripts/check-supply-chain.mjs && node --test scripts/check-supply-chain.node-test.mjs scripts/release-files.node-test.mjs scripts/release-gate.node-test.mjs",
     "format": "prettier --write .",

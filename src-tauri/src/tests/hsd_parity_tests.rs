@@ -49,9 +49,9 @@ fn hex32(s: &str) -> [u8; 32] {
 
 pub(crate) fn master_from_known_mnemonic() -> ExtendedPrivKey {
     // The mnemonic is fixed in the vectors; assert it matches our copy.
-    let mnemonic = "april coyote civil finger crane uncle situate moon choice wrong \
-                    goose client purse deer funny hobby shrug give anxiety truly rack \
-                    stand salad coach";
+    let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                    abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                    abandon abandon art";
     let seed = hd::seed_from_mnemonic(mnemonic, "").expect("seed");
     ExtendedPrivKey::from_seed(&seed).expect("master")
 }
