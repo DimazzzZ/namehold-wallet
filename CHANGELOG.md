@@ -72,6 +72,7 @@
 - **A name whose only task is reclaiming your own outbid reveals counts as owned.** The Reveal step no longer shows a disabled Redeem.
 
 ### Added
+- **A warning for an explorer the app does not know.** Saving an explorer URL other than the known ones adds a warning to the confirmation, since an explorer sees your addresses and what it answers is shown when your node cannot answer. Look-alike hosts get it too. You can still save it, to run your own.
 - **Renew all from Needs you.** When two or more names on the Wallet page can be renewed now, Renew all renews them in one confirmation, as a series of up to 100 names each.
 - **Renew all on a renewal reminder (macOS and Linux).** Its button opens Namehold and the same confirmation; nothing is signed from the notification.
 - **Every row on the Names page has a ⋯ menu**, not only watched names. It holds what the name allows right now: Renew, Reveal, Redeem and Finalize run for that name alone, with the same confirmation as a batch and without touching your selection; Transfer or sell…, Edit DNS records, Sign message and Cancel transfer… open the name's page where they live; a watched name also gets Edit tags. Revoke stays on the name's page only.
