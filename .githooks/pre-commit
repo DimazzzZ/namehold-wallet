@@ -1,0 +1,5 @@
+#!/bin/sh
+# Refuse a commit whose staged files add a recovery phrase or a private key.
+# git runs this once core.hooksPath is .githooks: scripts/install-git-hooks.mjs
+# sets it, and `pnpm install` runs that script.
+exec node scripts/check-secrets.mjs --staged

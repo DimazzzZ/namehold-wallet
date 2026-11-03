@@ -221,6 +221,8 @@ pnpm install
 pnpm tauri dev
 ```
 
+`pnpm install` also sets `core.hooksPath` to `.githooks/` in your clone: git hooks (`scripts/check-secrets.mjs`) refuse a recovery phrase or private key before it leaves your machine. It does nothing in CI and refuses, with a message, if your clone already uses other git hooks.
+
 ## Running a node (only to send)
 
 Reads need no node. To send HNS or perform name actions, run an **address-indexed**

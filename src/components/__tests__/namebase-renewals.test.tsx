@@ -27,7 +27,7 @@ const profile = {
   accountIndex: 0,
   receiveDepth: 20,
   changeDepth: 20,
-  receiveAddress: "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8",
+  receiveAddress: "hs1q7atmw033dxvpuzz0cjwzuqx4dpm3qee496vz74",
   lastSyncedHeight: 10,
   lastSyncedAt: null,
   watchOnly: false,

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Refuse a push whose commits (the files they add and their messages) carry a
+# recovery phrase or a private key, while it is still only on this machine.
+# $1 is the remote (its name, or its URL); git writes the refs being pushed on stdin.
+exec node scripts/check-secrets.mjs --push "$1"

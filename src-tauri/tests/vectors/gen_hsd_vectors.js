@@ -25,9 +25,9 @@ const ACCOUNT = 0;
 const HASH_ALL = Script.hashType.ALL; // 1
 
 const MNEMONIC =
-  "april coyote civil finger crane uncle situate moon choice wrong " +
-  "goose client purse deer funny hobby shrug give anxiety truly rack " +
-  "stand salad coach";
+  "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon " +
+  "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon " +
+  "abandon abandon art";
 
 const master = HDPrivateKey.fromMnemonic(new Mnemonic(MNEMONIC));
 

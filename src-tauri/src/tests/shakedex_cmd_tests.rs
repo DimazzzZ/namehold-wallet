@@ -25,9 +25,9 @@ use crate::noncustodial::shakedex::template::{step_sighash, StepTemplate};
 use crate::noncustodial::tx::output_address_from_string;
 use crate::AppState;
 
-const MNEMONIC: &str = "april coyote civil finger crane uncle situate moon choice wrong \
-                        goose client purse deer funny hobby shrug give anxiety truly rack \
-                        stand salad coach";
+const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                        abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                        abandon abandon art";
 pub(crate) const PROFILE: &str = "shk1";
 pub(crate) const FUND_TXID: &str =
     "1111111111111111111111111111111111111111111111111111111111111111";

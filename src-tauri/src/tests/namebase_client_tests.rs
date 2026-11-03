@@ -95,7 +95,7 @@ async fn test_410_on_post_is_shut_down() {
 
     let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
     let err = client
-        .withdraw_hns("hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8", "1")
+        .withdraw_hns("hs1q7atmw033dxvpuzz0cjwzuqx4dpm3qee496vz74", "1")
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::NamebaseShutDown), "got: {err:?}");

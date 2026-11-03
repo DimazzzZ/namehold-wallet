@@ -28,9 +28,9 @@ use crate::noncustodial::session::SignerSession;
 use crate::noncustodial::sync::{COV_REGISTER, COV_REVEAL};
 use crate::AppState;
 
-const MNEMONIC_A: &str = "april coyote civil finger crane uncle situate moon choice wrong \
-                          goose client purse deer funny hobby shrug give anxiety truly rack \
-                          stand salad coach";
+const MNEMONIC_A: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                          abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                          abandon abandon art";
 // A different, independently valid BIP39 mnemonic — used as wallet B's seed
 // to prove per-wallet isolation (B's unlocked signer must not sign for A's name).
 const MNEMONIC_B: &str = "abandon abandon abandon abandon abandon abandon abandon abandon \

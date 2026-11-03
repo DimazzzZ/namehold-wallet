@@ -105,7 +105,7 @@ fn conn_without_profile() -> rusqlite::Connection {
 }
 
 fn good_addr() -> String {
-    "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8".to_string()
+    "hs1q7atmw033dxvpuzz0cjwzuqx4dpm3qee496vz74".to_string()
 }
 
 // =========================================================================

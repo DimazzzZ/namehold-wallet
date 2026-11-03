@@ -47,7 +47,7 @@ describe("openExternal URL builders", () => {
   });
 
   it("explorerAddressUrl builds /address/<hs1…>", () => {
-    const addr = "hs1q7p94h09nqshcjuc5hpq06pz7mf40gpmjg6k6yk";
+    const addr = "hs1qpvj7x4jxq9qejtqtu9lg2zndfnvdcuyhwjgfkd";
     expect(explorerAddressUrl(addr)).toBe(`https://shakeshift.com/address/${addr}`);
   });
 
