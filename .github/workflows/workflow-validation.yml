@@ -15,7 +15,9 @@ jobs:
     name: Validate workflow YAML
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Parse every workflow file
         run: |
@@ -31,3 +33,10 @@ jobs:
                   print(f"❌ {f}: {e}")
           sys.exit(0 if ok else 1)
           PY
+
+      # Pinned actions, checkout credentials and the other rules in
+      # scripts/check-supply-chain.mjs, then the tests of that script and of the
+      # release scripts. They need no packages, so the runner image's Node runs
+      # them.
+      - name: Supply-chain checks
+        run: node scripts/check-supply-chain.mjs && node --test scripts/check-supply-chain.node-test.mjs scripts/release-files.node-test.mjs scripts/release-gate.node-test.mjs

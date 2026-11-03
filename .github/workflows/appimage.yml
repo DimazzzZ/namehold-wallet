@@ -33,27 +33,31 @@ jobs:
     name: AppImage runs for another user
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Refresh apt package index
         run: sudo timeout 120 apt-get update || echo "::warning::apt-get update failed — proceeding with stale index"
       - name: Install Tauri system dependencies
-        # Same package list as release.yml's Linux build, plus xvfb for the
+        # Same package list as release.yml's Linux build, with xvfb for the
         # app-start check.
         run: |
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libsecret-1-dev \
             libudev-dev patchelf build-essential libssl-dev mold xvfb
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11.17.0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch head on 2026-10-16 (no version tags)
+        with:
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
           shared-key: appimage
@@ -67,7 +71,7 @@ jobs:
       # No updater artifacts: they need the release signing key, which a pull
       # request does not get.
       - name: Build the AppImage
-        run: pnpm tauri build --bundles appimage --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        run: pnpm tauri build --bundles appimage --config '{"bundle":{"createUpdaterArtifacts":false}}' -- --locked
 
       - name: Check the AppImage runs for another user
         run: |

@@ -211,9 +211,13 @@ if [ "$(git -C "$WORK/shakedex" rev-parse HEAD 2>/dev/null)" != "$SHAKEDEX_SHA" 
     die "shakedex checkout is not the pinned $SHAKEDEX_SHA"
   (
     cd "$WORK/shakedex"
-    npm ci --no-audit --no-fund >&2
+    # No dependency runs an install script, with one exception below.
+    npm ci --ignore-scripts --no-audit --no-fund >&2
     # hsd is a peer requirement of the CLI (`npm i -g hsd` upstream); keep it local.
-    npm install --no-save --no-audit --no-fund "hsd@${HSD_NPM_VERSION:-$(hsd --version)}" >&2
+    npm install --ignore-scripts --no-save --no-audit --no-fund "hsd@${HSD_NPM_VERSION:-$(hsd --version)}" >&2
+    # The CLI's database needs leveldown, pinned by the lockfile above. It ships
+    # no darwin-arm64 prebuild, so it alone is built here.
+    npm rebuild leveldown >&2
   )
   touch "$INSTALLED"
 fi
@@ -230,7 +234,8 @@ for (const s of [process.stdout, process.stderr]) {
 JS
 
 shakedex() {
-  node --require "$TTY_SHIM" "$WORK/shakedex/bin/shakedex" \
+  # bcrypto's JS backend: its native build was not compiled (see the install).
+  NODE_BACKEND=js node --require "$TTY_SHIM" "$WORK/shakedex/bin/shakedex" \
     --prefix "$WORK/prefix" -n "$NETWORK" -w "$WALLET_ID" -a "$API_KEY" --no-passphrase "$@"
 }
 mkdir -p "$WORK/prefix"

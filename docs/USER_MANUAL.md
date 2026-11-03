@@ -734,15 +734,35 @@ When background sync is running, the daemon also writes its process ID to
 
 ### macOS quarantine
 
-The macOS build is not code-signed. On first launch macOS may show:
+The macOS and Windows builds are not code-signed, so your system cannot tell you who made them. Check the download yourself before you open it (releases after 0.6.1):
+
+```bash
+# Is this the file the release lists? Download SHA256SUMS and SHA256SUMS.sig from the same page.
+shasum -a 256 -c SHA256SUMS --ignore-missing
+
+# Is the list signed by Namehold's key? minisign is at https://jedisct1.github.io/minisign/
+curl -s https://raw.githubusercontent.com/DimazzzZ/namehold-wallet/main/src-tauri/tauri.conf.json \
+  | jq -r .plugins.updater.pubkey | base64 -d > namehold.pub
+base64 -d < SHA256SUMS.sig > SHA256SUMS.minisig
+minisign -V -m SHA256SUMS -x SHA256SUMS.minisig -p namehold.pub
+
+# Was the file built by this repository's release workflow?
+gh attestation verify Namehold_*.dmg --repo DimazzzZ/namehold-wallet
+```
+
+Every file on the release has its own `.sig`, checked the same way. These show that a file matches what the release workflow built and signed. They are made with the key that also signs updates, online in that workflow, so they do not protect against someone who has stolen that key.
+
+On first launch macOS may show:
 
 > "Namehold" can't be opened because Apple cannot check it for malicious software.
 
-Remove the quarantine flag:
+Open **System Settings → Privacy & Security** and choose **Open Anyway**. If macOS says the app is damaged and offers no such button, and only if the checks above passed, remove the download flag from this one app:
 
 ```bash
-xattr -cr /Applications/Namehold.app
+xattr -r -d com.apple.quarantine /Applications/Namehold.app
 ```
+
+Do not do this for a file you could not check: that flag is what makes macOS ask.
 
 Then open the app normally.
 

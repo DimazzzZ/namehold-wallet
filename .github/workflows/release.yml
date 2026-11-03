@@ -15,8 +15,9 @@ on:
         type: boolean
         default: false
 
+# Read-only by default; each job below asks for what it needs.
 permissions:
-  contents: write
+  contents: read
 
 # Prevent a re-tag (or force-push of a tag) from stacking parallel release
 # builds against the same ref. `cancel-in-progress: false` keeps a running
@@ -28,17 +29,22 @@ concurrency:
 
 jobs:
   # Resolve the version (input > tag > tauri.conf.json), validate it, and open a
-  # DRAFT release that the per-OS build jobs upload their bundles to.
+  # DRAFT release that the publish job later fills.
   prepare:
     name: Prepare release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the draft release and set its notes
+      checks: read # read main's CI results for this commit
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
       release_id: ${{ steps.draft.outputs.release_id }}
       release_notes: ${{ steps.notes.outputs.release_notes }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Resolve + validate version
         id: resolve
@@ -70,6 +76,24 @@ jobs:
           echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
           echo "Resolved version=$V prerelease=$PRE"
 
+      # A release is built from a commit on main whose CI passed, however it was
+      # started: a tag can sit on any commit and a manual run on any branch. If
+      # CI has not finished, this stops the run; re-run it once CI is green. A run
+      # started from a ref that edits this file can drop this step, which is what
+      # the release environment's deployment rules are for. Any older commit of main
+      # with green CI passes too, so a write-access holder can re-release old code.
+      - name: Refuse a commit that is not on main with green CI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          status="$(gh api "repos/$GH_REPO/compare/main...$SHA" --jq .status)"
+          gh api "repos/$GH_REPO/commits/$SHA/check-runs?per_page=100" \
+            --jq '.check_runs[] | select(.app.slug == "github-actions") | [.name, (.conclusion // "")] | @tsv' > check-runs.tsv
+          node scripts/release-gate.mjs "$status" check-runs.tsv
+
       - name: Create draft release
         id: draft
         env:
@@ -92,6 +116,8 @@ jobs:
               --generate-notes \
               $PRE_FLAG
           fi
+          # A published release stays as it is: this run would replace its files.
+          [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ] || { echo "::error::$TAG is already published"; exit 1; }
           RID="$(gh release view "$TAG" --json databaseId --jq .databaseId)"
           echo "release_id=$RID" >> "$GITHUB_OUTPUT"
 
@@ -115,8 +141,7 @@ jobs:
           if [ -z "$NOTES" ]; then
             # No CHANGELOG entry — fall back to the GitHub auto-generated notes
             # that `--generate-notes` produced when the draft was created. This
-            # keeps `latest.json`'s `notes` field (populated downstream from the
-            # tauri-action `releaseBody` input) from ever being empty, which is
+            # keeps `latest.json`'s `notes` field from ever being empty, which is
             # what silently hid the "What's new?" button in the update banner.
             echo "::warning::No CHANGELOG.md entry found for $VERSION — falling back to auto-generated release notes."
             NOTES="$(gh release view "$TAG" --json body --jq .body)"
@@ -128,20 +153,25 @@ jobs:
             printf '%s\n' "$NOTES" > /tmp/release-notes.md
             gh release edit "$TAG" --notes-file /tmp/release-notes.md
           fi
-          # Expose the resolved notes to downstream jobs so the build job can
-          # pass them to tauri-action's `releaseBody` input — that input is the
-          # sole source of `latest.json`'s `notes` field.
+          # Expose the resolved notes to the publish job: they are the sole source
+          # of `latest.json`'s `notes` field.
           {
             echo "release_notes<<NOTES_EOF"
             printf '%s\n' "$NOTES"
             echo "NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
 
+  # Compiles with no signing key and no write token. A tauri build runs every
+  # crate's build.rs and proc macros and the npm build tools, so none of that code
+  # can reach the updater key or change the release. Nothing is restored from the
+  # Actions cache either, because ci.yml and e2e.yml can write that cache on main
+  # and restored objects would be linked in unchecked; a release build compiles
+  # from scratch. scripts/check-supply-chain.mjs holds all of this in place.
   build:
     name: Build (${{ matrix.platform }})
     needs: prepare
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -156,96 +186,32 @@ jobs:
             args: "--bundles nsis,updater"
             rust_targets: ""
     runs-on: ${{ matrix.platform }}
-    env:
-      # Compiler-cache the release build (mirrors ci.yml). sccache stacks with
-      # Swatinem/rust-cache: rust-cache restores the target dir, sccache fills
-      # gaps (new/changed crates) — critical on macOS, which compiles the whole
-      # dependency graph twice (aarch64 + x86_64) for the universal bundle.
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      # Post-startup ghac IO errors fall back to a direct compile instead of
-      # aborting the build (see sccache#1751). Startup-time backend outages are
-      # handled by the "Verify sccache backend" step below.
-      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Refresh apt package index (Linux)
-        if: matrix.platform == 'ubuntu-22.04'
-        # Refresh the apt index first (see ci.yml): avoids a cache-miss 404 when
-        # the runner's pre-seeded index points at a superseded .deb version.
-        # Best-effort with a hard cap: on a throttled mirror the fetch has been
-        # observed to run >90s. If it fails, the cached-install step below still
-        # works on the cache-hit path; only a cache-miss + stale index actually
-        # 404s, and that surfaces at install time either way.
-        run: sudo timeout 120 apt-get update || echo "::warning::apt-get update failed — proceeding with stale index (cache-hit path is unaffected)"
       - name: Install Tauri system dependencies (Linux)
         if: matrix.platform == 'ubuntu-22.04'
-        # Cached via `awalsh128/cache-apt-pkgs-action` (same as ci.yml) so a slow
-        # apt mirror can't stall the release build. Keep `version` in sync with
-        # ci.yml when the package list changes.
-        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
-        with:
-          packages: >-
-            libwebkit2gtk-4.1-dev
-            libappindicator3-dev
-            librsvg2-dev
-            libsecret-1-dev
-            libudev-dev
-            patchelf
-            build-essential
-            libssl-dev
-            mold
-          # v3: bust the poisoned v1 cache (stale-index 404 dropped deps) and
-          # pick up the packages added for Ledger HID (libudev-dev), the secret
-          # service (libsecret-1-dev), and faster linking (mold). Keep the
-          # package list and this version in sync with ci.yml.
-          version: "3"
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libsecret-1-dev \
+            libudev-dev patchelf build-essential libssl-dev mold xvfb
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11.17.0
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-          cache: pnpm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch head on 2026-10-16 (no version tags)
         with:
+          toolchain: 1.99.1
           targets: ${{ matrix.rust_targets }}
-
-      # sccache (all platforms). Installed before Swatinem so the compiler
-      # wrapper is on PATH by the time cargo runs. `mozilla/sccache-action`
-      # handles per-OS binary install; the GHA backend is enabled via the
-      # job-level env block above.
-      - uses: mozilla/sccache-action@v0.0.11
-
-      # If the GitHub Actions Cache backend is unavailable, sccache's server
-      # fails to start and — because it's RUSTC_WRAPPER — hard-fails the whole
-      # job before any crate compiles (observed on ghac HTTP 400 outages).
-      # Probe startup here; if it fails, unset the wrapper so cargo compiles
-      # directly. Swatinem's target-dir cache still applies, so we stay green.
-      - name: Verify sccache backend (degrade gracefully if ghac is down)
-        shell: bash
-        run: |
-          if ! sccache --start-server 2>/tmp/sccache_start.log; then
-            echo "::warning::sccache failed to start (ghac backend likely unavailable) — disabling compiler cache for this run"
-            cat /tmp/sccache_start.log || true
-            echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
-          fi
-
-      - uses: Swatinem/rust-cache@v2.9.2
-        with:
-          workspaces: src-tauri
-          # Stabilise the cache key against `Cargo.toml`/`Cargo.lock` version
-          # bumps (which fold into the default key hash). Every real release
-          # bumps `[package] version`, which would otherwise miss the cache
-          # each release — devastating on macOS (compiles both arches from
-          # scratch: ~13 min of dep compile). `shared-key` mirrors the
-          # `rust-ci` pattern in ci.yml. Per-OS keys are still separated by
-          # Swatinem's own OS/arch prefix.
-          shared-key: release
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -253,6 +219,10 @@ jobs:
       # On a manual run with a version override, sync it into the version files so
       # the produced bundles are named for the release. Version is pre-validated in
       # `prepare`; passed via env. jq is available on all GitHub-hosted runners.
+      # Every cargo build below runs with --locked, which refuses a Cargo.lock that
+      # no longer matches Cargo.toml. A version change moves exactly one entry of
+      # it, the root package's (what cargo itself would rewrite), so that entry is
+      # set here and every dependency stays at the version Cargo.lock pins.
       - name: Sync version files
         shell: bash
         env:
@@ -270,6 +240,8 @@ jobs:
           jq --arg v "$VERSION" '.version = $v' package.json > "$tmp" && mv "$tmp" package.json
           # First [package] version key in Cargo.toml only.
           perl -0pi -e 's/^version = "[^"]*"/version = "'"$VERSION"'"/m if !$done++' src-tauri/Cargo.toml
+          # The namehold-wallet entry of Cargo.lock; fails if there is none.
+          perl -0pi -e '$n += s/(\[\[package\]\]\r?\nname = "namehold-wallet"\r?\nversion = )"[^"]*"/${1}"'"$VERSION"'"/; END { die "Cargo.lock has no namehold-wallet entry\n" unless $n }' src-tauri/Cargo.lock
 
       # Build the namehold-syncd daemon sidecar for bundling. Tauri's externalBin
       # expects `binaries/namehold-syncd-<target-triple>` in src-tauri/. For the
@@ -280,8 +252,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p binaries
-          cargo build --release --bin namehold-syncd --target aarch64-apple-darwin
-          cargo build --release --bin namehold-syncd --target x86_64-apple-darwin
+          cargo build --locked --release --bin namehold-syncd --target aarch64-apple-darwin
+          cargo build --locked --release --bin namehold-syncd --target x86_64-apple-darwin
           # Stage per-arch binaries for externalBin validation + resource bundling.
           cp target/aarch64-apple-darwin/release/namehold-syncd binaries/namehold-syncd-aarch64-apple-darwin
           cp target/x86_64-apple-darwin/release/namehold-syncd binaries/namehold-syncd-x86_64-apple-darwin
@@ -314,69 +286,153 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: bash scripts/preseed-apprun.sh
 
-      - name: Build + upload bundles
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # --- Updater signing (required for auto-update) ---
-          # Ed25519 keypair generated with `pnpm tauri signer generate`. The
-          # public key lives in tauri.conf.json → plugins.updater.pubkey; the
-          # private key is stored ONLY as a GitHub Actions secret.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # --- macOS code signing (optional; unset = unsigned bundles) ---
-          # APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
-          # APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
-        with:
-          releaseId: ${{ needs.prepare.outputs.release_id }}
-          releaseBody: ${{ needs.prepare.outputs.release_notes }}
-          args: ${{ matrix.args }}
+      # --no-sign: tauri build otherwise refuses to finish without the private key,
+      # because tauri.conf.json has a pubkey. It only skips signing: every updater
+      # archive is still produced, and the sign job below signs what comes out. It
+      # would also skip macOS and Windows code signing, which this build does not
+      # do yet; adding that means revisiting this flag.
+      - name: Build bundles
+        shell: bash
+        run: pnpm tauri build --no-sign ${{ matrix.args }} -- --locked
 
       # The AppImage runs as whoever mounted it, or as another user under firejail
       # and in the AppImage catalog's test: its file modes, its daemon and the app
       # itself are checked as another user (scripts/check-appimage.sh, also run by
-      # appimage.yml on pull requests). A failure here stops the release before
-      # `publish` takes it out of draft.
+      # appimage.yml on pull requests). A failure here stops the release in draft.
       - name: Check the AppImage runs for another user (Linux)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           set -euo pipefail
-          sudo apt-get install -y --no-install-recommends xvfb
           shopt -s nullglob
           images=(src-tauri/target/release/bundle/appimage/*.AppImage)
           [ "${#images[@]}" -eq 1 ] || { echo "::error::expected one AppImage, found ${#images[@]}"; exit 1; }
           bash scripts/check-appimage.sh "${images[0]}"
 
-      # Surface cache effectiveness in the job log (hit rate, compile requests).
-      # `if: always()` so we still see stats when the build fails. Skipped
-      # automatically when the wrapper was disabled by the degrade step above.
-      - name: sccache stats
-        if: always()
-        shell: bash
-        run: sccache --show-stats || true
+      - name: Collect the release files
+        run: node scripts/release-files.mjs stage src-tauri/target release-files
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files-${{ matrix.platform }}
+          path: release-files/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  # The only job that reads the updater signing secrets. It runs no third-party
+  # action and no build: its one tool is the Tauri CLI, installed from the lockfile
+  # in scripts/release-signer with install scripts off, and nothing it downloads is
+  # executed. It has no write token. A compromised build can still get a bad bundle
+  # signed here, but it cannot take the key away. Once the repository settings hold
+  # the secrets in this environment, with a required reviewer and deployments
+  # limited to main and v* tags, this job waits for that approval and a run from
+  # another ref does not start it.
+  sign:
+    name: Sign release files
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-files-*
+          path: release-files
+          merge-multiple: true
+
+      - name: Install the Tauri CLI
+        working-directory: scripts/release-signer
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      # Each signature names the version, the way tauri build's own signing does,
+      # and every file gets one: installers, updater archives and SHA256SUMS.
+      - name: Sign every release file
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          signer="$PWD/scripts/release-signer/node_modules/.bin/tauri"
+          cd release-files
+          sha256sum -- * > SHA256SUMS
+          for file in *; do
+            "$signer" signer sign --app-version "$VERSION" "./$file"
+          done
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-signatures
+          path: |
+            release-files/*.sig
+            release-files/SHA256SUMS
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
 
   publish:
     name: Publish release
-    needs: [prepare, build]
+    needs: [prepare, build, sign]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # upload the files, take the release out of draft
+      id-token: write # attest build provenance
+      attestations: write
     steps:
-      - name: Verify updater manifest was produced
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-files-*
+          path: release-files
+          merge-multiple: true
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-signatures
+          path: release-files
+
+      # Every installer kind present exactly once, every file signed by the key in
+      # tauri.conf.json for this version, SHA256SUMS matching the files. Anything
+      # else stops the release in draft. latest.json is written from the signatures
+      # that passed, so a key the app would refuse cannot be published.
+      - name: Check every file and signature, write latest.json
+        env:
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_NOTES: ${{ needs.prepare.outputs.release_notes }}
+        run: node scripts/release-files.mjs check release-files src-tauri/tauri.conf.json "$VERSION" "$GH_REPO"
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release-files/*
+
+      - name: Upload the files to the draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.prepare.outputs.version }}
+        run: gh release upload "v$VERSION" release-files/* --clobber
+
+      # What the draft holds must be exactly what was checked above, by name and by
+      # GitHub's own sha256 digest. A stray or half-uploaded asset stops it here.
+      - name: Compare the draft with the checked files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
         run: |
           set -euo pipefail
-          # tauri-action uploads `latest.json` (the updater manifest) to the
-          # release when createUpdaterArtifacts + signing key are set. Fail the
-          # publish if it's missing, so we never un-draft a release that would
-          # leave existing installs unable to update.
-          assets="$(gh release view "v$VERSION" --json assets --jq '.assets[].name')"
-          echo "Release assets:"; echo "$assets"
-          if ! printf '%s\n' "$assets" | grep -qx 'latest.json'; then
-            echo "::error::latest.json missing from release v$VERSION — updater signing likely not configured (set TAURI_SIGNING_PRIVATE_KEY)."
-            exit 1
-          fi
+          gh api --paginate "repos/$GH_REPO/releases/$RELEASE_ID/assets?per_page=100" \
+            --jq '.[] | [.name, (.digest // ""), .state] | @tsv' > release-assets.tsv
+          node scripts/release-files.mjs compare release-files release-assets.tsv
 
       - name: Un-draft the release
         env:

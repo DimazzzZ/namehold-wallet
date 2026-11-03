@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../src-tauri"
 mkdir -p binaries
 TARGET_TRIPLE=$(rustc --print host-tuple)
-cargo build --release --bin namehold-syncd
+cargo build --locked --release --bin namehold-syncd
 EXT=""
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then EXT=".exe"; fi
 cp "target/release/namehold-syncd${EXT}" "binaries/namehold-syncd-${TARGET_TRIPLE}${EXT}"
