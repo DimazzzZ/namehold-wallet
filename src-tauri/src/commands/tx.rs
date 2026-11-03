@@ -693,7 +693,27 @@ pub async fn estimate_tx_draft_fee(
     state: State<'_, AppState>,
     value_doos: i64,
     fee_rate: Option<u64>,
+    max: Option<bool>,
 ) -> Result<serde_json::Value, AppError> {
+    // Send's Max: the amount a sweep of every spendable coin would send
+    // (`maxSendDoos`, input total minus fee, no change), the same selection
+    // `build_send_hns_draft` makes with `max`, without building a draft (a
+    // draft reserves its coins). The form shows it for the user to adjust.
+    if max.unwrap_or(false) {
+        let rate = resolve_fee_rate(&state, fee_rate).await;
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let profile = active_profile(&conn)?;
+        let network = derivation::network_from_profile(&profile.network)?;
+        let coins = send::load_spendable_coins(&conn, &profile.id, None, network)?;
+        let selection = send::select_all_coins(&coins, rate)?;
+        return Ok(serde_json::json!({
+            "feeDoos": selection.fee,
+            "changeDoos": 0,
+            "inputTotalDoos": selection.input_total,
+            "numInputs": selection.coins.len(),
+            "maxSendDoos": selection.input_total - selection.fee,
+        }));
+    }
     if value_doos <= 0 {
         return Err(AppError::InvalidInput(
             "amount must be positive".to_string(),

@@ -2210,7 +2210,7 @@ async fn estimate_fee_returns_selection_details() {
     let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
     let app = app_with(conn);
 
-    let res = estimate_tx_draft_fee(app.state(), 500_000, Some(1))
+    let res = estimate_tx_draft_fee(app.state(), 500_000, Some(1), None)
         .await
         .expect("estimate ok");
     assert!(res["feeDoos"].as_u64().unwrap() > 0, "fee must be positive");
@@ -2226,17 +2226,48 @@ async fn estimate_fee_returns_selection_details() {
     assert_eq!(change, expected_change);
 }
 
+/// Send's Max fills the amount field from this estimate and stays on the form:
+/// it must equal what a real sweep then sends, and reserve nothing (a preview
+/// that built a draft left its coins reserved).
+#[tokio::test]
+async fn estimate_max_matches_the_sweep_and_reserves_nothing() {
+    let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
+    let app = app_with(conn);
+
+    let est = estimate_tx_draft_fee(app.state(), 0, Some(1), Some(true))
+        .await
+        .expect("max estimate ok");
+    let max_send = est["maxSendDoos"].as_u64().expect("maxSendDoos");
+    assert_eq!(
+        max_send + est["feeDoos"].as_u64().unwrap(),
+        est["inputTotalDoos"].as_u64().unwrap()
+    );
+    assert_eq!(est["changeDoos"].as_u64(), Some(0));
+    let drafts: i64 = {
+        let st = app.state::<crate::AppState>();
+        let c = st.db.lock().unwrap();
+        c.query_row("SELECT COUNT(*) FROM wallet_tx_drafts", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(drafts, 0, "an estimate builds no draft");
+
+    let sweep = build_send_hns_draft(app.state(), recv_addr(), 0, Some(1), Some(true))
+        .await
+        .expect("sweep builds");
+    assert_eq!(sweep.summary["sendTotalDoos"].as_u64(), Some(max_send));
+}
+
 #[tokio::test]
 async fn estimate_fee_rejects_non_positive_amount() {
     let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
     let app = app_with(conn);
 
-    let err = estimate_tx_draft_fee(app.state(), 0, Some(1))
+    let err = estimate_tx_draft_fee(app.state(), 0, Some(1), None)
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::InvalidInput(_)));
 
-    let err2 = estimate_tx_draft_fee(app.state(), -100, Some(1))
+    let err2 = estimate_tx_draft_fee(app.state(), -100, Some(1), None)
         .await
         .unwrap_err();
     assert!(matches!(err2, AppError::InvalidInput(_)));
@@ -2247,7 +2278,7 @@ async fn estimate_fee_fails_when_insufficient_coins() {
     let conn = seeded_conn("http://127.0.0.1:1", 1_000); // only 1000 doos
     let app = app_with(conn);
 
-    let err = estimate_tx_draft_fee(app.state(), 999_999, Some(1))
+    let err = estimate_tx_draft_fee(app.state(), 999_999, Some(1), None)
         .await
         .unwrap_err();
     // Coin selection should fail with an InvalidInput error
@@ -2262,7 +2293,7 @@ async fn estimate_fee_errors_when_no_active_profile() {
     db::migrations::run(&conn).unwrap();
     let app = app_with(conn);
 
-    let err = estimate_tx_draft_fee(app.state(), 500_000, Some(1))
+    let err = estimate_tx_draft_fee(app.state(), 500_000, Some(1), None)
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::InvalidInput(_)));
@@ -2380,7 +2411,7 @@ async fn estimate_fee_uses_node_rpc_fallback_when_no_setting() {
     let app = app_with(conn);
 
     // Call estimate_tx_draft_fee WITHOUT an explicit fee_rate → triggers resolve_fee_rate.
-    let res = estimate_tx_draft_fee(app.state(), 500_000, None)
+    let res = estimate_tx_draft_fee(app.state(), 500_000, None, None)
         .await
         .expect("estimate ok");
     assert!(res["feeDoos"].as_u64().unwrap() > 0);
@@ -2401,7 +2432,7 @@ async fn estimate_fee_uses_explicit_setting_over_node_rpc() {
     db::queries::set_setting(&conn, "fee_rate_doos_per_kvb", "5000").unwrap();
     let app = app_with(conn);
 
-    let res = estimate_tx_draft_fee(app.state(), 500_000, None)
+    let res = estimate_tx_draft_fee(app.state(), 500_000, None, None)
         .await
         .expect("estimate ok");
     assert!(res["feeDoos"].as_u64().unwrap() > 0);
@@ -2423,7 +2454,7 @@ async fn estimate_fee_falls_back_to_default_when_node_fee_estimate_errors() {
     let conn = seeded_conn(&server.url(), 2_000_000);
     let app = app_with(conn);
 
-    let res = estimate_tx_draft_fee(app.state(), 500_000, None)
+    let res = estimate_tx_draft_fee(app.state(), 500_000, None, None)
         .await
         .expect("estimate ok — should use default rate");
     assert!(res["feeDoos"].as_u64().unwrap() > 0);

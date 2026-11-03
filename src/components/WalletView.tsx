@@ -10,11 +10,10 @@ import {
   useSignerSession,
   useWriteCapability,
   useWalletBalances,
-  useUnlockSigner,
   useBuildSendDraft,
-  useSignTxDraft,
-  useBroadcastTxDraft,
+  useEstimateMaxSend,
 } from "../queries/wallet";
+import { useDraftRunner } from "../queries/useDraftRunner";
 import { usePurchaseFinalize } from "./market/usePurchase";
 import { useReadBalance } from "../queries/read";
 import { useNeedsYou } from "../queries/needsYou";
@@ -47,11 +46,10 @@ import {
   formatHns,
   formatHnsShort,
   hnsToDollarydoos,
-  dollarydoosToHns,
   isLikelyHnsAddress,
   hnsAddressPrefix,
 } from "../lib/utils";
-import { mapError } from "../lib/errors";
+import { mapError, unwrapStaged } from "../lib/errors";
 import { explorerCoversNetwork } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import type { TxDraftSummary } from "../types";
@@ -82,11 +80,15 @@ export function WalletView() {
   const syncStatus = useSyncStatus();
   const manualSync = useSyncTriggerStore((s) => s.manualSync);
   const setManualSync = useSyncTriggerStore((s) => s.setManualSync);
-  const unlock = useUnlockSigner();
   const signerToggle = useSignerToggle();
   const buildDraft = useBuildSendDraft();
-  const signDraft = useSignTxDraft();
-  const broadcast = useBroadcastTxDraft();
+  const estimateMax = useEstimateMaxSend();
+  // The amount Max put in the field: Review sends a sweep (no change left)
+  // while the field still holds it, and that amount otherwise.
+  const [maxFill, setMaxFill] = useState<number | null>(null);
+  // The draft Review or Max builds reserves its coins: leaving the review
+  // unsent abandons it, a failed send keeps it for Retry (useDraftRunner).
+  const runner = useDraftRunner();
 
   const [sendOpen, setSendOpen] = useState(false);
   const [sendAddress, setSendAddress] = useState("");
@@ -176,11 +178,13 @@ export function WalletView() {
   useEffect(() => subscribeAction((id) => actionHandlerRef.current(id)), []);
 
   const resetSend = () => {
+    void runner.abandon(draft?.id);
     setSendOpen(false);
     setSendAddress("");
     setSendAmount("");
     setSendFeeRate("");
     setDraft(null);
+    setMaxFill(null);
     setSubmitting(false);
     setSendError(null);
   };
@@ -237,8 +241,21 @@ export function WalletView() {
   const openNamePage = useOpenName();
   const openName = (name: string) => openNamePage(name, { seedCaps: capsByName.get(name) });
 
-  const handleBuildDraft = async (opts?: { max?: boolean }) => {
-    const max = opts?.max ?? false;
+  // Max fills the amount and stays on the form: the user may lower it first.
+  const handleMax = async () => {
+    try {
+      const est = await estimateMax.mutateAsync(parseFeeRateArg(sendFeeRate) ?? undefined);
+      // Plain digits: the amount field is a number input, which drops a value
+      // with thousands separators (dollarydoosToHns adds them).
+      setSendAmount((est.maxSendDoos / 1_000_000).toFixed(6));
+      setMaxFill(est.maxSendDoos);
+    } catch (e) {
+      showToast(mapError(e), "error");
+    }
+  };
+
+  const handleBuildDraft = async () => {
+    const max = maxFill != null && hnsToDollarydoos(sendAmount) === maxFill;
     if (!sendAddress.trim()) {
       showToast("Enter a destination address", "error");
       return;
@@ -257,10 +274,6 @@ export function WalletView() {
         feeRate: parseFeeRateArg(sendFeeRate) ?? undefined,
       });
       setDraft(d);
-      // Reflect the swept amount in the field so "Max" is transparent.
-      if (max && d.summary?.sendTotalDoos != null) {
-        setSendAmount(dollarydoosToHns(d.summary.sendTotalDoos));
-      }
     } catch (e) {
       showToast(mapError(e), "error");
     }
@@ -274,17 +287,14 @@ export function WalletView() {
     setSubmitting(true);
     setSendError(null);
     try {
-      if (!unlocked) {
-        await unlock.mutateAsync(profile.id);
-      }
-      await signDraft.mutateAsync(draft.id);
-      const result = await broadcast.mutateAsync(draft.id);
+      const result = await runner.send(draft.id, profile.id, unlocked, { keepOnFailure: true });
       // Only here — after the node accepted the tx — is the send complete.
       showToast(`Broadcast ${result.txid.slice(0, 12)}…`, "success");
+      setDraft(null);
       resetSend();
       qc.invalidateQueries({ queryKey: ["wallet"] });
     } catch (e) {
-      const msg = mapError(e);
+      const msg = mapError(unwrapStaged(e));
       setSendError(msg);
       showToast(msg, "error");
       setSubmitting(false);
@@ -644,12 +654,12 @@ export function WalletView() {
                     step="0.000001"
                   />
                 </div>
-                <Tooltip content="Send your entire spendable balance (minus the network fee)">
+                <Tooltip content="Fill in your whole spendable balance minus the network fee; you can lower it before Review">
                   <Button
                     size="sm"
                     variant="secondary"
-                    disabled={!canMax || buildDraft.isPending}
-                    onClick={() => handleBuildDraft({ max: true })}
+                    disabled={!canMax || buildDraft.isPending || estimateMax.isPending}
+                    onClick={() => void handleMax()}
                   >
                     Max
                   </Button>
@@ -738,6 +748,7 @@ export function WalletView() {
               <Button
                 variant="ghost"
                 onClick={() => {
+                  void runner.abandon(draft?.id);
                   setDraft(null);
                   setSendError(null);
                 }}

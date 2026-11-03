@@ -10,13 +10,8 @@ import { mapError, stageOf, unwrapStaged } from "../../lib/errors";
 import { formatHns } from "../../lib/utils";
 import { displayName } from "../../lib/idn";
 import { useBuildLock, useKeptDraft } from "../../queries/shakedex";
-import {
-  useActiveProfile,
-  useDeleteTxDraft,
-  useExecuteDraft,
-  useWithSigner,
-  useWriteCapability,
-} from "../../queries/wallet";
+import { useActiveProfile, useWithSigner, useWriteCapability } from "../../queries/wallet";
+import { useDraftRunner } from "../../queries/useDraftRunner";
 import { useSettingsStore } from "../../stores/settings";
 import { useUiStore } from "../../stores/ui";
 import type { ShakedexListingMode, TxDraftSummary } from "../../types";
@@ -60,8 +55,7 @@ export function LockDialog({ open, name, onClose }: LockDialogProps) {
   const signer = useWithSigner();
   const build = useBuildLock();
   const keptDraft = useKeptDraft();
-  const exec = useExecuteDraft();
-  const deleteDraft = useDeleteTxDraft();
+  const runner = useDraftRunner();
 
   const refusal = sellRefusal(profile?.kind, writeCap, profile?.network, experimental);
   const allowed = canSellShakedex(profile?.kind, writeCap, profile?.network, experimental);
@@ -69,11 +63,7 @@ export function LockDialog({ open, name, onClose }: LockDialogProps) {
   // An unsent lock draft holds coins, and its Locking listing goes with it.
   const discard = async () => {
     if (!draft) return;
-    try {
-      await deleteDraft.mutateAsync(draft.id);
-    } catch {
-      // Best-effort: Activity can still discard it.
-    }
+    await runner.abandon(draft.id);
     setDraft(null);
   };
 
@@ -108,7 +98,7 @@ export function LockDialog({ open, name, onClose }: LockDialogProps) {
       // The build just passed the signer check; should the session lapse
       // before signing, the sign is refused "Wallet locked" and run again
       // after one unlock.
-      await signer.run(profile.id, () => exec.run(draft.id, profile.id, true));
+      await signer.run(profile.id, () => runner.run(draft.id, profile.id, true));
       showToast(
         `Lock sent. Once the transfer lockup is over, set the price with ${LISTING_BUTTON_LABEL.finalizeAndSign} in Market › ${MY_LISTINGS_TAB}.`,
       );

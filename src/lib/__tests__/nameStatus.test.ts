@@ -36,7 +36,7 @@ describe("nameStatusLine", () => {
     ["lostNeedsRedeem", "You lost"],
     ["lostUnrevealed", "Lost — not revealed in time"],
     ["closedResultUnknown", "Auction closed"],
-    ["transferPendingFinalize", "Transfer in progress"],
+    ["transferPendingFinalize", "Transferring"],
     ["ownedNoUrgentAction", "Owned"],
     ["expiringSoon", "Expiring"],
     ["unavailableOther", "Registered by someone else"],

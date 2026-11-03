@@ -9,9 +9,14 @@ vi.mock("../../queries/wallet", () => ({
   useNameAction: vi.fn(),
   useActiveProfile: vi.fn(),
   useSignerSession: vi.fn(),
-  useUnlockSigner: vi.fn(),
-  useSignTxDraft: vi.fn(),
-  useBroadcastTxDraft: vi.fn(),
+}));
+
+// The draft's fate is useDraftRunner's (tested in draftRunner.test.tsx); this
+// file only checks the modal hands it the draft at the right moments.
+const runnerSend = vi.fn();
+const runnerAbandon = vi.fn();
+vi.mock("../../queries/useDraftRunner", () => ({
+  useDraftRunner: () => ({ send: runnerSend, abandon: runnerAbandon }),
 }));
 
 vi.mock("../../queries/read", () => ({
@@ -45,9 +50,6 @@ function cap(name: string, canBid: boolean, reason: string | null = null) {
 
 describe("BatchBidModal", () => {
   const buildMutateAsync = vi.fn();
-  const unlockMutateAsync = vi.fn();
-  const signMutateAsync = vi.fn();
-  const broadcastMutateAsync = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -61,15 +63,8 @@ describe("BatchBidModal", () => {
     vi.mocked(walletQueries.useSignerSession).mockReturnValue({
       data: { unlocked: true },
     } as any);
-    vi.mocked(walletQueries.useUnlockSigner).mockReturnValue({
-      mutateAsync: unlockMutateAsync,
-    } as any);
-    vi.mocked(walletQueries.useSignTxDraft).mockReturnValue({
-      mutateAsync: signMutateAsync,
-    } as any);
-    vi.mocked(walletQueries.useBroadcastTxDraft).mockReturnValue({
-      mutateAsync: broadcastMutateAsync,
-    } as any);
+    runnerSend.mockReset();
+    runnerAbandon.mockReset();
     // Default: no names checked yet → empty caps.
     vi.mocked(readQueries.useNamesActionCapabilities).mockReturnValue({
       data: [],
@@ -143,8 +138,7 @@ describe("BatchBidModal", () => {
       isFetching: false,
     } as any);
     buildMutateAsync.mockResolvedValue({ id: "draft1", summary: { feeDoos: 500 } });
-    signMutateAsync.mockResolvedValue({ id: "draft1" });
-    broadcastMutateAsync.mockResolvedValue({ txid: "abcdef0123456789", status: "ok" });
+    runnerSend.mockResolvedValue({ txid: "abcdef0123456789", status: "ok" });
     const onClose = vi.fn();
 
     render(<BatchBidModal open={true} onClose={onClose} activeProfileId="p1" />);
@@ -169,14 +163,35 @@ describe("BatchBidModal", () => {
     fireEvent.click(screen.getByRole("button", { name: /Confirm/i }));
 
     await waitFor(() => {
-      expect(signMutateAsync).toHaveBeenCalledWith("draft1");
-      expect(broadcastMutateAsync).toHaveBeenCalledWith("draft1");
+      // Kept on a failure: the confirmation stays open for a retry.
+      expect(runnerSend).toHaveBeenCalledWith("draft1", "p1", false, { keepOnFailure: true });
     });
     await waitFor(() => {
       expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["wallet"] });
       expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["read"] });
       expect(onClose).toHaveBeenCalled();
     });
+  });
+
+  it("Back from the confirmation abandons the built draft (its coins are freed)", async () => {
+    vi.mocked(readQueries.useNamesActionCapabilities).mockReturnValue({
+      data: [cap("name1", true)],
+      isFetching: false,
+    } as any);
+    buildMutateAsync.mockResolvedValue({ id: "draft1", summary: { feeDoos: 500 } });
+    render(<BatchBidModal open={true} onClose={vi.fn()} activeProfileId="p1" />);
+    fireEvent.change(screen.getByTestId("batch-bid-names-input"), { target: { value: "name1" } });
+    fireEvent.change(screen.getByTestId("batch-bid-value-input"), { target: { value: "1" } });
+    fireEvent.change(screen.getByTestId("batch-bid-lockup-input"), { target: { value: "2" } });
+    fireEvent.click(screen.getByTestId("batch-bid-check-names-btn"));
+    await waitFor(() =>
+      expect(screen.getByTestId("batch-bid-build-draft-btn")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId("batch-bid-build-draft-btn"));
+    await waitFor(() => expect(screen.getByText(/Confirm batch bid/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
+    expect(runnerAbandon).toHaveBeenCalledWith("draft1");
+    expect(runnerSend).not.toHaveBeenCalled();
   });
 
   it("shows a mapped (humanized) error toast when the build rejects", async () => {

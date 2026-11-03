@@ -955,6 +955,23 @@ async fn evaluate_name_action_capabilities(
             // Our coins of an earlier or expired auction are a stranded
             // lockup, on the node's word. Nothing to ask without candidates.
             let action_ctx = action_ctx.with_node_stranded_coins(&client).await;
+            // The tracked address alone says "ours" (no owner coin of ours, our
+            // reveal is not the owner): ask the node whom its owner coin pays.
+            // A different address is positive evidence the tracked one is
+            // stale, as on a lost auction whose losing reveal of ours an earlier
+            // read took for the owner. No answer keeps it: the local view may
+            // only be behind.
+            let tracked_owner_address = verify_tracked_owner_address(
+                state,
+                &client,
+                profile_id,
+                &name,
+                name_info.get("info"),
+                tracked_owner_address,
+                &profile_addrs,
+                &action_ctx,
+            )
+            .await;
             let NameOwnership {
                 owns_name,
                 spend_locked,
@@ -1783,6 +1800,55 @@ fn redeemable_reveals(
     // Why: a sum past i64::MAX doos is far beyond the HNS supply; it is shown
     // as the largest number, never wrapped negative.
     (n, i64::try_from(sum).unwrap_or(i64::MAX))
+}
+
+/// The tracked owner address, unless the node says the owner coin pays
+/// someone else (then the stale address is cleared from the tracked row too).
+/// Only asked when the address is the sole evidence of ownership.
+#[allow(clippy::too_many_arguments)]
+async fn verify_tracked_owner_address(
+    state: &State<'_, AppState>,
+    client: &NodeRpcClient,
+    profile_id: &str,
+    name: &str,
+    info: Option<&serde_json::Value>,
+    tracked: Option<String>,
+    profile_addrs: &[String],
+    ctx: &NameActionContext,
+) -> Option<String> {
+    let addr = tracked?;
+    let sole_evidence = profile_addrs.iter().any(|p| p == &addr)
+        && !ctx.has_owner_coin
+        && !ctx.owner_spend_in_flight
+        && !ctx.owner_reveal_by_node
+        && ctx.listing_state.is_none();
+    let owner = info.and_then(|i| i.get("owner"));
+    let txid = owner.and_then(|o| o.get("hash")).and_then(|v| v.as_str());
+    let vout = owner.and_then(|o| o.get("index")).and_then(|v| v.as_u64());
+    let (Some(txid), Some(vout), true) = (txid, vout, sole_evidence) else {
+        return Some(addr);
+    };
+    let pays = match client.get_tx_out(txid, vout as u32).await {
+        Ok(Some(txo)) => txo
+            .get("address")
+            .and_then(|a| a.get("string"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string()),
+        _ => None,
+    };
+    match pays {
+        Some(p) if p != addr => {
+            if let Ok(conn) = state.db.lock() {
+                let _ = conn.execute(
+                    "UPDATE tracked_name_states SET owner_address = NULL
+                     WHERE wallet_profile_id = ?1 AND name = ?2 AND owner_address = ?3",
+                    rusqlite::params![profile_id, name, addr],
+                );
+            }
+            None
+        }
+        _ => Some(addr),
+    }
 }
 
 /// `owner_address` is the owner recorded for the name (from the node payload

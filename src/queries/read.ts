@@ -329,6 +329,9 @@ export function useReadTxInfo(txid: string | null): UseQueryResult<TxInfo | TxIn
  *
  * Returns `[]` while disabled/loading so callers can `.map` unconditionally.
  */
+/** Names per `get_names_action_capabilities` call; the backend's cap is 200. */
+export const CAPABILITIES_CHUNK = 100;
+
 export function useNamesActionCapabilities(
   names: string[],
   walletProfileId?: string | null,
@@ -342,16 +345,39 @@ export function useNamesActionCapabilities(
     queryKey: ["read", "namesCapabilities", profileId, namesKey],
     enabled: names.length > 0,
     queryFn: async () => {
-      const raw = await invoke<NameActionCapabilities[] | null>("get_names_action_capabilities", {
-        names,
-        walletProfileId: profileId,
-      });
-      return Array.isArray(raw) ? raw : [];
+      // The backend refuses more than MAX_NAMES_ACTION_CAPABILITIES_BATCH
+      // (200) names per call; a wallet with hundreds of names used to get no
+      // capabilities at all. Ask in chunks, concurrently, and keep the order.
+      const chunks: string[][] = [];
+      for (let i = 0; i < names.length; i += CAPABILITIES_CHUNK) {
+        chunks.push(names.slice(i, i + CAPABILITIES_CHUNK));
+      }
+      const parts = await Promise.allSettled(
+        chunks.map((chunk) =>
+          invoke<NameActionCapabilities[] | null>("get_names_action_capabilities", {
+            names: chunk,
+            walletProfileId: profileId,
+          }),
+        ),
+      );
+      // One chunk the node failed to answer must not cost every other name
+      // its actions; only when every chunk failed is the query an error.
+      const answered = parts.filter(
+        (p): p is PromiseFulfilledResult<NameActionCapabilities[] | null> =>
+          p.status === "fulfilled",
+      );
+      if (answered.length === 0 && parts.length > 0) {
+        throw (parts[0] as PromiseRejectedResult).reason;
+      }
+      return answered.flatMap((p) => (Array.isArray(p.value) ? p.value : []));
     },
     staleTime: STALE_TIME,
     // Poll capabilities while the node is live so the auctions row advances
     // through pending → confirmed → closed → won/lost without a manual refresh.
-    refetchInterval: nodeLive ? 30_000 : false,
+    // Each name costs the node a dozen reads, so a wallet with hundreds of
+    // names polls every five minutes instead of every thirty seconds.
+    refetchInterval: nodeLive ? (names.length > CAPABILITIES_CHUNK ? 300_000 : 30_000) : false,
+    refetchOnWindowFocus: names.length <= CAPABILITIES_CHUNK,
   });
 }
 

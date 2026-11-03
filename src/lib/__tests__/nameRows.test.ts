@@ -131,6 +131,18 @@ describe("buildNameRows — status per task state", () => {
       null,
     ],
     [
+      "transfer with a countdown",
+      {
+        taskState: "transferPendingFinalize",
+        countdownLabel: "Finalize opens in",
+        countdownBlocks: 282,
+        countdownHours: 47,
+      },
+      "Transferring",
+      "finalize in 282 blocks (~47h)",
+      null,
+    ],
+    [
       "transfer ready",
       { taskState: "transferPendingFinalize", canFinalize: allowed },
       "Transferring",
@@ -416,5 +428,25 @@ describe("buildNameRows — ICANN collision (spec R3)", () => {
 
   it("a name nobody applied for carries null", () => {
     expect(one({ owned: [name("zzzz-not-applied")] }).icann).toBeNull();
+  });
+});
+
+describe("buildNameRows — when Finalize opens, in the table", () => {
+  it("counts blocks only where blocks do not keep time", () => {
+    const r = one({
+      owned: [name("x")],
+      wallClock: false,
+      capsByName: caps([
+        makeCapabilities({
+          name: "x",
+          taskState: "transferPendingFinalize",
+          countdownLabel: "Finalize opens in",
+          countdownBlocks: 9,
+          countdownHours: 1.5,
+        }),
+      ]),
+    });
+    expect(r.status).toBe("Transferring");
+    expect(r.detail).toBe("finalize in 9 blocks");
   });
 });

@@ -23,7 +23,7 @@ import { Tooltip } from "./ui/Tooltip";
 const NEXT_UP = ["readyToBid", "revealBroadcastPending", "waitingForBidding"];
 
 /** The Status cell: what the name needs, then a muted suffix. */
-function status(
+export function yourNamesStatus(
   n: HsdName,
   c: NameActionCapabilities | undefined,
   network: WalletNetwork,
@@ -44,7 +44,14 @@ function status(
     case "expiringSoon":
       return { main: "Renew soon", suffix: null };
     case "transferPendingFinalize":
-      return { main: "Transfer ready", suffix: "finalize it" };
+      // While the transfer lockup runs there is nothing to do: say when, not
+      // "finalize it" (the Names table and Needs you wait the same way).
+      return c.canFinalize.allowed
+        ? { main: "Transferring", suffix: "ready to finalize" }
+        : {
+            main: "Transferring",
+            suffix: when ? `finalize in ${when}` : "finalize once the transfer lockup ends",
+          };
     case "wonNeedsRegister":
       return { main: "Won", suffix: "register it" };
     case "lostNeedsRedeem":
@@ -154,7 +161,9 @@ export function YourNamesCard({
               const c = capsByName.get(row.name);
               // Purchases and needs-only rows (no read_names entry) speak in the row's words.
               const own = n && !n.shakedex ? n : null;
-              const st = own ? status(own, c, network) : { main: row.status, suffix: row.detail };
+              const st = own
+                ? yourNamesStatus(own, c, network)
+                : { main: row.status, suffix: row.detail };
               const { phase } = auctionPhase(c?.phase ?? n?.state);
               const bidding = phase === "OPENING" || phase === "BIDDING" || phase === "REVEAL";
               const r = renewalBy.get(row.name);

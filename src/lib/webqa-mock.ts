@@ -1543,6 +1543,15 @@ const handlers: Record<string, Handler> = {
   }),
   save_bid_backup: () => null,
 
+  // Send's Max: the liquid balance above minus a flat mock fee.
+  estimate_tx_draft_fee: (args) => ({
+    feeDoos: 100_000,
+    changeDoos: 0,
+    inputTotalDoos: 5_000_000_000,
+    numInputs: 1,
+    maxSendDoos: args?.max ? 4_999_900_000 : undefined,
+  }),
+
   build_send_hns_draft: (_args) => ({
     id: "draft-mock-001",
     walletProfileId: "webqa-profile",

@@ -377,6 +377,7 @@ pub fn upsert_name_state(
                  VALUES (?1, ?2, '', 'UNKNOWN', ?3)
                  ON CONFLICT(wallet_profile_id, name) DO UPDATE SET
                     state           = 'UNKNOWN',
+                    owner_address   = NULL,
                     owner_txid      = NULL,
                     owner_vout      = NULL,
                     height          = NULL,
@@ -438,6 +439,12 @@ pub fn upsert_name_state(
          ON CONFLICT(wallet_profile_id, name) DO UPDATE SET
             name_hash_hex   = excluded.name_hash_hex,
             state           = excluded.state,
+            -- The address belongs to the outpoint it was resolved for: when
+            -- the node names another owner coin, the old address is stale and
+            -- would keep reading a lost name as ours (it is not resolved here).
+            owner_address   = CASE
+                WHEN owner_txid IS excluded.owner_txid AND owner_vout IS excluded.owner_vout
+                THEN owner_address ELSE NULL END,
             owner_txid      = excluded.owner_txid,
             owner_vout      = excluded.owner_vout,
             height          = excluded.height,
@@ -478,6 +485,8 @@ mod tests {
         conn.execute_batch(include_str!("../sql/007_noncustodial_chain_cache.sql"))
             .unwrap();
         conn.execute_batch(include_str!("../sql/008_noncustodial_name_state.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("../sql/013_owner_address.sql"))
             .unwrap();
         conn.execute(
             "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub)
@@ -698,6 +707,75 @@ mod tests {
         assert_eq!(get_sync_height(&conn, "p1").unwrap(), 12345);
         set_sync_cursor(&conn, "p1", 12400).unwrap();
         assert_eq!(get_sync_height(&conn, "p1").unwrap(), 12400);
+    }
+
+    /// A lost auction read as owned: an earlier read recorded our losing
+    /// reveal (the newest in the name's history) as the owner, with our
+    /// address; the node then named the real owner coin, another bidder's
+    /// winning reveal, and the address stayed ours. The address belongs to an
+    /// outpoint, so a new outpoint drops it; the same outpoint keeps it.
+    #[test]
+    fn a_new_owner_outpoint_drops_the_owner_address_of_the_old_one() {
+        let conn = mem_db();
+        let info = |hash: &str| {
+            serde_json::json!({ "info": {
+                "name": "namehold", "nameHash": "aeb8", "state": "CLOSED",
+                "height": 339035, "renewal": 339035,
+                "owner": { "hash": hash, "index": 0 }
+            }})
+        };
+        upsert_name_state(&conn, "p1", "namehold", &info("ours_losing_reveal")).unwrap();
+        conn.execute(
+            "UPDATE tracked_name_states SET owner_address = 'hs1qours' WHERE name = 'namehold'",
+            [],
+        )
+        .unwrap();
+        let addr = |conn: &Connection| -> Option<String> {
+            conn.query_row(
+                "SELECT owner_address FROM tracked_name_states WHERE name = 'namehold'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        upsert_name_state(&conn, "p1", "namehold", &info("ours_losing_reveal")).unwrap();
+        assert_eq!(
+            addr(&conn).as_deref(),
+            Some("hs1qours"),
+            "same outpoint keeps it"
+        );
+
+        upsert_name_state(&conn, "p1", "namehold", &info("their_winning_reveal")).unwrap();
+        assert_eq!(
+            addr(&conn),
+            None,
+            "a new owner outpoint drops the old address"
+        );
+    }
+
+    #[test]
+    fn a_name_without_info_drops_its_owner_address() {
+        let conn = mem_db();
+        let info = serde_json::json!({ "info": {
+            "name": "gone", "nameHash": "ab", "state": "CLOSED",
+            "owner": { "hash": "ours", "index": 0 }
+        }});
+        upsert_name_state(&conn, "p1", "gone", &info).unwrap();
+        conn.execute(
+            "UPDATE tracked_name_states SET owner_address = 'hs1qours'",
+            [],
+        )
+        .unwrap();
+        upsert_name_state(&conn, "p1", "gone", &serde_json::json!({ "info": null })).unwrap();
+        let addr: Option<String> = conn
+            .query_row(
+                "SELECT owner_address FROM tracked_name_states WHERE name = 'gone'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(addr, None);
     }
 
     #[test]
