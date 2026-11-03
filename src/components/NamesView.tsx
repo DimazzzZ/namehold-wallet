@@ -65,6 +65,7 @@ import {
   NameFiltersPopover,
 } from "./names/NameFiltersPopover";
 import { auctionPhase, formatCountdown, taskStateLabel } from "../lib/auction";
+import { ConfusableNameNote } from "./ConfusableNameNote";
 import { displayName, nameMatches } from "../lib/idn";
 import { icannBadgeTitle } from "../lib/icann";
 import { fromInteractiveChild } from "../lib/rowClick";
@@ -568,6 +569,7 @@ export function NamesView() {
                 ) : null}
               </div>
               {resultText && <div className="text-xs text-gray-600 mt-0.5">{resultText}</div>}
+              <ConfusableNameNote name={result} className="mt-1.5" />
             </div>
             <Button
               size="sm"
