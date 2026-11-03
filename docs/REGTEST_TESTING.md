@@ -79,12 +79,11 @@ pnpm tauri dev
 1. Onboarding → **Create a new wallet**, network **regtest**. A separate
    **secure window** asks for a passphrase, then shows your recovery phrase —
    confirm backup. (The main React UI never sees the phrase.)
-2. Settings → **Node RPC**: URL `http://127.0.0.1:14037`, API key `test`,
-   chain source **Local node**.
+2. **Settings › Connections**: Node RPC URL `http://127.0.0.1:14037`, API key `test`, Chain source **Local full node**; **Save settings** and confirm in the secure window. The wallet's profile network must be regtest.
 
 ## 4. Fund it (mine regtest coins to your receive address)
 
-Copy the **Receive Address** from the Wallet page, then mine to it. On
+Open **Receive** on the Wallet page and copy **Your address**, then mine to it. On
 regtest a coinbase matures after **2** blocks (hsd `coinbaseMaturity`; it is
 100 on mainnet/testnet), so mine a comfortable 110 to have plenty of value:
 
@@ -96,22 +95,22 @@ Back in the app, click **Sync** → the spendable balance should appear.
 
 ## 5. Plain send
 
-Wallet → **Send HNS** → address + amount → **Review** (fee/change preview) →
+Wallet → **Send** → address + amount → **Review** (fee/change preview) →
 **Sign & Broadcast** (unlock in the secure window if locked). Then:
 
 ```sh
 hsd-cli --network=regtest --api-key=test rpc generatetoaddress 1 <anyAddress>
 ```
 
-Sync again; the tx shows under Recent transactions.
+Sync again; the tx shows under Recent activity.
 
 ## 6. Name auction (acquire a fresh name)
 
-In the Owned Names box, type a test name (e.g. `testname`) → **Name actions**:
+On the **Names** page, type a test name (e.g. `testname`) → **Look up** → **Open auction…**:
 
 1. **Open** → broadcast → mine `treeInterval`+1 blocks (regtest treeInterval=5):
    `generatetoaddress 6 <addr>`.
-2. **Bid** (e.g. bid `1000000`, lockup `2000000`) → mine through the bidding
+2. **Bid** (e.g. bid `1`, lockup `2`, in HNS) → mine through the bidding
    period (regtest biddingPeriod=5): `generatetoaddress 6 <addr>`.
 3. **Reveal** → mine through reveal period (regtest revealPeriod=10):
    `generatetoaddress 11 <addr>`.
@@ -122,9 +121,7 @@ Verify on the node: `hsd-cli --network=regtest --api-key=test rpc getnameinfo te
 ## 7. Migration lifecycle (a name you already own)
 
 For a name the wallet owns (after Register, or after a transfer to you):
-**Manage** → **Update** (records JSON), **Renew**, **Transfer** (to another
-address) → mine `transferLockup` blocks (regtest=10) → **Finalize**. **Cancel**
-reverts a pending transfer; **Revoke** burns the name.
+Open the name's page → **DNS records** (Update) or **Transfer & sell** (**Renew**, **Start transfer** to another address) → mine `transferLockup` blocks (regtest=10) → **Finalize**. **Cancel transfer** reverts a pending transfer; **Revoke** burns the name.
 
 Records JSON example for Update/Register:
 
@@ -154,10 +151,10 @@ If a flow passes unit + integration tests but fails on regtest, the regtest resu
 
 ## Notes / known caveats
 
-- Covenant **serialization + signing** match hsd v6.1.1 byte-for-byte and are
+- Covenant **serialization + signing** match hsd 8.0.0 byte-for-byte and are
   unit-tested, but on-chain acceptance of each action is exactly what this
   regtest pass validates — start here before testnet/mainnet.
-- If `getcoinsbyaddress` errors, the node was started without `--index-address`.
+- If coins never appear, the node was started without `--index-address`: hsd answers `GET /coin/address` with an empty list, not an error.
 - REVEAL/REDEEM need the wallet to have **synced** after the BID so it can find
   the bid coin (it matches by the bid address).
 - Remote-node broadcast is gated behind `allow_remote_broadcast`; local node
@@ -189,7 +186,7 @@ The following scenarios must be validated against a running regtest node to conf
 
 | Step | Action | Expected Result |
 |------|--------|----------------|
-| 1 | Open a name (e.g. `newname`) via `NameActionsModal` or `build_open_draft` | OPEN tx broadcasted; phase transitions to `OPENING` |
+| 1 | Open a name (e.g. `newname`) via the Names lookup or `build_open_draft` | OPEN tx broadcasted; phase transitions to `OPENING` |
 | 2 | Mine 10+ blocks until BIDDING phase | Phase shows `BIDDING`; countdown shows blocks until reveal |
 | 3 | Place a blind bid with `bid > 0` and `lockup ≥ bid` | BID tx broadcasted; bid commitment persisted locally |
 | 4 | Mine 10+ blocks until REVEAL phase | Phase shows `REVEAL`; `capabilities.canReveal` is true |
@@ -241,7 +238,7 @@ Run the following command to validate the capability model:
 cd src-tauri && cargo test -- auction_capabilities
 ```
 
-Expected: 55 tests pass covering all task-state derivations and next-action mappings.
+Expected: all tests pass, covering all task-state derivations and next-action mappings.
 
 ### Full Backend Test Suite
 

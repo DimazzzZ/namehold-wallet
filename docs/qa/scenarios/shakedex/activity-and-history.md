@@ -1,5 +1,5 @@
 ---
-area: Shakedex rows in Activity and on Owned Names, and the balance
+area: Shakedex rows in Activity and on the Names page, and the balance
 priority: P1–P3
 blocks: 0
 requires:
@@ -63,7 +63,7 @@ Expected:
 - **Evidence:** screenshots of the rows; the Wallet totals before and after the rebuild.
 - **Cleanup / end state:** nothing changed.
 
-## A1 — Owned Names, My listings, Activity and the balance agree
+## A1 — The Names page, My listings, Activity and the balance agree
 
 - **Priority:** P2
 - **Was:** full QA A1
@@ -72,13 +72,13 @@ Expected:
 
 Steps:
 
-1. For every name a case touched compare its Owned Names row, its My listings row and its Activity rows.
+1. For every name a case touched compare its Names row, its My listings row and its Activity rows.
 2. Add up what the cases paid and received and compare it with the Wallet totals.
 
 Expected:
 
-- The Owned Names badge equals the My listings label (the same N in `Locking · N blocks`).
-- Purchase rows have no checkbox and no `Manage`; a Sold name shows `Sold` on Owned Names for a while and has no owner actions; a Cancelled or aborted name is an ordinary owned row.
+- The Names row badge equals the My listings label (the same N in `Locking · N blocks`).
+- Purchase rows have no checkbox; a Sold name shows `Sold` on the Names page for a while and has no owner actions; a Cancelled or aborted name is an ordinary owned row.
 - Activity rows carry the labels of [ui.md](../../ui.md#activity-labels-for-shakedex).
 - The Wallet balance equals the run's coinbases plus sales, minus purchases and fees (a check from the account xpub and the node's address index is enough; never read the wallet database or the seed).
 - Passes if nothing disagrees.
@@ -96,7 +96,7 @@ Expected:
 Steps:
 
 1. Open Activity; scroll to its foot.
-2. Wallet › Owned Names → `Manage` on any owned name; read every section of the name's actions.
+2. The Names page → open any owned name's page; read every section of the name's actions.
 3. Open the cheatsheet (`Shift+?`) on the Wallet page and on Activity.
 
 Expected:

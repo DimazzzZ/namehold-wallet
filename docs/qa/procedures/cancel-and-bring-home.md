@@ -14,4 +14,4 @@ Cancel a `Listed for sale` (or Restored) listing and finalize the name home.
 
 ## End state
 
-`NAME` is an ordinary owned name of the active profile (Owned Names row with `Manage`, no listing badge); on chain `info NAME` shows `transfer 0` and the owner at the `Name comes home to` address of step 1's secure window. Another profile of the same phrase that tracked the same lock may need a Sync (or more) to read `Cancelled`.
+`NAME` is an ordinary owned name of the active profile (Names row with no listing badge); on chain `info NAME` shows `transfer 0` and the owner at the `Name comes home to` address of step 1's secure window. Another profile of the same phrase that tracked the same lock may need a Sync (or more) to read `Cancelled`.

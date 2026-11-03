@@ -54,16 +54,14 @@ Namehold.
 ## Step-by-step
 
 1. **Import your seed into Namehold.**
-   Open the app → "Create or import wallet" → enter your BIP39 mnemonic. Set
-   a passphrase (required for signing later). The wallet profile is created.
+   Click the wallet card → **Add wallet** → **Import your wallet** → **Import in secure window**, and enter your BIP39 mnemonic there. Set a passphrase (a mainnet wallet needs one of at least 8 characters). The wallet profile is created.
 
 2. **Sync the wallet.**
    Click **Sync** (or wait for the background sync daemon to run). Namehold
    discovers the on-chain BID coin for the name you bid on.
 
 3. **Open the name.**
-   Find the name in the **Auctions** page or **Owned Names** list. Click it
-   to open the **Name Actions** modal.
+   Find the name on the **Names** page, or look it up there, and open its page.
 
 4. **The Recover bid panel appears automatically.**
    When Namehold detects a BID coin in the REVEAL phase with no local
@@ -130,7 +128,6 @@ path instead — you'll need to recall (or narrow down) the value you bid.
 Either the wallet hasn't synced yet (click Sync and try again), or the bid
 was already revealed/redeemed (nothing to recover).
 
-**What if it says "bid value doesn't match" or "no bid value reproduces the
-on-chain blind"?**
+**What if it says "bid value doesn't match" or "no bid value in 0..lockup reproduces the on-chain blind"?**
 The seed you imported doesn't match the wallet that placed the bid. Double-
 check you're using the correct mnemonic.

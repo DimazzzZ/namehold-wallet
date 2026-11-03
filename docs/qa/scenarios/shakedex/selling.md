@@ -25,9 +25,9 @@ A seller locks an owned name, sets its price at Finalize & sign, shares the list
 
 Steps:
 
-1. Owned Names → `Manage` on the Listed name; read the Ownership section and hover each owner action.
-2. Auctions → look the name up → open its actions; read the same.
-3. Press **Sync**, wait, open `Manage` again.
+1. The Names page → open the Listed name's page; read the `Transfer & sell` tab and hover each owner action.
+2. Names → look the name up → open its actions; read the same.
+3. Press **Sync**, wait, open the name's page again.
 4. If at hand, open the name actions of a name that is `Locking · N blocks`, `Ready to Finalize & sign`, `Cancelling`, `Cancelled · finalize to bring it home`, and of one back home after `Cancelled` or `Lock aborted`.
 
 Expected:
@@ -51,27 +51,27 @@ Expected:
 
 Steps:
 
-1. Owned Names → `Manage` on SA → Ownership: `Sell…` is next to Transfer and enabled. Press it and read the Lock dialog `Sell .SA` without changing anything.
+1. The Names page → open SA's page → the `Transfer & sell` tab: `Sell…` is enabled. Press it and read the Lock dialog `Sell .SA` without changing anything.
 2. Pick `Buy Now — one price` → `Lock name` → `Sign and send the lock` → secure window → confirm. Before mining, open Activity filtered by SA.
-3. `mine 1`, Sync. Read the SA row on Owned Names, press its `My listings` button, read the SA row there.
+3. `mine 1`, Sync. Read the SA row on the Names page, press its `My listings` button, read the SA row there.
 4. `mine 9`, Sync → `Finalize & sign` → `Price (HNS)` `5` → `Finalize & sign` → secure window → confirm. Before mining read My listings and Activity.
 5. `mine 1`, Sync. Read the Listed row; `Export listing file` → `$QA_DIR/SA.json`.
 6. `Cancel listing` → read the dialog → `Sign and send the cancel` → read the `Confirm cancel` secure window → confirm. Before mining read the row and Activity; `Export listing file` → `$QA_DIR/SA-cancelling.json`.
 7. `mine 1`, Sync → read the row; export once more.
 8. `mine 9`, Sync → `Finalize home` → read the secure window → confirm. Before mining read the row and Activity.
-9. `mine 1`, Sync → read My listings, Owned Names and SA's name actions; `info SA`.
+9. `mine 1`, Sync → read My listings, the Names page and SA's name actions; `info SA`.
 
 Expected:
 
 - Step 1: the Lock dialog offers the legend `How to sell` with `Buy Now — one price` and `Reverse auction — the price falls step by step to a floor`; there is **no price field**; it says "You set the price, or the schedule, at Finalize & sign, once the transfer lockup is over."; it shows the costs sentence "Once the name is finalized into the lock, its DNS records cannot be changed and it cannot be renewed; the listing lasts at most one renewal window from that finalize, which renews the name." and `Shared as a file only: LearnHNS Market lists mainnet names only`; there is no publish checkbox, no publish privacy note and no near-expiry warning.
 - Step 2: after `Lock name` the dialog shows a `Network fee` row and the buttons `Back` and `Sign and send the lock`; the secure window lists the TRANSFER (`Name action` shakedex_lock); toast "Lock sent. Once the transfer lockup is over, set the price with Finalize & sign in Market › My listings."; Activity shows the draft `Lock for sale`.
-- Step 3: Owned Names and My listings both read `Locking · 9 blocks` (the same N); the `My listings` button opens Market with the My listings tab; the row reads `Buy now`, `Finalize & sign` disabled with "Finalize & sign opens after the transfer lockup", no price line.
+- Step 3: the Names page and My listings both read `Locking · 9 blocks` (the same N); the `My listings` button opens Market with the My listings tab; the row reads `Buy now`, `Finalize & sign` disabled with "Finalize & sign opens after the transfer lockup", no price line.
 - Step 4: the dialog `Finalize & sign .SA` has the single field `Price (HNS)`, no schedule fields, and the sentence "Each signature lets anyone buy the name at its price until the listing is cancelled and the cancel is mined. A price can be lowered later, never raised."; the secure window `Confirm Finalize & sign` lists the finalize fee and `Price step 1` `5.000000 HNS, valid at once`; toast "Finalize sent. The listing becomes Listed for sale once the finalize is mined."; the row reads `Finalizing into the lock` with no buttons; Activity shows `Finalize into lock`.
-- Step 5: `Listed for sale`, `Buy now`, `Price 5.000000 HNS`, the status line `Shared as a file only: LearnHNS Market lists mainnet names only`, the buttons `Lower price`, `Cancel listing`, `Export listing file` and **no** `Publish on LearnHNS Market`; no `All N price steps` disclosure (one step); Owned Names reads `Listed for sale`. Export opens the native Save panel "Save the listing file" without asking to unlock; toast "Listing file saved"; the file is JSON with `version` 2, SA's name and one entry in `data`.
+- Step 5: `Listed for sale`, `Buy now`, `Price 5.000000 HNS`, the status line `Shared as a file only: LearnHNS Market lists mainnet names only`, the buttons `Lower price`, `Cancel listing`, `Export listing file` and **no** `Publish on LearnHNS Market`; no `All N price steps` disclosure (one step); the Names page reads `Listed for sale`. Export opens the native Save panel "Save the listing file" without asking to unlock; toast "Listing file saved"; the file is JSON with `version` 2, SA's name and one entry in `data`.
 - Step 6: the dialog `Cancel the listing of .SA` reads, in order, "Anyone holding the listing file can still buy the name at its current price until this cancel is mined.", "If a purchase of the name is already in your node's mempool, the node does not take this cancel and it is never mined, although the node still answers it with a transaction id.", "Once the cancel is mined and the transfer lockup is over, finalize it to bring the name home." and "The secure window shows the current price and the fee before anything is signed.", with `Keep the listing` and `Sign and send the cancel`, and **no** "Told the listing is cancelled…" sentence. `Confirm cancel` shows `Action` "Cancel the listing", `Network fee (cancel)`, `Current price` `5.000000 HNS`, `Name comes home to` an `rs1…` address, `Lock address`, `Until it is mined`, `A purchase already sent`, `Then`. Toast "Cancel sent. Finalize the name home once it is mined and the lockup is over."; row `Cancelling`, `Lower price` disabled with "a cancel of this listing is not mined yet: its price cannot be lowered", `Export listing file` enabled; Activity shows `Cancel listing`.
 - Step 7: `Cancelled · finalize to bring it home`, `Finalize home` **disabled** with "the cancel can be finalized in 9 blocks" (before a sync has counted it: "the cancel is mined, but its transfer lockup is not counted yet: sync, then finalize it"), export still works.
 - Step 8: the secure window's action is `shakedex_cancel_finalize`, with "This brings the name out of its lock to the address of this wallet the cancel committed to; the listing ends."; toast "Sent. The name comes home once the finalize is mined."; row `Coming home` with `Export listing file` only; Activity shows `Finalize cancel`.
-- Step 9: My listings `Cancelled`, no buttons; SA is an ordinary Owned Names row with `Manage` and no listing badge; its owner actions are enabled (Renew may be disabled for a name just renewed by the FINALIZE); `info SA` shows `transfer 0` and the owner at the step 6 `Name comes home to` address.
+- Step 9: My listings `Cancelled`, no buttons; SA is an ordinary Names row with no listing badge; its owner actions are enabled (Renew may be disabled for a name just renewed by the FINALIZE); `info SA` shows `transfer 0` and the owner at the step 6 `Name comes home to` address.
 - Passes if every state, label, button and sentence above is seen; a missed transient toast is ◐.
 
 - **Blocks mined:** 22
@@ -90,14 +90,14 @@ Steps:
 1. [lock-and-list](../../procedures/lock-and-list.md) SB, Buy Now 5, `EXPORT=$QA_DIR/SB.json`.
 2. [cli-fill](../../procedures/cli-fill.md) left in the mempool with `$QA_DIR/SB.json`. **Do not Sync.**
 3. On the still-Listed row: `Cancel listing` → `Sign and send the cancel`. Then `Lower price` → `4` → `Sign the lower price`.
-4. Sync. Read My listings and Owned Names.
-5. `mine 1`, Sync. Read My listings, Owned Names and Activity; `info SB`.
+4. Sync. Read My listings and the Names page.
+5. `mine 1`, Sync. Read My listings, the Names page and Activity; `info SB`.
 
 Expected:
 
 - Step 3: the cancel is refused before any secure window opens, in the backend's words: "a purchase of this listing is in the node's mempool: the node would not take a cancel now" (or "the lock coin is no longer unspent (bought, cancelled, or being spent in the node's mempool): there is nothing to cancel"; quote which). Lower price is refused likewise: "a purchase of this listing is in the node's mempool: its price cannot be lowered" (or "…: the price cannot be lowered"). Nothing is signed: no `Cancel listing` draft in Activity, the row stays Listed.
-- Step 4: My listings `Sale pending` with only `Export listing file` and no price line; Owned Names `Sale pending`.
-- Step 5: `Sold`, no buttons, no price line, in My listings and on Owned Names (Owned Names may need one more refresh); Activity shows the 5.000000 HNS arriving with the fill's txid as a green `+5.000000`. `getrawmempool` held the fill before the block, with `info SB` still on the lock coin; after it the owner is the fill's TRANSFER.
+- Step 4: My listings `Sale pending` with only `Export listing file` and no price line; the Names page `Sale pending`.
+- Step 5: `Sold`, no buttons, no price line, in My listings and on the Names page (the Names page may need one more refresh); Activity shows the 5.000000 HNS arriving with the fill's txid as a green `+5.000000`. `getrawmempool` held the fill before the block, with `info SB` still on the lock coin; after it the owner is the fill's TRANSFER.
 - Passes if both refusals come before any secure window and the row walks Listed → Sale pending → Sold.
 
 - **Blocks mined:** 12
@@ -140,7 +140,7 @@ Expected:
 
 Steps:
 
-1. `Manage` on SD → `Sell…` → `Reverse auction — the price falls step by step to a floor` → `Lock name` → `Sign and send the lock` → confirm; `mine 1`, Sync; `mine 9`, Sync.
+1. Open SD's page → the `Transfer & sell` tab → `Sell…` → `Reverse auction — the price falls step by step to a floor` → `Lock name` → `Sign and send the lock` → confirm; `mine 1`, Sync; `mine 9`, Sync.
 2. `Finalize & sign` → read the editor; enter start `5`, floor `3`, `3` prices, `15` minutes; read the dialog.
 3. `Finalize & sign` → read the secure window → confirm; `mine 1`, Sync; read the row and open `All 3 price steps`.
 4. `Cancel listing` → read the first sentence → `Keep the listing`.
@@ -171,10 +171,10 @@ Expected:
 
 Steps:
 
-1. `Manage` → `Sell…` → `Lock name` (the `Network fee` row shows) → `Back`. Read My listings, Activity and the balance.
+1. The name's `Transfer & sell` tab → `Sell…` → `Lock name` (the `Network fee` row shows) → `Back`. Read My listings, Activity and the balance.
 2. Again `Lock name` → close the dialog with its close button. Read the same.
 3. Again `Lock name` → press Escape **once**. Read the same; then press Escape again.
-4. Auctions → look the name up → its actions → `Sell…` → Escape once, then once more.
+4. Names → look the name up → its actions → `Sell…` → Escape once, then once more.
 
 Expected:
 
@@ -219,12 +219,12 @@ Expected:
 
 Steps:
 
-1. Owned Names → click the name itself (`.name`, "View name info") → Ownership → hover `Sell…`; press it, then close the dialog without locking.
+1. The Names page → click the name itself (`.name`) → the `Transfer & sell` tab → hover `Sell…`; press it, then close the dialog without locking.
 2. The same on the Locking name.
 
 Expected:
 
-- The same name actions dialog as `Manage`; `Sell…` enabled with no refusal on hover; pressing it opens the Lock dialog.
+- The same name page; `Sell…` enabled with no refusal on hover; pressing it opens the Lock dialog.
 - On the Locking name `Sell…` is disabled, its hover `this name is locked for sale through Shakedex` (or the pending-transfer reason).
 - Passes if both paths open the same dialog; an unreadable hover is ◐.
 
@@ -237,7 +237,7 @@ Expected:
 - **Priority:** P3
 - **Was:** full QA S10
 - **Covers:** R27
-- **Preconditions:** a Listed (or Locking) name and an ordinary name in Owned Names.
+- **Preconditions:** a Listed (or Locking) name and an ordinary name on the Names page.
 
 Steps:
 
@@ -263,11 +263,11 @@ Expected:
 Steps:
 
 1. For each file print `paymentAddr`, `publicKey`, `lockingTxHash` and `lockingOutputIdx`.
-2. Compare them with each other and with the Receive Address shown when each name was locked.
+2. Compare them with each other and with the address shown in Receive when each name was locked.
 
 Expected:
 
-- Every listing pays a different `paymentAddr`, none equal to the Receive Address shown at its lock.
+- Every listing pays a different `paymentAddr`, none equal to the address shown in Receive at its lock.
 - `SE-1.json` and `SE-2.json` carry the same `publicKey` (same lock key and lock address) but a different lock outpoint and a different `paymentAddr`.
 - Passes if no two listings share a payment address.
 

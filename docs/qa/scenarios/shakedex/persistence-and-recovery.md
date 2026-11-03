@@ -24,14 +24,14 @@ What survives a quit, what an unsent transaction looks like on its row, what hap
 Steps:
 
 1. (a) Lock the name, `mine 1`: `Locking · 9 blocks`; quit and relaunch. (b) Likewise once a row is `Listed for sale` and once it is `Cancelling` (fold into S2).
-2. (c) `Sell…` → `Lock name` (the draft is built) → quit instead of `Sign and send the lock` → relaunch, unlock → My listings, Owned Names, Activity.
+2. (c) `Sell…` → `Lock name` (the draft is built) → quit instead of `Sign and send the lock` → relaunch, unlock → My listings, the Names page, Activity.
 3. `Discard` on the row.
 4. Repeat step 2, then press the row's `Sign and send` → secure window → confirm → `mine 1`, Sync.
 
 Expected:
 
 - (a), (b): the state, the block count and the `My listings` button survive the restart.
-- (c): the row reads `Locking` (no block count: nothing is mined), mode `Buy now`, with `Sign and send` and `Discard` beside a disabled `Finalize & sign`; Owned Names shows the listing badge; Activity keeps the `Lock for sale` draft.
+- (c): the row reads `Locking` (no block count: nothing is mined), mode `Buy now`, with `Sign and send` and `Discard` beside a disabled `Finalize & sign`; the Names page shows the listing badge; Activity keeps the `Lock for sale` draft.
 - Step 3: toast "Lock discarded. Nothing was sent: the name stays yours."; the row goes; the name is ordinary; the balance unchanged.
 - Step 4: toast "Sent", then `Locking · 9 blocks`.
 - Passes if the unsent lock survives a restart and can be both discarded and sent. If the draft did not survive the quit, record it with what you saw.
@@ -50,7 +50,7 @@ Expected:
 
 Steps:
 
-1. `Manage` → `Cancel transfer` → the secure window opens → quit the app while it is open → relaunch, unlock; read My listings and Activity.
+1. The name's `Transfer & sell` tab → `Cancel transfer` → the secure window opens → quit the app while it is open → relaunch, unlock; read My listings and Activity.
 2. Optionally `mine 9`, Sync, and read again (the lockup over).
 3. In Activity, `Discard` the Cancel transfer draft; read My listings.
 4. Either finish the listing (Finalize & sign, the case it belongs to), or: `Cancel transfer` → sign and send → **do not mine** → Sync → My listings; then `mine 1`, Sync.
@@ -60,7 +60,7 @@ Expected:
 - Step 1: if the built draft survived, `Finalize & sign` is disabled with "a Cancel transfer of this listing is pending and spends the same coin: Finalize & sign waits until it is dropped, failed or deleted" (not the lockup sentence); Activity shows the draft with `Sign & broadcast` and `Discard`. If it did not survive, record what you saw.
 - Step 2: the same reason after the lockup.
 - Step 3: (a confirm may appear first) the draft goes; `Finalize & sign` is back, disabled only by the lockup reason, or enabled once Ready.
-- Step 4, sent and unmined: the same pending reason while the abort sits in the mempool. After the block: `Lock aborted`, no buttons; Owned Names shows the name as an ordinary owned name with no listing badge; `info` shows `transfer 0`.
+- Step 4, sent and unmined: the same pending reason while the abort sits in the mempool. After the block: `Lock aborted`, no buttons; the Names page shows the name as an ordinary owned name with no listing badge; `info` shows `transfer 0`.
 - Passes if Finalize & sign is never offered while the abort is pending and the abort ends the listing.
 
 - **Blocks mined:** 0–10
@@ -96,7 +96,7 @@ Expected:
 - **Priority:** P2
 - **Was:** full QA X5
 - **Covers:** R6, R7, R13, R19
-- **Preconditions:** rows in `Listed for sale`, `Locked — listing details unknown` and a purchase `Ready to finalize` (or awaiting); a listing file at hand.
+- **Preconditions:** rows in `Listed for sale`, `Locked — listing details unknown` and a purchase `Bought · ready to finalize` (or awaiting); a listing file at hand.
 
 Steps:
 
@@ -125,7 +125,7 @@ Expected:
 
 Steps:
 
-1. After the `mine`, do not press Sync; watch My listings and Owned Names for up to 3 minutes.
+1. After the `mine`, do not press Sync; watch My listings and the Names page for up to 3 minutes.
 
 Expected:
 
@@ -167,7 +167,7 @@ Steps:
 
 1. Check that `namehold-syncd` runs and was started from the installed build (`ps -o lstart= -p $(pgrep -x namehold-syncd)` later than the install); an older process is a leftover, not the build under test.
 2. Quit the app; [cli-fill](../../procedures/cli-fill.md) mined at once with the file; wait 2–3 minutes (the daemon syncs about every 60 s).
-3. Relaunch, and before any Sync read My listings and Owned Names.
+3. Relaunch, and before any Sync read My listings and the Names page.
 
 Expected:
 

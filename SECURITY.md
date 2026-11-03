@@ -48,7 +48,7 @@ Namehold.
 **Mitigations (3 layers):**
 
 - Cookie never sent to renderer: `get_settings` redacts the raw cookie and
-  emits only `__has_namebase_cookie: "true"` (`commands/settings.rs:12-16`)
+  emits only `__has_namebase_cookie: "true"` (`commands/settings.rs::get_settings`)
 - Renderer cannot write the cookie or base URL: `update_setting` is an allowlist (`security.rs::RENDERER_SETTING_KEYS`) and refuses any other key before any DB mutation
 - Per-transaction confirmation in a separate Rust-owned window, and signing bound to what it shows: before signing any transaction, `sign_tx_draft` asks for explicit confirmation in the secure window (`commands/tx.rs::sign_tx_draft_confirmed`, `prompt_secure`). A send shows its recipient, amount, fee, the total leaving the wallet and its txid, and a Max send says it sweeps the wallet. A send to an address this wallet has not paid before, and that is not its own, says so. A name action's rows are computed from the plan that is signed (`noncustodial/review.rs`): its names come from the covenants' name hashes, a transfer's recipient from the address its covenant commits to, a finalize's from the output that receives the name, a bid's value from the wallet's own record checked against the blind the BID commits to, with the amount locked until reveal, and the fee and txid from the plan's own inputs and outputs; a draft whose rows cannot be shown truthfully is refused. A revoke asks for the name to be typed, and the backend checks what was typed. Signing then refuses unless the transaction it signs is the one reviewed (`ensure_reviewed`, `ensure_signed_is_reviewed`): a send signs only the coins it reserved when it was built, never the wallet's other coins, its change must go to the account's own change address re-derived from the xpub (any plan's change likewise, for every signer), and the signed transaction's txid must be the one the window showed. Residual risk, not mitigated: a process that can write the database could rewrite a draft's plan and summary together; the window then shows that draft truthfully, but the user must read it.
 - A file the backend reads at a path the renderer names (a watchlist, name-list or Namebase-history import) goes through `commands/user_file.rs::read_chosen_file`: a symbolic link or anything but a regular file is refused (`O_NOFOLLOW`), a file over 8 MiB or not UTF-8 text is refused, and the importers store only rows whose name is a Handshake name, never repeating a refused row's text, so a compromised webview cannot use an import to copy another file (`~/.hsd/hsd.conf`, a key file) into rows it reads back (`watchlist_cmd_tests::import_refuses_a_file_whose_rows_are_not_names_and_stores_nothing`, `csv_cmd_tests::import_csv_stores_only_handshake_names_and_never_echoes_a_refused_row`).
@@ -86,7 +86,7 @@ VS Code, etc.).
 **Mitigations:**
 
 - Release builds: `test_base_url_override` returns empty
-  (`commands/namebase.rs:24-27`); the base URL is compile-time locked to
+  (`commands/namebase.rs::test_base_url_override`); the base URL is compile-time locked to
   `https://sunset.namebase.io`
 - Debug/test builds: `validate_base_url` (`namebase/client.rs:184`) enforces a
   strict host allowlist + HTTPS requirement; loopback accepted only under
@@ -99,7 +99,7 @@ The [hsd API documentation](https://hsd-dev.org/api-docs/#authentication)
 explicitly states: *"If you intend to use API via network and setup api-key,
 make sure to setup ssl too."*
 
-**Mitigation:** `guard_transport` (`noncustodial/rpc.rs:139`) enforces this
+**Mitigation:** `guard_transport` (`noncustodial/rpc.rs::guard_transport`) enforces this
 requirement:
 
 - `https://` is accepted for any host (key retained)
@@ -107,21 +107,14 @@ requirement:
   `localhost`)
 - Remote `http://` with a non-empty api-key is **rejected** with a clear error
 - If `NodeRpcClient::new` is called with a remote HTTP URL, it blanks the
-  api-key defensively (`rpc.rs:172-184`) so the key is never sent cleartext
+  api-key defensively (`noncustodial/rpc.rs::NodeRpcClient::new`) so the key is never sent cleartext
   even if the guard is somehow bypassed
 
 This fully complies with the hsd node API's security guidance.
 
 ### The lower-risk alternative (documented, not enforced)
 
-Users who want zero credential exposure on their device can use Namebase's own
-web UI to initiate transfers/withdrawals to an address generated in Namehold,
-then use Namehold's chain-monitoring to confirm arrival. This workflow:
-
-- Requires no session cookie to be stored locally
-- Trades batch operations and in-app visibility for zero credential exposure
-- Is fully supported by Namehold's core functionality (address generation,
-  chain monitoring, name tracking)
+Namebase's web UI closed with the platform on 1 October 2026, so this alternative no longer exists. Anything left there goes through Namebase's manual recovery process.
 
 ### Feature scope (bounding the blast radius)
 
@@ -139,8 +132,7 @@ wallet functionality.
 
 The background sync daemon (`namehold-syncd`) is a separate Rust binary that:
 
-- Runs every 60 seconds when "Sync in background" is enabled (Settings →
-  Connections, default ON).
+- Runs every 60 seconds when "Sync in background" is enabled (Settings › Node & tray, default ON).
 - Reads wallet profiles (UTXOs, name states, transactions) from the local hsd
   node via RPC.
 - Writes sync data to the shared SQLite database (`~/.namehold/portfolio.db`).
@@ -163,8 +155,7 @@ Before treating `syncd.pid` as the live daemon or signalling it, the app verifie
 **Behavior (not a vulnerability):** When "Sync in background" is ON, hsd is not
 killed when the app closes. The daemon keeps it alive for background syncing.
 This is intentional — the next app launch adopts the running hsd. To stop hsd,
-disable "Sync in background" or manually click **Stop hsd** in Settings →
-Connections.
+disable "Sync in background" or manually click **Stop mainnet node** (named for the wallet's network) in Settings › Node & tray.
 
 **Residual risk (honest disclosure):** An attacker with local code execution as
 the app user could potentially interact with the orphaned hsd node (e.g., via
@@ -287,7 +278,7 @@ The Market lists names for sale through Shakedex, read from the LearnHNS Market 
 
 | Concern | Mitigation | Location | Tests |
 |---------|-----------|----------|-------|
-| Renderer reads cookie | Redacted; presence marker only | `settings.rs:12-16` | `settings_cmd_tests` |
+| Renderer reads cookie | Redacted; presence marker only | `settings.rs::get_settings` | `settings_cmd_tests` |
 | Renderer writes cookie | `update_setting` allowlist (`RENDERER_SETTING_KEYS`) | `security.rs` | `settings_cmd_tests` |
 | Renderer writes base URL | `update_setting` allowlist (`RENDERER_SETTING_KEYS`) | `security.rs` | `settings_cmd_tests` |
 | Renderer changes the hsd program, node, explorer or an API key | `update_setting` refuses them; written only after a secure-window confirmation; the stored program is re-validated before each run | `security.rs` (`PROTECTED_SETTING_KEYS`), `protected_settings.rs` | `protected_settings_tests`, `settings_cmd_tests::update_setting_refuses_every_protected_key_and_leaves_its_row` |
@@ -296,12 +287,12 @@ The Market lists names for sale through Shakedex, read from the LearnHNS Market 
 | Generated node key reaches another process | New key per start, sent only to the app's own running node on the network's default port; a held port refuses the start | `noncustodial/rpc.rs` (`managed_node_api_key_for_url`), `commands/node.rs`, `noncustodial/node_config.rs` | `node_lifecycle_tests` |
 | Stale node decides which coins are spent | Coins are updated only from a synced node with a recent tip | `noncustodial/rpc.rs`, `commands/sync.rs` | `sync_race_tests::{node_step_against_a_node_with_an_old_tip_marks_nothing_spent, node_step_against_a_node_behind_the_tip_marks_nothing_spent}` |
 | Lock coin signed over twice | Every FINALIZE txid with stored steps is recorded and refused for good | `commands/shakedex.rs`, `db/queries.rs` (`shakedex_signed_lock_txids`) | `shakedex_sell_tests::{a_resigned_finalize_never_reuses_a_lock_coin_steps_were_signed_over, a_finalize_the_sync_reverted_stays_refused_at_the_same_tip, deleting_the_wallet_keeps_the_signed_lock_record, finalize_and_sign_returns_no_step_signatures}`, `shakedex_my_listings_tests::my_listings_carry_no_step_signatures` |
-| Base URL redirect (production) | Release build ignores setting | `namebase.rs:24-27` | `namebase.rs::tests` |
+| Base URL redirect (production) | Release build ignores setting | `namebase.rs::test_base_url_override` | `namebase.rs::tests` |
 | Cookie on disk (offline attacker) | AES-256-GCM under OS-keyring DEK | `cookie_vault.rs` | `cookie_vault::tests` |
 | Signing without confirmation | Rust-owned secure window | `tx.rs::sign_tx_draft_confirmed` (`prompt_secure`) | `tx_lifecycle_tests` |
 | Signing something other than what the window showed | Rows of a name action computed from its plan; a send signs only its reserved coins; change re-derived; signed txid must equal the reviewed one; a revoke needs the name typed | `noncustodial/review.rs` (`covenant_rows`), `commands/tx.rs` (`ensure_reviewed`, `ensure_signed_is_reviewed`) | `review_tests`, `tx_lifecycle_tests::{a_max_send_never_sweeps_a_coin_that_arrived_after_it_was_reviewed, a_send_whose_reservation_was_released_is_refused_before_the_window_opens, signing_refuses_a_send_whose_change_is_not_the_wallets_change_address, signing_refuses_a_name_plan_whose_change_is_not_ours, a_revoke_is_signed_only_once_its_name_is_typed_in_the_window, the_window_shows_a_bids_value_from_the_wallets_record}` |
-| RPC api-key sent cleartext | `guard_transport` rejects remote HTTP | `rpc.rs:139-168` | `rpc.rs::tests` |
-| Audit log leaks secrets | Redacted to `***` on write; re-redacted on read | `settings.rs:40-41, 68-69` | `settings_cmd_tests` |
+| RPC api-key sent cleartext | `guard_transport` rejects remote HTTP | `rpc.rs::guard_transport` | `rpc.rs::tests` |
+| Audit log leaks secrets | Redacted to `***` on write; re-redacted on read | `settings.rs::log_setting_change`, `get_audit_log` | `settings_cmd_tests` |
 | Market redirect or host swap | HTTPS LearnHNS host only, no redirects, override debug-only | `market/learnhns.rs` | `learnhns_tests` |
 | Tampered listing or price | Verified on the profile's node; price re-checked before broadcast | `noncustodial/shakedex/verify.rs` | `shakedex_verify_tests`, `shakedex_cmd_tests` |
 | Ledger signs a foreign input, a lock coin or a Shakedex draft | Draft signing refuses every Shakedex draft by action and a lock-key or foreign plan by shape; the device signer refuses foreign, lock-key and custom-sequence or lock-time plans by shape only, and cannot see the action | `commands/tx.rs`, `providers/ledger/signing.rs` | `ledger_plan_guard_tests` |
@@ -327,7 +318,7 @@ A release runs four jobs. `prepare` refuses a commit that is not in main's histo
 
 `scripts/check-supply-chain.mjs` enforces the job list, permissions, guard steps, SHA pins and the place of the signing secrets. It reads workflows line by line and refuses YAML it could misread (flow mappings, quoted or tagged keys, double-quoted escapes, anchors, aliases, merge keys). That check catches mistakes in review. It does not stop a workflow pushed to a branch, which runs before review, or someone with write access, who can edit the check in the same commit.
 
-Each release carries `SHA256SUMS` and a `.sig` for every file, the dmg included. They use the updater key, online in the workflow, so they show a file matches what the workflow signed and do not protect against someone who holds that key or can run the sign job. macOS and Windows builds are not code-signed.
+Each release carries `SHA256SUMS` and a `.sig` for every file, the dmg included, except `latest.json`, whose entries carry the signatures. They use the updater key, online in the workflow, so they show a file matches what the workflow signed and do not protect against someone who holds that key or can run the sign job. macOS and Windows builds are not code-signed.
 
 ---
 

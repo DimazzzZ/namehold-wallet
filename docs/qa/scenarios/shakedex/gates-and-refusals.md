@@ -18,12 +18,12 @@ What may sign, and what the backend refuses before anything is signed. A gate re
 - **Priority:** P1
 - **Was:** full QA G1; T7 S8.2
 - **Covers:** R6, R29
-- **Preconditions:** the seller profile with an ordinary owned name, a Listed row, an imported buyable row on Browse, and if possible a Restored row (second device) and a purchase `Ready to finalize`.
+- **Preconditions:** the seller profile with an ordinary owned name, a Listed row, an imported buyable row on Browse, and if possible a Restored row (second device) and a purchase `Bought · ready to finalize`.
 
 Steps:
 
 1. Settings → Connections → untick `Allow sending via remote node` → `Save settings`. Note the original value first.
-2. (a) Owned Names → `Manage` on the ordinary name → `Sell…`; (b) Market › Browse; (c) My listings; (d) `Restore a lock by name` with a name typed; (e) on a Restored row, `Import its listing file`; (f) on a purchase `Ready to finalize`, `Finalize` in Owned Names and in Market › Your purchases.
+2. (a) The Names page → open the ordinary name's page → the `Transfer & sell` tab → `Sell…`; (b) Market › Browse; (c) My listings; (d) `Restore a lock by name` with a name typed; (e) on a Restored row, `Import its listing file`; (f) on a purchase `Bought · ready to finalize`, `Finalize` on the Names page and in Market › Your purchases.
 3. Tick it back → `Save settings`; check every item again.
 
 Expected:
@@ -33,7 +33,7 @@ Expected:
 - (c) Every signing button (Lower price, Cancel listing, Finalize & sign, Finalize home) disabled with the sentence printed under the row; `Export listing file` stays enabled.
 - (d) `Restore` disabled, the sentence under the section.
 - (e) `Import its listing file` disabled with the sentence (if the dialog opens instead, `choose a file…` and `Import` are disabled with it).
-- (f) `Finalize` disabled with the sentence, in Owned Names as a hover and in Your purchases printed above its rows.
+- (f) `Finalize` disabled with the sentence, on the Names page as a hover and in Your purchases printed above its rows.
 - After step 3 everything is enabled again. Nothing refuses with another reason.
 - Passes if every entry point is gated by that sentence and released after; unreadable hovers are ◐.
 
@@ -53,7 +53,7 @@ Steps:
 1. [switch-profile](../../procedures/switch-profile.md) to the watch-only profile.
 2. Market › Browse → import the CLI file.
 3. Market › My listings: read `Restore a lock by name`.
-4. Auctions → look up an ordinary name the seller owns → its actions.
+4. Names → look up an ordinary name the seller owns → its actions.
 5. Optional (P3): if Add wallet offers an extended-private-key import on regtest, create a throwaway profile and repeat steps 2 and 4; delete nothing.
 
 Expected:
@@ -128,7 +128,7 @@ Expected (each in red under the fields, the submit button disabled, unless noted
 
 Steps:
 
-1. On the ordinary name: Ownership → `Transfer` to a new hsd wallet address (`W getnewaddress`) → sign and send → `mine 1`, Sync → open its actions; hover `Sell…` (and press it if it is enabled, then `Lock name`).
+1. On the ordinary name: the `Transfer & sell` tab → `Start transfer` to a new hsd wallet address (`W getnewaddress`) → sign and send → `mine 1`, Sync → open its actions; hover `Sell…` (and press it if it is enabled, then `Lock name`).
 2. `Cancel transfer` it → sign and send → `mine 1`, Sync (don't lose the name).
 3. On the Locking name: open its actions; hover `Sell…`.
 

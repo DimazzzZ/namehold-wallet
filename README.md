@@ -4,7 +4,7 @@
 
 Namehold is a local desktop wallet for **Handshake (HNS)**: hold HNS, manage the
 names you own, run the full name-auction lifecycle, and edit on-chain DNS — all
-non-custodially, with your keys encrypted on your own machine. It used to include a **Move from Namebase** helper; the legacy custodial Namebase closed on 1 October 2026, so that screen now explains the shutdown and keeps only the import of history you exported earlier.
+non-custodially, with your keys encrypted on your own machine. It used to include a **Move from Namebase** helper; the legacy custodial Namebase closed on 1 October 2026, so that part of the app, now Import from Namebase under Settings › Backup & import, explains the shutdown and keeps only the import of history you exported earlier.
 
 Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 
@@ -70,10 +70,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
   confirm each send, bid, or covenant action on-screen. Requires the official
   [`ledger-app-hns`](https://github.com/handshake-org/ledger-app-hns) firmware.
 - **Multiple wallets** — switch between them and delete ones you no longer need.
-- **Receive** — your address with a QR code and one-click copy. Expand "View all
-  addresses" to see the full list of derived receive addresses with derivation
-  index, used/fresh badge, first-seen date, copy/QR/explorer buttons, and a
-  "Generate new address" button to allocate the next unused index.
+- **Receive** — a dialog with your address, a QR code and one-click copy. "All addresses" lists every derived receive address with its derivation index, used/fresh badge and copy/QR/explorer buttons, and "New address" allocates the next unused index.
 - **Per-wallet balances** — each wallet shows its own balance; values persist and
   refresh on demand (no bleed between wallets).
 
@@ -95,20 +92,18 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
 - The complete Vickrey-auction lifecycle: **open, bid, reveal, redeem, register,
   update, transfer, finalize, cancel, renew, revoke**.
 - **Phase badges + countdowns** for each owned name, a **reveal-required alert**,
-  and a **"Locked in Auctions"** balance for in-flight bids.
-- A typed **DNS-record editor** (TXT/A/AAAA/NS/CNAME…) for register/update, with a
+  and a **"Locked in auctions"** balance for in-flight bids.
+- A typed **DNS-record editor** (TXT, NS, DS, GLUE4/6, SYNTH4/6) for register/update, with a
   raw-JSON fallback.
 - **Several bids on one name**, each with its own value and lockup; Reveal and
   Redeem take all of them in one transaction.
 - **Batch operations** — bid, renew, reveal, redeem, finalize or transfer multiple
-  names in a single transaction. Multi-select checkboxes on the Owned Names table with a
+  names in a single transaction. Multi-select checkboxes on the Names page with a
   batch action bar and a confirmation modal showing estimated fee + name list.
-- **Name watchlist** — track names you don't own for monitoring. Watchlist page
-  in the sidebar with add/remove, tags, CSV import/export, and "Add to
-  Watchlist" buttons in name modals.
+- **Watching names** — track names you don't own on the Names page's Watching chip, with a star on every row, tags, and CSV import/export.
 - **ICANN collision flag** — a name that someone has also applied for as a new gTLD in ICANN's 2026 round carries an ICANN badge on the Names page and on its own page, Details names the applicants with links to their applications, and a Names filter shows every such name. The list ships with the app (`just icann-strings` refreshes it); the app never contacts ICANN.
-- **Buy names on the Market** — browse LearnHNS Market listings, verified against your own node, or import a listing file, pasted JSON or a market.learnhns.com link, and buy at the current step. One list with search, filters and sorting sits beside a panel that shows the selected listing's price, what your node checked, and the price, market fee and network fee before you buy; the purchase then shows in Your purchases and Owned Names until you finalize it. Needs a node and a recovery-phrase wallet; on mainnet, buying is behind "Allow buying and selling names on mainnet through Shakedex (experimental)" in Settings, which the Market offers to turn on.
-- **Sell names through Shakedex** — Sell, in a name's actions, locks the name for sale as a Buy Now or a reverse auction; once the transfer lockup is over, Finalize & sign sets the price or the schedule and signs every price at once. Market › My listings follows each listing to Sold or back home, with Lower price, Cancel listing and Finalize home, and Export listing file, and warns before buyers stop seeing a listing whose name nears expiry. A wallet restored from its recovery phrase finds its locked names on its first sync (Find my locks, or Restore a lock by name, for the rest), and a listing managed from another device of the same phrase is recognised and can be taken over. The listing file is a Shakedex v2 listing that the shakedex CLI can buy; on mainnet it can also be published on LearnHNS Market, where the app and the background daemon keep it at its current price. Needs a node that can send and a recovery-phrase wallet; mainnet selling is behind the same experimental setting as buying.
+- **Buy names on the Market** — browse LearnHNS Market listings, verified against your own node, or import a listing file, pasted JSON or a market.learnhns.com link, and buy at the current step. One list with search, filters and sorting sits beside a panel that shows the selected listing's price, what your node checked, and the price, market fee and network fee before you buy; the purchase then shows in Your purchases and on the Names page until you finalize it. Needs a node and a recovery-phrase wallet; on mainnet, buying is behind "Allow buying and selling names on mainnet through Shakedex (experimental)" in Settings, which the Market offers to turn on.
+- **Sell names through Shakedex** — Sell…, on a name's Transfer & sell tab, locks the name for sale as a Buy Now or a reverse auction; once the transfer lockup is over, Finalize & sign sets the price or the schedule and signs every price at once. Market › My listings follows each listing to Sold or back home, with Lower price, Cancel listing and Finalize home, and Export listing file, and warns before buyers stop seeing a listing whose name nears expiry. A wallet restored from its recovery phrase finds its locked names on its first sync (Find my locks, or Restore a lock by name, for the rest), and a listing managed from another device of the same phrase is recognised and can be taken over. The listing file is a Shakedex v2 listing that the shakedex CLI can buy; on mainnet it can also be published on LearnHNS Market, where the app and the background daemon keep it at its current price. Needs a node that can send and a recovery-phrase wallet; mainnet selling is behind the same experimental setting as buying.
 - **Recover lost bids** — if you lose your local bid data (reinstall, seed-
   restore, import from another wallet), Namehold can brute-force the bid value
   from your seed and reveal it before the window closes. See
@@ -125,7 +120,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
   (https://shakeshift.com) for viewing on-chain details.
 
 ### Move from Namebase (retired)
-- The legacy custodial Namebase (sunset.namebase.io) shut down on 1 October 2026 and no longer answers, so the wallet can no longer connect to it, list, transfer or withdraw. The screen says so, points to Namebase's sunset guide for the manual recovery of anything left there, and still imports an account-history CSV you exported earlier.
+- The legacy custodial Namebase (sunset.namebase.io) shut down on 1 October 2026 and no longer answers, so the wallet can no longer connect to it, list, transfer or withdraw. The notice in Settings › Backup & import says so, points to Namebase's sunset guide for the manual recovery of anything left there, and still imports an account-history CSV you exported earlier.
 
 ### Auto-update (since v0.2.0)
 - Namehold checks for updates automatically ~30 seconds after launch. When a
@@ -163,23 +158,20 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
   --index-tx`.
 - **Explorer failover** — all explorer HTTP requests support automatic failover to a
   configurable fallback URL.
-- **SPV indicator** in the StatusStrip — shows "Explorer (SPV)" when in SPV mode.
+- **SPV indicator** in the readiness pill's panel — reads "Reads from the explorer (SPV)" when in SPV mode.
 
 ### Keyboard-first navigation
 
 - **Command palette** (⌘K / Ctrl+K) — fuzzy-searchable list of navigation targets
   and view actions on the current page. Type to filter, ↑/↓ to move, Enter to run.
 - **Cheatsheet** (Shift+?) — overlay documenting all bindings for the current page.
-- **Sections** — `1` Wallet, `2` Activity, `3` Auctions, `4` Market, `5` Watchlist,
-  `6` Move from Namebase, `7` Settings.
+- **Sections** — `1` Wallet, `2` Names, `3` Market, `4` Activity, `5` Settings.
 - **Per-page shortcuts** — common flows without the mouse:
-  - **Wallet** (`/`): `s` send, `r` refresh, `u` unlock, `q` toggle QR, `/` filter
-    names, `j`/`k` + Enter to walk owned names
-  - **Auctions** (`/auctions`): `/` lookup, `b` batch bid
+  - **Wallet** (`/`): `s` send, `r` sync, `u` lock or unlock, `q` open Receive
+  - **Names** (`/names`): `/` find a name, `b` batch bid, `j`/`k` + Enter to walk the list and open a name
   - **Market** (`/market`): `/` search, `i` import a listing, `j`/`k` + Enter to
     walk the list and press the listing panel's button
   - **Activity** (`/activity`): `/` search
-  - **Watchlist** (`/watchlist`): `a` add name, `e` export CSV
 
 ## How it works
 
@@ -195,7 +187,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
 - **Write-capability gating.** Spend/name actions are enabled only when the signer
   is unlocked **and** the node is reachable, synced, and address-indexed — with a
   precise reason shown when any condition isn't met.
-- **Background sync daemon.** When "Sync in background" is enabled (Settings → Connections, default ON), a separate Rust binary syncs all profiles every 60s. A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync and the daemon via heartbeats (10s) and stale-lock takeover (30s); the app's Sync takes the lock from a daemon run. A run whose lock is taken over stops at its next check, within one heartbeat, and the LearnHNS Market jobs read the lock row before each listing, so they stop at once. The daemon writes its PID to `~/.namehold/syncd.pid` for lifecycle tracking.
+- **Background sync daemon.** When "Sync in background" is enabled (Settings › Node & tray, default ON), a separate Rust binary syncs all profiles every 60s. A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync and the daemon via heartbeats (10s) and stale-lock takeover (30s); the app's Sync takes the lock from a daemon run. A run whose lock is taken over stops at its next check, within one heartbeat, and the LearnHNS Market jobs read the lock row before each listing, so they stop at once. The daemon writes its PID to `~/.namehold/syncd.pid` for lifecycle tracking.
 
 ## Security
 
@@ -243,8 +235,7 @@ hsd --index-address --index-tx --api-key=<your-key>
 
 - `--index-address` is **required** (the wallet finds your coins by address);
   `--index-tx` backs transaction history + confirmation tracking.
-- The app can manage hsd for you — set the **data directory** and (if needed) the
-  **hsd binary path** in **Settings → Connections**, then click **Start mainnet node** (it names the active wallet's network).
+- The app can manage hsd for you — set the **data directory** and (if needed) the **hsd binary path** in **Settings › Node & tray**, then click **Start mainnet node** there or in the readiness pill (it names the active wallet's network).
 - **hsd can't add an index to an already-synced chain.** If your existing chain
   was synced without these indexes, the app detects it and offers a **one-click
   re-sync** (it moves the old chain to a backup and re-syncs with the right indexes).
@@ -260,7 +251,7 @@ See [`docs/NODE_SETUP.md`](docs/NODE_SETUP.md) and
 
 ## Move from Namebase
 
-The legacy custodial Namebase (sunset.namebase.io) closed on 1 October 2026 and answers every request with "Namebase has shut down", so this helper can no longer connect, list your custodial domains, transfer names out or withdraw HNS. Namebase's own guide says anything still held there now goes through a manual recovery process with extra verification and fees; the **Move from Namebase** screen links to it. What still works is importing an account-history CSV you exported from Namebase before the shutdown.
+The legacy custodial Namebase (sunset.namebase.io) closed on 1 October 2026 and answers every request with "Namebase has shut down", so this helper can no longer connect, list your custodial domains, transfer names out or withdraw HNS. Namebase's own guide says anything still held there now goes through a manual recovery process with extra verification and fees; the notice in **Settings › Backup & import › Import from Namebase** links to it. What still works is importing an account-history CSV you exported from Namebase before the shutdown.
 
 ## Build for production
 
@@ -291,7 +282,7 @@ minisign -V -m SHA256SUMS -x SHA256SUMS.minisig -p namehold.pub
 gh attestation verify Namehold_*.dmg --repo DimazzzZ/namehold-wallet
 ```
 
-Every file on the release has its own `.sig`, checked the same way. These show that a file matches what the release workflow built and signed. They are made with the key that also signs updates, online in that workflow, so they do not protect against someone who has stolen that key.
+Every file on the release except `latest.json`, whose entries carry the signatures, has its own `.sig`, checked the same way. These show that a file matches what the release workflow built and signed. They are made with the key that also signs updates, online in that workflow, so they do not protect against someone who has stolen that key.
 
 On first launch macOS may show:
 

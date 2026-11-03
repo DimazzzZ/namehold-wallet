@@ -32,7 +32,7 @@ Steps:
 4. `Restore` SE once more ([R4](#r4--restore-refusals)(g)).
 5. `Cancel listing` → read the first sentence → `Sign and send the cancel` → read the secure window → confirm.
 6. Continue [cancel-and-bring-home](../../procedures/cancel-and-bring-home.md) from its step 2 in this profile.
-7. [switch-profile](../../procedures/switch-profile.md) back to the seller, Sync (twice if needed); read My listings and Owned Names; `info SE`.
+7. [switch-profile](../../procedures/switch-profile.md) back to the seller, Sync (twice if needed); read My listings and the Names page; `info SE`.
 
 Expected:
 
@@ -60,14 +60,14 @@ Steps:
 1. Seller: [lock-and-list](../../procedures/lock-and-list.md) SF, Buy Now 5, `EXPORT=$QA_DIR/SF.json`.
 2. Second device: [restore-and-import](../../procedures/restore-and-import.md) SF without a file: `Locked — listing details unknown`.
 3. Terminal: [cli-fill](../../procedures/cli-fill.md) mined at once with `$QA_DIR/SF.json`.
-4. Second device: Sync; read My listings and Owned Names.
+4. Second device: Sync; read My listings and the Names page.
 5. Seller: [switch-profile](../../procedures/switch-profile.md), Sync; read the same.
 
 Expected:
 
 - The second device's row becomes `Sold`, no buttons (found from the price step's `0x84` signature, with no payment address known here).
 - The seller's row reads `Sold` (it may show `Listed for sale` while its first sync runs).
-- Neither shows `Listed for sale` once synced. Note in each profile whether Owned Names lists SF and with which label. `info SF` shows the fill's TRANSFER as the owner.
+- Neither shows `Listed for sale` once synced. Note in each profile whether the Names page lists SF and with which label. `info SF` shows the fill's TRANSFER as the owner.
 - Passes if both profiles end `Sold`.
 
 - **Blocks mined:** 12
@@ -161,11 +161,11 @@ Expected:
 
 Steps:
 
-1. In both profiles: My listings → find the expired row; Owned Names; Sync.
+1. In both profiles: My listings → find the expired row; the Names page; Sync.
 
 Expected:
 
-- `Expired in the lock`, no buttons, no price line, in every profile that tracks it (a Restored lock included); not on Owned Names; unchanged by Sync.
+- `Expired in the lock`, no buttons, no price line, in every profile that tracks it (a Restored lock included); not on the Names page; unchanged by Sync.
 - Passes if seen as above; with no expired row on the chain, record BLOCKED ✗.
 
 - **Blocks mined:** 0

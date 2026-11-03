@@ -85,7 +85,7 @@ Creating them (mode B, or when a profile is missing):
 
 ## Funding the app
 
-Read the seller's **Receive Address** (`rs1…`) on the Wallet page, then `mine 12 <rs1…>` and **Sync**: the coinbases mature 2 blocks later. At heights past 20 000 a block pays under 8 HNS, so mine more if the buying cases need it (a full buying run spends about 30 HNS on purchases).
+Open Receive on the Wallet page and read **Your address** (`rs1…`), then `mine 12 <rs1…>` and **Sync**: the coinbases mature 2 blocks later. At heights past 20 000 a block pays under 8 HNS, so mine more if the buying cases need it (a full buying run spends about 30 HNS on purchases).
 
 ## Test names for a run
 
@@ -113,12 +113,12 @@ for n in qxb$TAG qxc$TAG qxd$TAG; do W sendbid $n 1 2 >/dev/null; W sendbid $n 0
 mine 6                                                            # REVEAL, else mine 1
 W sendreveal >/dev/null; mine 11                                  # CLOSED, else mine 1
 for n in $APP_NAMES $CLI_NAMES; do W sendupdate $n '{"records":[{"type":"TXT","txt":["shakedex-cli-sell"]}]}' >/dev/null; done; mine 1
-APP=<the seller's Receive Address, rs1…>
+APP=<the seller's address from Receive, rs1…>
 for n in $APP_NAMES; do W sendtransfer $n $APP >/dev/null; done; mine 11
 for n in $APP_NAMES; do W sendfinalize $n >/dev/null; done; mine 1
 ```
 
-Then **Sync** in the seller profile: all six app names appear in Owned Names, and `info <n>` shows `transfer 0` with the owner at the app's address. If they do not, that is a finding (owned-name discovery); fall back to the in-app auction ([REGTEST_TESTING.md](../REGTEST_TESTING.md) §6, about 25 blocks for all names at once). When a case will use X5, add `qxe$TAG` to `CLI_NAMES` and to the two-bid loop (`for n in qxb$TAG qxc$TAG qxd$TAG qxe$TAG`) before running the block above. Then list X1 (`fixed`, PRICE 5), X2 (`auction` 10 → 5), X3 (`fixed`, PRICE 5) and, only when used, X5 (`fixed`, PRICE 5) and, only for B13, X4 with [cli-list-a-name](procedures/cli-list-a-name.md), 13 blocks each. Setup total: about 36 + 39 (+13) blocks, plus the funding blocks.
+Then **Sync** in the seller profile: all six app names appear on the Names page, and `info <n>` shows `transfer 0` with the owner at the app's address. If they do not, that is a finding (owned-name discovery); fall back to the in-app auction ([REGTEST_TESTING.md](../REGTEST_TESTING.md) §6, about 25 blocks for all names at once). When a case will use X5, add `qxe$TAG` to `CLI_NAMES` and to the two-bid loop (`for n in qxb$TAG qxc$TAG qxd$TAG qxe$TAG`) before running the block above. Then list X1 (`fixed`, PRICE 5), X2 (`auction` 10 → 5), X3 (`fixed`, PRICE 5) and, only when used, X5 (`fixed`, PRICE 5) and, only for B13, X4 with [cli-list-a-name](procedures/cli-list-a-name.md), 13 blocks each. Setup total: about 36 + 39 (+13) blocks, plus the funding blocks.
 
 A chain reset leaves the app profiles holding rows and drafts about names that no longer exist on chain; rows that a Sync does not clear are leftovers of the reset, noted once in the report, not findings.
 

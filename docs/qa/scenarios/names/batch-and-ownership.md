@@ -26,7 +26,7 @@ Run [seed-many-names](../../procedures/seed-many-names.md) first. `NM` are its 2
 
 - **Priority:** P1
 - **Covers:** B3c
-- **Regression of:** a mainnet wallet with 547 names had no actions: every row read its bare phase (`Closed`) and every batch button stayed grey with "All selected names must be transferable (owned, not mid-transfer)".
+- **Regression of:** a wallet with several hundred names had no actions: every row read its bare phase (`Closed`) and every batch button stayed grey with "All selected names must be transferable (owned, not mid-transfer)".
 - **Preconditions:** seed-many-names done; the seller profile active; the node running and synced.
 
 Steps:

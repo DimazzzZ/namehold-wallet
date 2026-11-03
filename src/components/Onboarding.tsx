@@ -206,7 +206,7 @@ function ConnectionChoice({
           >
             <h3 className="font-bold text-gray-900">SPV (Lightweight)</h3>
             <p className="text-xs text-gray-600 mt-2">
-              Headers only, ~1MB. Fast sync. Uses explorer for data. Read-only.
+              Headers only, tens of MB. Fast sync. Uses explorer for data. Read-only.
             </p>
           </button>
         </div>

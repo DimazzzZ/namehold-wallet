@@ -159,15 +159,15 @@ Expected:
 Steps:
 
 1. Select X1's row → read the panel → `Buy .<X1> for <total> HNS` → the secure window (passphrase first if asked) → read → confirm.
-2. Without mining: Wallet › Owned Names; Activity filtered by X1; `scripts/regtest.sh rpc getrawmempool`.
-3. `mine 1`, Sync; read Owned Names and Activity; `info <X1>`.
+2. Without mining: the Names page; Activity filtered by X1; `scripts/regtest.sh rpc getrawmempool`.
+3. `mine 1`, Sync; read the Names page and Activity; `info <X1>`.
 
 Expected:
 
 - The panel: `Price to seller` `5.000000 HNS`, the `LearnHNS fee` line locked at `—`, `Network fee`, `Total` = price + fee; `▸ Fee rate`; the three steps with step 2 `Wait 10 blocks`, "The swap settles once 10 more blocks are mined. Track it in Your purchases."; no expiry warning under `Checked by your node`; no line above the button.
 - The secure window rows: `Action` Purchase, `Name`, `Price (to seller)` `5.000000 HNS`, `Network fee`, `Total`, `Paid to` (the CLI's payment address), `Name becomes yours` "after a finalize, 10 blocks after the purchase is mined", `Txid`; the summary does not count the name's own value as money spent.
-- While it runs the button reads `Sending…`. Then the toast "Purchase of .<X1> sent"; the panel shows "Purchase sent" and ".<X1> is locked to you. Finalize it from Your purchases above once its wait is over." with the checks still above it; the row is tagged `Bought`; `Your purchases` lists `.<X1>`, "Paid 5 HNS", "Waiting for the purchase to be mined". Owned Names: `.<X1>` as plain text, badge `Unconfirmed purchase`, no checkbox, no `Manage`, no `Finalize`. Activity: a row labelled `Buy`. The mempool holds the purchase.
-- After the block and Sync: `Awaiting finalize · 9 blocks`, and Your purchases reads "1 of 10 blocks" with `9 blocks left` on the right (regtest counts blocks, never a time like `~1 h left`); Activity still labels the row `Buy`, Amount minus the price (`−5.000000 HNS`), the fee shown apart; `info <X1>` shows `transfer` at that block and the owner a TRANSFER out of the CLI's lock.
+- While it runs the button reads `Sending…`. Then the toast "Purchase of .<X1> sent"; the panel shows "Purchase sent" and ".<X1> is locked to you. Finalize it from Your purchases above once its wait is over." with the checks still above it; the row is tagged `Bought`; `Your purchases` lists `.<X1>`, "Paid 5 HNS", "Waiting for the purchase to be mined". the Names page: `.<X1>` as plain text, badge `Bought · waiting for the purchase to confirm`, no checkbox, no `Finalize`. Activity: a row labelled `Buy`. The mempool holds the purchase.
+- After the block and Sync: `Bought · awaiting finalize · 9 blocks left`, and Your purchases reads "1 of 10 blocks" with `9 blocks left` on the right (regtest counts blocks, never a time like `~1 h left`); Activity still labels the row `Buy`, Amount minus the price (`−5.000000 HNS`), the fee shown apart; `info <X1>` shows `transfer` at that block and the owner a TRANSFER out of the CLI's lock.
 - Passes if the purchase pays exactly the price shown and is tracked as above; a missed toast is ◐.
 
 - **Blocks mined:** 1
@@ -184,15 +184,15 @@ Expected:
 
 Steps:
 
-1. `mine 8`, Sync → read the Owned Names row and Market › Your purchases. `mine 1`, Sync → `Finalize` (in Owned Names) → secure window → confirm.
-2. Before mining: Owned Names and Activity.
-3. `mine 1`, Sync; open the name's `Manage`; `info <X1>`.
+1. `mine 8`, Sync → read the Names row and Market › Your purchases. `mine 1`, Sync → `Finalize` (on the Names page) → secure window → confirm.
+2. Before mining: the Names page and Activity.
+3. `mine 1`, Sync; open the name's page; `info <X1>`.
 
 Expected:
 
-- `Awaiting finalize · 1 block` after 8 blocks (Your purchases: "9 of 10 blocks", `1 block left`), then `Ready to finalize` with an enabled `Finalize`, in Owned Names and in Your purchases (the green bar, "Ready to finalize"; a `Finalize` there, filled only while the page shows no other filled button, does the same, its toast ".<X1> finalize sent · it moves into your wallet once mined").
+- `Bought · awaiting finalize · 1 block left` after 8 blocks (Your purchases: "9 of 10 blocks", `1 block left`), then `Bought · ready to finalize` with an enabled `Finalize`, on the Names page and in Your purchases (the green bar, "Ready to finalize"; a `Finalize` there, filled only while the page shows no other filled button, does the same, its toast ".<X1> finalize sent · it moves into your wallet once mined").
 - After confirming: the toast "Finalize broadcast — <first 12 hex of the txid>…" and the info toast "The name still carries the seller's DNS records: update them once it is yours."; the row reads `Finalize · waiting for a block` with no second `Finalize`; Activity shows `Finalize purchase`; Market › Your purchases no longer lists it.
-- After the block: an ordinary owned row (a link, a checkbox, `Manage`); Manage shows the seller's TXT record `shakedex-cli-sell` and the usual owner actions enabled, `Sell…` among them (Renew may be disabled for a name just renewed; Transfer is disabled until an address is typed). Activity: `Finalize purchase`, Amount 0 with the `⤷` line. `info <X1>` shows our FINALIZE as the owner and `transfer 0`.
+- After the block: an ordinary owned row (a link, a checkbox); its page shows the seller's TXT record `shakedex-cli-sell` and the usual owner actions enabled, `Sell…` among them (Renew may be disabled for a name just renewed; Transfer is disabled until an address is typed). Activity: `Finalize purchase`, Amount 0 with the `⤷` line. `info <X1>` shows our FINALIZE as the owner and `transfer 0`.
 - Passes if the name becomes an ordinary owned name with the seller's records; a missed toast is ◐.
 
 - **Blocks mined:** 10
@@ -210,11 +210,11 @@ Steps:
 
 1. Select the row → `Buy .<name> for <total> HNS` → in the secure window press `Cancel`.
 2. At once, with no Sync, press the panel's Buy again; then `Cancel` the secure window again.
-3. Read Owned Names, Activity and the balance.
+3. Read the Names page, Activity and the balance.
 
 Expected:
 
-- The panel shows "Confirmation declined" in red under its button; no purchase appears in Owned Names; no `Buy` draft stays in Activity (the prepared purchase was discarded); the balance is unchanged.
+- The panel shows "Confirmation declined" in red under its button; no purchase appears on the Names page; no `Buy` draft stays in Activity (the prepared purchase was discarded); the balance is unchanged.
 - The second `Buy` builds and opens the secure window again with the same price, without any "already" refusal.
 - Passes if declining leaves nothing behind and does not block a retry.
 
@@ -239,7 +239,7 @@ Steps:
 Expected:
 
 - The row: Price now = the current step, Next price `↓ <cheaper> HNS in ~T`, `✓ Verified`. The panel: `Price drops over time · Imported from file`, "Drops to <cheaper> HNS in ~T, down to a floor of <floor> HNS in ~T." (or "…, its floor." when the next step is the floor), the price steps from the current one on (`Now` first, in blue, then `~T` per step, at most 8 rows with "N more steps…" before the last), and "Waiting gets a lower price, but anyone can buy it first."
-- The panel's `Price to seller`, the secure window and the chain output to the seller all equal the step shown. Then `Unconfirmed purchase` → `Awaiting finalize · 9 blocks`.
+- The panel's `Price to seller`, the secure window and the chain output to the seller all equal the step shown. Then `Bought · waiting for the purchase to confirm` → `Bought · awaiting finalize · 9 blocks left`.
 - Activity: `Buy`, Amount minus exactly that price (not the price plus the name's 0.5 HNS value); its later FINALIZE, if done, shows `Finalize purchase`, Amount 0 with `⤷ 0.500000`.
 - Passes if the purchase and its history row match the current step.
 
@@ -282,13 +282,13 @@ Steps:
 
 1. Panel Buy → the secure window opens; do not confirm yet.
 2. In a terminal: [cli-fill](../../procedures/cli-fill.md) mined at once with X3's file.
-3. Confirm in the secure window; read the panel. Sync, read Activity, Owned Names and the balance; `info <X3>`.
+3. Confirm in the secure window; read the panel. Sync, read Activity, the Names page and the balance; `info <X3>`.
 
 Expected:
 
-- Owned Names and the Market page refresh as soon as the panel shows the failure, without waiting for the next poll.
+- The Names page and the Market page refresh as soon as the panel shows the failure, without waiting for the next poll.
 - The broadcast reports "The node did not take the transaction. hsd does not say why; often its coins are already spent elsewhere. You can try again; the coins stay held until the node is checked again." (or another broadcast error: quote it); the line above the panel's button may then give the node's verdict ("this listing is already sold or cancelled", the backend's words) with Buy disabled.
-- After Sync: Activity shows the purchase with the badge `Lost` and under it "someone else bought the name first, or the seller cancelled the listing — nothing was paid"; Owned Names has no row for X3; the spendable balance is back to the noted value.
+- After Sync: Activity shows the purchase with the badge `Lost` and under it "someone else bought the name first, or the seller cancelled the listing — nothing was paid"; the Names page has no row for X3; the spendable balance is back to the noted value.
 - `info <X3>` shows the owner as the CLI fill's TRANSFER.
 - Passes if nothing was paid and the coins are spendable again; record how many syncs or blocks the verdict took.
 
@@ -350,7 +350,7 @@ Expected:
 Steps:
 
 1. Add the name to the Watchlist (or open Watchlist if it is there); read its badge.
-2. In Owned Names try to select the purchase row.
+2. In the Names page try to select the purchase row.
 3. After its finalize (B8), read the Watchlist again.
 
 Expected:
@@ -373,13 +373,13 @@ Expected:
 Steps:
 
 1. Panel Buy → the secure window opens; quit the app instead of confirming (app menu Quit, or `osascript -e 'tell application "Namehold" to quit'`; [ui](../../ui.md#known-quirks-and-their-workarounds)).
-2. Relaunch, unlock; read Activity and Owned Names.
+2. Relaunch, unlock; read Activity and the Names page.
 3. Discard what is left (Activity `Discard`). Never press `Sign & broadcast` here.
 
 Expected:
 
-- Either nothing remains (the draft was discarded at quit), or Activity shows a `Buy` draft with `Sign & broadcast` and `Discard` (say which). Owned Names showing `Unconfirmed purchase` for a purchase that was never sent is a finding only if it persists after a Sync.
-- After `Discard` (and its confirm "Discard this draft? Any coins it reserved will be freed. This cannot be undone.", if it appears) the draft and any purchase row go, toast "Draft discarded", Owned Names drops the `Unconfirmed purchase` row at once (no Sync needed), and the balance is unchanged.
+- Either nothing remains (the draft was discarded at quit), or Activity shows a `Buy` draft with `Sign & broadcast` and `Discard` (say which). the Names page showing `Bought · waiting for the purchase to confirm` for a purchase that was never sent is a finding only if it persists after a Sync.
+- After `Discard` (and its confirm "Discard this draft? Any coins it reserved will be freed. This cannot be undone.", if it appears) the draft and any purchase row go, toast "Draft discarded", the Names page drops the `Bought · waiting for the purchase to confirm` row at once (no Sync needed), and the balance is unchanged.
 - Passes if no unsent purchase survives a discard and no coins stay reserved.
 
 - **Blocks mined:** 0
@@ -439,7 +439,7 @@ Expected:
 
 - **Priority:** P2
 - **Covers:** R14, R15 (design rule: one primary action per page)
-- **Preconditions:** run inside B8, after step 1 reaches `Ready to finalize` and before its `Finalize`; another verified row in Browse (X3).
+- **Preconditions:** run inside B8, after step 1 reaches `Bought · ready to finalize` and before its `Finalize`; another verified row in Browse (X3).
 
 Steps:
 
@@ -461,21 +461,21 @@ Expected:
 
 - **Priority:** P2
 - **Covers:** R13 (amended by the [Speed up spec](../../../specs/2026-10-21-speed-up-unconfirmed-sends.md) R4, R11, R12, R16)
-- **Preconditions:** run inside [B7](#b7--buy-a-cli-listing-through-the-secure-window), after its step 2 (the purchase of X1 sent, `Unconfirmed purchase`) and before its step 3's `mine 1`; or on X5, registered with the other test names and listed with [cli-list-a-name](../../procedures/cli-list-a-name.md) ([environment](../../environment.md#test-names-for-a-run)) and bought with [buy-a-cli-listing](../../procedures/buy-a-cli-listing.md) up to its step 2. Mine nothing until step 4.
+- **Preconditions:** run inside [B7](#b7--buy-a-cli-listing-through-the-secure-window), after its step 2 (the purchase of X1 sent, `Bought · waiting for the purchase to confirm`) and before its step 3's `mine 1`; or on X5, registered with the other test names and listed with [cli-list-a-name](../../procedures/cli-list-a-name.md) ([environment](../../environment.md#test-names-for-a-run)) and bought with [buy-a-cli-listing](../../procedures/buy-a-cli-listing.md) up to its step 2. Mine nothing until step 4.
 
 Steps:
 
 1. Sync. Market › Browse › `Your purchases`: read X1's line and its right-hand column; hover `Speed up`.
 2. `Speed up` → read the dialog's first paragraph → type `10` in `Fee rate (doos/vB)` → read the rows → `Review and sign` → the secure window → read → confirm.
-3. Without mining: read `Your purchases` (hover `Speed up` again), Owned Names, and Activity filtered by X1 and unfiltered; `scripts/regtest.sh rpc getrawmempool`.
+3. Without mining: read `Your purchases` (hover `Speed up` again), the Names page, and Activity filtered by X1 and unfiltered; `scripts/regtest.sh rpc getrawmempool`.
 4. Continue B7 from its step 3 (`mine 1`, Sync); read Activity and `Your purchases`.
 
 Expected:
 
 - Step 1: X1 "Paid 5 HNS", "Waiting for the purchase to be mined", and on the right a secondary `Speed up`, enabled, hover "Pay a higher fee for it through a second transaction" (before the Sync it may be disabled with "Its change is not in your wallet yet; refresh your wallet and try again."). A purchase whose change fell into its fee shows `Speed up` disabled with "This transaction has no change to spend, so it cannot be sped up.": record it and continue B7.
 - Step 2: the paragraph reads "A second transaction spends this one's change and pays the fee for both, so a miner takes them together. The fee goes to the network only; nobody else is paid, and the seller's price and the purchase itself are unchanged. The original keeps its transaction id."; the rows as in [U1](../wallet/speed-up.md#u1--speed-up-an-ordinary-send) step 5. The secure window `Confirm transaction`: `Action` `Speed up`, `Speeds up` the purchase's txid, `Paid to` "The network only: nobody else is paid. The seller's price and the purchase itself are unchanged.", `Back to your wallet`, `Original transaction` "It keeps its transaction id.", the `Deadline` sentence. Toast `Speed up sent <first 12 hex of the child's txid>…`.
-- Step 3: `Your purchases` still lists X1 "Waiting for the purchase to be mined", its `Speed up` now disabled with "This transaction is already being sped up."; Owned Names still `Unconfirmed purchase`; Activity: the `Buy` row with "Sped up by <first 10 hex of the child's txid>…" and a `Speed up` row with "Speeds up <first 10 hex of the purchase's txid>…"; the mempool holds both.
-- Step 4: B7's expectations hold unchanged (`Awaiting finalize · 9 blocks`, "1 of 10 blocks", `9 blocks left` with no `Speed up`); the `Buy` and `Speed up` rows are `Confirmed` in the same block. B8 then finalizes X1 as usual. The child's fee is spent on top of the price and the purchase's own fee: account for it in B7's balance note.
+- Step 3: `Your purchases` still lists X1 "Waiting for the purchase to be mined", its `Speed up` now disabled with "This transaction is already being sped up."; the Names page still `Bought · waiting for the purchase to confirm`; Activity: the `Buy` row with "Sped up by <first 10 hex of the child's txid>…" and a `Speed up` row with "Speeds up <first 10 hex of the purchase's txid>…"; the mempool holds both.
+- Step 4: B7's expectations hold unchanged (`Bought · awaiting finalize · 9 blocks left`, "1 of 10 blocks", `9 blocks left` with no `Speed up`); the `Buy` and `Speed up` rows are `Confirmed` in the same block. B8 then finalizes X1 as usual. The child's fee is spent on top of the price and the purchase's own fee: account for it in B7's balance note.
 - Passes if the purchase is sped up without changing what the seller is paid, and the purchase proceeds as without it.
 
 - **Blocks mined:** 0 (inside B7)

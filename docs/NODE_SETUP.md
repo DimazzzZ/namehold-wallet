@@ -6,12 +6,12 @@ device. It splits how it talks to the Handshake network:
 - **Reading (balance + names): no node needed.** Balances and name info are read
   from the **HNSFans explorer** (`https://e.hnsfans.com`) using your wallet's own
   addresses. You can view your wallet immediately after creating/importing it.
-- **Sending (HNS sends + name covenant actions): needs a local hsd node.** Spending
+- **Sending (HNS sends + name covenant actions): needs an hsd node, local or remote.** Spending
   requires the wallet's unspent-coin set (UTXOs) and the ability to broadcast a
   Handshake-format transaction — and **no hosted provider offers that**. We checked:
   - HNSFans / 3xpl — read-only, no UTXOs, no broadcast.
   - Blockchair — does not support Handshake at all (no API for it).
-  - HNScan — no public API. Namebase — custodial/being wound down.
+  - HNScan — no public API. Namebase — custodial, shut down on 1 October 2026.
 
   So to send, run hsd yourself (locally, or on a small VPS — the chain is light).
 
@@ -28,15 +28,14 @@ hsd --index-address --index-tx --api-key=<your-key>
   enable … indexing"). If your existing chain was synced without these indexes, it
   must be re-synced with them — the app detects this and offers a one-click re-sync
   (it moves the old `blocks/`, `chain/`, `tree/` aside and re-syncs).
-- **Autostart is on by default, per network.** When a wallet that uses a local node becomes active (at launch, or when you switch to it), the app starts that network's hsd for you. Turn it off for the active wallet's network under Settings → Connections → "Start the mainnet node automatically" (each network keeps its own setting; a network you never set follows the app-wide one). If a node already answers on that network's port on the right chain, the app uses it instead of spawning a new one. A node you stopped stays stopped until the active wallet changes.
-- **Background sync:** When "Sync in background" is enabled in Settings → Connections (default ON), every node the app started stays running after the app closes, one per network. A background daemon (`namehold-syncd`) wakes every 60 seconds to sync wallet data from those nodes into the local database; it never starts or stops a node itself. On macOS and Linux the next app launch recognises those nodes as its own from `namehold-hsd.pid` in each network's data directory (the pid and the process start time); on Windows it does not, so a node left running is used but not stopped by the app after a restart. With "Sync in background" off, closing the app stops every node it started, including, on macOS and Linux, ones left from an earlier session. To stop a network's node by hand, switch to one of its wallets and click **Stop mainnet node** (or the network you are on) in Settings → Connections or in the status bar.
+- **Autostart is on by default, per network.** When a wallet that uses a local node becomes active (at launch, or when you switch to it), the app starts that network's hsd for you. Turn it off for the active wallet's network under Settings › Node & tray → "Start the mainnet node automatically" (each network keeps its own setting; a network you never set follows the app-wide one). If a node already answers on that network's port on the right chain, the app uses it instead of spawning a new one. A node you stopped stays stopped until the active wallet changes.
+- **Background sync:** When "Sync in background" is enabled in Settings › Node & tray (default ON), every node the app started stays running after the app closes, one per network. A background daemon (`namehold-syncd`) wakes every 60 seconds to sync wallet data from those nodes into the local database; it never starts or stops a node itself. On macOS and Linux the next app launch recognises those nodes as its own from `namehold-hsd.pid` in each network's data directory (the pid and the process start time); on Windows it does not, so a node left running is used but not stopped by the app after a restart. With "Sync in background" off, closing the app stops every node it started, including, on macOS and Linux, ones left from an earlier session. To stop a network's node by hand, switch to one of its wallets and click **Stop mainnet node** (or the network you are on) in Settings › Node & tray or in the readiness pill.
 - **The node the app starts always has an API key.** The app starts hsd with the key configured in Settings → Connections (or the `api-key` of `hsd.conf` in the configured data directory). With neither, it generates a new random key for each start of a network's node and keeps it in its own database (never shown in Settings). The key reaches hsd through the `HSD_API_KEY` environment variable, never the command line, and `--no-auth=false` keeps it in force even if `hsd.conf` says `no-auth`. The generated key is sent only to that network's default RPC port on `127.0.0.1` (or `localhost`), and only while the node the app started is running, by the pid and start time the app recorded when it started it: never to a remote node, another port, or a node on that port that the app did not start. On a system where the app cannot read a process's start time (Windows), it cannot tell these apart, so it does not generate a key: set one in Settings → Connections before starting a node. hsd's own wallet, which the started node also runs, takes the same key unless your `hsw.conf` sets one of its own. To use the started node from `hsd-cli` or `hsw-cli`, set your own key in Settings → Connections, then stop and start the node: it then runs with yours. The started node listens on `127.0.0.1` whatever `hsd.conf` says (`--http-host=127.0.0.1`). If something else holds the network's RPC port and does not answer as a usable node, the app refuses to start one and says so: stop what holds the port, or, if it is your own hsd, set its key in Settings.
 - **Logs of the node the app starts.** hsd runs at log level `info` (its default is `debug`, which records every address the wallet looks up and every raw transaction it sends), with umask 077, so the files it creates (its `debug.log`, chain, key) are readable by your account only. Its output goes to `namehold-hsd.log` in the network's data directory (0600); at each start the previous one becomes `namehold-hsd.log.1`, and logs an earlier node left there (`debug*.log`, `namehold-hsd.log.1`) are made 0600 too. A data directory the app creates is 0700; an existing one keeps its mode.
-- Then in the app: **Settings → Node RPC** → URL `http://127.0.0.1:12037`, API key
-  `<your-key>`; click **Sync** to pull your UTXOs; **Send** is now enabled.
+- Then in the app: **Settings › Connections**: Node RPC URL (sending) `http://127.0.0.1:12037`, Node RPC API key `<your-key>`, **Save settings** and confirm in the secure window; click **Sync** to pull your UTXOs; **Send** is now enabled.
 
 While the node is down you can still view balance/names (explorer); the app shows
-"Start your local node to send" and disables spend actions until it's reachable.
+"Start your local node (<url>) to send." and disables spend actions until it's reachable.
 
 ## Remote node (point at someone else's hsd)
 
@@ -70,7 +69,7 @@ Instead of running hsd locally, you can point the wallet at an existing hsd RPC:
 
 Remote nodes are ideal for:
 - Quick setup without syncing 15GB locally.
-- Running the wallet on a low-power device (phone, tablet, old laptop).
+- Running the wallet on a low-power computer.
 - Trusting a node operator you know (family, friend, business partner).
 
 ## Changing connection settings
@@ -90,7 +89,7 @@ address, then exercise send + the covenant actions end-to-end.
 
 ## Background sync daemon
 
-When "Sync in background" is enabled (Settings → Connections, default ON):
+When "Sync in background" is enabled (Settings › Node & tray, default ON):
 
 - A separate Rust binary `namehold-syncd` runs every 60 seconds, syncing all
   wallet profiles (UTXOs, name states, transactions) from hsd into the shared
@@ -103,8 +102,7 @@ When "Sync in background" is enabled (Settings → Connections, default ON):
 - **Crash recovery:** if the daemon dies, the app respawns it on startup (if the
   toggle is ON).
 
-To disable background sync, uncheck **Settings → Connections → "Sync in
-background"**. hsd will be stopped the next time you close the app.
+To disable background sync, uncheck **Settings › Node & tray → "Sync in background"**. hsd will be stopped the next time you close the app.
 
 ## Where data and node config live
 
@@ -187,13 +185,13 @@ Wallets on different networks do not share a node. Each network gets its own hsd
 For users who don't need to send transactions or want faster initial setup:
 
 - **SPV mode** runs hsd with `--spv` (no `--index-address`), downloading only block
-  headers. Much faster initial sync and minimal disk usage (~几十MB vs ~15GB).
+  headers. Much faster initial sync and minimal disk usage (tens of MB vs ~15GB).
 - **Read-only** — cannot send transactions. Balance and name data come from the
   explorer.
 - **Explorer failover** — set a fallback URL in Settings for when the primary
   explorer is unreachable.
-- **To enable:** Settings → Connections → Chain source → select "Local node (SPV)" → Save. There is no separate "Node mode" dropdown; the one selector sets both the source and, for a local node, whether the active wallet's network's node runs full or SPV. Each network keeps its own choice.
-- **Status indicator:** StatusStrip shows "Explorer (SPV)" when SPV mode is active.
+- **To enable:** Settings → Connections → Chain source → select "SPV — lightweight, read-only (headers only, explorer for data)" → Save settings. There is no separate "Node mode" dropdown; the one selector sets both the source and, for a local node, whether the active wallet's network's node runs full or SPV. Each network keeps its own choice.
+- **Status indicator:** the readiness pill's panel reads "Reads from the explorer (SPV)" when SPV mode is active.
 
 SPV mode is ideal for:
 - **Viewing your wallet** without waiting for full sync
@@ -201,4 +199,4 @@ SPV mode is ideal for:
 - **Low-disk environments** where full node storage isn't feasible
 - **Quick setup** for new users who want to see their balance immediately
 
-To send transactions, switch back to "Full node" mode and wait for sync.
+To send transactions, switch back to "Local full node (this device runs hsd)" and wait for sync.
