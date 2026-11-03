@@ -58,7 +58,7 @@ Download the latest build from [Releases](https://github.com/DimazzzZ/namehold-w
 | Windows | `Namehold_<version>_x64-setup.exe` |
 | Linux | `Namehold_<version>_amd64.AppImage`, `.deb` or `.rpm` |
 
-Once installed, the app updates itself (see [Auto-update](#auto-update-since-v020)). On first launch it asks how to connect: a local full node, a remote node or SPV.
+Once installed, the app updates itself (see [Auto-update](#auto-update-since-v020)). On first launch it asks how to connect: a local full node, a remote node or SPV. On Windows, a local node needs a Node RPC API key set in Settings › Connections first.
 
 ## Features
 
@@ -97,8 +97,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
   raw-JSON fallback.
 - **Several bids on one name**, each with its own value and lockup; Reveal and
   Redeem take all of them in one transaction.
-- **Batch operations** — bid, renew, reveal, redeem, finalize or transfer multiple
-  names in a single transaction. Multi-select checkboxes on the Names page with a
+- **Batch operations** — bid, renew, reveal, redeem, finalize or transfer multiple names, in one transaction per 100 names. Multi-select checkboxes on the Names page with a
   batch action bar and a confirmation modal showing estimated fee + name list.
 - **Watching names** — track names you don't own on the Names page's Watching chip, with a star on every row, tags, and CSV import/export.
 - **ICANN collision flag** — a name that someone has also applied for as a new gTLD in ICANN's 2026 round carries an ICANN badge on the Names page and on its own page, Details names the applicants with links to their applications, and a Names filter shows every such name. The list ships with the app (`just icann-strings` refreshes it); the app never contacts ICANN.
@@ -106,7 +105,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
 - **Sell names through Shakedex** — Sell…, on a name's Transfer & sell tab, locks the name for sale as a Buy Now or a reverse auction; once the transfer lockup is over, Finalize & sign sets the price or the schedule and signs every price at once. Market › My listings follows each listing to Sold or back home, with Lower price, Cancel listing and Finalize home, and Export listing file, and warns before buyers stop seeing a listing whose name nears expiry. A wallet restored from its recovery phrase finds its locked names on its first sync (Find my locks, or Restore a lock by name, for the rest), and a listing managed from another device of the same phrase is recognised and can be taken over. The listing file is a Shakedex v2 listing that the shakedex CLI can buy; on mainnet it can also be published on LearnHNS Market, where the app and the background daemon keep it at its current price. Needs a node that can send and a recovery-phrase wallet; mainnet selling is behind the same experimental setting as buying.
 - **Recover lost bids** — if you lose your local bid data (reinstall, seed-
   restore, import from another wallet), Namehold can brute-force the bid value
-  from your seed and reveal it before the window closes. See
+  from your account xpub and reveal it before the window closes. See
   [`docs/RECOVER_LOST_BIDS.md`](docs/RECOVER_LOST_BIDS.md).
 
 ### Node-free reads
@@ -235,7 +234,7 @@ hsd --index-address --index-tx --api-key=<your-key>
 
 - `--index-address` is **required** (the wallet finds your coins by address);
   `--index-tx` backs transaction history + confirmation tracking.
-- The app can manage hsd for you — set the **data directory** and (if needed) the **hsd binary path** in **Settings › Node & tray**, then click **Start mainnet node** there or in the readiness pill (it names the active wallet's network).
+- The app can manage hsd for you (on Windows, set a Node RPC API key in Settings › Connections first) — set the **data directory** and (if needed) the **hsd binary path** in **Settings › Node & tray**, then click **Start mainnet node** there or in the readiness pill (it names the active wallet's network).
 - **hsd can't add an index to an already-synced chain.** If your existing chain
   was synced without these indexes, the app detects it and offers a **one-click
   re-sync** (it moves the old chain to a backup and re-syncs with the right indexes).
@@ -349,7 +348,7 @@ it from dragging down the overall number, while the pure logic it orchestrates
 
 **Why is `run()` in `lib.rs` `coverage(off)`?** `tauri::generate_handler!` inside it expands one IPC wrapper per command, and llvm-cov counts each wrapper on its `#[tauri::command]` line in the command's own file, where it only runs through the real IPC dispatcher. Unit tests call the command function directly, so without the attribute every command showed one red line (134 of them) that no test can reach.
 
-**What are the remaining ~1.6% uncovered lines?** After Phases 1–5, the residual
+**What are the remaining uncovered lines?** After Phases 1–5, the residual
 uncovered lines fall into structurally-untestable categories that are documented
 in-place (via `coverage(off)` annotations) or intentionally left as-is:
 

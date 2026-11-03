@@ -2969,7 +2969,7 @@ pub(crate) async fn apply_node_write_probe_with_client(
                     Ok(_) => {
                         cap.can_write = false;
                         cap.reason = Some(
-                            "Your node isn't address-indexed — restart hsd with address indexing (Settings → Start node) and let it finish syncing."
+                            "Your node isn't address-indexed — restart hsd with address indexing (Settings › Node & tray) and let it finish syncing."
                                 .to_string(),
                         );
                     }

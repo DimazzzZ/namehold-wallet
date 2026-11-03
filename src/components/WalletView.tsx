@@ -152,7 +152,7 @@ export function WalletView() {
     writeCap?.reason ??
     (needsNodeSync
       ? "Sync your coins below, then unlock to send."
-      : "Connect a node, Refresh to sync your coins, then unlock to send.");
+      : "Connect a node, Sync to read your coins, then unlock to send.");
 
   const isRunning = syncStatus.data?.running ?? false;
   // The last sync could not read this wallet's coins from the node: the

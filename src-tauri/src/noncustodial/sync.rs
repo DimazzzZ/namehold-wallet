@@ -536,7 +536,7 @@ mod tests {
     /// says so — `Covenant.isNonspendable()` returns false for NONE, OPEN and
     /// REDEEM alone — so classifying it with the name covenants left a
     /// reclaimed lockup out of the spendable balance and out of coin
-    /// selection. Found on a live wallet: 28 HNS redeemed from three losing
+    /// selection. Seen in practice: a redeem of three losing
     /// bids landed in `name_control` and could not be spent or seen.
     #[test]
     fn a_redeemed_lockup_is_ordinary_money_again() {

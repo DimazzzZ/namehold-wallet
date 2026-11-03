@@ -17,7 +17,7 @@ function unavailable(a: NameActions): string | null {
     return "Signing needs the owner coin, which is in the Shakedex lock right now.";
   }
   if (live) {
-    return "Signing needs the owner coin, which hasn't synced locally yet. Connect a node and Refresh.";
+    return "Signing needs the owner coin, which hasn't synced locally yet. Connect a node and Sync.";
   }
   return "Only the name's owner can sign with it.";
 }

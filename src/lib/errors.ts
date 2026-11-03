@@ -4,8 +4,8 @@
 // ID" copy — this app holds its own keys and reads via an explorer.
 const ERROR_MAP: Record<string, string> = {
   // Explorer rate-limited (HNSFans answers rapid bursts with HTTP 403).
-  "status 403": "The explorer is busy (rate-limited). Wait a moment and Refresh again.",
-  forbidden: "The explorer is busy (rate-limited). Wait a moment and Refresh again.",
+  "status 403": "The explorer is busy (rate-limited). Wait a moment and Sync again.",
+  forbidden: "The explorer is busy (rate-limited). Wait a moment and Sync again.",
   // Explorer / network unreachable.
   hnsfans: "Couldn't reach the explorer. Check the Explorer URL in Settings and your connection.",
   "connection refused":
@@ -30,17 +30,17 @@ const ERROR_MAP: Record<string, string> = {
   // NEEDS_ADDRESS_AND_TX_INDEX): listed before "index-address", which their
   // remedy also contains.
   "address and transaction indexes not enabled":
-    "Your node has neither the address nor the transaction index. Restart hsd with --index-address and --index-tx (Settings → Start node) and let it finish syncing.",
+    "Your node has neither the address nor the transaction index. Restart hsd with --index-address and --index-tx (Settings › Node & tray) and let it finish syncing.",
   "transaction index not enabled":
-    "Your node has no transaction index. Restart hsd with --index-address and --index-tx (Settings → Start node) and let it finish syncing.",
+    "Your node has no transaction index. Restart hsd with --index-address and --index-tx (Settings › Node & tray) and let it finish syncing.",
   // Node not address-indexed (getcoinsbyaddress unavailable) — blocks all spends.
   getcoinsbyaddress:
-    "Your node isn't address-indexed. Restart hsd with address indexing (Settings → Start node) and let it finish syncing.",
+    "Your node isn't address-indexed. Restart hsd with address indexing (Settings › Node & tray) and let it finish syncing.",
   "index-address":
-    "Your node isn't address-indexed. Restart hsd with address indexing (Settings → Start node) and let it finish syncing.",
+    "Your node isn't address-indexed. Restart hsd with address indexing (Settings › Node & tray) and let it finish syncing.",
   // The name's coin isn't in the wallet's synced set yet.
   "does not hold":
-    "This wallet hasn't synced this name's coin yet — make sure your node is fully synced and address-indexed (Settings), Refresh, then try again.",
+    "This wallet hasn't synced this name's coin yet — make sure your node is fully synced and address-indexed (Settings), Sync, then try again.",
   // Sending. The maturity case is listed first: `mapError` scans in key order,
   // and "insufficient funds" would otherwise swallow it and drop the reason.
   "insufficient mature funds":

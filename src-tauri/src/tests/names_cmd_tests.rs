@@ -1799,7 +1799,7 @@ async fn capabilities_node_synced_with_owner_coin_allows_spends() {
     // Not spend-locked: reasons must NOT be the "not synced" lock reason.
     assert_ne!(
         caps.can_update.reason.as_deref().unwrap_or(""),
-        "owner coin not synced locally — connect a node and Refresh to manage"
+        "owner coin not synced locally — connect a node and Sync to manage"
     );
 }
 
@@ -2104,7 +2104,7 @@ async fn capabilities_untracked_winner_only_reveal_offers_no_redeem() {
     assert!(!caps.can_register.allowed);
     assert_eq!(
         caps.can_register.reason.as_deref(),
-        Some("you won this name, but the wallet does not track it yet — Refresh to sync it, then manage")
+        Some("you won this name, but the wallet does not track it yet — Sync to read it, then manage")
     );
 }
 

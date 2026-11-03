@@ -57,8 +57,7 @@ entered and displayed only inside a small **Rust-owned secure window**.
 
 - The Namehold desktop app (macOS `.dmg`, Windows `-setup.exe`, or Linux `.AppImage`, `.deb` or `.rpm`).
 - To **send HNS or perform name actions**, you also need [hsd](https://github.com/handshake-org/hsd)
-  — the app can start it for you (see [Node control](#11-node-control)). Reads
-  work without hsd.
+  — the app can start it for you (see [Node control](#11-node-control)). On Windows, set a Node RPC API key in Settings › Connections first. Reads work without hsd.
 
 ### First launch — Onboarding
 
@@ -76,7 +75,7 @@ never sees it. Confirm the backup before continuing.
 
 ### Adding more wallets later
 
-Click the wallet card at the top of the sidebar and use **Add wallet** and **Manage wallets…** to switch between wallets, reveal a wallet's phrase in the secure window, or delete one you no longer need. Delete wallet opens the secure window; for a wallet with a stored recovery phrase, type its label to enable Delete wallet. Cancel deletes nothing. Creating a wallet: it exists only after you tick "I have written down my recovery phrase" and press Done; closing the window saves nothing. The reveal window's clipboard clears when you press Done, or about 30 s after copying.
+Click the wallet card at the top of the sidebar and use **Add wallet** and **Manage wallets…** to switch between wallets, reveal a wallet's phrase in the secure window, or delete one you no longer need. Delete wallet opens the secure window; for a wallet with a stored recovery phrase, type its label to enable Delete wallet. Cancel deletes nothing. Creating a wallet: it exists only after you tick "I have written down my recovery phrase" and press Done; closing the window saves nothing. The reveal window's clipboard clears when you press Done, or about 30 s after copying while the window stays open. Closing the window with its close button cancels that timer, so the phrase stays in the clipboard until something replaces it: copy something else.
 
 ### Background sync (enabled by default)
 
@@ -114,7 +113,7 @@ Receive opens a dialog: a QR code, **Your address** with Copy address, New addre
 
 ### Needs you
 
-One row per task, most urgent first: a bid to reveal, a name to register, a lost bid to redeem, a name to renew, a purchase to finalize. **Renew all N** appears for two renewable names or more. A watch-only wallet does not show this card.
+One row per task, most urgent first: a bid to reveal, a name to renew, a transfer or purchase to finalize, a name to register, a lost bid to redeem. **Renew all N** appears for two renewable names or more. A watch-only wallet does not show this card.
 
 ### Your names
 
@@ -155,7 +154,7 @@ You can write when **all** of these hold:
    "When the wallet calls a node synced" in [NODE_SETUP.md](NODE_SETUP.md)).
 4. **Address-indexed** — hsd was started with `--index-address` (required to
    discover your unspent coins). The wallet asks hsd which indexes it runs,
-   which hsd reports from version 7.0, so the node must be hsd 7.0 or newer.
+   which hsd reports from version 7.0, so a node you run yourself must be hsd 7.0 or newer; the app refuses to start an hsd older than 8.0.0.
 
 When any condition fails, the reason is shown in plain text (e.g. "Your local node is still syncing (12%). On-chain sends and transfers need a fully-synced node.", "Your node isn't address-indexed — restart hsd with address indexing…", or "Locked · unlock to send" on the pill).
 
@@ -209,12 +208,13 @@ name goes through four phases:
 
 1. Click **Names** in the sidebar.
 2. Type the name in "Find a name to open, bid on or watch" and click **Look up** (or press Enter).
-3. A name already on your list opens its page. Any other shows a card with Open auction… and Watch.
+3. A name already on your list opens its page. Any other shows a card with Open auction… (Open name if it is already in an auction, or on a watch-only wallet) and Watch.
 4. On the name's page (`/names/<name>`), follow the guided action:
 
 | Current state | Guided action | What you provide |
 |---------------|---------------|------------------|
-| Available / Opening | **Open Auction** | Nothing — just confirm. |
+| Available | **Open Auction** | Nothing — just confirm. |
+| Opening | None: wait for Bidding (a countdown shows) | — |
 | Bidding | **Place Bid** | Bid (HNS) and Lockup (HNS). |
 | Reveal | **Reveal Bid** | Nothing — just confirm. |
 | Closed (you won) | **Register** | Optional DNS records. |
@@ -301,7 +301,7 @@ editor opens empty.
 | **NS** | Nameserver hostname |
 | **DS** | Key tag, algorithm, digest type, digest hex |
 | **GLUE4** / **GLUE6** | Hostname + IPv4/IPv6 address |
-| **SYNTH4** / **SYNTH6** | Hostname + IPv4/IPv6 address (synthesized) |
+| **SYNTH4** / **SYNTH6** | IPv4/IPv6 address (synthesized) |
 
 Click **+ Add record** to append a row. Records are optional — you can register
 a name with no records and add them later via an Update.
@@ -343,7 +343,7 @@ Select names on the Names page using the checkboxes (or the header checkbox to s
 - **Renew Selected** — renew all selected names in a single transaction.
 - **Reveal Selected** — bulk reveal all selected names' bids (enabled when
   every selected name is in REVEAL phase).
-- **Redeem Selected** — bulk sweep losing-bid coins from selected names.
+- **Redeem Selected** — bulk sweep losing-bid coins from selected names. A lost auction that is not among your names has no checkbox: use Redeem on its row.
 - **Finalize Selected** — bulk finalize outgoing TRANSFERs whose lockup has
   expired.
 - **Transfer Selected…** — transfer all selected names to one recipient: press
@@ -353,7 +353,7 @@ Each batch action opens a **confirmation modal** showing the count, the amount
 the transaction moves (every output except change — a batch reveal or redeem
 carries one per bid), the estimated fee, and a collapsible list of the
 selected names. Cancel closes without
-broadcasting; Confirm signs + broadcasts the draft in one step. Batch Bid also shows "Locked until you reveal: N x L HNS = T HNS" and a forfeit warning on the check and confirm steps.
+broadcasting; Confirm signs + broadcasts the draft in one step. Batch Bid also shows "Locked until you reveal: N × L HNS = T HNS" and a forfeit warning on the check and confirm steps.
 
 Up to 100 names go in one transaction with one txid, so they all land or none do, well under hsd's per-transaction covenant limits (300 OPENs, 600 UPDATEs, 600 RENEWs). A larger selection goes out as a series of transactions of up to 100 after one confirmation; if one fails, the names not yet sent stay selected.
 
@@ -383,7 +383,7 @@ Your purchases, a card at the top of Browse, lists every purchase bought and not
 
 On the Market, `/` focuses the search, `i` opens Import, `j` and `k` (or the arrow keys) move through the list, and `Enter` presses the panel's button.
 
-A purchase appears on the Names page as Bought, with "waiting for the purchase to confirm" until the transaction confirms, then "awaiting finalize · N blocks left" while the transfer delay runs (288 blocks, about two days, on mainnet and testnet; 10 on regtest; the Market panel states it for your network), then "Ready to finalize" with a Finalize button, and "Finalize · waiting for a block" once the finalize is sent. The name becomes yours only after you finalize it, and Finalize is never gated by the mainnet setting. When it is done, update the DNS records, because the name keeps the seller's. Finalize before the name expires: the Market panel warns when the name expires soon after the finalize becomes possible. A purchase whose name expires unfinalized is lost: the price was paid, but the name is not yours. The row leaves the Names page, and Activity marks the purchase "Lost" and shows the reason under it; so does any purchase that ends without the name, paid or not.
+A purchase appears on the Names page as Bought, with "waiting for the purchase to confirm" until the transaction confirms, then "awaiting finalize · N blocks left" while the transfer delay runs (288 blocks, about two days, on mainnet and testnet; 10 on regtest; the Market panel states it for your network), then "ready to finalize" with a Finalize button, and "finalize sent" with a "Finalize · waiting for a block" badge once the finalize is sent. The name becomes yours only after you finalize it, and Finalize is never gated by the mainnet setting. When it is done, update the DNS records, because the name keeps the seller's. Finalize before the name expires: the Market panel warns when the name expires soon after the finalize becomes possible. A purchase whose name expires unfinalized is lost: the price was paid, but the name is not yours. The row leaves the Names page, and Activity marks the purchase "Lost" and shows the reason under it; so does any purchase that ends without the name, paid or not.
 
 ### Selling names through Shakedex
 
@@ -510,12 +510,12 @@ Connection settings are under **Settings › Connections**: chain source, node R
 |-------|---------|-------|
 | **Chain source** | **Local full node** | Which node the wallet sends through: **Local full node** (hsd on this device, full indexes), **SPV — lightweight, read-only** (headers only, explorer for data), **Remote node** (someone else's hsd RPC), or **Read-only (never send)**. Reads are not routed by this selector: they come from the node whenever it is synced and on your wallet's network, and from the explorer otherwise. |
 | **Node RPC URL** | `http://127.0.0.1:12037` | Mainnet 12037, testnet 13037, regtest 14037. |
-| **Node RPC API key** | (empty) | For remote nodes: match the remote hsd's `--api-key`. For a node the app starts it is that node's key; left empty, the app generates a new one at every start and never shows it. With no key configured, that node answers 401 to keyless `hsd-cli` and `hsw-cli` and on its wallet API (12039): to use them, set a key here, then stop and start the node. On Windows, set a key before starting a node from the app. |
+| **Node RPC API key** | (empty) | For remote nodes: match the remote hsd's `--api-key`. For a node the app starts it is that node's key; left empty, and with no `api-key` in the `hsd.conf` of a configured data directory, the app generates a new one at every start and never shows it. With no key configured, that node answers 401 to keyless `hsd-cli` and `hsw-cli` and on its wallet API (12039): to use them, set a key here, then stop and start the node. On Windows, set a key before starting a node from the app. |
 | **Allow sending via remote node** | **off** | When chain source is Remote node, enable this to broadcast signed transactions to the remote node. Off by default for safety. |
 | **Explorer base URL** | (network-dependent) | Mainnet: `https://e.hnsfans.com`. Testnet/regtest have no default explorer — set one explicitly if you have one. |
 | **Explorer fallback URL** | (empty) | When the primary explorer is unreachable, automatically tries this URL. Leave empty to disable failover. |
 | **Node data directory (`hsd --prefix`)** | (system default) | Use **Browse…** to pick. Local hsd only. |
-| **hsd binary path** | (auto) | Only needed if hsd isn't on PATH. Local hsd only. Must be the full path of an executable file that only its owner can change, owned by you or by root; a link is stored as the file it leads to, so for Homebrew leave the path empty, or confirm it again after an upgrade. |
+| **hsd binary path** | (auto) | Only needed if hsd isn't on PATH. Local hsd only. Must be the full path of an executable file; on macOS and Linux, one that only its owner can change, owned by you or by root; a link is stored as the file it leads to, so for Homebrew leave the path empty, or confirm it again after an upgrade. |
 | **Start the mainnet node automatically** (names the active wallet's network) | **on** | Starts that network's hsd when one of its wallets becomes active, and at launch. Each network has its own setting; toggle off to keep that network's hsd manual. Local hsd only. |
 | **Sync in background** | **on** | When enabled, a background daemon syncs your wallet every 60 seconds, even when the app is closed. |
 
@@ -571,7 +571,7 @@ When SPV mode is active:
 
 In **Settings › Node & tray**, a panel shows a live status dot (Connected · Starting · Stopped · Syncing %), the read source (**Local node cache** or **Explorer**), the data directory and hsd version. Buttons:
 
-- **Start mainnet node** (named for the active wallet's network) — spawns that network's hsd with the required flags (`--index-address --index-tx`), listening on 127.0.0.1 only: an `http-host` setting in `hsd.conf` does not apply to a node the app starts. If a node already answers on that network's port, it uses it instead. If something else holds the port, Start refuses and says which port: stop what holds it, or, if it is your own hsd, set its key in Settings. Another network's node keeps running: each network has its own.
+- **Start mainnet node** (named for the active wallet's network; on Windows, set a Node RPC API key first) — spawns that network's hsd with the required flags (`--index-address --index-tx`), listening on 127.0.0.1 only: an `http-host` setting in `hsd.conf` does not apply to a node the app starts. If a node already answers on that network's port, it uses it instead. If something else holds the port, Start refuses and says which port: stop what holds it, or, if it is your own hsd, set its key in Settings. Another network's node keeps running: each network has its own.
 - **Stop mainnet node** — stops the active wallet's network's node, if Namehold started it. A node you started yourself is never stopped by Namehold; the button is disabled and says so.
 - **Re-sync node data** — appears only when the app detects an
   **index mismatch** (hsd's existing chain was synced without `--index-address`).
@@ -594,7 +594,7 @@ dot is Connected). Restart the app — it respawns the daemon on startup when
 "Sync in background" is ON. The daemon writes its process ID to
 `~/.namehold/syncd.pid` while alive.
 
-**hsd is still running after I closed the app.** This is expected when "Sync in background" is enabled: every node Namehold started (one per network) stays alive so the daemon can sync in the background, and on macOS and Linux the next launch still knows they are Namehold's (on Windows it does not, and such a node is then used but not stopped by Namehold). To stop them, either disable "Sync in background" (they are then stopped on the next app close, on macOS and Linux including ones left from an earlier session) or switch to a wallet of that network and click **Stop mainnet node** (or the network you are on) in Settings → Connections.
+**hsd is still running after I closed the app.** This is expected when "Sync in background" is enabled: every node Namehold started (one per network) stays alive so the daemon can sync in the background, and on macOS and Linux the next launch still knows they are Namehold's (on Windows it does not, and such a node is then used but not stopped by Namehold). To stop them, either disable "Sync in background" (they are then stopped on the next app close, on macOS and Linux including ones left from an earlier session) or switch to a wallet of that network and click **Stop mainnet node** (or the network you are on) in Settings › Node & tray.
 
 **I want to stop background sync.** Uncheck **Settings › Node & tray › "Sync in background"**. The daemon exits immediately, and hsd is stopped the next time you
 close the app.
@@ -623,8 +623,7 @@ background sync daemon running even after you close the main window.
 ### Close to tray
 
 Enabled by default (**Settings › Node & tray › System Tray › "Close to tray"**). Clicking the
-window's close button hides Namehold to the tray instead of quitting. Click the
-tray icon or choose **Open Namehold** from the tray menu to restore the window.
+window's close button hides Namehold to the tray instead of quitting. Click the tray icon and choose **Open Namehold** to restore the window.
 Use **Quit Namehold** from the tray menu to fully exit.
 
 ### Launch at login
@@ -636,7 +635,7 @@ menu-bar experience.
 
 ### Tray menu
 
-Right-click the tray icon for: **Open Namehold**, live **node status** with a
+Click or right-click the tray icon for: **Open Namehold**, live **node status** with a
 Start/Stop toggle, a **Background sync** checkbox, and **Quit Namehold**. The tray
 icon reflects node state (normal / syncing / stopped) and adapts to light/dark
 menu bars on macOS.
@@ -725,13 +724,13 @@ Click the readiness pill, top right, or hover Send, for the exact reason. Common
 - **"Locked · unlock to send"**: press Unlock in the pill, or the lock button beside the wallet card in the sidebar.
 - **"Your local node is still syncing (N%)…"**: wait for hsd to finish syncing.
 - **"Your node isn't address-indexed — restart hsd with address indexing…"**: hsd was started without `--index-address`. Restart it from Settings › Node & tray; the app adds the flag. If your chain was already synced without it, use **Re-sync node data**.
-- **"Your node doesn't report its indexes (hsd older than 7.0)…"**: update hsd to 7.0 or newer.
+- **"Your node doesn't report its indexes (hsd older than 7.0)…"**: update hsd (8.0 or newer if the app starts it).
 - **"Your node's status couldn't be read…"**: check that hsd is running and reachable at the RPC URL, then press Sync.
 - **"Start your local node (<url>) to send."**: start it from the pill or Settings › Node & tray (the dot there is grey when stopped), and check that the RPC URL and API key match.
 
 ### The balance shows 0 with "Your node can't report this wallet's coins"
 
-The last sync could not read this wallet's coins from your node, so the balance is what the wallet last stored, which is 0 for a wallet never synced through an indexed node. The line under the balance gives the reason the sync recorded: most often hsd was started without `--index-address` (restart it from Settings → Connections), or it is older than 7.0 and cannot say whether it has the index (update it). The next sync through a node that can report the coins removes the line.
+The last sync could not read this wallet's coins from your node, so the balance is what the wallet last stored, which is 0 for a wallet never synced through an indexed node. The line under the balance gives the reason the sync recorded: most often hsd was started without `--index-address` (restart it from Settings › Node & tray), or it is older than 7.0 and cannot say whether it has the index (update it). The next sync through a node that can report the coins removes the line.
 
 ### Activity says "Your node does not have --index-tx enabled"
 
@@ -770,8 +769,7 @@ The dialog stays open with the exact error. Common causes: not enough HNS to cov
 
 ### CSV import shows errors
 
-Check that your CSV has a `Name` column, names don't have leading/trailing
-spaces, and duplicate rows are OK (they're updated, not errors).
+The first column must be the name, and a header row is optional. One row that is not a Handshake name stops the import and nothing is stored. Names already on your list are skipped, not updated.
 
 ---
 
