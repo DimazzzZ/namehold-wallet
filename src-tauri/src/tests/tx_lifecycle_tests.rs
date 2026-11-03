@@ -3294,6 +3294,75 @@ async fn signing_refuses_a_send_whose_change_is_not_the_wallets_change_address()
     assert_eq!(draft_row(&app, &draft.id).status, "draft");
 }
 
+/// The window warns of a first send to an address, and only of a first send.
+#[tokio::test]
+async fn the_window_warns_of_the_first_send_to_an_address() {
+    use crate::commands::secure_prompt::{
+        clear_test_answers, push_test_answer, take_test_requests, SecurePromptResult,
+    };
+    async fn warned(app: &tauri::App<tauri::test::MockRuntime>, id: &str) -> bool {
+        let _ = take_test_requests();
+        push_test_answer(SecurePromptResult {
+            value: None,
+            confirmed: false,
+        });
+        let _ = sign_tx_draft_confirmed(&app.state(), app.handle(), id).await;
+        let request = take_test_requests().pop().expect("the window opened");
+        clear_test_answers();
+        request
+            .details
+            .unwrap()
+            .to_string()
+            .contains("never sent to this address")
+    }
+    let foreign = crate::noncustodial::address::encode_p2wpkh(Network::Main, &[7u8; 20]).unwrap();
+    let conn = seeded_conn("http://127.0.0.1:1", 5_000_000);
+    let app = app_with(conn);
+    unlock(&app, PROFILE);
+
+    let first = build_send_hns_draft(app.state(), foreign.clone(), 100_000, Some(1), None)
+        .await
+        .unwrap();
+    assert!(warned(&app, &first.id).await, "a first send");
+
+    // A failed send paid nobody, so the next one is still the first.
+    let set_status = |status: &str| {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute(
+            "UPDATE wallet_tx_drafts SET status = ?2 WHERE id = ?1",
+            rusqlite::params![first.id, status],
+        )
+        .unwrap();
+    };
+    set_status("failed");
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute("UPDATE tracked_utxos SET reserved_by_draft_id = NULL", [])
+            .unwrap();
+    }
+    let second = build_send_hns_draft(app.state(), foreign.clone(), 100_000, Some(1), None)
+        .await
+        .unwrap();
+    assert!(warned(&app, &second.id).await, "after a failed send");
+
+    set_status("confirmed");
+    assert!(!warned(&app, &second.id).await, "paid before");
+
+    // This wallet's own address is no stranger.
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute("UPDATE tracked_utxos SET reserved_by_draft_id = NULL", [])
+            .unwrap();
+    }
+    let own = build_send_hns_draft(app.state(), recv_addr(), 100_000, Some(1), None)
+        .await
+        .unwrap();
+    assert!(!warned(&app, &own.id).await, "its own address");
+}
+
 /// A summary (what the window shows) of another transaction than the plan
 /// (what is signed) is refused.
 #[tokio::test]

@@ -1392,6 +1392,29 @@ pub fn may_have_reached_chain(status: DraftStatus) -> bool {
     REACHED_CHAIN_STATUSES.contains(&status)
 }
 
+/// Whether `address` is one of this wallet's, or a plain send of it other than
+/// `draft_id` may have paid it already.
+pub fn has_paid_or_owns_address(
+    conn: &rusqlite::Connection,
+    wallet_profile_id: &str,
+    address: &str,
+    draft_id: &str,
+) -> Result<bool, AppError> {
+    let reached = sql_list(REACHED_CHAIN_STATUSES.iter().map(|s| s.as_str()));
+    Ok(conn.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM derived_addresses
+                            WHERE wallet_profile_id = ?1 AND address = ?2)
+                 OR EXISTS(SELECT 1 FROM wallet_tx_drafts
+                            WHERE wallet_profile_id = ?1 AND id <> ?3 AND action = 'send_hns'
+                              AND status IN {reached}
+                              AND json_extract(summary_json, '$.recipientAddress') = ?2)"
+        ),
+        rusqlite::params![wallet_profile_id, address, draft_id],
+        |row| row.get(0),
+    )?)
+}
+
 /// The draft statuses [`may_have_reached_chain`] accepts.
 pub const REACHED_CHAIN_STATUSES: [DraftStatus; 3] = [
     DraftStatus::Broadcasted,
