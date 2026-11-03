@@ -121,15 +121,22 @@ export function WalletView() {
     .filter((i) => i.kind === "renew" && capsByName.get(i.name)?.canRenew.allowed)
     .map((i) => i.name);
   // A press on a renewal notification: one confirmation, as soon as this wallet
-  // can send and the list has arrived. Leaving the page drops the request.
+  // can send and the list has arrived. A reminder is for one wallet, and names
+  // of another are never renewed for it. Leaving the page drops the request.
   const [params, setParams] = useSearchParams();
-  const renewAllReady = params.has(RENEW_ALL_PARAM) && canWrite && renewable.length > 0;
+  const renewAllFor = params.get(RENEW_ALL_PARAM);
+  const renewAllElsewhere = !!profile && !!renewAllFor && renewAllFor !== profile.id;
+  const renewAllReady = renewAllFor === profile?.id && canWrite && renewable.length > 0;
   useEffect(() => {
+    if (renewAllElsewhere) {
+      setParams({}, { replace: true });
+      showToast("That reminder is for another wallet: switch to it to renew its names", "info");
+    }
     if (!renewAllReady) return;
     setParams({}, { replace: true });
     void batch.runFor("renew", renewable);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [renewAllReady]);
+  }, [renewAllReady, renewAllElsewhere]);
   const finalizeRefusal = shakedexRefusal(profile?.kind, writeCap);
   // Spending uses node-synced coins (tracked_utxos), NOT the explorer balance.
   // If the explorer shows funds but nothing is synced yet, the user must connect

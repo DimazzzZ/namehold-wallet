@@ -50,7 +50,7 @@ pub async fn simulate_notification<R: tauri::Runtime>(
         "renewal" => Ok(send_os_notification(
             &app,
             &PendingNotification {
-                key: "sim:renewal:example".into(),
+                key: "renewal-group:sim".into(),
                 title: "Renewal due soon".into(),
                 body: "example — expires in 3.0 days".into(),
             },
