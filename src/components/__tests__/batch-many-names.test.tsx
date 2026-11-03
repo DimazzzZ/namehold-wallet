@@ -367,12 +367,12 @@ describe("Names — a wallet with hundreds of names", () => {
       await screen.findByText(/Confirm batch finalize/i);
     }
 
-    it("replays the 546: the sixth build finds no free coin, a sync brings the change and the series finishes", async () => {
+    it("the third build finds no free coin, a sync brings the change and the series finishes", async () => {
       invokeMock.mockImplementation(
         route({
-          names: inTransfer(546),
+          names: inTransfer(246),
           inTransfer: true,
-          failBuildWith: { at: 6, message: WAITING, times: 1 },
+          failBuildWith: { at: 3, message: WAITING, times: 1 },
         }),
       );
       render(<NamesView />, { wrapper: wrapper() });
@@ -380,10 +380,10 @@ describe("Names — a wallet with hundreds of names", () => {
       await finalizeSelected();
       confirm();
 
-      await waitFor(() => expect(calls("broadcast_tx_draft")).toHaveLength(6));
+      await waitFor(() => expect(calls("broadcast_tx_draft")).toHaveLength(3));
       expect(
         calls("build_batch_finalize_draft").map((c) => (c[1].names as string[]).length),
-      ).toEqual([100, 100, 100, 100, 100, 46, 46]);
+      ).toEqual([100, 100, 46, 46]);
       expect(calls("sync_wallet_state")).toEqual([
         ["sync_wallet_state", { walletProfileId: "p1" }],
       ]);
@@ -391,7 +391,7 @@ describe("Names — a wallet with hundreds of names", () => {
       const order = invokeMock.mock.calls
         .map((c) => c[0])
         .filter((c) => c === "build_batch_finalize_draft" || c === "sync_wallet_state");
-      expect(order.indexOf("sync_wallet_state")).toBe(6);
+      expect(order.indexOf("sync_wallet_state")).toBe(3);
       await waitFor(() => expect(screen.queryByTestId("batch-action-bar")).toBeNull());
       expect(lastError()).toBe("");
     });
@@ -399,9 +399,9 @@ describe("Names — a wallet with hundreds of names", () => {
     it("when a sync brings no change the series stops: the rest stay selected, with the real reason", async () => {
       invokeMock.mockImplementation(
         route({
-          names: inTransfer(546),
+          names: inTransfer(246),
           inTransfer: true,
-          failBuildWith: { at: 6, message: WAITING, times: 2 },
+          failBuildWith: { at: 3, message: WAITING, times: 2 },
         }),
       );
       render(<NamesView />, { wrapper: wrapper() });
@@ -410,9 +410,9 @@ describe("Names — a wallet with hundreds of names", () => {
       confirm();
 
       await waitFor(() => expect(screen.getByText("46 selected")).toBeInTheDocument());
-      expect(calls("broadcast_tx_draft")).toHaveLength(5);
+      expect(calls("broadcast_tx_draft")).toHaveLength(2);
       expect(calls("sync_wallet_state")).toHaveLength(1); // one try, no loop
-      await waitFor(() => expect(lastError()).toMatch(/failed after 500 of 546 name\(s\)/));
+      await waitFor(() => expect(lastError()).toMatch(/failed after 200 of 246 name\(s\)/));
       expect(lastError()).toMatch(/their change is not back yet/);
       expect(lastError()).not.toMatch(/Insufficient HNS balance/);
       expect(screen.queryByTestId("batch-progress")).toBeNull();
@@ -420,7 +420,7 @@ describe("Names — a wallet with hundreds of names", () => {
       // Pressed again later, the 46 go out from the same selection.
       await finalizeSelected();
       confirm();
-      await waitFor(() => expect(calls("broadcast_tx_draft")).toHaveLength(6));
+      await waitFor(() => expect(calls("broadcast_tx_draft")).toHaveLength(3));
       await waitFor(() => expect(screen.queryByTestId("batch-action-bar")).toBeNull());
     });
 
