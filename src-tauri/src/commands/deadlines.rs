@@ -225,7 +225,69 @@ pub fn scan_deadlines(
             title: "Renewal due soon".into(),
             body: format!("{} — expires in {:.1} days", d.name, d.days_remaining),
         });
-    dedup_imminent(reveals.chain(renewals), config, previously_notified)
+    let mut result = dedup_imminent(reveals.chain(renewals), config, previously_notified);
+    result.notifications = group_renewals(result.notifications, renewal);
+    result
+}
+
+/// How many names a grouped renewal notification spells out.
+const GROUPED_RENEWAL_NAMES: usize = 3;
+
+/// One notification per wallet for its renewals: a wallet of hundreds of names
+/// bought together comes due together, and one notification per name would
+/// bury the desktop. Each name keeps its own episode key in the scan's state.
+fn group_renewals(
+    notifications: Vec<PendingNotification>,
+    renewal: &[RenewalDeadline],
+) -> Vec<PendingNotification> {
+    let due: std::collections::HashMap<String, &RenewalDeadline> =
+        renewal.iter().map(|d| (renewal_key(d), d)).collect();
+    let mut by_wallet: std::collections::BTreeMap<&str, Vec<&RenewalDeadline>> = Default::default();
+    for n in &notifications {
+        if let Some(d) = due.get(&n.key) {
+            by_wallet
+                .entry(d.wallet_profile_id.as_str())
+                .or_default()
+                .push(d);
+        }
+    }
+    let grouped = |key: &str| {
+        due.get(key)
+            .is_some_and(|d| by_wallet[d.wallet_profile_id.as_str()].len() > 1)
+    };
+    let mut out: Vec<PendingNotification> = notifications
+        .iter()
+        .filter(|n| !grouped(&n.key))
+        .cloned()
+        .collect();
+    for (wallet, mut names) in by_wallet.clone() {
+        if names.len() < 2 {
+            continue;
+        }
+        names.sort_by(|a, b| a.days_remaining.total_cmp(&b.days_remaining));
+        let shown: Vec<&str> = names
+            .iter()
+            .take(GROUPED_RENEWAL_NAMES)
+            .map(|d| d.name.as_str())
+            .collect();
+        let rest = names.len().saturating_sub(GROUPED_RENEWAL_NAMES);
+        let list = if rest > 0 {
+            format!("{} and {rest} more", shown.join(", "))
+        } else {
+            shown.join(", ")
+        };
+        out.push(PendingNotification {
+            key: format!("renewal-group:{wallet}"),
+            title: "Renewals due soon".into(),
+            body: format!(
+                "{} names, first {} in {:.1} days: {list}. Open Namehold to renew them.",
+                names.len(),
+                names[0].name,
+                names[0].days_remaining
+            ),
+        });
+    }
+    out
 }
 
 /// The scan both scanners share: every `imminent` episode stays active, and
@@ -465,6 +527,51 @@ fn collect_deadlines(
     Ok((reveal_out, renewal_out))
 }
 
+/// The event a press on a renewal reminder sends the main window.
+#[cfg(not(test))]
+const RENEW_ALL_EVENT: &str = "renew-all-requested";
+
+/// The wallet a renewal reminder is for, from its key; `None` for any other
+/// notification. A press acts on this wallet, not on whichever is active then.
+fn renewal_wallet(key: &str) -> Option<&str> {
+    key.strip_prefix("renewal:")
+        .or_else(|| key.strip_prefix("renewal-group:"))
+        .and_then(|rest| rest.split(':').next())
+}
+
+/// A renewal reminder with a Renew all button, through notify-rust because the
+/// notification plugin has no buttons on desktop. A press opens the app and
+/// its confirmation and signs nothing. Waiting for it blocks, so it has its own
+/// thread. On macOS notify-rust sends only when waited on and swallows a failure,
+/// so an error returned here is the other platforms' only.
+#[cfg(all(not(test), not(target_os = "windows")))]
+fn send_renewal_notification<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    n: &PendingNotification,
+    wallet: &str,
+) -> Option<String> {
+    use tauri::Emitter;
+    let handle = match notify_rust::Notification::new()
+        .summary(&n.title)
+        .body(&n.body)
+        .action("renew", "Renew all")
+        .show()
+    {
+        Ok(handle) => handle,
+        Err(e) => return Some(e.to_string()),
+    };
+    let (app, wallet) = (app.clone(), wallet.to_string());
+    std::thread::spawn(move || {
+        handle.wait_for_action(|action| {
+            if action != "__closed" {
+                crate::show_main_window(&app);
+                let _ = app.emit(RENEW_ALL_EVENT, wallet);
+            }
+        });
+    });
+    None
+}
+
 /// Best-effort OS notification dispatch. Never returns an error to the
 /// caller — a denied/unavailable OS permission must not break the scan or
 /// crash the app; the outcome's `delivery_error` communicates it to the UI
@@ -475,6 +582,10 @@ pub(crate) fn send_os_notification<R: tauri::Runtime>(
     n: &PendingNotification,
 ) -> Option<String> {
     use tauri_plugin_notification::NotificationExt;
+    #[cfg(not(target_os = "windows"))]
+    if let Some(wallet) = renewal_wallet(&n.key) {
+        return send_renewal_notification(app, n, wallet);
+    }
     match app
         .notification()
         .builder()
@@ -915,6 +1026,75 @@ mod tests {
         assert_eq!(result.notifications.len(), 1);
         assert_eq!(result.notifications[0].key, "renewal:p1:nameb");
         assert!(result.active_episodes.contains("renewal:p1:nameb"));
+    }
+
+    #[test]
+    fn only_renewal_reminders_offer_renew_all_and_name_their_wallet() {
+        let key = renewal_key(&renewal("p1", "a", 1.0));
+        assert_eq!(renewal_wallet(&key), Some("p1"));
+        assert_eq!(renewal_wallet("renewal:p2:a:900"), Some("p2"));
+        assert_eq!(renewal_wallet("renewal-group:p3"), Some("p3"));
+        // A name is whatever its owner chose, so it cannot make a key a renewal's.
+        let key = reveal_key(&reveal("p1", "renewal", 5));
+        assert_eq!(renewal_wallet(&key), None);
+    }
+
+    #[test]
+    fn several_renewals_of_a_wallet_are_one_notification() {
+        let result = scan_deadlines(
+            &[reveal("p1", "namer", 5)],
+            &[
+                renewal("p1", "late", 9.0),
+                renewal("p1", "soon", 2.5),
+                renewal("p1", "mid", 5.0),
+                renewal("p1", "more", 6.0),
+                renewal("p2", "other", 3.0),
+            ],
+            &cfg(true),
+            &Default::default(),
+        );
+        // The reveal, one for p1's four names, and p2's own.
+        assert_eq!(result.notifications.len(), 3);
+        let group = result
+            .notifications
+            .iter()
+            .find(|n| n.title == "Renewals due soon")
+            .expect("a grouped notification");
+        assert_eq!(
+            group.body,
+            "4 names, first soon in 2.5 days: soon, mid, more and 1 more. Open Namehold to renew them."
+        );
+        let single = result
+            .notifications
+            .iter()
+            .find(|n| n.body.starts_with("other"))
+            .expect("p2's own notification");
+        assert_eq!(single.title, "Renewal due soon");
+        // Each name stays its own episode, so one renewed name ends only its own.
+        for key in ["p1:late", "p1:soon", "p1:mid", "p1:more", "p2:other"] {
+            assert!(result.active_episodes.contains(&format!("renewal:{key}")));
+        }
+    }
+
+    #[test]
+    fn a_name_notified_before_is_not_counted_again() {
+        let previous: BTreeSet<String> = ["renewal:p1:old".to_string()].into();
+        let result = scan_deadlines(
+            &[],
+            &[
+                renewal("p1", "old", 1.0),
+                renewal("p1", "new", 4.0),
+                renewal("p1", "newer", 5.0),
+            ],
+            &cfg(true),
+            &previous,
+        );
+        assert_eq!(result.notifications.len(), 1);
+        assert_eq!(
+            result.notifications[0].body,
+            "2 names, first new in 4.0 days: new, newer. Open Namehold to renew them."
+        );
+        assert!(result.active_episodes.contains("renewal:p1:old"));
     }
 
     #[test]

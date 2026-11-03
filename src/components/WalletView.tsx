@@ -2,7 +2,7 @@ import { ArrowRight, QrCode, RefreshCw, Send, TriangleAlert } from "lucide-react
 import { Icon } from "./ui/Icon";
 import { isSignerUnlockedFor } from "../lib/signer";
 import { useState, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { settingsPath } from "../lib/settingsSections";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -30,6 +30,10 @@ import { useOpenName } from "../hooks/useOpenName";
 import { BlockInfoModal } from "./BlockInfoModal";
 import { RecentActivityCard } from "./activity/RecentActivityCard";
 import { useSignerToggle } from "../hooks/useSignerToggle";
+import { useNameBatchActions } from "../hooks/useNameBatchActions";
+import { RENEW_ALL_PARAM } from "../hooks/useRenewAllRequest";
+import { BatchConfirmModal } from "./BatchConfirmModal";
+import { ProgressLine } from "./names/NameBatchBar";
 import { NeedsYouCard } from "./NeedsYouCard";
 import { ReceiveDialog } from "./ReceiveDialog";
 import { AddWalletForm } from "./AddWalletForm";
@@ -111,6 +115,28 @@ export function WalletView() {
   const unlocked = isLedger ? true : isSignerUnlockedFor(signer, profile?.id);
   const canWrite = writeCap?.canWrite ?? false;
   const isWatchOnly = profile?.watchOnly ?? false;
+  // Renew all in Needs you: the same series, confirmation and send as Names.
+  const batch = useNameBatchActions({ profile, capsByName, unlocked });
+  const renewable = needsYou.items
+    .filter((i) => i.kind === "renew" && capsByName.get(i.name)?.canRenew.allowed)
+    .map((i) => i.name);
+  // A press on a renewal notification: one confirmation, as soon as this wallet
+  // can send and the list has arrived. A reminder is for one wallet, and names
+  // of another are never renewed for it. Leaving the page drops the request.
+  const [params, setParams] = useSearchParams();
+  const renewAllFor = params.get(RENEW_ALL_PARAM);
+  const renewAllElsewhere = !!profile && !!renewAllFor && renewAllFor !== profile.id;
+  const renewAllReady = renewAllFor === profile?.id && canWrite && renewable.length > 0;
+  useEffect(() => {
+    if (renewAllElsewhere) {
+      setParams({}, { replace: true });
+      showToast("That reminder is for another wallet: switch to it to renew its names", "info");
+    }
+    if (!renewAllReady) return;
+    setParams({}, { replace: true });
+    void batch.runFor("renew", renewable);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renewAllReady, renewAllElsewhere]);
   const finalizeRefusal = shakedexRefusal(profile?.kind, writeCap);
   // Spending uses node-synced coins (tracked_utxos), NOT the explorer balance.
   // If the explorer shows funds but nothing is synced yet, the user must connect
@@ -584,6 +610,15 @@ export function WalletView() {
           }
           finalizingId={finalizingId}
           finalizeRefusal={finalizeRefusal}
+          renewAll={{
+            count: renewable.length,
+            onClick: () => void batch.runFor("renew", renewable),
+            disabledReason: !canWrite
+              ? sendBlockedReason
+              : batch.progress
+                ? "Already working on it"
+                : undefined,
+          }}
           allNamesLink={
             <button
               type="button"
@@ -594,6 +629,21 @@ export function WalletView() {
               All names <Icon icon={ArrowRight} size={12} />
             </button>
           }
+        />
+      )}
+
+      {batch.progress && <ProgressLine progress={batch.progress} />}
+      {batch.modal && (
+        <BatchConfirmModal
+          open={batch.modal.open}
+          action={batch.modal.action}
+          names={batch.modal.names}
+          batches={batch.modal.batches}
+          estimatedFeeDoos={batch.modal.feeDoos}
+          amountDoos={batch.modal.amountDoos}
+          recipient={batch.modal.recipient}
+          onConfirm={batch.confirm}
+          onCancel={batch.cancel}
         />
       )}
 

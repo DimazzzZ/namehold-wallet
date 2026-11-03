@@ -13,7 +13,7 @@ import { Spinner } from "../ui/Spinner";
 import { Tooltip } from "../ui/Tooltip";
 
 /** What a running series is doing, with the seconds this step has taken: a still line reads as a hang. */
-function ProgressLine({ progress }: { progress: BatchProgress }) {
+export function ProgressLine({ progress }: { progress: BatchProgress }) {
   const { action, step, index, total, names } = progress;
   const [seconds, setSeconds] = useState(0);
   useEffect(() => {
