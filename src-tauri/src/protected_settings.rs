@@ -367,7 +367,36 @@ pub fn confirmation_rows(
             "value": format!("Your node API key will be sent to {host}.")
         }));
     }
+    for host in unknown_explorer_hosts(changes) {
+        rows.push(serde_json::json!({
+            "label": "Warning",
+            "value": format!(
+                "{host} is not an explorer Namehold knows. It sees your addresses and names, and \
+                 what it answers is shown when your node cannot answer. Check it is the site you \
+                 meant: fake explorers have been listed on trusted sites before."
+            )
+        }));
+    }
     serde_json::json!({ "rows": rows, "confirmLabel": "Save settings" })
+}
+
+/// Explorers that serve this app's reads. Exact hosts: a look-alike or a
+/// subdomain of another site is exactly what the warning is for.
+const KNOWN_EXPLORER_HOSTS: &[&str] = &["e.hnsfans.com", "shakeshift.com"];
+
+/// The hosts of explorer URLs in `changes` that are neither known nor this
+/// machine. A warning, not a refusal: running your own explorer is legitimate.
+fn unknown_explorer_hosts(changes: &[PlannedChange]) -> Vec<String> {
+    let mut hosts: Vec<String> = changes
+        .iter()
+        .filter(|c| matches!(c.key.as_str(), "explorer_api_url" | "explorer_fallback_url"))
+        .filter_map(|c| url::Url::parse(c.new.trim()).ok())
+        .filter(|u| !crate::http::is_loopback_url(u))
+        .filter_map(|u| u.host_str().map(str::to_string))
+        .filter(|h| !KNOWN_EXPLORER_HOSTS.contains(&h.as_str()))
+        .collect();
+    hosts.dedup();
+    hosts
 }
 
 /// The new host, when `changes` move the node to another host and a key the

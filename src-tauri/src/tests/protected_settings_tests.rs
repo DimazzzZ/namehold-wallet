@@ -190,7 +190,7 @@ async fn a_confirmed_change_is_written_after_one_row_per_change() {
         &app,
         &[
             ("node_rpc_url", "https://node.example.com:12037"),
-            ("explorer_api_url", "https://explorer.example"),
+            ("explorer_api_url", "https://shakeshift.com"),
         ],
     )
     .await
@@ -208,7 +208,7 @@ async fn a_confirmed_change_is_written_after_one_row_per_change() {
             ),
             (
                 "Explorer URL".to_string(),
-                "the network's default explorer → https://explorer.example".to_string()
+                "the network's default explorer → https://shakeshift.com".to_string()
             ),
         ]
     );
@@ -219,14 +219,14 @@ async fn a_confirmed_change_is_written_after_one_row_per_change() {
     );
     assert_eq!(
         raw_setting(&app, "explorer_api_url").as_deref(),
-        Some("https://explorer.example")
+        Some("https://shakeshift.com")
     );
     let log = audit_details(&app).await;
     assert_eq!(log.len(), 2, "{log:?}");
     assert!(log
         .iter()
         .any(|d| d.contains("https://node.example.com:12037")));
-    assert!(log.iter().any(|d| d.contains("https://explorer.example")));
+    assert!(log.iter().any(|d| d.contains("https://shakeshift.com")));
 }
 
 #[tokio::test]
@@ -596,6 +596,52 @@ async fn moving_the_node_to_another_host_warns_who_receives_the_key() {
             .is_empty(),
         "the node does not move"
     );
+}
+
+#[tokio::test]
+#[serial_test::serial(protected_settings)]
+async fn an_explorer_this_app_does_not_know_is_warned_about_and_can_still_be_saved() {
+    async fn warnings(pairs: &[(&str, &str)]) -> Vec<String> {
+        let app = app_with(migrated_conn());
+        answer(true);
+        save(&app, pairs).await.unwrap();
+        rows_of(&only_request())
+            .into_iter()
+            .filter(|(label, _)| label == "Warning")
+            .map(|(_, value)| value)
+            .collect()
+    }
+    for key in ["explorer_api_url", "explorer_fallback_url"] {
+        let found = warnings(&[(key, "https://e-hnsfans.example")]).await;
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].starts_with("e-hnsfans.example is not an explorer"));
+        // Near misses of a known host are what this is for.
+        for lookalike in [
+            "https://e.hnsfans.com.evil.example",
+            "https://shakeshift.co",
+            "https://x.shakeshift.com",
+        ] {
+            assert_eq!(warnings(&[(key, lookalike)]).await.len(), 1, "{lookalike}");
+        }
+        for known in [
+            "https://e.hnsfans.com",
+            "https://shakeshift.com/",
+            "https://E.HNSFANS.COM",
+            "http://127.0.0.1:8080",
+        ] {
+            assert!(warnings(&[(key, known)]).await.is_empty(), "{known}");
+        }
+    }
+    let both = warnings(&[
+        ("explorer_api_url", "https://a.example"),
+        ("explorer_fallback_url", "https://b.example"),
+    ])
+    .await;
+    assert_eq!(both.len(), 2, "{both:?}");
+    // A node URL is not an explorer.
+    assert!(warnings(&[("node_rpc_url", "https://node.example:1")])
+        .await
+        .is_empty());
 }
 
 #[test]
