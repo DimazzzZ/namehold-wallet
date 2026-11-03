@@ -407,6 +407,10 @@ covenant limits (300 OPENs, 600 UPDATEs, 600 RENEWs), and per-block limits are
 the same as per-transaction ones — so a full batch is never refused for
 carrying too many covenants.
 
+### Names written with look-alike letters
+
+A name can use letters of another alphabet that look Latin: `.аpple` with a Cyrillic `а` is a different name from `.apple`. Its page, Names lookup and a Market listing then say what it reads like and show the name it really is. This covers the common look-alikes only, so no note does not prove a name is what it seems. Check the `xn--` form before paying.
+
 ### Buying names on the Market
 
 The Market is the fourth sidebar section (hotkey `4`, right after Auctions, marked New). It lists the names that sellers have put up for sale through Shakedex, taken from the LearnHNS Market, and lets you buy one with the wallet you already have.

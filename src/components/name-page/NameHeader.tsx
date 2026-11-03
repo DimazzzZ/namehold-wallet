@@ -6,6 +6,7 @@ import { Icon } from "../ui/Icon";
 import { Popover } from "../ui/Popover";
 import { Tooltip } from "../ui/Tooltip";
 import { ActionHint } from "../name-actions/ActionHint";
+import { ConfusableNameNote } from "../ConfusableNameNote";
 import { WatchlistToggle } from "../WatchlistToggle";
 import { displayName } from "../../lib/idn";
 import { icannBadgeTitle, icannCollision } from "../../lib/icann";
@@ -189,6 +190,7 @@ export function NameHeader({
               {status.note && <span className="text-gray-400"> {status.note}</span>}
             </span>
           </div>
+          <ConfusableNameNote name={name} className="mt-2 max-w-xl" />
         </div>
 
         <div className="flex items-center gap-2 relative">

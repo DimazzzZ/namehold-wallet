@@ -2,6 +2,7 @@ import { Check as CheckIcon, ChevronDown, ChevronRight, CircleAlert } from "luci
 import { Icon } from "../ui/Icon";
 import { useEffect, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import { Button } from "../ui/Button";
+import { ConfusableNameNote } from "../ConfusableNameNote";
 import { displayName } from "../../lib/idn";
 import { mapError } from "../../lib/errors";
 import { parseFeeRateArg } from "../../lib/feeRate";
@@ -98,6 +99,7 @@ function Selected(p: ListingDetailProps & { entry: Entry }) {
         <h3 className="mt-1 break-all font-mono text-[22px] font-semibold text-gray-900">
           .{displayName(entry.name)}
         </h3>
+        <ConfusableNameNote name={entry.name} className="mt-2" />
       </div>
       {entry.kind === "unchecked" ? (
         <div className={SECTION} data-testid="detail-unchecked">
