@@ -43,6 +43,16 @@ describe("confusable", () => {
     expect(confusable("xn--90ai7ab2786b")).toEqual({ readsAs: null, hidden: true }); // сбер, U+2800
   });
 
+  it("a filler Unicode files as a letter or a mark is hidden too", () => {
+    expect(confusable("xn--apple-0k5d")).toEqual({ readsAs: "apple", hidden: true }); // U+3164
+    expect(confusable("xn--apple-r533a")).toEqual({ readsAs: "apple", hidden: true }); // U+FFA0
+    expect(confusable("xn--apple-tfv")).toEqual({ readsAs: "apple", hidden: true }); // U+115F
+    expect(confusable("xn--apple-zfv")).toEqual({ readsAs: "apple", hidden: true }); // U+1160
+    expect(confusable("xn--apple-0613a")).toEqual({ readsAs: "apple", hidden: true }); // U+FE0F
+    expect(confusable("xn--apple-osd")).toEqual({ readsAs: "apple", hidden: true }); // U+034F
+    expect(confusable("xn--90ai7ab2988c")).toEqual({ readsAs: null, hidden: true }); // сбер, U+3164
+  });
+
   it("a mark left on a look-alike does not take it out of the table", () => {
     expect(confusable("xn--pple-p0c72n")?.readsAs).toBe("apple"); // а with a dot below
   });

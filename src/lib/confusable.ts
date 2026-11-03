@@ -43,8 +43,11 @@ const LOOK_ALIKES: Record<string, string> = {
   ɡ: "g",
 };
 
-/** Anything a reader cannot see as part of a name: all but letters, marks, digits and `-`. */
-const NOT_A_LETTER = /[^\p{L}\p{M}\p{N}-]/u;
+/**
+ * Anything a reader cannot see as part of a name: all but letters, marks, digits
+ * and `-`, and the fillers Unicode files as letters or marks, such as U+3164.
+ */
+const NOT_A_LETTER = /[^\p{L}\p{M}\p{N}-]|\p{Default_Ignorable_Code_Point}/u;
 
 /** What a decoded name hides or imitates; see {@link confusable}. */
 export interface Confusable {
