@@ -41,3 +41,17 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 # can reason about "the lane that runs absolutely everything" independently of
 # whatever the fast lane chooses to skip.
 slow-timeout = { period = "60s", terminate-after = 4 }
+
+# ---------------------------------------------------------------------------
+# One port, one test at a time
+# ---------------------------------------------------------------------------
+# nextest gives each test its own process, so `#[serial]` does not hold across
+# them. These tests start a testnet node, and one of them holds testnet's real
+# RPC port to prove that a held port refuses a start: run together, that test
+# makes the others fail.
+[test-groups]
+testnet-rpc-port = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'test(/tests::node_lifecycle_tests::/)'
+test-group = 'testnet-rpc-port'
