@@ -1,0 +1,25 @@
+# Bumps the commit SHAs that every `uses:` in .github/workflows is pinned to
+# (scripts/check-supply-chain.mjs refuses a tag or branch ref). Dependabot reads
+# the version from the trailing `# vX.Y.Z` comment and rewrites the SHA and the
+# comment together in one pull request per week.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Propose a release only once it has been public for two weeks, so a
+    # hijacked tag or a bad release has time to be noticed and pulled first.
+    cooldown:
+      default-days: 14
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: build
+      include: scope
+    ignore:
+      # Pinned to a commit of its `stable` branch, which has no version tags
+      # for Dependabot to compare; the Rust version itself is the explicit
+      # `toolchain:` input. Bump both by hand (docs/RELEASING.md).
+      - dependency-name: dtolnay/rust-toolchain

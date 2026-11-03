@@ -75,8 +75,10 @@ src-tauri/target/release/bundle/
 
 # Build artifacts
 tsconfig.tsbuildinfo
-www.namebase.io.har
 CLAUDE.md
+
+# Browser network captures: a HAR of a logged-in session holds its cookies
+*.har
 
 # Namebase account-history exports (sensitive, user data)
 namebase-history-*.csv

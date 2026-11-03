@@ -319,10 +319,22 @@ The Market lists names for sale through Shakedex, read from the LearnHNS Market 
 
 ---
 
+## Release and update trust
+
+Updates are trusted through one Ed25519 updater key; its public half is in `src-tauri/tauri.conf.json`. Whoever can use that key can ship an update every install accepts, after a user clicks Install. Key rotation is not implemented, so a stolen key cannot be retired today. The key is held as a GitHub Actions secret, and only the sign job names it.
+
+A release runs four jobs. `prepare` refuses a commit that is not in main's history or lacks green Frontend, Rust lint, Rust tests, Workflow Validation and E2E checks, and refuses a version already published. Any older commit of main with green CI passes, so someone with write access can re-release old code. `build` compiles with no key and no write token, and restores nothing from the Actions cache. `sign` is the only job that holds the key; it runs in the `release` environment, has no write token, and runs only GitHub's checkout and artifact actions and the Tauri CLI, installed from a lockfile with install scripts off. A compromised build can still get a bad bundle signed, because `sign` signs what `build` produced, but it cannot read the key. `publish` verifies every signature against the key in `tauri.conf.json` for this version, requires each installer kind exactly once and a matching `SHA256SUMS`, writes `latest.json`, attests provenance, and requires the draft to match by name and digest before it un-drafts.
+
+`scripts/check-supply-chain.mjs` enforces the job list, permissions, guard steps, SHA pins and the place of the signing secrets. It reads workflows line by line and refuses YAML it could misread (flow mappings, quoted or tagged keys, double-quoted escapes, anchors, aliases, merge keys). That check catches mistakes in review. It does not stop a workflow pushed to a branch, which runs before review, or someone with write access, who can edit the check in the same commit.
+
+Each release carries `SHA256SUMS` and a `.sig` for every file, the dmg included. They use the updater key, online in the workflow, so they show a file matches what the workflow signed and do not protect against someone who holds that key or can run the sign job. macOS and Windows builds are not code-signed.
+
+---
+
 ## Dependency auditing
 
 CI runs an advisory-only audit job (`cargo audit` + `pnpm audit --prod`) on
-every PR to surface newly-disclosed CVEs in the dependency graph.
+every PR to surface newly-disclosed CVEs in the dependency graph. The vector generator's lockfile is tracked, and developer harnesses install with `--ignore-scripts`, except leveldown for the shakedex CLI.
 
 ### Suppressed advisories
 
@@ -351,7 +363,7 @@ dependencies of this crate.
 | [RUSTSEC-2024-0370](https://rustsec.org/advisories/RUSTSEC-2024-0370) | `proc-macro-error 1.0.4` | unmaintained | Compile-time-only proc-macro helper via `glib-macros` / `gtk3-macros`. No runtime code. |
 | [RUSTSEC-2024-0411](https://rustsec.org/advisories/RUSTSEC-2024-0411) through [-0420](https://rustsec.org/advisories/RUSTSEC-2024-0420) | gtk-rs GTK3 bindings (`atk`, `atk-sys`, `gdk`, `gdk-sys`, `gdkwayland-sys`, `gdkx11`, `gdkx11-sys`, `gtk`, `gtk-sys`, `gtk3-macros`, all `0.18.2`) | unmaintained | Tauri v2 Linux windowing depends on the GTK3 stack. A fix requires Tauri migrating to GTK4/webkitgtk-6 upstream. |
 | [RUSTSEC-2025-0075](https://rustsec.org/advisories/RUSTSEC-2025-0075), [-0080](https://rustsec.org/advisories/RUSTSEC-2025-0080), [-0081](https://rustsec.org/advisories/RUSTSEC-2025-0081), [-0098](https://rustsec.org/advisories/RUSTSEC-2025-0098), [-0100](https://rustsec.org/advisories/RUSTSEC-2025-0100) | `unic-*` (`unic-char-range`, `unic-common`, `unic-char-property`, `unic-ucd-version`, `unic-ucd-ident`, all `0.9.0`) | unmaintained | Pulled in transitively via `urlpattern` <- `tauri-utils`. No direct use. |
-| [RUSTSEC-2026-0367](https://rustsec.org/advisories/RUSTSEC-2026-0367), [-0368](https://rustsec.org/advisories/RUSTSEC-2026-0368), [-0369](https://rustsec.org/advisories/RUSTSEC-2026-0369), [-0429](https://rustsec.org/advisories/RUSTSEC-2026-0429) | `zip 4.6.1` | vuln (extraction: symlinks, permission bits, a process abort on a symlink entry with a large declared size) | Fixed only in `>=9.0.0` (semver-major). Pinned by `tauri-plugin-updater` (even `2.14.0` depends on `zip 4.6.1`). Extraction runs only in the Windows updater, on a bundle whose Ed25519 signature `download_and_install` has already verified against `plugins.updater.pubkey`: a malicious archive needs our signing key. Revisit when the updater moves to zip `>=9`. |
+| [RUSTSEC-2026-0367](https://rustsec.org/advisories/RUSTSEC-2026-0367), [-0368](https://rustsec.org/advisories/RUSTSEC-2026-0368), [-0369](https://rustsec.org/advisories/RUSTSEC-2026-0369), [-0429](https://rustsec.org/advisories/RUSTSEC-2026-0429) | `zip 4.6.1` | vuln (extraction: symlinks, permission bits, a process abort on a symlink entry with a large declared size) | Fixed only in `>=9.0.0` (semver-major). Pinned by `tauri-plugin-updater` (even `2.14.0` depends on `zip 4.6.1`). Extraction runs only in the Windows updater, on a bundle whose Ed25519 signature `download_and_install` has already verified against `plugins.updater.pubkey`: a malicious archive needs our signing key (see "Release and update trust" for where it lives). Revisit when the updater moves to zip `>=9`. |
 | [RUSTSEC-2026-0370](https://rustsec.org/advisories/RUSTSEC-2026-0370), [-0371](https://rustsec.org/advisories/RUSTSEC-2026-0371), [-0372](https://rustsec.org/advisories/RUSTSEC-2026-0372) | `zvariant`, `zbus_names`, `zvariant_derive` (4.x and 5.x) | unmaintained | Pulled in by `zbus` (Linux D-Bus) via `notify-rust`, `tauri-plugin-notification` and `tauri-plugin-opener`. No fixed release; revisit when zbus moves off them. |
 
 > `anyhow` (RUSTSEC-2026-0190) was fixed by bumping to `1.0.104` rather than

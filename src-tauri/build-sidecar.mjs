@@ -52,15 +52,16 @@ const isRelease = rawProfile === "release";
 const cargoFlag = isRelease ? " --release" : "";
 const targetDir = isRelease ? "release" : "debug";
 
-// Skip if the sidecar is already staged (non-empty). This avoids a redundant
-// rebuild when the release workflow stages both architectures before tauri-action
-// invokes `beforeBuildCommand`.
+// In CI, skip if the sidecar is already staged (non-empty): the release workflow
+// stages both architectures before `beforeBuildCommand` runs, and a rebuild would
+// compile the daemon a third time. On a developer's machine always go through
+// cargo, which does nothing when it is fresh, so a stale daemon is never bundled.
 const destDir = resolve("binaries");
 mkdirSync(destDir, { recursive: true });
 const dest = resolve(destDir, `namehold-syncd-${triple}${ext}`);
 try {
   const st = statSync(dest);
-  if (st.size > 0) {
+  if (process.env.CI && st.size > 0) {
     console.log(`Sidecar already staged: ${dest} (${st.size} bytes) — skipping build`);
     process.exit(0);
   }
@@ -69,7 +70,8 @@ try {
 }
 
 console.log(`Building namehold-syncd (${rawProfile}, target=${triple})`);
-execSync(`cargo build${cargoFlag} --bin namehold-syncd`, { stdio: "inherit" });
+// --locked: build the dependency versions Cargo.lock pins, or fail.
+execSync(`cargo build --locked${cargoFlag} --bin namehold-syncd`, { stdio: "inherit" });
 
 const src = resolve("target", targetDir, `namehold-syncd${ext}`);
 copyFileSync(src, dest);

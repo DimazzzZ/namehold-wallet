@@ -1,0 +1,8 @@
+{
+  "name": "namehold-release-signer",
+  "private": true,
+  "description": "The one package the release signing job installs: the Tauri CLI, at the exact version pnpm-lock.yaml pins.",
+  "dependencies": {
+    "@tauri-apps/cli": "2.11.5"
+  }
+}

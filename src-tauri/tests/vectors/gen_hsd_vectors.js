@@ -3,7 +3,12 @@
 // Independent known-answer transaction vectors generated from canonical hsd
 // 8.0.0. Consumed by src-tauri/src/tests/hsd_parity_tests.rs to prove our Rust
 // transaction construction / signing / serialization / covenant encoding match
-// hsd byte-for-byte. Regenerate with: `npm install && node gen_hsd_vectors.js`.
+// hsd byte-for-byte. Regenerate with:
+// `npm ci --ignore-scripts && NODE_BACKEND=js node gen_hsd_vectors.js`.
+// The lockfile pins hsd's dependencies; bcrypto, bdb, goosig and unbound would
+// otherwise compile native code at install, and NODE_BACKEND=js is what makes
+// bcrypto run without it. Best run in a container or under a throwaway user
+// with no wallet or release key in reach.
 //
 // hsd and our Rust signer both produce RFC-6979 deterministic, low-S ECDSA
 // signatures, so for identical inputs (same coins, output order, locktime,

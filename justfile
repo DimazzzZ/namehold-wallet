@@ -15,7 +15,7 @@ coverage:
 
 # Build for release
 build-release:
-    cd src-tauri && cargo build --release
+    cd src-tauri && cargo build --locked --release
 
 # Format code (stable toolchain, pre-dirty worktree OK)
 fmt:

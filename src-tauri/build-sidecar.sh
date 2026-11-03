@@ -17,10 +17,10 @@ mkdir -p binaries
 TARGET_DIR="${CARGO_TARGET_DIR:-target}"
 echo "Building namehold-syncd (mode=$MODE, target=$TARGET_TRIPLE, out=$TARGET_DIR)"
 if [ "$MODE" = "debug" ]; then
-  cargo build --bin namehold-syncd
+  cargo build --locked --bin namehold-syncd
   SRC="$TARGET_DIR/debug/namehold-syncd"
 else
-  cargo build --release --bin namehold-syncd
+  cargo build --locked --release --bin namehold-syncd
   SRC="$TARGET_DIR/release/namehold-syncd"
 fi
 
