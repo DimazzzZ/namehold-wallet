@@ -210,7 +210,7 @@ On the Wallet page, click **Send HNS**. The Send dialog has:
 3. **Review** button — builds a draft (`build_send_draft`) and shows Amount,
    Fee, Change, Inputs, and destination. **No key is touched yet.**
 4. **Sign & Broadcast** — unlocks the signer (secure window if locked), signs
-   the draft, and broadcasts it.
+   the draft, and broadcasts it. The secure window warns when this wallet has never sent to the address: compare it with the source, because a send cannot be undone.
 
 If the broadcast fails, the dialog stays open with a persistent "Not sent"
 error so you don't lose your inputs. On success, the transaction shows up under

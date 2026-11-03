@@ -384,6 +384,33 @@ fn confirm_details_for_speed_up(s: &SpeedUpSummary) -> serde_json::Value {
     serde_json::json!({ "rows": rows })
 }
 
+/// Says so when a plain send pays an address this wallet has never sent to and
+/// that is not its own: a pasted or look-alike address is seen here last.
+fn warn_of_a_first_send(
+    conn: &rusqlite::Connection,
+    draft: &db::queries::TxDraftRow,
+    details: &mut serde_json::Value,
+) -> Result<(), AppError> {
+    if draft.action != "send_hns" {
+        return Ok(());
+    }
+    let summary: TxSummary = read_summary(&draft.summary_json)?;
+    let Some(to) = summary.recipient_address.as_deref() else {
+        return Ok(());
+    };
+    if db::queries::has_paid_or_owns_address(conn, &draft.wallet_profile_id, to, &draft.id)? {
+        return Ok(());
+    }
+    if let Some(rows) = details["rows"].as_array_mut() {
+        rows.push(serde_json::json!({
+            "label": "Warning",
+            "value": "This wallet has never sent to this address. Compare it with the source \
+                      character by character: a send cannot be undone.",
+        }));
+    }
+    Ok(())
+}
+
 /// One "Warning" row per warning.
 fn push_warning_rows(rows: &mut Vec<serde_json::Value>, warnings: &[String]) {
     for w in warnings {
@@ -900,11 +927,13 @@ pub(crate) async fn sign_tx_draft_confirmed<R: Runtime>(
         let reserved = reserved_send_coins(&conn, &draft)?;
         ensure_reviewed(&draft, &profile, &reserved)?;
         let profile_id = draft.wallet_profile_id.clone();
-        confirm_details_with(&draft, &|blind| {
+        let mut details = confirm_details_with(&draft, &|blind| {
             db::queries::get_bid_by_blind(&conn, &profile_id, blind)
                 .ok()
                 .flatten()
-        })?
+        })?;
+        warn_of_a_first_send(&conn, &draft, &mut details)?;
+        details
     };
     let confirm_text = typed_confirmation(&details).map(str::to_string);
     let confirm = prompt_secure(
