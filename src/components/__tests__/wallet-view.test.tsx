@@ -1931,6 +1931,27 @@ describe("WalletView — Renew all in Needs you", () => {
     expect(invokeMock.mock.calls.some((c) => c[0] === "sign_tx_draft")).toBe(false);
   });
 
+  it("a press on the notification opens the confirmation, and only once", async () => {
+    invokeMock.mockImplementation(route(true));
+    render(<WalletView />, { wrapper: wrapper("/?renewAll=1") });
+    expect(await screen.findByText(/Confirm batch renew/i)).toBeInTheDocument();
+    const calls = invokeMock.mock.calls.filter((c) => c[0] === "build_batch_renew_draft");
+    expect(calls).toHaveLength(1);
+    expect((calls[0]?.[1] as { names: string[] }).names).toEqual(["alpha", "beta"]);
+  });
+
+  it("a press on the notification builds nothing while this wallet cannot send", async () => {
+    invokeMock.mockImplementation(route(false));
+    render(<WalletView />, { wrapper: wrapper("/?renewAll=1") });
+    await screen.findByTestId("needs-you-renew-all");
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some((c) => c[0] === "get_names_action_capabilities")).toBe(
+        true,
+      ),
+    );
+    expect(invokeMock.mock.calls.some((c) => c[0] === "build_batch_renew_draft")).toBe(false);
+  });
+
   it("stays off while this wallet cannot send", async () => {
     invokeMock.mockImplementation(route(false));
     render(<WalletView />, { wrapper: wrapper() });

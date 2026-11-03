@@ -43,7 +43,7 @@ use tokio::sync::Mutex as AsyncMutex;
 /// was hidden to tray), and focus. Used by the tray "Open" menu item and by a
 /// left-click on the tray icon. Errors are logged, not propagated — a failed
 /// focus should never crash the event loop.
-fn show_main_window(app: &tauri::AppHandle) {
+pub(crate) fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     // macOS: restore the Dock icon in case we hid it when the window was
     // closed to tray. No-op on other platforms.
     #[cfg(target_os = "macos")]

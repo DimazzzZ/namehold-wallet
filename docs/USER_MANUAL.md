@@ -566,7 +566,7 @@ unaffected.
 
 ### Renewal reminders
 
-With deadline notifications on (Settings › Notifications), the app reminds you when an owned name comes within the lead time you set. Names of one wallet that come due in the same check share one notification: how many, which comes first, and the first three names. The notification only informs: open Namehold and press **Renew all** in Needs you on the Wallet page, which appears for two names or more and renews every name that can be renewed now after one confirmation. Renewal reminders are sent while the app is running, not by the background daemon.
+With deadline notifications on (Settings › Notifications), the app reminds you when an owned name comes within the lead time you set. Names of one wallet that come due in the same check share one notification: how many, which comes first, and the first three names. On macOS and Linux it has a **Renew all** button, which opens Namehold and the confirmation; nothing is signed from the notification, and a locked wallet asks you to unlock first. On Windows, open Namehold yourself. On the Wallet page, **Renew all** in Needs you appears for two names or more and renews every name that can be renewed now after one confirmation. Renewal reminders are sent while the app is running, not by the background daemon.
 
 ### Finalize reminders in the background
 

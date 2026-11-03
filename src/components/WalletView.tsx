@@ -2,7 +2,7 @@ import { ArrowRight, QrCode, RefreshCw, Send, TriangleAlert } from "lucide-react
 import { Icon } from "./ui/Icon";
 import { isSignerUnlockedFor } from "../lib/signer";
 import { useState, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { settingsPath } from "../lib/settingsSections";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -31,6 +31,7 @@ import { BlockInfoModal } from "./BlockInfoModal";
 import { RecentActivityCard } from "./activity/RecentActivityCard";
 import { useSignerToggle } from "../hooks/useSignerToggle";
 import { useNameBatchActions } from "../hooks/useNameBatchActions";
+import { RENEW_ALL_PARAM } from "../hooks/useRenewAllRequest";
 import { BatchConfirmModal } from "./BatchConfirmModal";
 import { ProgressLine } from "./names/NameBatchBar";
 import { NeedsYouCard } from "./NeedsYouCard";
@@ -119,6 +120,16 @@ export function WalletView() {
   const renewable = needsYou.items
     .filter((i) => i.kind === "renew" && capsByName.get(i.name)?.canRenew.allowed)
     .map((i) => i.name);
+  // A press on a renewal notification: one confirmation, as soon as this wallet
+  // can send and the list has arrived. Leaving the page drops the request.
+  const [params, setParams] = useSearchParams();
+  const renewAllReady = params.has(RENEW_ALL_PARAM) && canWrite && renewable.length > 0;
+  useEffect(() => {
+    if (!renewAllReady) return;
+    setParams({}, { replace: true });
+    void batch.runFor("renew", renewable);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renewAllReady]);
   const finalizeRefusal = shakedexRefusal(profile?.kind, writeCap);
   // Spending uses node-synced coins (tracked_utxos), NOT the explorer balance.
   // If the explorer shows funds but nothing is synced yet, the user must connect

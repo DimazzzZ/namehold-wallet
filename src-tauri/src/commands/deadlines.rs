@@ -527,6 +527,48 @@ fn collect_deadlines(
     Ok((reveal_out, renewal_out))
 }
 
+/// The event a press on a renewal reminder sends the main window.
+#[cfg(not(test))]
+const RENEW_ALL_EVENT: &str = "renew-all-requested";
+
+/// Whether a notification is a renewal reminder, which offers Renew all.
+fn offers_renew_all(key: &str) -> bool {
+    key.contains("renewal")
+}
+
+/// A renewal reminder with a Renew all button, through notify-rust because the
+/// notification plugin has no buttons on desktop. A press opens the app and
+/// its confirmation and signs nothing. Waiting blocks, so it has its own thread;
+/// the outcome reaches nobody, so a failure is only logged.
+#[cfg(all(not(test), not(target_os = "windows")))]
+fn send_renewal_notification<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    n: &PendingNotification,
+) {
+    use tauri::Emitter;
+    let (app, title, body) = (app.clone(), n.title.clone(), n.body.clone());
+    std::thread::spawn(move || {
+        let shown = notify_rust::Notification::new()
+            .summary(&title)
+            .body(&body)
+            .action("renew", "Renew all")
+            .show();
+        let handle = match shown {
+            Ok(handle) => handle,
+            Err(e) => {
+                eprintln!("renewal reminder not shown: {e}");
+                return;
+            }
+        };
+        handle.wait_for_action(|action| {
+            if action != "__closed" {
+                crate::show_main_window(&app);
+                let _ = app.emit(RENEW_ALL_EVENT, ());
+            }
+        });
+    });
+}
+
 /// Best-effort OS notification dispatch. Never returns an error to the
 /// caller — a denied/unavailable OS permission must not break the scan or
 /// crash the app; the outcome's `delivery_error` communicates it to the UI
@@ -537,6 +579,11 @@ pub(crate) fn send_os_notification<R: tauri::Runtime>(
     n: &PendingNotification,
 ) -> Option<String> {
     use tauri_plugin_notification::NotificationExt;
+    #[cfg(not(target_os = "windows"))]
+    if offers_renew_all(&n.key) {
+        send_renewal_notification(app, n);
+        return None;
+    }
     match app
         .notification()
         .builder()
@@ -977,6 +1024,13 @@ mod tests {
         assert_eq!(result.notifications.len(), 1);
         assert_eq!(result.notifications[0].key, "renewal:p1:nameb");
         assert!(result.active_episodes.contains("renewal:p1:nameb"));
+    }
+
+    #[test]
+    fn only_renewal_reminders_offer_renew_all() {
+        assert!(offers_renew_all(&renewal_key(&renewal("p1", "a", 1.0))));
+        assert!(offers_renew_all("renewal-group:p1"));
+        assert!(!offers_renew_all(&reveal_key(&reveal("p1", "a", 5))));
     }
 
     #[test]

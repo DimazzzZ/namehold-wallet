@@ -8,6 +8,7 @@ import { PRIMARY_ROUTES } from "../lib/navigation";
 import { cn } from "../lib/utils";
 import { isBrowser } from "../lib/runtime";
 import { useAppHotkeys } from "../hooks/useAppHotkeys";
+import { useRenewAllRequest } from "../hooks/useRenewAllRequest";
 import { useNavCounts } from "../hooks/useNavCounts";
 import { useUiStore } from "../stores/ui";
 import { Cheatsheet } from "./Cheatsheet";
@@ -38,6 +39,7 @@ export function Layout() {
   const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   useAppHotkeys({ setCheatsheetOpen, setPaletteOpen });
+  useRenewAllRequest();
 
   // Navigating anywhere closes the shell's popovers.
   useEffect(() => {
