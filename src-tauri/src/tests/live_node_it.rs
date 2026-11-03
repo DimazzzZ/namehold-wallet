@@ -370,6 +370,96 @@ async fn live_send_builds_broadcasts_and_confirms() {
     );
 }
 
+/// The node's own word on what a series of transactions meets when it runs out
+/// of coins: the refusal names the held coins, a sync with no block brings the
+/// change of the mempool transactions, the node takes a transaction spending
+/// it, and a block confirms the whole chain.
+#[tokio::test]
+async fn live_series_out_of_coins_goes_on_after_a_sync_with_no_block() {
+    let Some((url, key)) = it_env() else {
+        eprintln!(
+            "skip live_series_out_of_coins_goes_on_after_a_sync_with_no_block: set HNS_IT_NODE_URL"
+        );
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    // Two coins, matured on another wallet's blocks: an immature coin of ours
+    // would be named as the reason instead.
+    let (elsewhere, _, _) = leaf00_at(99_999);
+    fund(&cl, &addr, 2).await;
+    fund(&cl, &elsewhere, 3).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let profile_id = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        crate::db::queries::get_active_profile_id(&conn).unwrap()
+    };
+    let spendable = || {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        crate::noncustodial::send::load_spendable_coins(
+            &conn,
+            &profile_id,
+            None,
+            crate::noncustodial::network::Network::Regtest,
+        )
+        .unwrap()
+        .len()
+    };
+    let send_no_mine = |id: String| {
+        let app = &app;
+        async move {
+            unlock(app);
+            sign_tx_draft_inner(&app.state(), &id).await.expect("sign");
+            let bc = broadcast_tx_draft(app.state(), id)
+                .await
+                .expect("broadcast");
+            assert_eq!(bc.status, "broadcasted");
+            bc.txid
+        }
+    };
+    let free = spendable();
+    assert!(free >= 1, "funded");
+
+    // Send on every free coin, mining nothing and syncing nothing.
+    for _ in 0..free {
+        let d = build_send_hns_draft(app.state(), addr.clone(), 100_000, Some(1), None)
+            .await
+            .expect("build send");
+        send_no_mine(d.id).await;
+    }
+    assert_eq!(spendable(), 0, "every coin held, no change known yet");
+    let e = build_send_hns_draft(app.state(), addr.clone(), 100_000, Some(1), None)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("insufficient free coins"), "{e}");
+
+    // A sync, no block: the change is known and the node takes a spend of it.
+    let height = cl.get_blockchain_info().await.expect("info").blocks;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    assert_eq!(cl.get_blockchain_info().await.expect("info").blocks, height);
+    assert!(
+        spendable() >= free,
+        "every sent transaction returned change"
+    );
+    let d = build_send_hns_draft(app.state(), addr.clone(), 100_000, Some(1), None)
+        .await
+        .expect("change of a mempool transaction pays");
+    let txid = send_no_mine(d.id.clone()).await;
+
+    // A block confirms parent and child together: the node did not refuse it.
+    cl.generate_to_address(1, &elsewhere).await.expect("mine");
+    let mined = cl.get_tx_by_hash(&txid).await.expect("the child is known");
+    assert!(
+        mined.get("height").and_then(|h| h.as_i64()).unwrap_or(-1) > height,
+        "child of a mempool transaction mined: {mined}"
+    );
+}
+
 #[tokio::test]
 async fn live_auction_open_bid_reveal_register() {
     let Some((url, key)) = it_env() else {
@@ -554,6 +644,117 @@ async fn live_auction_open_bid_reveal_redeem() {
         "REDEEM returns the losing reveal's value"
     );
     assert_eq!(name_owner(&cl, &name).await.0, rival_reveal_txid);
+}
+
+/// The value of a lost bid comes back as a REDEEM coin. The balance counts it,
+/// so Max must send it and leave nothing: what the owner met on 2026-11-02, a
+/// HNS left on a wallet after Max. Everything here is mined on another wallet's
+/// blocks, so no immature coin of ours muddies the balance.
+#[tokio::test]
+async fn live_max_sends_a_redeemed_coin_and_leaves_nothing() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_max_sends_a_redeemed_coin_and_leaves_nothing: set HNS_IT_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    let (rival, rival_addr) = rival_wallet(&url, &key);
+    let (miner, _, _) = leaf00_at(99_998);
+    fund(&cl, &addr, 8).await;
+    fund(&cl, &rival_addr, 5).await;
+    fund(&cl, &miner, 3).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("redeemmax{tip}");
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
+    execute(&app, &cl, &miner, open.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &miner, 30).await);
+
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let bid = build_bid_draft(app.state(), name.clone(), 500_000, 1_000_000, Some(1))
+        .await
+        .expect("build bid");
+    execute(&app, &cl, &miner, bid.id).await;
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let rival_bid = build_bid_draft(rival.state(), name.clone(), 800_000, 1_600_000, Some(1))
+        .await
+        .expect("build rival bid");
+    execute(&rival, &cl, &miner, rival_bid.id).await;
+    assert!(mine_until(&cl, &name, "REVEAL", &miner, 30).await);
+
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let reveal = build_reveal_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build reveal");
+    execute(&app, &cl, &miner, reveal.id).await;
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let rival_reveal = build_reveal_draft(rival.state(), name.clone(), Some(1))
+        .await
+        .expect("build rival reveal");
+    execute(&rival, &cl, &miner, rival_reveal.id).await;
+    assert!(mine_until(&cl, &name, "CLOSED", &miner, 40).await);
+
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let redeem = build_redeem_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build redeem");
+    execute(&app, &cl, &miner, redeem.id).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let (profile_id, redeemed, liquid) = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        let id = crate::db::queries::get_active_profile_id(&conn).unwrap();
+        let redeemed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tracked_utxos
+                 WHERE wallet_profile_id = ?1 AND spent_by_txid IS NULL AND covenant_type = 5",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let b = crate::noncustodial::sync::compute_balances(
+            &conn,
+            &id,
+            crate::noncustodial::network::Network::Regtest,
+        )
+        .unwrap();
+        (id, redeemed, b.liquid)
+    };
+    assert_eq!(redeemed, 1, "the lost bid came back as a REDEEM coin");
+
+    let draft = build_send_hns_draft(app.state(), miner.clone(), 0, Some(1), Some(true))
+        .await
+        .expect("build Max");
+    assert_eq!(
+        draft.summary["inputTotalDoos"].as_i64(),
+        Some(liquid),
+        "Max takes every coin the balance counts"
+    );
+    execute(&app, &cl, &miner, draft.id).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().unwrap();
+    let after = crate::noncustodial::sync::compute_balances(
+        &conn,
+        &profile_id,
+        crate::noncustodial::network::Network::Regtest,
+    )
+    .unwrap();
+    assert_eq!(after.liquid, 0, "nothing left after a mined Max");
 }
 
 /// A bid this wallet never revealed, in an auction a rival won: once CLOSED

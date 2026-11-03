@@ -246,7 +246,7 @@ Steps:
 
 Expected:
 
-- `Renew Selected` is disabled with a reason (it is offered only when every selected name may be renewed); `Transfer Selected` and the other batch buttons stay disabled for the locked name, even with a valid address typed.
+- `Renew Selected` is disabled with a reason (it is offered only when every selected name may be renewed); `Transfer Selected` and the other batch buttons stay disabled for the locked name.
 - Passes if no batch action can include the locked name; an unreadable hover is ◐.
 
 - **Blocks mined:** 0

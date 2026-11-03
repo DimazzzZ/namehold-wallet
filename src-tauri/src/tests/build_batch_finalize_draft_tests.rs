@@ -56,6 +56,15 @@ fn seed_profile(conn: &rusqlite::Connection) {
 }
 
 fn seed_liquid_coin(conn: &rusqlite::Connection, txid: &str, value: i64, address: &str) {
+    // Coin selection joins on the wallet's own addresses.
+    conn.execute(
+        "INSERT OR IGNORE INTO derived_addresses
+            (wallet_profile_id, account_index, branch, child_index,
+             address, script_pubkey_hex, public_key_hex)
+         VALUES (?1, 0, 0, 0, ?2, 'deadbeef', '00')",
+        rusqlite::params![PROFILE, address],
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO tracked_utxos
             (txid, vout, wallet_profile_id, address, script_pubkey_hex,
@@ -417,4 +426,182 @@ fn batch_finalize_writes_each_names_weak_flag() {
     assert_eq!(flags.len(), 2, "one FINALIZE per name");
     assert_eq!(flags[&nh("alpha")], "00");
     assert_eq!(flags[&nh("bravo")], "01");
+}
+
+// ---------------------------------------------------------------------------
+// A series out of coins (2026-11-02, the 46 names left of 546): five batches
+// took the five free coins, their change was not synced yet, and the sixth
+// read "Insufficient HNS balance" with 5.57 HNS on the way back.
+// ---------------------------------------------------------------------------
+
+const WAITING: &str = "insufficient free coins";
+
+/// The first batch built and put in `status`, its coin held. A second batch of
+/// another name then runs with no coin left, as a fresh `load_ctx` would see.
+fn second_batch_after_first_in(
+    status: &str,
+) -> Result<crate::noncustodial::types::TxDraftSummary, AppError> {
+    let (conn, mut ctx, per_name, rblock) = setup(&["aaa", "bbb"]);
+    let mut per_name = per_name.into_iter();
+    let first = vec![per_name.next().unwrap()];
+    let second = vec![per_name.next().unwrap()];
+    let draft = build_batch_finalize_draft_inner(&conn, &ctx, first, &rblock, 1).unwrap();
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = ?2",
+        rusqlite::params![status, draft.id],
+    )
+    .unwrap();
+    ctx.funding =
+        crate::noncustodial::send::load_spendable_coins(&conn, PROFILE, None, Network::Main)
+            .unwrap();
+    assert!(
+        ctx.funding.is_empty(),
+        "the first batch holds the only coin"
+    );
+    build_batch_finalize_draft_inner(&conn, &ctx, second, &rblock, 1)
+}
+
+fn message(r: Result<crate::noncustodial::types::TxDraftSummary, AppError>) -> String {
+    match r {
+        Err(AppError::InvalidInput(m)) => m,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn batch_after_a_sent_batch_says_its_coins_are_held() {
+    for status in ["broadcasted", "broadcast_pending", "confirmed"] {
+        let m = message(second_batch_after_first_in(status));
+        assert!(m.starts_with(WAITING), "{status}: {m}");
+        assert!(m.contains("1 coin(s)"), "{status}: {m}");
+    }
+}
+
+#[test]
+fn batch_after_an_unsent_draft_is_not_told_to_wait() {
+    // Nothing is on its way back: waiting would never help.
+    for status in ["draft", "signed"] {
+        let m = message(second_batch_after_first_in(status));
+        assert!(m.starts_with("insufficient funds"), "{status}: {m}");
+    }
+}
+
+#[test]
+fn batch_with_no_coins_at_all_stays_plain_insufficient_funds() {
+    let (conn, mut ctx, per_name, rblock) = setup(&["aaa"]);
+    ctx.funding.clear();
+    let m = message(build_batch_finalize_draft_inner(
+        &conn, &ctx, per_name, &rblock, 1,
+    ));
+    assert!(m.starts_with("insufficient funds"), "{m}");
+}
+
+#[test]
+fn coins_held_count_ignores_spent_coins_name_coins_and_other_wallets() {
+    use crate::db::queries::count_coins_held_by_sent_drafts as held;
+    let (conn, ctx, per_name, rblock) = setup(&["aaa"]);
+    let draft = build_batch_finalize_draft_inner(&conn, &ctx, per_name, &rblock, 1).unwrap();
+    assert_eq!(held(&conn, PROFILE).unwrap(), 0, "not sent yet");
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET status = 'broadcasted' WHERE id = ?1",
+        rusqlite::params![draft.id],
+    )
+    .unwrap();
+    // The draft also reserves the name's coin; only the liquid one pays fees.
+    assert_eq!(held(&conn, PROFILE).unwrap(), 1);
+    assert_eq!(held(&conn, "another_wallet").unwrap(), 0);
+    conn.execute(
+        "UPDATE tracked_utxos SET spent_by_txid = 'spent' WHERE spend_class = 'liquid_hns'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        held(&conn, PROFILE).unwrap(),
+        0,
+        "synced: its change is back"
+    );
+}
+
+#[test]
+fn explain_waiting_coins_leaves_every_other_error_alone() {
+    let (conn, ctx, per_name, rblock) = setup(&["aaa"]);
+    let draft = build_batch_finalize_draft_inner(&conn, &ctx, per_name, &rblock, 1).unwrap();
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET status = 'broadcasted' WHERE id = ?1",
+        rusqlite::params![draft.id],
+    )
+    .unwrap();
+    let explain = crate::noncustodial::send::explain_waiting_coins;
+    let e = explain(
+        &conn,
+        PROFILE,
+        AppError::InvalidInput("too many coins".into()),
+    );
+    assert!(matches!(e, AppError::InvalidInput(m) if m == "too many coins"));
+    let e = explain(&conn, PROFILE, AppError::Rpc("insufficient funds".into()));
+    assert!(
+        matches!(e, AppError::Rpc(_)),
+        "only coin selection's own refusal"
+    );
+}
+
+/// A whole series, coin by coin: three free coins carry three batches, the
+/// fourth is told to wait, and once a sync brings the first one's change the
+/// fourth builds on that change.
+#[test]
+fn a_series_runs_until_the_coins_run_out_and_resumes_on_the_change() {
+    let (conn, mut ctx, per_name, rblock) = setup(&["aaa", "bbb", "ccc", "ddd"]);
+    let addr: String = conn
+        .query_row("SELECT address FROM tracked_utxos LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    seed_liquid_coin(&conn, &"ab".repeat(32), 40_000_000, &addr);
+    seed_liquid_coin(&conn, &"ac".repeat(32), 30_000_000, &addr);
+    let load = |conn: &rusqlite::Connection| {
+        crate::noncustodial::send::load_spendable_coins(conn, PROFILE, None, Network::Main).unwrap()
+    };
+    let mut names = per_name.into_iter();
+    let mut first_id = String::new();
+    for i in 0..3 {
+        ctx.funding = load(&conn);
+        assert_eq!(
+            ctx.funding.len(),
+            3 - i,
+            "one coin left per batch not yet built"
+        );
+        let d =
+            build_batch_finalize_draft_inner(&conn, &ctx, vec![names.next().unwrap()], &rblock, 1)
+                .unwrap();
+        conn.execute(
+            "UPDATE wallet_tx_drafts SET status = 'broadcasted' WHERE id = ?1",
+            rusqlite::params![d.id],
+        )
+        .unwrap();
+        if i == 0 {
+            first_id = d.id;
+        }
+    }
+    ctx.funding = load(&conn);
+    let fourth = names.next().unwrap();
+    let m = message(build_batch_finalize_draft_inner(
+        &conn,
+        &ctx,
+        vec![fourth.clone()],
+        &rblock,
+        1,
+    ));
+    assert!(m.starts_with(WAITING) && m.contains("3 coin(s)"), "{m}");
+
+    // A sync: the first batch's coin reads spent, its change arrives.
+    conn.execute(
+        "UPDATE tracked_utxos SET spent_by_txid = 'spent' WHERE reserved_by_draft_id = ?1",
+        rusqlite::params![first_id],
+    )
+    .unwrap();
+    seed_liquid_coin(&conn, &"cd".repeat(32), 49_000_000, &addr);
+    ctx.funding = load(&conn);
+    assert_eq!(ctx.funding.len(), 1);
+    build_batch_finalize_draft_inner(&conn, &ctx, vec![fourth], &rblock, 1)
+        .expect("the change pays for the batch that had to wait");
 }

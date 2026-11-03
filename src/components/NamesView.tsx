@@ -6,12 +6,16 @@ import {
   ArrowUp,
   ArrowUpDown,
   ArrowUpRight,
+  CircleCheck,
   Download,
   Ellipsis,
   Gavel,
+  RefreshCw,
   Search,
+  Send,
+  Settings2,
+  Signature,
   Star,
-  StarOff,
   Tag,
   Upload,
   X,
@@ -40,6 +44,7 @@ import {
   useWatchlistStatuses,
 } from "../queries/watchlist";
 import { buildNameRows, chipCounts, wallClock, type NameCat, type NameRow } from "../lib/nameRows";
+import { nameRowMenu, type RowMenuItem } from "../lib/nameRowMenu";
 import {
   activeFilterCount,
   NATURAL_DIR,
@@ -667,13 +672,14 @@ export function NamesView() {
         </div>
       )}
 
-      {!isWatchOnly && (batch.selected.size > 0 || transferableLeft > 0) && (
+      {!isWatchOnly && (batch.selected.size > 0 || transferableLeft > 0 || batch.progress) && (
         <NameBatchBar
           batch={batch}
           transferBlockers={transferBlockers}
           onSelectTransferable={selectTransferable}
           onDropBlockers={dropBlockers}
           transferableLeft={transferableLeft}
+          network={profile?.network ?? "mainnet"}
         />
       )}
 
@@ -744,6 +750,9 @@ export function NamesView() {
                       />
                     )}
                   </th>
+                  <th className="py-1 pr-4 w-6">
+                    <span className="sr-only">Watchlist</span>
+                  </th>
                   {SORT_COLUMNS.map((c) => (
                     <SortHeader
                       key={c.key}
@@ -790,13 +799,33 @@ export function NamesView() {
                           />
                         )}
                       </td>
+                      <td className="py-1 pr-4 align-top">
+                        <Tooltip
+                          content={r.watch ? "On your watchlist: remove" : "Add to watchlist"}
+                          className="inline-flex"
+                        >
+                          <button
+                            type="button"
+                            aria-label={`${r.watch ? "Unwatch" : "Watch"} .${displayName(r.name)}`}
+                            aria-pressed={!!r.watch}
+                            disabled={addWatch.isPending || removeWatch.isPending}
+                            className={`p-0.5 rounded hover:bg-gray-100 ${
+                              r.watch ? "text-amber-500" : "text-gray-300 hover:text-gray-500"
+                            }`}
+                            onClick={() =>
+                              r.watch ? removeWatch.mutate(r.name) : addWatch.mutate(r.name)
+                            }
+                          >
+                            <Icon
+                              icon={Star}
+                              size={14}
+                              className={r.watch ? "fill-current" : undefined}
+                            />
+                          </button>
+                        </Tooltip>
+                      </td>
                       <td className="py-1 pr-4">
                         <div className="flex items-center gap-1.5">
-                          {r.watch && (
-                            <Tooltip content="On your watchlist" className="inline-flex">
-                              <Icon icon={Star} size={13} className="text-amber-500" />
-                            </Tooltip>
-                          )}
                           <span className="font-mono text-[13px] text-gray-900">
                             .{displayName(r.name)}
                           </span>
@@ -924,58 +953,52 @@ export function NamesView() {
                       <td className="py-1 text-right whitespace-nowrap">
                         <span className="inline-flex items-center gap-1">
                           {rowAction(r)}
-                          {r.watch && (
-                            <Popover
-                              align="right"
-                              panelClassName="w-[200px]"
-                              trigger={({ toggle }) => (
-                                <Tooltip content="More">
-                                  <button
-                                    type="button"
-                                    aria-label="More"
-                                    className="p-1 rounded text-gray-500 hover:bg-gray-100"
-                                    onClick={toggle}
-                                  >
-                                    <Icon icon={Ellipsis} size={16} />
-                                  </button>
-                                </Tooltip>
-                              )}
-                            >
-                              {({ close }) => (
-                                <>
-                                  <MenuItem
-                                    icon={ArrowUpRight}
-                                    onClick={() => {
-                                      close();
-                                      openName(r.name);
-                                    }}
-                                  >
-                                    Open name
-                                  </MenuItem>
-                                  <MenuItem
-                                    icon={Tag}
-                                    onClick={() => {
-                                      close();
+                          <Popover
+                            align="right"
+                            panelClassName="w-[200px]"
+                            trigger={({ toggle }) => (
+                              <Tooltip content="More">
+                                <button
+                                  type="button"
+                                  aria-label="More"
+                                  className="p-1 rounded text-gray-500 hover:bg-gray-100"
+                                  onClick={toggle}
+                                >
+                                  <Icon icon={Ellipsis} size={16} />
+                                </button>
+                              </Tooltip>
+                            )}
+                          >
+                            {({ close }) =>
+                              nameRowMenu({
+                                caps: capsByName.get(r.name),
+                                watched: !!r.watch,
+                                watchOnly: isWatchOnly,
+                              }).map((item) => (
+                                <MenuItem
+                                  key={item.label}
+                                  icon={menuIcon(item)}
+                                  onClick={() => {
+                                    close();
+                                    const d = item.do;
+                                    if (d.kind === "open")
+                                      openNamePage(r.name, {
+                                        tab: d.tab,
+                                        seedCaps: capsByName.get(r.name),
+                                      });
+                                    else if (d.kind === "run")
+                                      void batch.runFor(d.action, [r.name]);
+                                    else {
                                       setEditingTags(r.name);
-                                      setTagValue(r.watch!.tags);
-                                    }}
-                                  >
-                                    Edit tags
-                                  </MenuItem>
-                                  <MenuItem
-                                    icon={StarOff}
-                                    className="text-red-700"
-                                    onClick={() => {
-                                      close();
-                                      removeWatch.mutate(r.name);
-                                    }}
-                                  >
-                                    Remove from watchlist
-                                  </MenuItem>
-                                </>
-                              )}
-                            </Popover>
-                          )}
+                                      setTagValue(r.watch?.tags ?? "");
+                                    }
+                                  }}
+                                >
+                                  {item.label}
+                                </MenuItem>
+                              ))
+                            }
+                          </Popover>
                         </span>
                       </td>
                     </tr>
@@ -1033,6 +1056,23 @@ function BlockLink({ height, onClick }: { height: number; onClick: (h: number) =
       </button>
     </Tooltip>
   );
+}
+
+const RUN_ICONS = {
+  renew: RefreshCw,
+  reveal: CircleCheck,
+  redeem: CircleCheck,
+  finalize: CircleCheck,
+};
+
+function menuIcon(item: RowMenuItem): Parameters<typeof Icon>[0]["icon"] {
+  const d = item.do;
+  if (d.kind === "run") return RUN_ICONS[d.action];
+  if (d.kind === "editTags") return Tag;
+  if (d.tab === "transfer") return Send;
+  if (d.tab === "dns") return Settings2;
+  if (d.tab === "sign") return Signature;
+  return item.label.startsWith("Cancel") ? X : ArrowUpRight;
 }
 
 function MenuItem({

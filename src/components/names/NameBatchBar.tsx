@@ -1,8 +1,46 @@
-import { MAX_BATCH, type NameBatchActions } from "../../hooks/useNameBatchActions";
+import { useEffect, useState } from "react";
+import {
+  MAX_BATCH,
+  type BatchProgress,
+  type NameBatchActions,
+} from "../../hooks/useNameBatchActions";
+import { hnsAddressPrefix, isLikelyHnsAddress } from "../../lib/utils";
 import { Button } from "../ui/Button";
+import { Dialog } from "../ui/Dialog";
 import { FeeRateOverride } from "../ui/FeeRateOverride";
 import { Input } from "../ui/Input";
+import { Spinner } from "../ui/Spinner";
 import { Tooltip } from "../ui/Tooltip";
+
+/** What a running series is doing, with the seconds this step has taken: a still line reads as a hang. */
+function ProgressLine({ progress }: { progress: BatchProgress }) {
+  const { action, step, index, total, names } = progress;
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    setSeconds(0);
+    const timer = setInterval(() => setSeconds((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, [step, index]);
+  return (
+    <div
+      className="flex items-center gap-2 text-sm font-medium text-blue-900"
+      role="status"
+      data-testid="batch-progress"
+    >
+      <Spinner />
+      <span>
+        {step === "building" ? "Building" : "Signing and sending"} {action}{" "}
+        {total > 1 ? `transaction ${index} of ${total}` : "transaction"}…
+      </span>
+      <span className="font-normal" data-testid="batch-progress-detail">
+        {step === "building"
+          ? `reading ${names} name${names === 1 ? "" : "s"} from your node, `
+          : ""}
+        {seconds}s
+      </span>
+    </div>
+  );
+}
 
 /** The batch bar for the selected names. Secondary buttons: Look up is the page's primary. */
 export function NameBatchBar({
@@ -11,6 +49,7 @@ export function NameBatchBar({
   onSelectTransferable,
   onDropBlockers,
   transferableLeft = 0,
+  network,
 }: {
   batch: NameBatchActions;
   /** Selected names that refuse a transfer, with the backend's reason (or none yet). */
@@ -21,7 +60,11 @@ export function NameBatchBar({
   onDropBlockers?: () => void;
   /** How many shown names can be transferred and are not yet selected. */
   transferableLeft?: number;
+  /** The wallet's network, to check the recipient's address prefix. */
+  network: string;
 }) {
+  // Transfer is two steps in order: pick the names, then say where they go.
+  const [askRecipient, setAskRecipient] = useState(false);
   const { eligibility: e, run, selected, recipient, setRecipient, progress } = batch;
   const batches = Math.ceil(selected.size / MAX_BATCH);
   const blockerText =
@@ -65,13 +108,42 @@ export function NameBatchBar({
   ];
   const transferWhy = !e.canTransfer
     ? (blockerText ?? "Capabilities are still loading for some selected names")
-    : !recipient.trim()
-      ? "Enter a recipient address"
-      : undefined;
+    : undefined;
+  const recipientError =
+    recipient.trim() && !isLikelyHnsAddress(recipient, network)
+      ? `Enter a valid ${network} address (starts with ${hnsAddressPrefix(network)}…)`
+      : null;
   const seriesNote =
     batches > 1
       ? `${selected.size} names go out as ${batches} transactions of up to ${MAX_BATCH}, one confirm for all`
       : null;
+  const progressLine = progress && <ProgressLine progress={progress} />;
+  // Transfer's blockers only help when dropping them leaves a transfer to run:
+  // on a selection none of which can transfer (names waiting for Finalize) they
+  // read as an error about what is going on. The button's tooltip still says
+  // why Transfer is off.
+  const showBlockers = transferBlockers.length > 0 && selected.size > transferBlockers.length;
+
+  // Nothing selected: no actions to offer, only the way to select (and the
+  // progress of an action run from a row's menu, which selects nothing).
+  if (selected.size === 0) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="batch-idle">
+        {onSelectTransferable && transferableLeft > 0 && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onSelectTransferable}
+            data-testid="batch-select-transferable"
+          >
+            Select all {transferableLeft} transferable
+          </Button>
+        )}
+        {progressLine}
+      </div>
+    );
+  }
+
   return (
     <div
       className="bg-blue-50 border border-blue-200 rounded-md px-3 py-2.5 flex flex-col gap-2"
@@ -92,23 +164,15 @@ export function NameBatchBar({
             </Button>
           </Tooltip>
         ))}
-        <span className="h-5 w-px bg-blue-200" aria-hidden />
-        <Input
-          className="w-56 font-mono"
-          placeholder="Transfer to hs1q… / rs1q…"
-          value={recipient}
-          onChange={(ev) => setRecipient(ev.target.value)}
-          data-testid="batch-transfer-recipient-input"
-        />
         <Tooltip content={transferWhy}>
           <Button
             size="sm"
             variant="secondary"
-            onClick={() => void run.transfer()}
+            onClick={() => setAskRecipient(true)}
             disabled={!!transferWhy}
             data-testid="batch-transfer-btn"
           >
-            Transfer Selected
+            Transfer Selected…
           </Button>
         </Tooltip>
         <Button
@@ -123,55 +187,94 @@ export function NameBatchBar({
           Clear
         </Button>
       </div>
-      {progress && (
-        <div
-          className="text-sm font-medium text-blue-900"
-          role="status"
-          data-testid="batch-progress"
-        >
-          {progress.step === "building" ? "Building" : "Signing and sending"} {progress.action}{" "}
-          {progress.total > 1
-            ? `transaction ${progress.index} of ${progress.total}`
-            : "transaction"}
-          …
-        </div>
-      )}
-      {(transferWhy || onSelectTransferable) && (
-        <div
-          className="flex flex-wrap items-center gap-2 text-xs text-blue-900"
-          data-testid="batch-transfer-help"
-        >
-          {transferWhy && !e.canTransfer && <span>{transferWhy}</span>}
-          {transferBlockers.length > 0 && onDropBlockers && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onDropBlockers}
-              data-testid="batch-drop-blockers"
-            >
-              Drop {transferBlockers.length} not transferable, keep{" "}
-              {selected.size - transferBlockers.length}
-            </Button>
-          )}
-          {seriesNote && <span>{seriesNote}</span>}
-          {onSelectTransferable && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onSelectTransferable}
-              disabled={transferableLeft === 0}
-              data-testid="batch-select-transferable"
-            >
-              Select all {transferableLeft} transferable
-            </Button>
-          )}
-        </div>
-      )}
+      {progressLine}
+      {!progress &&
+        (showBlockers || seriesNote || (onSelectTransferable && transferableLeft > 0)) && (
+          <div
+            className="flex flex-wrap items-center gap-2 text-xs text-blue-900"
+            data-testid="batch-transfer-help"
+          >
+            {showBlockers && <span>{transferWhy}</span>}
+            {showBlockers && onDropBlockers && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onDropBlockers}
+                data-testid="batch-drop-blockers"
+              >
+                Drop {transferBlockers.length} not transferable, keep{" "}
+                {selected.size - transferBlockers.length}
+              </Button>
+            )}
+            {seriesNote && <span>{seriesNote}</span>}
+            {onSelectTransferable && transferableLeft > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onSelectTransferable}
+                data-testid="batch-select-transferable"
+              >
+                Select all {transferableLeft} transferable
+              </Button>
+            )}
+          </div>
+        )}
       <FeeRateOverride
         value={batch.feeRate}
         onChange={batch.setFeeRate}
         label="Fee rate override"
       />
+      <Dialog
+        open={askRecipient}
+        onClose={() => setAskRecipient(false)}
+        title={`Transfer ${selected.size} name${selected.size === 1 ? "" : "s"}`}
+      >
+        <form
+          className="flex flex-col gap-3"
+          onSubmit={(ev) => {
+            ev.preventDefault();
+            if (!recipient.trim() || recipientError) return;
+            setAskRecipient(false);
+            void run.transfer(recipient);
+          }}
+        >
+          <div>
+            <Input
+              label="Recipient address"
+              className="font-mono"
+              placeholder={`${hnsAddressPrefix(network)}q…`}
+              value={recipient}
+              onChange={(ev) => setRecipient(ev.target.value)}
+              autoFocus
+              data-testid="batch-transfer-recipient-input"
+            />
+            {recipientError && (
+              <div
+                className="mt-1 text-xs text-red-600"
+                data-testid="batch-transfer-recipient-error"
+              >
+                {recipientError}
+              </div>
+            )}
+          </div>
+          <p className="text-xs text-gray-500">
+            The names move to this address once you finalize the transfer after its lockup. Review
+            shows the fee before anything is signed.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setAskRecipient(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={!recipient.trim() || !!recipientError}
+              data-testid="batch-transfer-review"
+            >
+              Review
+            </Button>
+          </div>
+        </form>
+      </Dialog>
     </div>
   );
 }

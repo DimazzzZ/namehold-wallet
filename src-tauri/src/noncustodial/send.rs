@@ -229,7 +229,6 @@ pub fn load_reserved_coins(
          WHERE u.wallet_profile_id = ?1
            AND u.reserved_by_draft_id = ?2
            AND u.spent_by_txid IS NULL
-           AND u.covenant_type = 0
            AND u.spend_class = 'liquid_hns'
          ORDER BY u.value_doos DESC, u.txid ASC, u.vout ASC",
     )?;
@@ -249,8 +248,9 @@ pub fn load_reserved_coins(
     Ok(coins)
 }
 
-/// Load all spendable coins for a profile: unspent, covenant-free
-/// (`covenant_type = 0`), and classified as liquid HNS.
+/// Load all spendable coins for a profile: unspent and classified as liquid HNS
+/// ([`crate::noncustodial::sync::classify_covenant`], which the balance counts
+/// by too: plain coins and REDEEM, a lost bid's value back).
 ///
 /// Coins live in `tracked_utxos`, but the BIP44 `(branch, child_index)` needed
 /// to re-derive each input's signing key lives in `derived_addresses`. We join
@@ -303,7 +303,6 @@ pub fn load_spendable_coins(
           AND d.address = u.address
          WHERE u.wallet_profile_id = ?1
            AND u.spent_by_txid IS NULL
-           AND u.covenant_type = 0
            AND u.spend_class = 'liquid_hns'
            AND u.txid NOT IN (SELECT s.purchase_txid FROM shakedex_purchases s
                                WHERE s.wallet_profile_id = ?1
@@ -492,6 +491,26 @@ pub fn shortfall_message(
         );
     }
     "insufficient funds to cover amount and fee".to_string()
+}
+
+/// Turn a bare "insufficient funds" into one that names the wait when coins of
+/// this wallet are held by transactions already sent: a coin stays reserved and
+/// its change unknown until the next sync, so a series of transactions runs out
+/// of coins long before it runs out of HNS.
+/// Any other error, and a DB failure of the lookup, passes straight through.
+pub fn explain_waiting_coins(conn: &Connection, profile_id: &str, err: AppError) -> AppError {
+    let AppError::InvalidInput(ref msg) = err else {
+        return err;
+    };
+    if !msg.starts_with("insufficient funds") {
+        return err;
+    }
+    match crate::db::queries::count_coins_held_by_sent_drafts(conn, profile_id) {
+        Ok(n) if n > 0 => AppError::InvalidInput(format!(
+            "insufficient free coins: {n} coin(s) are held by transactions just sent"
+        )),
+        _ => err,
+    }
 }
 
 /// Sweep selection: spend ALL available coins into a single recipient output of
@@ -1039,6 +1058,99 @@ mod tests {
         let msg = shortfall_message(1_000_000, 0, 1_000_000, None);
         assert!(msg.contains("freshly mined"), "{msg}");
         assert!(!msg.contains("about"), "{msg}");
+    }
+
+    /// One unspent coin of a covenant type, classified the way sync does.
+    fn insert_typed_coin(conn: &Connection, txid: &str, value: i64, covenant_type: u8) {
+        crate::noncustodial::sync::upsert_utxo(
+            conn,
+            "p1",
+            &serde_json::from_value(serde_json::json!({
+                "hash": txid,
+                "index": 0,
+                "value": value,
+                "address": "hs1qtyped",
+                "covenant": { "type": covenant_type, "items": [] },
+                "coinbase": false,
+                "height": 10,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// The balance and coin selection must agree for every covenant there is:
+    /// what the balance calls spendable, Max sends. A REDEEM coin (a lost bid
+    /// back) was counted by one and refused by the other, 2026-11-02.
+    #[test]
+    fn the_balance_counts_exactly_the_coins_selection_can_spend() {
+        for covenant_type in 0..=12u8 {
+            let conn = mem_db();
+            insert_derived(&conn, 0, 0, "hs1qtyped");
+            insert_typed_coin(&conn, "aa", 1_000_000, covenant_type);
+            let balance = crate::noncustodial::sync::compute_balances(&conn, "p1", Network::Main)
+                .unwrap()
+                .liquid;
+            let coins = load_spendable_coins(&conn, "p1", None, Network::Main).unwrap();
+            let spendable: i64 = coins.iter().map(|c| c.value as i64).sum();
+            assert_eq!(balance, spendable, "covenant type {covenant_type}");
+        }
+    }
+
+    #[test]
+    fn a_redeemed_coin_is_selected_and_swept_and_nothing_bound_to_a_name_is() {
+        let conn = mem_db();
+        insert_derived(&conn, 0, 0, "hs1qtyped");
+        insert_typed_coin(&conn, "aa", 2_000_000, 0);
+        insert_typed_coin(
+            &conn,
+            "bb",
+            1_000_000,
+            crate::noncustodial::sync::COV_REDEEM,
+        );
+        for (txid, t) in [
+            ("c1", crate::noncustodial::sync::COV_BID),
+            ("c2", crate::noncustodial::sync::COV_REVEAL),
+            ("c3", crate::noncustodial::sync::COV_REGISTER),
+            ("c4", crate::noncustodial::sync::COV_TRANSFER),
+            ("c5", crate::noncustodial::sync::COV_REVOKE),
+        ] {
+            insert_typed_coin(&conn, txid, 9_000_000, t);
+        }
+        let coins = load_spendable_coins(&conn, "p1", None, Network::Main).unwrap();
+        let swept = select_all_coins(&coins, 1).unwrap();
+        assert_eq!(
+            swept.input_total, 3_000_000,
+            "the two free coins, nothing else"
+        );
+        assert_eq!(swept.coins.len(), 2);
+    }
+
+    /// Re-signing selects from the coins a draft reserved: a reserved REDEEM
+    /// coin read as missing would sign a different set than was reviewed.
+    #[test]
+    fn a_reserved_redeemed_coin_is_loaded_back_for_signing() {
+        let conn = mem_db();
+        insert_derived(&conn, 0, 0, "hs1qtyped");
+        insert_typed_coin(
+            &conn,
+            "bb",
+            1_000_000,
+            crate::noncustodial::sync::COV_REDEEM,
+        );
+        conn.execute(
+            "INSERT INTO wallet_tx_drafts
+                (id, wallet_profile_id, action, unsigned_tx_hex, signing_inputs_json,
+                 summary_json, status)
+             VALUES ('d', 'p1', 'send', 'deadbeef', '[]', '{}', 'draft')",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE tracked_utxos SET reserved_by_draft_id = 'd'", [])
+            .unwrap();
+        let coins = load_reserved_coins(&conn, "p1", "d").unwrap();
+        assert_eq!(coins.len(), 1);
+        assert_eq!(coins[0].value, 1_000_000);
     }
 
     #[test]

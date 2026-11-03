@@ -5075,3 +5075,79 @@ async fn capabilities_with_our_owner_coin_ignore_a_wrong_owner_answer() {
     assert!(caps.has_owner_coin);
     assert!(stored.is_some(), "the address is not cleared");
 }
+
+// --- refuse_behind_chain: a batch against a node still catching up ----------
+
+#[tokio::test]
+async fn refuse_behind_chain_reads_the_nodes_own_sync_state() {
+    use crate::commands::draft_ctx::refuse_behind_chain;
+    use crate::noncustodial::rpc::BlockchainInfo;
+    use crate::tests::mock_node_rpc::MockNodeRpc;
+    let info = |blocks, headers, progress| BlockchainInfo {
+        blocks,
+        headers,
+        verification_progress: progress,
+        ..Default::default()
+    };
+    // (blocks, headers, progress, may the batch run)
+    let cases = [
+        (100, Some(100), Some(1.0), true),
+        (98, Some(100), Some(1.0), true), // a block that just arrived mid-series
+        (97, Some(100), Some(1.0), false),
+        (10, Some(354_000), Some(0.03), false),
+        (100, Some(100), Some(0.08), false), // headers not at the real tip yet
+        (100, Some(0), None, false),         // no sync target yet
+        (0, Some(0), None, false),
+        (100, None, None, true), // regtest reports neither
+    ];
+    for (blocks, headers, progress, ok) in cases {
+        let mock = MockNodeRpc::new().with_blockchain_info(info(blocks, headers, progress));
+        let got = refuse_behind_chain(&mock).await;
+        assert_eq!(
+            got.is_ok(),
+            ok,
+            "{blocks}/{headers:?}/{progress:?}: {got:?}"
+        );
+        if let Err(e) = got {
+            assert!(e.to_string().contains("node is still syncing"), "{e}");
+        }
+    }
+    let down = MockNodeRpc::new().with_blockchain_info_err("connection refused");
+    let e = refuse_behind_chain(&down).await.unwrap_err();
+    assert!(e.to_string().contains("connection refused"), "{e}");
+}
+
+#[tokio::test]
+async fn build_batch_finalize_draft_refuses_a_syncing_node_before_reading_names() {
+    let mut server = mockito::Server::new_async().await;
+    let info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::PartialJson(
+            serde_json::json!({"method": "getblockchaininfo"}),
+        ))
+        .with_body(
+            serde_json::json!({"result": {"blocks": 10, "headers": 354_000,
+                "verificationprogress": 0.03}, "error": null})
+            .to_string(),
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+    }
+    let app = mock_app_with(state);
+    // No other mock exists: reading a name would fail with another message.
+    let e = names::build_batch_finalize_draft(app.state(), vec!["alpha".into()], None)
+        .await
+        .unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("node is still syncing (block 10 of 354000)"),
+        "{e}"
+    );
+    info.assert_async().await;
+}

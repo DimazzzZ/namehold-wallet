@@ -38,7 +38,7 @@ Steps:
 Expected:
 
 - Step 2: the `NM` rows read `Owned` with a muted detail (for example `renew within …`), not a bare `Closed`.
-- Step 3: the bar reads `<n> selected`; `Renew Selected` and `Transfer Selected` are not greyed out because of missing data (Transfer is disabled only by an empty recipient: its hover says "Enter a recipient address").
+- Step 3: the bar reads `<n> selected`; `Renew Selected` and `Transfer Selected` are not greyed out because of missing data (`Transfer Selected…` is enabled with no address typed anywhere: the address is asked for after it is pressed).
 - Passes if the 210 names show owned statuses and the batch buttons work without a page reload.
 
 - **Blocks mined:** 0
@@ -55,7 +55,7 @@ Expected:
 Steps:
 
 1. Names → `Owned`. In the batch bar press `Select all <n> transferable`. Read the bar.
-2. Type `$WADDR` in `Transfer to hs1q… / rs1q…`, press `Transfer Selected`. While it builds, read the bar.
+2. Press `Transfer Selected…`, type `$WADDR` in `Recipient address`, press `Review`. While it builds, read the bar.
 3. Read the confirmation `Confirm batch transfer` (open `Names (<n>)`).
 4. `Confirm`. Confirm every secure window that opens. While it runs, read the bar.
 5. Read the toasts and Activity. `scripts/regtest.sh rpc getrawmempool`; for one txid from the toasts, `scripts/regtest.sh rpc getrawtransaction <txid> 1` and count its outputs whose covenant action is `TRANSFER`.
@@ -85,15 +85,15 @@ Steps:
 
 1. Open one owned name (role P) → Transfer & sell → transfer it to `$WADDR`; confirm. Do not mine.
 2. Names → `Owned` → header checkbox (`Select all names`). Read the bar.
-3. Type `$WADDR` in the recipient field; read `Transfer Selected` (hover it).
-4. Press `Drop <k> not transferable, keep <m>`. Read the bar and `Transfer Selected` again.
+3. Read `Transfer Selected…` (hover it).
+4. Press `Drop <k> not transferable, keep <m>`. Read the bar and `Transfer Selected…` again.
 5. `Clear`. Press `Select all <n> transferable`. Read the selection count.
 
 Expected:
 
 - Step 2: the bar lists "Not transferable: <P> (a transfer is already pending)" (or, before a Sync, the capability's own sentence "a transfer is already pending — finalize or cancel it first"); a name still in its auction would read "still in its auction", a lapsed one "expired", an unregistered one "not registered". More than three blocking names end with "and <j> more".
-- Step 3: `Transfer Selected` is disabled; its hover repeats the "Not transferable: …" sentence.
-- Step 4: the count drops by the number of blocking names; the "Not transferable" line and the Drop button are gone; `Transfer Selected` is enabled.
+- Step 3: `Transfer Selected…` is disabled; its hover repeats the "Not transferable: …" sentence.
+- Step 4: the count drops by the number of blocking names; the "Not transferable" line and the Drop button are gone; `Transfer Selected…` is enabled.
 - Step 5: the count equals the number of owned names minus P.
 - Passes if every blocking name is named with a reason and one click removes exactly them.
 

@@ -224,7 +224,7 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] "Renew Selected" opens BatchConfirmModal with count + amount + estimated fee + name list
 - [ ] Confirming broadcasts a single batch transaction
 - [ ] "Reveal Selected" / "Redeem Selected" / "Finalize Selected" work similarly
-- [ ] "Transfer Selected" takes one recipient in the action bar and repeats it in the modal
+- [ ] "Transfer Selected…" asks for one recipient in a dialog after it is pressed and repeats it in the confirmation
 - [ ] Deselecting all hides the batch action bar
 
 ### J. Buying and selling names on the Market (Shakedex)

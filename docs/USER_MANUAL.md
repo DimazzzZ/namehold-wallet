@@ -389,8 +389,8 @@ header checkbox to select all). A batch action bar appears at the bottom:
 - **Redeem Selected** — bulk sweep losing-bid coins from selected names.
 - **Finalize Selected** — bulk finalize outgoing TRANSFERs whose lockup has
   expired.
-- **Transfer Selected** — transfer all selected names to one recipient
-  address, entered in the action bar.
+- **Transfer Selected…** — transfer all selected names to one recipient: press
+  it, then enter the address in the dialog it opens and press Review.
 
 Each batch action opens a **confirmation modal** showing the count, the amount
 the transaction moves (every output except change — a batch reveal or redeem

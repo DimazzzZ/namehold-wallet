@@ -1733,7 +1733,7 @@ fn explain_shortfall(
         return err;
     };
     if balances.immature <= 0 {
-        return err;
+        return crate::noncustodial::send::explain_waiting_coins(conn, profile_id, err);
     }
     let available: u64 = coins.iter().map(|c| c.value).sum();
     AppError::InvalidInput(crate::noncustodial::send::shortfall_message(
@@ -3237,6 +3237,54 @@ mod pure_helper_tests {
         let conn = shortfall_db(5_000_000, false);
         let err = explain_shortfall(&conn, "p1", Network::Regtest, 9_000_000, &[], short());
         assert!(matches!(err, AppError::InvalidInput(m) if m == SHORT));
+    }
+
+    /// A coin of `value` held by a sent draft, plus optionally an immature one.
+    fn held_coin_db(value: u64, immature: bool) -> rusqlite::Connection {
+        let conn = shortfall_db(value, false);
+        conn.execute(
+            "INSERT INTO wallet_tx_drafts
+                (id, wallet_profile_id, action, unsigned_tx_hex, signing_inputs_json, summary_json, status)
+             VALUES ('sent', 'p1', 'send', 'deadbeef', '[]', '{}', 'broadcasted')",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE tracked_utxos SET reserved_by_draft_id = 'sent'", [])
+            .unwrap();
+        if immature {
+            let addr: String = conn
+                .query_row("SELECT address FROM tracked_utxos LIMIT 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            crate::tests::command_helpers::insert_liquid_coin(&conn, 0xcd, &addr, "00", 7_000_000);
+            conn.execute(
+                "UPDATE tracked_utxos SET coinbase = 1, height = 100 WHERE value_doos = 7000000",
+                [],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn explain_shortfall_names_coins_held_by_sent_transactions() {
+        let conn = held_coin_db(5_000_000, false);
+        let err = explain_shortfall(&conn, "p1", Network::Regtest, 1_000_000, &[], short());
+        assert!(
+            matches!(&err, AppError::InvalidInput(m) if m.starts_with("insufficient free coins")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn explain_shortfall_prefers_immature_coinbase_that_covers_the_send() {
+        let conn = held_coin_db(5_000_000, true);
+        let err = explain_shortfall(&conn, "p1", Network::Regtest, 1_000_000, &[], short());
+        assert!(
+            matches!(&err, AppError::InvalidInput(m) if m.starts_with("insufficient mature funds")),
+            "{err:?}"
+        );
     }
 
     #[test]

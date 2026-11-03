@@ -85,3 +85,11 @@ describe("mapError (non-custodial)", () => {
     expect(mapError("insufficient funds")).toBe("Insufficient HNS balance for this transaction.");
   });
 });
+
+describe("mapError: a series out of free coins", () => {
+  it("says the coins are held, not that the balance is low", () => {
+    const m = mapError("insufficient free coins: 5 coin(s) are held by transactions just sent");
+    expect(m).toMatch(/their change is not back yet/);
+    expect(m).not.toMatch(/Insufficient HNS balance/);
+  });
+});
