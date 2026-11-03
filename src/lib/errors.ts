@@ -45,6 +45,8 @@ const ERROR_MAP: Record<string, string> = {
   // and "insufficient funds" would otherwise swallow it and drop the reason.
   "insufficient mature funds":
     "Some of your balance is freshly mined and can't be spent yet. Coins from mining mature after a set number of blocks — wait for them, or send a smaller amount.",
+  "insufficient free coins":
+    "The coins that pay this fee are held by transactions you just sent, and their change is not back yet. Your HNS is fine: try again in a minute.",
   "insufficient funds": "Insufficient HNS balance for this transaction.",
 };
 

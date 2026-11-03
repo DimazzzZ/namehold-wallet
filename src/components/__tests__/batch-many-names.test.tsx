@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor, configure } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, configure } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -25,6 +25,7 @@ vi.mock("../../lib/clipboard", () => ({
 }));
 
 import { NamesView } from "../NamesView";
+import { useUiStore } from "../../stores/ui";
 
 // Hundreds of real table rows render slowly when the whole suite runs in
 // parallel: give these tests and their waits room instead of flaking.
@@ -101,10 +102,18 @@ interface Opts {
   failBuild?: number;
   /** The nth sign (1-based) fails (a declined secure window). */
   failSign?: number;
+  /** The second build waits for this promise. */
+  secondBuildGate?: Promise<void>;
   /** The second sign waits for this promise. */
   secondSignGate?: Promise<void>;
   /** The capability call for a chunk containing this name fails. */
   failCapsWith?: string;
+  /** Capabilities of names waiting to be finalized (a transfer is pending). */
+  inTransfer?: boolean;
+  /** Builds from the nth (1-based) fail with this backend message, `times` of them. */
+  failBuildWith?: { at: number; message: string; times: number };
+  /** The wallet sync fails. */
+  failSync?: boolean;
 }
 
 function route(o: Opts = {}) {
@@ -144,12 +153,33 @@ function route(o: Opts = {}) {
         if (o.failCapsWith && (args?.names as string[]).includes(o.failCapsWith)) {
           throw new Error("node did not answer");
         }
-        return (args?.names as string[]).map(cap);
+        return (args?.names as string[]).map((n) =>
+          o.inTransfer
+            ? {
+                ...cap(n),
+                canRenew: { allowed: false, reason: "not renewable" },
+                canTransfer: { allowed: false, reason: "a transfer is already pending" },
+                canFinalize: { allowed: true, reason: null },
+              }
+            : cap(n),
+        );
+      case "sync_wallet_state":
+        if (o.failSync) throw new Error("node did not answer");
+        return { nodeReachable: true };
       case "build_batch_renew_draft":
+      case "build_batch_finalize_draft":
       case "build_batch_transfer_draft": {
         if (o.buildGate) await o.buildGate;
         builds += 1;
+        if (builds === 2 && o.secondBuildGate) await o.secondBuildGate;
         if (builds === o.failBuild) throw new Error("could not build the draft");
+        if (
+          o.failBuildWith &&
+          builds >= o.failBuildWith.at &&
+          builds < o.failBuildWith.at + o.failBuildWith.times
+        ) {
+          throw new Error(o.failBuildWith.message);
+        }
         const names = args?.names as string[];
         return {
           id: `draft-${builds}`,
@@ -308,6 +338,278 @@ describe("Names — a wallet with hundreds of names", () => {
     open();
     await screen.findByText(/Confirm batch transfer/i);
     expect(screen.queryByTestId("batch-progress")).toBeNull();
+  });
+
+  // A long series must show it is working and go on when it runs out of coins.
+  describe("a series that looks frozen or runs out of coins", () => {
+    const confirm = () => fireEvent.click(screen.getByRole("button", { name: /^Confirm$/i }));
+    const WAITING = "insufficient free coins: 5 coin(s) are held by transactions just sent";
+    beforeEach(() => useUiStore.setState({ toastQueue: [] }));
+    const inTransfer = (n: number) =>
+      many(n).map((x) => ({ ...x, transfer: 353_498 })) as ReturnType<typeof owned>[];
+
+    const lastError = () =>
+      useUiStore
+        .getState()
+        .toastQueue.filter((t) => t.type === "error")
+        .map((t) => t.message)
+        .join(" | ");
+
+    async function selectAll() {
+      const box = await screen.findByRole("checkbox", { name: "Select all names" });
+      await waitFor(() => expect(box).not.toBeDisabled());
+      fireEvent.click(box);
+    }
+    async function finalizeSelected() {
+      const btn = await screen.findByTestId("batch-finalize-btn");
+      await waitFor(() => expect(btn).not.toBeDisabled());
+      fireEvent.click(btn);
+      await screen.findByText(/Confirm batch finalize/i);
+    }
+
+    it("replays the 546: the sixth build finds no free coin, a sync brings the change and the series finishes", async () => {
+      invokeMock.mockImplementation(
+        route({
+          names: inTransfer(546),
+          inTransfer: true,
+          failBuildWith: { at: 6, message: WAITING, times: 1 },
+        }),
+      );
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAll();
+      await finalizeSelected();
+      confirm();
+
+      await waitFor(() => expect(calls("broadcast_tx_draft")).toHaveLength(6));
+      expect(
+        calls("build_batch_finalize_draft").map((c) => (c[1].names as string[]).length),
+      ).toEqual([100, 100, 100, 100, 100, 46, 46]);
+      expect(calls("sync_wallet_state")).toEqual([
+        ["sync_wallet_state", { walletProfileId: "p1" }],
+      ]);
+      // The sync comes after the refused build and before its retry.
+      const order = invokeMock.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c === "build_batch_finalize_draft" || c === "sync_wallet_state");
+      expect(order.indexOf("sync_wallet_state")).toBe(6);
+      await waitFor(() => expect(screen.queryByTestId("batch-action-bar")).toBeNull());
+      expect(lastError()).toBe("");
+    });
+
+    it("when a sync brings no change the series stops: the rest stay selected, with the real reason", async () => {
+      invokeMock.mockImplementation(
+        route({
+          names: inTransfer(546),
+          inTransfer: true,
+          failBuildWith: { at: 6, message: WAITING, times: 2 },
+        }),
+      );
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAll();
+      await finalizeSelected();
+      confirm();
+
+      await waitFor(() => expect(screen.getByText("46 selected")).toBeInTheDocument());
+      expect(calls("broadcast_tx_draft")).toHaveLength(5);
+      expect(calls("sync_wallet_state")).toHaveLength(1); // one try, no loop
+      await waitFor(() => expect(lastError()).toMatch(/failed after 500 of 546 name\(s\)/));
+      expect(lastError()).toMatch(/their change is not back yet/);
+      expect(lastError()).not.toMatch(/Insufficient HNS balance/);
+      expect(screen.queryByTestId("batch-progress")).toBeNull();
+
+      // Pressed again later, the 46 go out from the same selection.
+      await finalizeSelected();
+      confirm();
+      await waitFor(() => expect(calls("broadcast_tx_draft")).toHaveLength(6));
+      await waitFor(() => expect(screen.queryByTestId("batch-action-bar")).toBeNull());
+    });
+
+    it("a failed sync stops the series with the refusal it was trying to clear", async () => {
+      invokeMock.mockImplementation(
+        route({
+          names: inTransfer(150),
+          inTransfer: true,
+          failSync: true,
+          failBuildWith: { at: 2, message: WAITING, times: 1 },
+        }),
+      );
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAll();
+      await finalizeSelected();
+      confirm();
+      await waitFor(() => expect(screen.getByText("50 selected")).toBeInTheDocument());
+      await waitFor(() => expect(lastError()).toMatch(/their change is not back yet/));
+      expect(lastError()).not.toMatch(/node did not answer/);
+      expect(calls("build_batch_finalize_draft")).toHaveLength(2); // no retry without a sync
+    });
+
+    it("a first build with no free coin syncs too, then opens the confirmation", async () => {
+      invokeMock.mockImplementation(
+        route({
+          names: inTransfer(46),
+          inTransfer: true,
+          failBuildWith: { at: 1, message: WAITING, times: 1 },
+        }),
+      );
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAll();
+      await finalizeSelected();
+      expect(calls("sync_wallet_state")).toHaveLength(1);
+      expect(lastError()).toBe("");
+    });
+
+    it("a first build the sync cannot help opens nothing and keeps the selection", async () => {
+      invokeMock.mockImplementation(
+        route({
+          names: inTransfer(46),
+          inTransfer: true,
+          failBuildWith: { at: 1, message: WAITING, times: 2 },
+        }),
+      );
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAll();
+      const btn = await screen.findByTestId("batch-finalize-btn");
+      await waitFor(() => expect(btn).not.toBeDisabled());
+      fireEvent.click(btn);
+      await waitFor(() => expect(lastError()).toMatch(/their change is not back yet/));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.getByText("46 selected")).toBeInTheDocument();
+    });
+
+    it.each([
+      ["no HNS at all", "insufficient funds to cover outputs and fee", /Insufficient HNS balance/],
+      ["another refusal", "'name000' is not in transfer; nothing to finalize", /not in transfer/],
+    ])("%s does not sync: there is no change to wait for", async (_, message, shown) => {
+      invokeMock.mockImplementation(
+        route({
+          names: inTransfer(150),
+          inTransfer: true,
+          failBuildWith: { at: 2, message, times: 1 },
+        }),
+      );
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAll();
+      await finalizeSelected();
+      confirm();
+      await waitFor(() => expect(lastError()).toMatch(shown));
+      expect(calls("sync_wallet_state")).toHaveLength(0);
+      expect(screen.getByText("50 selected")).toBeInTheDocument();
+    });
+
+    it("shows work is going on while it builds: a spinner, the names being read and the seconds", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        let open!: () => void;
+        const buildGate = new Promise<void>((r) => (open = r));
+        invokeMock.mockImplementation(
+          route({ names: inTransfer(546), inTransfer: true, buildGate }),
+        );
+        render(<NamesView />, { wrapper: wrapper() });
+        await selectAll();
+        const btn = await screen.findByTestId("batch-finalize-btn");
+        await waitFor(() => expect(btn).not.toBeDisabled());
+        fireEvent.click(btn);
+        const line = await screen.findByTestId("batch-progress");
+        expect(line).toHaveTextContent("Building finalize transaction 1 of 6…");
+        expect(line.querySelector("[aria-hidden='true']")).not.toBeNull();
+        expect(screen.getByTestId("batch-progress-detail")).toHaveTextContent(
+          /reading 100 names from your node, \d+s/,
+        );
+        const before = Number(/(\d+)s/.exec(line.textContent ?? "")![1]);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5_000);
+        });
+        const after = Number(/(\d+)s/.exec(line.textContent ?? "")![1]);
+        expect(after).toBeGreaterThanOrEqual(before + 5);
+        open();
+        await screen.findByText(/Confirm batch finalize/i);
+        expect(screen.queryByTestId("batch-progress")).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("the seconds start again with each step", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        let build!: () => void;
+        let sign!: () => void;
+        const secondBuildGate = new Promise<void>((r) => (build = r));
+        const secondSignGate = new Promise<void>((r) => (sign = r));
+        invokeMock.mockImplementation(
+          route({ names: inTransfer(150), inTransfer: true, secondBuildGate, secondSignGate }),
+        );
+        render(<NamesView />, { wrapper: wrapper() });
+        await selectAll();
+        await finalizeSelected();
+        confirm();
+        await waitFor(() =>
+          expect(screen.getByTestId("batch-progress")).toHaveTextContent(
+            "Building finalize transaction 2 of 2…",
+          ),
+        );
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(20_000);
+        });
+        expect(screen.getByTestId("batch-progress-detail")).toHaveTextContent(/, (2\d)s$/);
+        build();
+        await waitFor(() => expect(calls("sign_tx_draft")).toHaveLength(2));
+        await waitFor(() =>
+          expect(screen.getByTestId("batch-progress")).toHaveTextContent(
+            "Signing and sending finalize transaction 2 of 2…",
+          ),
+        );
+        expect(screen.getByTestId("batch-progress-detail")).toHaveTextContent(/^[0-9]s$/);
+        sign();
+        await waitFor(() => expect(screen.queryByTestId("batch-progress")).toBeNull());
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("says nothing about Transfer's blockers when every selected name is waiting for Finalize", async () => {
+      invokeMock.mockImplementation(route({ names: inTransfer(546), inTransfer: true }));
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAll();
+      const btn = await screen.findByTestId("batch-finalize-btn");
+      await waitFor(() => expect(btn).not.toBeDisabled());
+      const bar = screen.getByTestId("batch-action-bar").textContent ?? "";
+      expect(bar).not.toMatch(/Not transferable/);
+      expect(bar).not.toMatch(/keep 0/);
+      expect(bar).not.toMatch(/Select all 0/);
+      expect(screen.getByTestId("batch-transfer-btn")).toBeDisabled();
+      // The series note stays: it is about Finalize too.
+      expect(bar).toMatch(/546 names go out as 6 transactions/);
+    });
+
+    it("says nothing about Transfer's blockers while capabilities load, if no name could transfer", async () => {
+      invokeMock.mockImplementation(
+        route({ names: inTransfer(120), inTransfer: true, capsPending: true }),
+      );
+      render(<NamesView />, { wrapper: wrapper() });
+      await selectAll();
+      await screen.findByText("120 selected");
+      expect(screen.getByTestId("batch-action-bar").textContent).not.toMatch(/Not transferable/);
+    });
+
+    it("hides the help while a series runs, and brings it back when it stops", async () => {
+      let open!: () => void;
+      const buildGate = new Promise<void>((r) => (open = r));
+      const names = [...many(5), owned("lapsed", { registered: false })];
+      invokeMock.mockImplementation(route({ names, capsPending: true, buildGate }));
+      render(<NamesView />, { wrapper: wrapper() });
+      await screen.findByText(/\.lapsed/);
+      fireEvent.click(screen.getByRole("checkbox", { name: "Select all names" }));
+      expect(await screen.findByTestId("batch-transfer-help")).toHaveTextContent(
+        "Not transferable",
+      );
+      fireEvent.click(screen.getByTestId("batch-drop-blockers"));
+      startTransfer();
+      await screen.findByTestId("batch-progress");
+      expect(screen.queryByTestId("batch-transfer-help")).toBeNull();
+      open();
+      await screen.findByText(/Confirm batch transfer/i);
+    });
   });
 
   describe("edge cases", () => {

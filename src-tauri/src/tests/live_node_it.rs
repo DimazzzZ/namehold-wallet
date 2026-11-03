@@ -370,6 +370,96 @@ async fn live_send_builds_broadcasts_and_confirms() {
     );
 }
 
+/// The node's own word on what a series of transactions meets when it runs out
+/// of coins: the refusal names the held coins, a sync with no block brings the
+/// change of the mempool transactions, the node takes a transaction spending
+/// it, and a block confirms the whole chain.
+#[tokio::test]
+async fn live_series_out_of_coins_goes_on_after_a_sync_with_no_block() {
+    let Some((url, key)) = it_env() else {
+        eprintln!(
+            "skip live_series_out_of_coins_goes_on_after_a_sync_with_no_block: set HNS_IT_NODE_URL"
+        );
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    // Two coins, matured on another wallet's blocks: an immature coin of ours
+    // would be named as the reason instead.
+    let (elsewhere, _, _) = leaf00_at(99_999);
+    fund(&cl, &addr, 2).await;
+    fund(&cl, &elsewhere, 3).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let profile_id = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        crate::db::queries::get_active_profile_id(&conn).unwrap()
+    };
+    let spendable = || {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        crate::noncustodial::send::load_spendable_coins(
+            &conn,
+            &profile_id,
+            None,
+            crate::noncustodial::network::Network::Regtest,
+        )
+        .unwrap()
+        .len()
+    };
+    let send_no_mine = |id: String| {
+        let app = &app;
+        async move {
+            unlock(app);
+            sign_tx_draft_inner(&app.state(), &id).await.expect("sign");
+            let bc = broadcast_tx_draft(app.state(), id)
+                .await
+                .expect("broadcast");
+            assert_eq!(bc.status, "broadcasted");
+            bc.txid
+        }
+    };
+    let free = spendable();
+    assert!(free >= 1, "funded");
+
+    // Send on every free coin, mining nothing and syncing nothing.
+    for _ in 0..free {
+        let d = build_send_hns_draft(app.state(), addr.clone(), 100_000, Some(1), None)
+            .await
+            .expect("build send");
+        send_no_mine(d.id).await;
+    }
+    assert_eq!(spendable(), 0, "every coin held, no change known yet");
+    let e = build_send_hns_draft(app.state(), addr.clone(), 100_000, Some(1), None)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("insufficient free coins"), "{e}");
+
+    // A sync, no block: the change is known and the node takes a spend of it.
+    let height = cl.get_blockchain_info().await.expect("info").blocks;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    assert_eq!(cl.get_blockchain_info().await.expect("info").blocks, height);
+    assert!(
+        spendable() >= free,
+        "every sent transaction returned change"
+    );
+    let d = build_send_hns_draft(app.state(), addr.clone(), 100_000, Some(1), None)
+        .await
+        .expect("change of a mempool transaction pays");
+    let txid = send_no_mine(d.id.clone()).await;
+
+    // A block confirms parent and child together: the node did not refuse it.
+    cl.generate_to_address(1, &elsewhere).await.expect("mine");
+    let mined = cl.get_tx_by_hash(&txid).await.expect("the child is known");
+    assert!(
+        mined.get("height").and_then(|h| h.as_i64()).unwrap_or(-1) > height,
+        "child of a mempool transaction mined: {mined}"
+    );
+}
+
 #[tokio::test]
 async fn live_auction_open_bid_reveal_register() {
     let Some((url, key)) = it_env() else {

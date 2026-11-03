@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { invoke } from "../lib/invoke";
 import { parseFeeRateArg } from "../lib/feeRate";
 import { mapError, unwrapStaged } from "../lib/errors";
 import { useNameAction } from "../queries/wallet";
@@ -37,6 +38,8 @@ export interface BatchProgress {
   /** 1-based index of the transaction being built or sent. */
   index: number;
   total: number;
+  /** Names in that transaction. */
+  names: number;
 }
 
 // "Batch renew" for several names, "Renew" for one (a row menu's action).
@@ -153,6 +156,26 @@ export function useNameBatchActions({
   const feeRateArg = () => parseFeeRateArg(feeRate) ?? undefined;
   const names = () => Array.from(selected);
 
+  // A sent transaction holds its coin until a sync brings its change, and the
+  // node has that change at once: a series out of coins syncs and tries again
+  // before it stops. A failed sync leaves the refusal that sent us here.
+  const buildWithChange = async (
+    build: (names: string[]) => Promise<TxDraftSummary>,
+    chunkNames: string[],
+  ) => {
+    try {
+      return await build(chunkNames);
+    } catch (e) {
+      if (!String(e).includes("insufficient free coins") || !profile) throw e;
+      try {
+        await invoke("sync_wallet_state", { walletProfileId: profile.id });
+      } catch {
+        throw e;
+      }
+      return build(chunkNames);
+    }
+  };
+
   // Every batch action is the same three steps — build one draft for the
   // selection, then hand its fee and amount to the confirm modal — and every
   // failure is reported the same way.
@@ -166,8 +189,14 @@ export function useNameBatchActions({
     if (list.length === 0) return;
     const [first, ...rest] = chunk(list);
     try {
-      setProgress({ action, step: "building", index: 1, total: rest.length + 1 });
-      const draft = await build(first!);
+      setProgress({
+        action,
+        step: "building",
+        index: 1,
+        total: rest.length + 1,
+        names: first!.length,
+      });
+      const draft = await buildWithChange(build, first!);
       setProgress(null);
       series.current = { rest, build, fromSelection: !only };
       setModal({
@@ -229,7 +258,7 @@ export function useNameBatchActions({
     // (Cancel abandons it). A later one was built here: a failure before its
     // broadcast discards it (useDraftRunner).
     const sendOne = async (id: string, chunkNames: string[], index: number) => {
-      setProgress({ action, step: "sending", index, total: batches });
+      setProgress({ action, step: "sending", index, total: batches, names: chunkNames.length });
       const result = await runner.send(id, profile.id, index > 1 || unlocked, {
         keepOnFailure: index === 1,
       });
@@ -244,8 +273,14 @@ export function useNameBatchActions({
       await sendOne(draftId, first, 1);
       setModal(null);
       for (const [i, chunkNames] of (s?.rest ?? []).entries()) {
-        setProgress({ action, step: "building", index: i + 2, total: batches });
-        const draft = await s!.build(chunkNames);
+        setProgress({
+          action,
+          step: "building",
+          index: i + 2,
+          total: batches,
+          names: chunkNames.length,
+        });
+        const draft = await buildWithChange(s!.build, chunkNames);
         await sendOne(draft.id, chunkNames, i + 2);
       }
       series.current = null;

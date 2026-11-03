@@ -1,11 +1,46 @@
-import { useState } from "react";
-import { MAX_BATCH, type NameBatchActions } from "../../hooks/useNameBatchActions";
+import { useEffect, useState } from "react";
+import {
+  MAX_BATCH,
+  type BatchProgress,
+  type NameBatchActions,
+} from "../../hooks/useNameBatchActions";
 import { hnsAddressPrefix, isLikelyHnsAddress } from "../../lib/utils";
 import { Button } from "../ui/Button";
 import { Dialog } from "../ui/Dialog";
 import { FeeRateOverride } from "../ui/FeeRateOverride";
 import { Input } from "../ui/Input";
+import { Spinner } from "../ui/Spinner";
 import { Tooltip } from "../ui/Tooltip";
+
+/** What a running series is doing, with the seconds this step has taken: a still line reads as a hang. */
+function ProgressLine({ progress }: { progress: BatchProgress }) {
+  const { action, step, index, total, names } = progress;
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    setSeconds(0);
+    const timer = setInterval(() => setSeconds((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, [step, index]);
+  return (
+    <div
+      className="flex items-center gap-2 text-sm font-medium text-blue-900"
+      role="status"
+      data-testid="batch-progress"
+    >
+      <Spinner />
+      <span>
+        {step === "building" ? "Building" : "Signing and sending"} {action}{" "}
+        {total > 1 ? `transaction ${index} of ${total}` : "transaction"}…
+      </span>
+      <span className="font-normal" data-testid="batch-progress-detail">
+        {step === "building"
+          ? `reading ${names} name${names === 1 ? "" : "s"} from your node, `
+          : ""}
+        {seconds}s
+      </span>
+    </div>
+  );
+}
 
 /** The batch bar for the selected names. Secondary buttons: Look up is the page's primary. */
 export function NameBatchBar({
@@ -82,12 +117,12 @@ export function NameBatchBar({
     batches > 1
       ? `${selected.size} names go out as ${batches} transactions of up to ${MAX_BATCH}, one confirm for all`
       : null;
-  const progressLine = progress && (
-    <div className="text-sm font-medium text-blue-900" role="status" data-testid="batch-progress">
-      {progress.step === "building" ? "Building" : "Signing and sending"} {progress.action}{" "}
-      {progress.total > 1 ? `transaction ${progress.index} of ${progress.total}` : "transaction"}…
-    </div>
-  );
+  const progressLine = progress && <ProgressLine progress={progress} />;
+  // Transfer's blockers only help when dropping them leaves a transfer to run:
+  // on a selection none of which can transfer (names waiting for Finalize) they
+  // read as an error about what is going on. The button's tooltip still says
+  // why Transfer is off.
+  const showBlockers = transferBlockers.length > 0 && selected.size > transferBlockers.length;
 
   // Nothing selected: no actions to offer, only the way to select (and the
   // progress of an action run from a row's menu, which selects nothing).
@@ -153,37 +188,37 @@ export function NameBatchBar({
         </Button>
       </div>
       {progressLine}
-      {(transferWhy || onSelectTransferable) && (
-        <div
-          className="flex flex-wrap items-center gap-2 text-xs text-blue-900"
-          data-testid="batch-transfer-help"
-        >
-          {transferWhy && <span>{transferWhy}</span>}
-          {transferBlockers.length > 0 && onDropBlockers && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onDropBlockers}
-              data-testid="batch-drop-blockers"
-            >
-              Drop {transferBlockers.length} not transferable, keep{" "}
-              {selected.size - transferBlockers.length}
-            </Button>
-          )}
-          {seriesNote && <span>{seriesNote}</span>}
-          {onSelectTransferable && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onSelectTransferable}
-              disabled={transferableLeft === 0}
-              data-testid="batch-select-transferable"
-            >
-              Select all {transferableLeft} transferable
-            </Button>
-          )}
-        </div>
-      )}
+      {!progress &&
+        (showBlockers || seriesNote || (onSelectTransferable && transferableLeft > 0)) && (
+          <div
+            className="flex flex-wrap items-center gap-2 text-xs text-blue-900"
+            data-testid="batch-transfer-help"
+          >
+            {showBlockers && <span>{transferWhy}</span>}
+            {showBlockers && onDropBlockers && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onDropBlockers}
+                data-testid="batch-drop-blockers"
+              >
+                Drop {transferBlockers.length} not transferable, keep{" "}
+                {selected.size - transferBlockers.length}
+              </Button>
+            )}
+            {seriesNote && <span>{seriesNote}</span>}
+            {onSelectTransferable && transferableLeft > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onSelectTransferable}
+                data-testid="batch-select-transferable"
+              >
+                Select all {transferableLeft} transferable
+              </Button>
+            )}
+          </div>
+        )}
       <FeeRateOverride
         value={batch.feeRate}
         onChange={batch.setFeeRate}

@@ -494,6 +494,26 @@ pub fn shortfall_message(
     "insufficient funds to cover amount and fee".to_string()
 }
 
+/// Turn a bare "insufficient funds" into one that names the wait when coins of
+/// this wallet are held by transactions already sent: a coin stays reserved and
+/// its change unknown until the next sync, so a series of transactions runs out
+/// of coins long before it runs out of HNS.
+/// Any other error, and a DB failure of the lookup, passes straight through.
+pub fn explain_waiting_coins(conn: &Connection, profile_id: &str, err: AppError) -> AppError {
+    let AppError::InvalidInput(ref msg) = err else {
+        return err;
+    };
+    if !msg.starts_with("insufficient funds") {
+        return err;
+    }
+    match crate::db::queries::count_coins_held_by_sent_drafts(conn, profile_id) {
+        Ok(n) if n > 0 => AppError::InvalidInput(format!(
+            "insufficient free coins: {n} coin(s) are held by transactions just sent"
+        )),
+        _ => err,
+    }
+}
+
 /// Sweep selection: spend ALL available coins into a single recipient output of
 /// `input_total - fee` (no change). Used by "Send Max". The recipient amount is
 /// `input_total - fee`; the caller reads it as `input_total - selection.fee`.

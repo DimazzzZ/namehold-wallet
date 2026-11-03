@@ -19,6 +19,7 @@ use crate::error::AppError;
 use crate::noncustodial::actions::{self, PrimaryOutput};
 use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::NodeRpcClient;
+use crate::noncustodial::send;
 use crate::noncustodial::sync::{self, COV_REGISTER, COV_REVEAL};
 use crate::noncustodial::types::TxDraftSummary;
 use crate::noncustodial::{address, bids, covenants, names, resource};
@@ -2204,7 +2205,8 @@ pub(crate) fn build_open_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
 
     // --- Double-open guard (Task 1, mirrors the I2
     // bid-multiplicity guard in `build_bid_draft` above) + draft insert/coin
@@ -2334,7 +2336,8 @@ pub(crate) fn build_bid_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
 
     // --- Commitment persist + draft insert/reservation, ALL under the
     // caller's held MutexGuard.
@@ -2613,7 +2616,8 @@ pub(crate) fn build_batch_bid_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
 
     // Persist the draft. Note: the schema stores one name per draft; for a
     // batch we use the first name as the draft label (a limitation).
@@ -2761,7 +2765,8 @@ pub(crate) fn build_reveal_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
     let summary = persist_with_conn(conn, &ctx.profile_id, "reveal", name, None, None, &res)?;
     // Stamp the reveal txid onto each commitment this draft actually reveals —
     // keyed by its own `blind_hex`, not by name. Keyed by name, one reveal
@@ -2874,7 +2879,8 @@ pub(crate) fn build_redeem_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
     persist_with_conn(conn, &ctx.profile_id, "redeem", name, None, None, &res)
 }
 
@@ -2980,7 +2986,8 @@ pub(crate) fn build_register_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
     persist_with_conn(conn, &ctx.profile_id, "register", name, None, None, &res)
 }
 
@@ -3059,7 +3066,8 @@ pub(crate) fn build_update_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
     persist_with_conn(conn, &ctx.profile_id, "update", name, None, None, &res)
 }
 
@@ -3114,7 +3122,8 @@ pub(crate) fn build_renew_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
     persist_with_conn(conn, &ctx.profile_id, "renew", name, None, None, &res)
 }
 
@@ -3168,7 +3177,8 @@ pub(crate) fn build_transfer_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
     persist_with_conn(
         conn,
         &ctx.profile_id,
@@ -3270,7 +3280,8 @@ pub(crate) fn build_finalize_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
     persist_with_conn(
         conn,
         &ctx.profile_id,
@@ -3306,7 +3317,11 @@ pub async fn build_cancel_draft(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| match state.db.lock() {
+        Ok(conn) => send::explain_waiting_coins(&conn, &ctx.profile_id, e),
+        Err(_) => e,
+    })?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     // R19: a Cancel transfer of a name still locking is its listing's abort.
     // The link commits with the draft; the listing becomes Aborted only once
@@ -3360,7 +3375,11 @@ pub async fn build_revoke_draft(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| match state.db.lock() {
+        Ok(conn) => send::explain_waiting_coins(&conn, &ctx.profile_id, e),
+        Err(_) => e,
+    })?;
     persist(&state, &ctx.profile_id, "revoke", &name, None, None, &res)
 }
 
@@ -3399,6 +3418,7 @@ pub async fn build_batch_renew_draft(
         )));
     }
     let ctx = load_ctx(&state)?;
+    super::draft_ctx::refuse_behind_chain(&ctx.node).await?;
     refuse_while_listed(&state, &ctx.profile_id, &names, false)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let client = ctx.node.clone();
@@ -3453,7 +3473,8 @@ pub(crate) fn build_batch_renew_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
     // Persist with first name as primary; the draft plan contains all names.
     let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
@@ -3492,6 +3513,7 @@ pub async fn build_batch_transfer_draft(
     // Decode the shared recipient once, up front, so a bad address aborts the
     // whole batch before any owner-coin prefetch or DB write.
     let (version, program) = address::decode(ctx.network, &recipient)?;
+    super::draft_ctx::refuse_behind_chain(&ctx.node).await?;
 
     let mut per_name: PerNameOwner = Vec::with_capacity(names.len());
     for name in &names {
@@ -3548,7 +3570,8 @@ pub(crate) fn build_batch_transfer_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
     let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist_with_conn(
@@ -3580,6 +3603,7 @@ pub async fn build_batch_reveal_draft(
         )));
     }
     let ctx = load_ctx(&state)?;
+    super::draft_ctx::refuse_behind_chain(&ctx.node).await?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let client = ctx.node.clone();
 
@@ -3692,7 +3716,8 @@ pub(crate) fn build_batch_reveal_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
     let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     let summary = persist_with_conn(
@@ -3732,6 +3757,7 @@ pub async fn build_batch_redeem_draft(
         )));
     }
     let ctx = load_ctx(&state)?;
+    super::draft_ctx::refuse_behind_chain(&ctx.node).await?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let client = ctx.node.clone();
 
@@ -3835,7 +3861,8 @@ pub(crate) fn build_batch_redeem_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
     let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist_with_conn(
@@ -3867,6 +3894,7 @@ pub async fn build_batch_finalize_draft(
         )));
     }
     let ctx = load_ctx(&state)?;
+    super::draft_ctx::refuse_behind_chain(&ctx.node).await?;
     refuse_while_listed(&state, &ctx.profile_id, &names, false)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let client = ctx.node.clone();
@@ -3980,7 +4008,8 @@ pub(crate) fn build_batch_finalize_draft_inner(
         &ctx.funding,
         &ctx.change_address,
         rate,
-    )?;
+    )
+    .map_err(|e| send::explain_waiting_coins(conn, &ctx.profile_id, e))?;
     let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist_with_conn(

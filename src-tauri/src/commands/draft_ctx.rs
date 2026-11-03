@@ -362,6 +362,26 @@ pub(crate) async fn renewal_block(
     Ok(h)
 }
 
+/// Refuses a batch at once when the node is still catching up, instead of
+/// reading every name from it for minutes first. Two blocks of slack: a block
+/// that just arrived must not stop a running series.
+pub(crate) async fn refuse_behind_chain(client: &dyn NodeRpc) -> Result<(), AppError> {
+    let info = client.get_blockchain_info().await?;
+    if !crate::noncustodial::rpc::chain_synced(
+        info.blocks + 2,
+        info.headers,
+        info.verification_progress,
+        true,
+    ) {
+        return Err(AppError::InvalidInput(format!(
+            "node is still syncing (block {} of {}): try again when it has caught up",
+            info.blocks,
+            info.headers.map_or("?".to_string(), |h| h.to_string()),
+        )));
+    }
+    Ok(())
+}
+
 // --- consensus guards -------------------------------------------------------
 //
 // A draft hsd's consensus would refuse is refused here, before it is persisted

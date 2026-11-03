@@ -1397,6 +1397,27 @@ pub fn reached_chain_sql() -> String {
     sql_list(REACHED_CHAIN_STATUSES.iter().map(|s| s.as_str()))
 }
 
+/// How many unspent liquid coins of a wallet are reserved by a draft already
+/// sent: coin selection cannot use them, and their change is not synced yet.
+pub fn count_coins_held_by_sent_drafts(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<i64, AppError> {
+    Ok(conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM tracked_utxos u
+             JOIN wallet_tx_drafts d ON d.id = u.reserved_by_draft_id
+             WHERE u.wallet_profile_id = ?1
+               AND u.spent_by_txid IS NULL
+               AND u.spend_class = 'liquid_hns'
+               AND d.status IN {}",
+            reached_chain_sql()
+        ),
+        params![profile_id],
+        |r| r.get(0),
+    )?)
+}
+
 /// The draft statuses of a draft never sent: discarding it changes nothing
 /// on chain. Disjoint from [`REACHED_CHAIN_STATUSES`].
 pub const UNSENT_STATUSES: [DraftStatus; 2] = [DraftStatus::Draft, DraftStatus::Signed];
