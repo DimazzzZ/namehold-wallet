@@ -55,12 +55,14 @@ This creates:
    just icann-strings
    ```
    The script prints the counts it wrote and refuses an export whose layout changed. ICANN confirms the final list on 17 November 2026 and applicants may still withdraw after that, so this step is not optional for a release after that date.
-4. Merge to `main`, wait for CI on that commit to go green, then tag it:
-   ```bash
-   git tag v0.X.0
-   git push origin v0.X.0
-   ```
-   A manual run of `release.yml` from `main` works the same way. The commit must be on `main` and its Frontend, Rust lint, Rust tests, Workflow Validation and E2E checks must have passed; otherwise the run stops before it opens a draft (`scripts/release-gate.mjs`). A tag pushed before CI finishes fails this way too: re-run the job once CI is green. The advisory dependency audit is not part of this. Any older commit of `main` with green CI also passes, so someone with write access can re-release old code under a new version; the gate does not check that the commit is the newest one.
+4. Merge to `main`, wait for CI on that commit to go green, then run the release by hand. This is how releases are made here:
+   - Actions → **Release** → **Run workflow**, branch `main`.
+   - **Version:** `X.Y.Z`, or blank to use `tauri.conf.json`.
+   - **Mark the release as a pre-release:** only for a test run, see below.
+   - When the builds finish, the run waits at the `sign` job. Press **Review deployments**, tick `release`, then **Approve and deploy**. Until then nothing is signed.
+
+   Pushing a tag `vX.Y.Z` starts the same run. The commit must be on `main` and its Frontend, Rust lint, Rust tests, Workflow Validation and E2E checks must have passed; otherwise the run stops before it opens a draft (`scripts/release-gate.mjs`). A tag pushed before CI finishes fails this way too: re-run the job once CI is green. The advisory dependency audit is not part of this. Any older commit of `main` with green CI also passes, so someone with write access can re-release old code under a new version; the gate does not check that the commit is the newest one.
+
 5. The `release.yml` workflow runs four jobs:
    - **prepare** checks the commit as above and creates a **draft** GitHub Release.
    - **build** compiles on macOS (universal), Linux and Windows with no signing key and no write token, because `tauri build` runs every crate's `build.rs` and proc macros and the npm build tools. It restores nothing from the Actions cache, so a release compiles from scratch and takes longer than a CI run. `pnpm tauri build --no-sign` still writes the updater archives; `scripts/release-files.mjs stage` hands the installers on as artifacts. `--no-sign` would also skip macOS and Windows code signing, so adding code signing means revisiting that flag.
@@ -70,6 +72,16 @@ This creates:
    `SHA256SUMS` and the signatures use the updater key, so they show a file matches what this workflow signed; they do not protect against someone who holds that key or can run the `sign` job. `scripts/check-supply-chain.mjs` keeps these jobs, their permissions and their guard steps as written: changing a guard step means changing its copy in that script in the same commit.
 6. Existing installs auto-detect the new version within ~30 s of their next
    launch (or immediately when the user clicks "Check for updates" in Settings).
+
+### A test run before a real release
+
+Run a pre-release first when `release.yml` or its scripts changed: the same manual run, with version `X.Y.Z-rc.N` and the pre-release box ticked. The build takes that version from the field, so nothing needs bumping. The updater reads `releases/latest`, which skips a pre-release, so installs are not offered it, but its page is public. Check the files with the README's recipe, install it over an older build, then delete the pre-release.
+
+### If a run stops
+
+- **At `prepare`:** usually the commit has no green CI yet. Wait for it, or release a commit that has it.
+- **At `sign`, with a decryption error:** `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` in the `release` environment is wrong. Set it again there.
+- **Anywhere before `publish` finishes:** the release is still a draft and reaches nobody. Fix the cause and run again.
 
 ---
 
