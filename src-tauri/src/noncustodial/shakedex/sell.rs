@@ -1642,7 +1642,7 @@ mod tests {
         assert_eq!(buy_now_lock_time(100), 0, "never below zero");
     }
 
-    const CHANGE: &str = "hs1qdhtaj7ws7chd2z2tulrmakqww428myx08d6w3v";
+    const CHANGE: &str = "hs1q88hzgdw24zda5lk9aaj8uv7ahu6nu8ua3yve9k";
 
     fn coin(txid_byte: u8, value: u64, child: u32) -> SpendableCoin {
         SpendableCoin {

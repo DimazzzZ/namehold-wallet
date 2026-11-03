@@ -353,7 +353,7 @@ mod tests {
     use crate::noncustodial::shakedex::lock_key::derive_lock_key;
     use crate::noncustodial::tx::Transaction;
 
-    const CHANGE: &str = "hs1qdhtaj7ws7chd2z2tulrmakqww428myx08d6w3v";
+    const CHANGE: &str = "hs1q88hzgdw24zda5lk9aaj8uv7ahu6nu8ua3yve9k";
     const CANCEL_INDEX: u32 = 11;
     const NAME: &str = "dexreviews";
     const LOCK_TXID: &str = "2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c";

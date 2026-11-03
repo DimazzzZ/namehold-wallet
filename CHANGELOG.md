@@ -38,6 +38,10 @@
 - **Shakedex price steps.** A re-signed Finalize & sign never reuses a lock coin that price steps were signed over; it is refused until the next block, and the prompt names the lock coin. Price-step signatures no longer reach the app's main window. A market fee over 5% of the price is never ticked for you and always carries a warning, whatever rate the market publishes.
 - **Amounts are read exactly.** HNS amounts in Send, Bid, Lockup, Batch bid, Recover bid and the Namebase withdrawal refuse a 7th decimal, a sign, an exponent or a thousands separator with a message, instead of rounding or misreading them.
 - **Batch Bid and Activity tell the truth about a lockup.** Batch Bid no longer says the lockup comes back as change and only the fee is spent: it says the lockup is locked until reveal and an unrevealed bid forfeits it, with the amounts at stake. Activity calls a bid row's value its lockup, and a draft that was not sent, failed or was dropped says nothing has moved. The bid forfeit warning shows the lockup as read and no longer repeats text the amount field refused.
+- **The secret gate runs earlier.** The repository's gate now runs before a commit, a merge commit and a push, and `pnpm lint:secrets` fails in a clone without the hooks.
+- **It reads more formats.** It recognises recovery phrases in lists, tables, comments, HTML, joined tokens, JSON objects and base64, hex seeds and keys beside a key word, and private keys of every Handshake network.
+- **Nothing slips past in a ref.** A push of a ref to a blob or tree is refused, and tag messages, authors, file names and ref names are scanned.
+- **CI scans everything pushed.** A new workflow scans every branch, tag and pull request, including commits whose secret was removed again.
 
 ### Fixed
 - **A wallet with more than 200 names had no name actions at all.** The capability check was asked for every name in one call, which the backend refuses above 200; names showed their bare phase and every batch button stayed grey. It is now asked in chunks of 100, and polled every five minutes instead of every thirty seconds on wallets with more than 100 names.

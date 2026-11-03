@@ -319,6 +319,12 @@ The Market lists names for sale through Shakedex, read from the LearnHNS Market 
 
 ---
 
+## Secrets in the repository
+
+`scripts/check-secrets.mjs` refuses BIP39 recovery phrases with a valid checksum, written with any common separator or decoration (lists, tables, comments, HTML, joined by one of `-._/:`, JSON arrays and objects), also inside base64; extended private keys of all four Handshake networks and WIF keys; and 16, 32 or 64 bytes of hex near the words seed, entropy, priv, secret, master or mnemonic. It runs before a commit or merge commit on staged blobs, and before a push on every commit the remote lacks, including file names, messages, authors, annotated tags and ref names; a ref to a blob or tree is refused. The `Secret scan` workflow runs on every branch, tag and pull request on the tree and the pushed commits. Hooks are client-side and can be bypassed with `--no-verify`; CI detects only after publication, when the secret must be treated as burned. Not detected: hex as byte arrays, keys or hex split across lines, secrets inside binary files, base64 with a non-base64 prefix glued to it such as a path. A cherry-pick runs no commit hook and is covered only at push. Public vectors are allowed by SHA-256 in `scripts/secret-scan-allow.txt`.
+
+---
+
 ## Dependency auditing
 
 CI runs an advisory-only audit job (`cargo audit` + `pnpm audit --prod`) on

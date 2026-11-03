@@ -27,9 +27,9 @@ use crate::noncustodial::send::load_spendable_coins;
 use crate::noncustodial::speed_up::{self as su, SpeedUpSummary, TargetSource, SPEED_UP_ACTION};
 use crate::tests::mock_node_rpc::{MockNodeRpc, RpcCall};
 
-const MNEMONIC: &str = "april coyote civil finger crane uncle situate moon choice wrong \
-                        goose client purse deer funny hobby shrug give anxiety truly rack \
-                        stand salad coach";
+const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                        abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                        abandon abandon art";
 const PROFILE: &str = "sp1";
 const PARENT: &str = "parent-draft";
 const PARENT_TXID: &str = "5555555555555555555555555555555555555555555555555555555555555555";

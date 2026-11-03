@@ -50,12 +50,12 @@ fn lock_key_matches_the_r17_golden_vector() {
         (
             Network::Main,
             "m/44'/5353'/0'/2'/1433607229'",
-            "hs1qkq6yytu0c4puw0xlrdwedylkk5a04yrgecgz9wgyu2sua3mzh4jqt74rdj",
+            "hs1q9vha4e8w0ht4mve3hvh4h0v5q6vul5v04vfm9zmafw2e5m6fpd4qakpz04",
         ),
         (
             Network::Regtest,
             "m/44'/5355'/0'/2'/1433607229'",
-            "rs1qr3mxw2n44nxqf43jqr69d42nmypn84jgzxtxeafpxn4nq58tylzsrz9ec5",
+            "rs1qdu8pwcjwrpxp7vn2j0cx84flts4r03d3p6k9eqvthuzqdfllxvaqplnwp8",
         ),
     ] {
         let p = lock_key_path(network, 0, "dexreviews").unwrap();

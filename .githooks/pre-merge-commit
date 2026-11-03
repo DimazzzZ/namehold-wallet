@@ -1,0 +1,4 @@
+#!/bin/sh
+# Refuse a merge whose result adds a recovery phrase or a private key: git runs
+# no pre-commit hook for a merge that needs no conflict resolution.
+exec node scripts/check-secrets.mjs --staged

@@ -16,9 +16,9 @@ use crate::noncustodial::speed_up::{
     MEMPOOL_EXPIRY_SECS, RATE_NOT_HIGHER, SPEED_UP_ACTION,
 };
 
-const MNEMONIC: &str = "april coyote civil finger crane uncle situate moon choice wrong \
-                        goose client purse deer funny hobby shrug give anxiety truly rack \
-                        stand salad coach";
+const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                        abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                        abandon abandon art";
 const PARENT_TXID: &str = "5555555555555555555555555555555555555555555555555555555555555555";
 const NOW: i64 = 1_761_000_000;
 

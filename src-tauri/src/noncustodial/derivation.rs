@@ -459,17 +459,17 @@ mod tests {
     /// differ. Guards against any silent change to seed/HD/coin-type/address code.
     #[test]
     fn known_mnemonic_derives_expected_addresses_per_network() {
-        let mnemonic = "april coyote civil finger crane uncle situate moon choice wrong \
-                        goose client purse deer funny hobby shrug give anxiety truly rack \
-                        stand salad coach";
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                        abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+                        abandon abandon art";
         let seed = seed_from_mnemonic(mnemonic, "").unwrap();
         let master = ExtendedPrivKey::from_seed(&seed).unwrap();
 
         for (network, expected) in [
-            (Network::Main, "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8"),
+            (Network::Main, "hs1q7atmw033dxvpuzz0cjwzuqx4dpm3qee496vz74"),
             (
                 Network::Regtest,
-                "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2",
+                "rs1qpmy37srkkwr9psxgka4vyqkcuyqzmcx4v3r44t",
             ),
         ] {
             // Private path (m/44'/coin'/0'/0/0) — what the signer uses.
