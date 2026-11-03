@@ -43,6 +43,9 @@ const LOOK_ALIKES: Record<string, string> = {
   ɡ: "g",
 };
 
+/** Anything a reader cannot see as part of a name: all but letters, marks, digits and `-`. */
+const NOT_A_LETTER = /[^\p{L}\p{M}\p{N}-]/u;
+
 /** What a decoded name hides or imitates; see {@link confusable}. */
 export interface Confusable {
   /** The plain ASCII name it reads as, when every letter looks Latin. */
@@ -54,18 +57,22 @@ export interface Confusable {
 /**
  * Whether an IDN hides characters or reads as an ASCII name: `.аpple`, in
  * Cyrillic, reads as `apple`. The chain takes any `xn--` label, so a label can
- * decode to what IDNA would refuse: invisible characters and compatibility forms
- * are read away first, or one of them would take a look-alike out of the table.
+ * decode to what IDNA would refuse: anything that is not visibly a letter and
+ * compatibility forms are read away first, or one of them would take a look-alike
+ * out of the table.
  * `null` for a plain name, and for an IDN with a letter that gives it away, such
  * as `сбер`. A name is the buyer's to check, so this only informs.
  */
 export function confusable(name: string): Confusable | null {
   const decoded = displayName(name);
   if (decoded === name) return null;
-  const hidden = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/u.test(decoded);
+  const hidden = NOT_A_LETTER.test(decoded);
+  // After NFKC an accent a letter takes is part of it (`ü`); a mark left over
+  // sits on a look-alike and must not take it out of the table.
   const visible = decoded
-    .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")
+    .replace(new RegExp(NOT_A_LETTER, "gu"), "")
     .normalize("NFKC")
+    .replace(/\p{M}/gu, "")
     .toLowerCase();
   let latin = "";
   for (const ch of visible) {

@@ -35,6 +35,18 @@ describe("confusable", () => {
     expect(confusable("xn--apple-pt3b")).toEqual({ readsAs: "apple", hidden: true }); // ZWSP alone
   });
 
+  it("a blank that is not formally invisible is hidden too", () => {
+    expect(confusable("xn--apple-ws3c")).toEqual({ readsAs: "apple", hidden: true }); // U+2800
+    expect(confusable("xn--apple-9a")).toEqual({ readsAs: "apple", hidden: true }); // U+0085
+    expect(confusable("xn--apple-wfa")).toEqual({ readsAs: "apple", hidden: true }); // no-break space
+    expect(confusable("xn--pple-43d6216c")).toEqual({ readsAs: "apple", hidden: true }); // а, U+2800
+    expect(confusable("xn--90ai7ab2786b")).toEqual({ readsAs: null, hidden: true }); // сбер, U+2800
+  });
+
+  it("a mark left on a look-alike does not take it out of the table", () => {
+    expect(confusable("xn--pple-p0c72n")?.readsAs).toBe("apple"); // а with a dot below
+  });
+
   it("a compatibility form reads as its letter", () => {
     expect(confusable("xn--pple-zg0y")).toEqual({ readsAs: "apple", hidden: false }); // fullwidth a
   });
