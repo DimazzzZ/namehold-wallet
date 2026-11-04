@@ -110,6 +110,7 @@
 - Actions updated by Dependabot, and the tests of testnet's real RPC port run one at a time under nextest.
 - Take `async-executor` 1.14.1, since 1.14.0 was yanked. RUSTSEC-2026-0429 (`zip` aborts the process on a crafted symlink entry) is suppressed with the other `zip` advisories: `tauri-plugin-updater` pins `zip` 4.6.1, and extraction runs only on Windows, on a bundle whose signature is already verified. See `SECURITY.md`.
 - A pull request's type label comes from the commit type its title starts with.
+- A pre-release's notes come from its version's changelog section instead of GitHub's list of pull requests.
 
 ## [0.6.1] - 2026-10-25
 

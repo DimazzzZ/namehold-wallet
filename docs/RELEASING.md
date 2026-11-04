@@ -75,7 +75,7 @@ This creates:
 
 ### A test run before a real release
 
-Run a pre-release first when `release.yml` or its scripts changed: the same manual run, with version `X.Y.Z-rc.N` and the pre-release box ticked. The build takes that version from the field, so nothing needs bumping. The updater reads `releases/latest`, which skips a pre-release, so installs are not offered it, but its page is public. Check the files with the README's recipe, install it over an older build, then delete the pre-release.
+Run a pre-release first when `release.yml` or its scripts changed: the same manual run, with version `X.Y.Z-rc.N` and the pre-release box ticked. The build takes that version from the field, so nothing needs bumping, and its notes come from the `X.Y.Z` section of the changelog. The updater reads `releases/latest`, which skips a pre-release, so installs are not offered it, but its page is public. Check the files with the README's recipe, install it over an older build, then delete the pre-release.
 
 ### If a run stops
 

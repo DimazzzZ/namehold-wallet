@@ -133,11 +133,16 @@ jobs:
           # - Match from "## [$VERSION]" to the next "## [" (or EOF).
           # - Print only the interior lines (skip the boundary headers).
           # - Trim leading blank lines.
-          NOTES="$(awk -v ver="$VERSION" '
-            index($0, "## [" ver "]") == 1 { found=1; next }
-            found && index($0, "## [") == 1 { exit }
-            found { print }
-          ' CHANGELOG.md | sed '/./,$!d')"
+          # A pre-release has no section of its own, so 1.2.3-rc.1 uses 1.2.3's.
+          NOTES=""
+          for ver in "$VERSION" "${VERSION%%-*}"; do
+            NOTES="$(awk -v ver="$ver" '
+              index($0, "## [" ver "]") == 1 { found=1; next }
+              found && index($0, "## [") == 1 { exit }
+              found { print }
+            ' CHANGELOG.md | sed '/./,$!d')"
+            [ -z "$NOTES" ] || break
+          done
           if [ -z "$NOTES" ]; then
             # No CHANGELOG entry — fall back to the GitHub auto-generated notes
             # that `--generate-notes` produced when the draft was created. This
