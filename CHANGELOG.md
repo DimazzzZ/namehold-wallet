@@ -70,6 +70,7 @@
 - **A running series shows it is working.** The batch bar shows a spinner, the names being read from your node and the seconds this step has taken. Transfer's blockers appear only when dropping them would leave a transfer to run.
 - **Max and coin selection spend a lost bid's redeemed coin.** It was left out, so Max could leave a redeemed bid's HNS behind and a send could report too little.
 - **The Node RPC API key field no longer says "stored" when no key is stored.** An empty setting counted as a stored secret.
+- **Settings shows Save only after an edit.** With Launch at login on, opening Settings counted as an edit, and so did the toggles that apply themselves (Launch at login, Close to tray, Sync in background). The save bar also moved as you scrolled or changed section; it now stays on the window's bottom edge.
 - **A Ledger wallet can send.** It was always reported as locked, so Send stayed disabled behind an Unlock that could only fail. The device signs, so a Ledger is ready whenever the node is.
 - **Upgrading no longer starts a second hsd over the running one's data directory.** The app reaches the node the previous build started.
 - **Name pages no longer sit on "Loading name info…" with a synced node.** The check for a usable node asked the app-wide node address rather than the active wallet's, so a leftover address sent every name read the slow way.
