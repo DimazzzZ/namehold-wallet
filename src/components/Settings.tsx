@@ -80,7 +80,7 @@ export function validateExplorerUrl(raw: string): string | null {
  * No legacy hsd-wallet / connection-mode / write-mode config.
  */
 export function Settings() {
-  const { settings, loaded, saveAll } = useSettingsStore();
+  const { settings, loaded, saveAll, update } = useSettingsStore();
   const showToast = useUiStore((s) => s.showToast);
   const { data: profile } = useActiveProfile();
   const saveBidBackup = useSaveBidBackup();
@@ -167,20 +167,15 @@ export function Settings() {
 
   // On mount, check the OS autostart state and reconcile with our DB.
   // If they differ, the OS state is authoritative (the user may have toggled
-  // it via System Preferences), so update our DB to match.
+  // it via System Preferences), so update our DB to match. That is not an edit
+  // of the user's, so it leaves the save bar alone.
   useEffect(() => {
-    if (!isTauri()) return; // Skip on web.
+    if (!isTauri() || !loaded) return; // Skip on web; the DB value isn't known yet.
     const syncAutostart = async () => {
       try {
-        const osEnabled = await isAutostartEnabled();
-        const dbEnabled = form.launch_at_login === "1";
-        if (osEnabled !== dbEnabled) {
-          // Reconcile: update our DB to match the OS state.
-          await invoke("update_setting", {
-            key: "launch_at_login",
-            value: osEnabled ? "1" : "0",
-          });
-          updateField("launch_at_login", osEnabled ? "1" : "0");
+        const value = (await isAutostartEnabled()) ? "1" : "0";
+        if (value !== useSettingsStore.getState().settings?.launch_at_login) {
+          await update("launch_at_login", value);
         }
       } catch (err) {
         // Autostart plugin may not be available on all platforms or in dev.
@@ -188,7 +183,8 @@ export function Settings() {
       }
     };
     syncAutostart();
-  }, []); // Run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]); // Once, as soon as the settings are in.
 
   if (!loaded || !settings) {
     return <div className="text-gray-500">Loading settings...</div>;
@@ -197,6 +193,10 @@ export function Settings() {
   const updateField = (key: string, value: string) => {
     setForm((prev) => ({ ...prev, [key]: value }));
     setDirty(true);
+  };
+  // For a toggle that applies itself: there is nothing left for Save to do.
+  const showApplied = (key: string, value: string) => {
+    setForm((prev) => ({ ...prev, [key]: value }));
   };
 
   // Explorer base URL is used as `${url}/api/...` by the backend
@@ -355,7 +355,7 @@ export function Settings() {
   };
 
   return (
-    <div className="flex flex-col gap-5 pb-16">
+    <div className="flex flex-col gap-5 min-h-full">
       <PageHeader
         title="Settings"
         subtitle="How this device connects, runs its node, notifies you and keeps backups."
@@ -527,7 +527,7 @@ export function Settings() {
                       onChange={async (e) => {
                         const enabled = e.target.checked;
                         // Update local form state immediately for responsive UI.
-                        updateField("background_sync_enabled", enabled ? "1" : "0");
+                        showApplied("background_sync_enabled", enabled ? "1" : "0");
                         try {
                           // The specialized command also spawns/stops the daemon,
                           // and persists the setting itself. Applied immediately (no
@@ -541,7 +541,7 @@ export function Settings() {
                           );
                         } catch (err) {
                           // Revert form state if the command failed.
-                          updateField("background_sync_enabled", enabled ? "0" : "1");
+                          showApplied("background_sync_enabled", enabled ? "0" : "1");
                           showToast(`Failed to toggle background sync: ${err}`, "error");
                         }
                       }}
@@ -570,11 +570,11 @@ export function Settings() {
                     checked={form.close_to_tray === "1"}
                     onChange={async (e) => {
                       const enabled = e.target.checked;
-                      updateField("close_to_tray", enabled ? "1" : "0");
+                      showApplied("close_to_tray", enabled ? "1" : "0");
                       try {
                         await invoke("set_close_to_tray_enabled", { enabled });
                       } catch (err) {
-                        updateField("close_to_tray", enabled ? "0" : "1");
+                        showApplied("close_to_tray", enabled ? "0" : "1");
                         showToast(`Failed to toggle close-to-tray: ${err}`, "error");
                       }
                     }}
@@ -595,7 +595,7 @@ export function Settings() {
                     disabled={import.meta.env.DEV}
                     onChange={async (e) => {
                       const enabled = e.target.checked;
-                      updateField("launch_at_login", enabled ? "1" : "0");
+                      showApplied("launch_at_login", enabled ? "1" : "0");
                       try {
                         if (enabled) {
                           await enableAutostart();
@@ -611,7 +611,7 @@ export function Settings() {
                           value: enabled ? "1" : "0",
                         });
                       } catch (err) {
-                        updateField("launch_at_login", enabled ? "0" : "1");
+                        showApplied("launch_at_login", enabled ? "0" : "1");
                         showToast(`Failed to toggle launch at login: ${err}`, "error");
                       }
                     }}
@@ -875,7 +875,9 @@ export function Settings() {
       </div>
 
       {dirty && (
-        <StickyFooter className="-mx-6">
+        // Fills the page's padding, so the bar sits on the window's edge in every
+        // section and at any scroll position.
+        <StickyFooter className="-mx-6 -mb-6 !-bottom-6 mt-auto">
           {saveBlock ? (
             <div
               className="flex items-center gap-2 text-xs text-red-600 mr-3"
