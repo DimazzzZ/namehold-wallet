@@ -543,3 +543,43 @@ fn a_log_that_cannot_be_opened_is_none() {
     assert!(open_rotated_log(&path).is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn scratch_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "namehold-daemon-{tag}-{}-{:?}",
+        std::process::id(),
+        std::time::SystemTime::now()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// One daemon per data directory: a second one finds the lock taken, and the
+/// lock is free again once the first is gone.
+#[test]
+fn only_one_daemon_holds_the_instance_lock() {
+    use crate::daemon::claim_single_instance;
+    let dir = scratch_dir("lock");
+    let path = dir.join("syncd.lock");
+    let first = claim_single_instance(&path).unwrap();
+    assert!(first.is_some());
+    assert!(claim_single_instance(&path).unwrap().is_none());
+    drop(first);
+    assert!(claim_single_instance(&path).unwrap().is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A daemon removes the pid file only while it names that daemon.
+#[test]
+fn the_pid_file_is_matched_to_its_own_pid() {
+    use crate::daemon::pid_file_names;
+    let dir = scratch_dir("pid");
+    let path = dir.join("syncd.pid");
+    assert!(!pid_file_names(&path, 42), "no file");
+    std::fs::write(&path, "42\n").unwrap();
+    assert!(pid_file_names(&path, 42));
+    assert!(!pid_file_names(&path, 43));
+    std::fs::write(&path, "garbage").unwrap();
+    assert!(!pid_file_names(&path, 42));
+    let _ = std::fs::remove_dir_all(&dir);
+}

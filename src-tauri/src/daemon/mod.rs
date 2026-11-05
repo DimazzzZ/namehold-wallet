@@ -45,6 +45,17 @@ pub const HEARTBEAT_INTERVAL_SECS: u64 = 10;
 
 /// Main daemon loop: sync all profiles every 60 seconds.
 pub fn run(db_path: &str) -> Result<(), AppError> {
+    // One daemon per data directory, whatever the pid file says: it has been
+    // overwritten and removed by others, and three syncs ran side by side.
+    // The OS drops the lock when the process ends, however it ends.
+    let lock_path = std::path::Path::new(db_path).with_file_name("syncd.lock");
+    let Some(_instance) = claim_single_instance(&lock_path)? else {
+        dlog!(
+            "namehold-syncd: another namehold-syncd is running (PID {}); exiting",
+            std::process::id()
+        );
+        return Ok(());
+    };
     let conn = crate::db::connection::open(std::path::Path::new(db_path))?;
     crate::db::migrations::run(&conn)?;
     drop(conn); // Close this handle — each cycle re-opens fresh connections.
@@ -222,6 +233,24 @@ pub(crate) async fn sync_profile(db_path: &str, profile_id: &str, lock_lost: &sy
     sync_cmd::stamp_explorer_sync_if_clean(&status, db_path, profile_id).await;
 }
 
+/// Take the exclusive lock on `path`, creating the file: `Some` while this
+/// process is the one daemon (keep it alive as long as the daemon runs),
+/// `None` when another process holds it.
+pub(crate) fn claim_single_instance(
+    path: &std::path::Path,
+) -> Result<Option<std::fs::File>, AppError> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+    }
+}
+
 /// Write the daemon's PID to `~/.namehold/syncd.pid`.
 fn write_pid_file() -> Result<(), AppError> {
     let home = dirs::home_dir().ok_or_else(|| AppError::Other("no home dir".to_string()))?;
@@ -233,14 +262,21 @@ fn write_pid_file() -> Result<(), AppError> {
     Ok(())
 }
 
+/// Whether the pid file at `path` holds `pid`.
+pub(crate) fn pid_file_names(path: &std::path::Path, pid: u32) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|s| s.trim().parse::<u32>().ok() == Some(pid))
+}
+
 /// Clean up on daemon exit.
 pub fn cleanup(db_path: &str) -> Result<(), AppError> {
     let conn = sync_cmd::open_conn(db_path)?;
     sync_lock::release_all_owned(&conn)?;
-    // Best-effort: remove the PID file (harmless if it fails).
+    // Best-effort, and only our own: the file can name another daemon by now.
     if let Some(home) = dirs::home_dir() {
         let pid_path = home.join(".namehold").join("syncd.pid");
-        let _ = std::fs::remove_file(&pid_path);
+        if pid_file_names(&pid_path, std::process::id()) {
+            let _ = std::fs::remove_file(&pid_path);
+        }
     }
     dlog!("namehold-syncd: cleaned up locks");
     Ok(())
