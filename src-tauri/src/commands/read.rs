@@ -1108,7 +1108,7 @@ pub async fn read_name_bids(
     // explorer when the scanner hasn't caught up yet.
     if node_ready {
         let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name(&name)?);
-        let (indexed_bids, commitments, scanner_height, name_height) = {
+        let (indexed_bids, commitments, scanner_covers) = {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
             // Both the index and the cursor are network-keyed (028): a name
             // hashes identically on every chain, and a cursor from another
@@ -1120,12 +1120,6 @@ pub async fn read_name_bids(
             // already does.
             let network = profile_network_from_conn(&conn, &id).ok();
             let comms = queries::list_bid_commitments(&conn, &id)?;
-            // With no network there is no cursor to read: leaving the coverage
-            // at 0 makes `scanner_covers` false, which is the path an
-            // un-caught-up scanner already takes.
-            let cursor_h = network
-                .map(|n| crate::commands::chain_scan::scan_cursor_height(&conn, n.as_str()))
-                .unwrap_or(0);
             // The OPEN height of the name's CURRENT auction. `upsert_name_state`
             // clears it when the node reports no auction, so `None` means the
             // name has none open right now — not merely that we haven't looked.
@@ -1162,14 +1156,17 @@ pub async fn read_name_bids(
                 .into_iter()
                 .filter(|c| c.belongs_to_auction(nh))
                 .collect();
-            (indexed, comms, cursor_h, nh)
+            // With no network there is no cursor to read, which is the path an
+            // un-caught-up scanner already takes. Unknown auction (name never
+            // opened?), not reached yet, or aged out of the index: the explorer.
+            let covers = match (network, nh) {
+                (Some(n), Some(start)) => {
+                    crate::commands::chain_scan::scan_covers_auction(&conn, n.as_str(), start)
+                }
+                _ => false,
+            };
+            (indexed, comms, covers)
         };
-
-        // Only serve from the index if the scanner has reached the name's
-        // auction height (so we're confident we've seen all BIDs). If the
-        // name_height is unknown (name never opened?), or the scanner hasn't
-        // caught up, fall through to the explorer.
-        let scanner_covers = name_height.map(|nh| scanner_height >= nh).unwrap_or(false);
 
         if scanner_covers {
             return Ok(merge_indexed_bids(&indexed_bids, &commitments, &name));
