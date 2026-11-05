@@ -10,6 +10,10 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock("../../lib/openExternal", async (orig) => ({
+  ...(await orig<typeof import("../../lib/openExternal")>()),
+  openExternal: vi.fn(),
+}));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn(),
   readText: vi.fn().mockResolvedValue(""),
@@ -49,6 +53,7 @@ function WithShell() {
 }
 
 const openReadiness = async () => fireEvent.click(await screen.findByTestId("readiness-pill"));
+import { openExternal } from "../../lib/openExternal";
 import type { SyncStatus } from "../../queries/sync";
 import { useSyncTriggerStore } from "../../stores/syncTrigger";
 
@@ -267,6 +272,35 @@ describe("WalletView (non-custodial)", () => {
     expect(screen.getByText("No passphrase set — just click Unlock")).toBeInTheDocument();
     expect(screen.queryByText(/Unlock with your passphrase/i)).toBeNull();
     expect(screen.getAllByRole("button", { name: /Unlock/i }).length).toBeGreaterThan(0);
+  });
+
+  describe("a mainnet wallet without a passphrase", () => {
+    const renderWith = async (profile: Partial<typeof baseProfile>) => {
+      invokeMock.mockImplementation(routeInvoke({ profile }));
+      render(<WalletView />, { wrapper: wrapper() });
+      await screen.findByTestId("receive-open");
+    };
+    const mainnet = { network: "mainnet", receiveAddress: "hs1qexample", hasPassphrase: false };
+
+    it("warns and links to the steps in the manual", async () => {
+      await renderWith(mainnet);
+      const note = screen.getByTestId("no-passphrase-warning");
+      expect(note).toHaveTextContent("This wallet has no passphrase.");
+      fireEvent.click(within(note).getByRole("button", { name: "How to move it…" }));
+      expect(openExternal).toHaveBeenCalledWith(
+        "https://github.com/DimazzzZ/namehold-wallet/blob/main/docs/USER_MANUAL.md#a-mainnet-wallet-without-a-passphrase",
+      );
+    });
+
+    it.each([
+      ["has a passphrase", { ...mainnet, hasPassphrase: true }],
+      ["is on a test network", { ...mainnet, network: "regtest" }],
+      ["is a Ledger", { ...mainnet, kind: "ledger_hardware" }],
+      ["is watch-only", { ...mainnet, watchOnly: true }],
+    ])("says nothing when the wallet %s", async (_case, profile) => {
+      await renderWith(profile);
+      expect(screen.queryByTestId("no-passphrase-warning")).toBeNull();
+    });
   });
 
   it("a passphrase wallet still shows the secure-window unlock copy", async () => {

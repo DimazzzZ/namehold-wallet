@@ -49,12 +49,14 @@ import { PageHeader } from "./ui/PageHeader";
 import { formatHns, formatHnsShort, isLikelyHnsAddress, hnsAddressPrefix } from "../lib/utils";
 import { doosToHnsDigits, parseHnsAmount } from "../lib/hnsAmount";
 import { mapError, unwrapStaged } from "../lib/errors";
-import { explorerCoversNetwork } from "../lib/openExternal";
+import { explorerCoversNetwork, GITHUB_REPO_URL, openExternal } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import type { TxDraftSummary } from "../types";
 import { subscribeAction } from "../lib/actionBus";
 import { Tooltip } from "./ui/Tooltip";
 import { shakedexRefusal } from "./market/marketText";
+
+const NO_PASSPHRASE_GUIDE_URL = `${GITHUB_REPO_URL}/blob/main/docs/USER_MANUAL.md#a-mainnet-wallet-without-a-passphrase`;
 
 export function WalletView() {
   const qc = useQueryClient();
@@ -115,6 +117,11 @@ export function WalletView() {
   const unlocked = isLedger ? true : isSignerUnlockedFor(signer, profile?.id);
   const canWrite = writeCap?.canWrite ?? false;
   const isWatchOnly = profile?.watchOnly ?? false;
+  // A wallet from before the mainnet passphrase rule: its phrase is encrypted
+  // under a key in the public source. A Ledger or watch-only wallet has no
+  // phrase here, though it also reports no passphrase.
+  const lacksPassphrase =
+    profile?.network === "mainnet" && !profile.hasPassphrase && !isLedger && !isWatchOnly;
   // Renew all in Needs you: the same series, confirmation and send as Names.
   const batch = useNameBatchActions({ profile, capsByName, unlocked });
   const renewable = needsYou.items
@@ -557,6 +564,26 @@ export function WalletView() {
           <div className="mt-2.5 text-xs text-gray-500">
             Watch-only wallet — it can receive and track balances and names, but it can't sign or
             spend.
+          </div>
+        )}
+        {lacksPassphrase && (
+          <div
+            className="mt-3 flex items-start justify-between gap-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
+            data-testid="no-passphrase-warning"
+          >
+            <div>
+              <span className="font-semibold">This wallet has no passphrase.</span> Anyone with a
+              copy of its files, including an old backup, can take its funds. Create a new wallet
+              with a passphrase and move your coins and names there.
+            </div>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="shrink-0"
+              onClick={() => void openExternal(NO_PASSPHRASE_GUIDE_URL)}
+            >
+              How to move it…
+            </Button>
           </div>
         )}
         {needsNodeSync && !isWatchOnly && (
