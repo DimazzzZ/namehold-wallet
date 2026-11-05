@@ -88,6 +88,30 @@ td code { font-family: var(--mono); font-size: 13px; }
 pre { background: var(--code-bg); color: var(--code-ink); font: 13px/1.6 var(--mono); padding: 14px 16px; border-radius: 6px; overflow-x: auto; margin: 0; }
 footer { border-top: 1px solid var(--line); }
 footer .wrap { padding-block: 22px; display: flex; flex-wrap: wrap; gap: 8px 18px; justify-content: space-between; font-size: 13px; color: var(--muted); }
+
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+a.zoom { display: block; cursor: zoom-in; }
+a.zoom:hover .shot { border-color: var(--accent); }
+.track li { padding: 0; }
+.track button { all: unset; box-sizing: border-box; display: block; width: 100%; height: 100%; padding: 10px 14px 10px 0; cursor: pointer; }
+.track button:hover b { color: var(--accent); }
+.track button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.track button[aria-pressed="true"] b { color: var(--accent); }
+#step-detail { background: var(--accent-soft); color: var(--ink); border-radius: 6px; padding: 12px 14px; font-size: 15px; min-height: 3.6em; }
+tr.mine td { background: var(--accent-soft); }
+tr.mine td:first-child::after { content: " · your system"; font-weight: 400; color: var(--muted); font-size: 12px; }
+#download h3 { font-size: 16px; }
+.code { display: flex; gap: 8px; align-items: stretch; }
+.code pre { flex: 1; min-width: 0; }
+.copy { font: 500 13px var(--sans); padding: 0 14px; border-radius: 4px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; min-width: 72px; }
+.copy:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+td.file-size { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+dialog { border: 0; border-radius: 8px; padding: 14px; max-width: min(94vw, 1500px); background: var(--surface); color: var(--body); }
+dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
+dialog figure { margin: 0 0 10px; display: grid; gap: 8px; }
+dialog img { display: block; max-height: 78vh; width: auto; margin-inline: auto; }
+dialog figcaption { font-size: 13px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -99,6 +123,7 @@ footer .wrap { padding-block: 22px; display: flex; flex-wrap: wrap; gap: 8px 18p
     <a href="#market">Market</a>
     <a href="#keys">Your keys</a>
     <a href="#download">Download</a>
+    <a href="https://github.com/DimazzzZ/namehold-wallet/blob/main/docs/USER_MANUAL.md">Manual</a>
     <a href="https://github.com/DimazzzZ/namehold-wallet">GitHub</a>
   </nav>
 </div></header>
@@ -108,58 +133,59 @@ footer .wrap { padding-block: 22px; display: flex; flex-wrap: wrap; gap: 8px 18p
   <h1>Own your <em>.names</em>.<br>Keep your keys.</h1>
   <p class="lede">Namehold is a desktop wallet for Handshake: hold HNS, win and renew top-level names, edit their DNS, and buy or sell them on the Shakedex market. Your recovery phrase stays on your computer.</p>
   <div class="actions">
-    <a class="btn primary" href="#download">Download</a>
+    <a class="btn primary" id="dl-hero" href="#download">Download</a>
     <a class="btn" href="https://github.com/DimazzzZ/namehold-wallet">Read the source</a>
-    <span class="meta">macOS, Windows, Linux · open source, MIT</span>
+    <span class="meta" id="dl-hero-meta">macOS, Windows, Linux · open source, MIT</span>
   </div>
-  <img class="shot" src="img/wallet.jpg" width="1500" height="1032" alt="The Namehold wallet page: spendable balance, Send and Receive, and the names that need attention">
+  <a class="zoom" href="img/wallet.jpg"><img class="shot" src="img/wallet.jpg" width="1500" height="1032" alt="The Namehold wallet page: spendable balance, Send and Receive, and the names that need attention"></a>
 </section>
 
 <section class="wrap"><div class="life">
   <h2>Every step of a name, in one place</h2>
   <ol class="track">
-    <li class="here"><b>open</b><span>Start the auction</span></li>
-    <li class="here"><b>bid</b><span>About 5 days, sealed</span></li>
-    <li class="here"><b>reveal</b><span>About 10 days. The app reminds you</span></li>
-    <li class="here"><b>register</b><span>Win it, set its DNS</span></li>
-    <li class="here"><b>renew</b><span>Hundreds at once, if you hold them</span></li>
-    <li class="here"><b>transfer</b><span>Send it, or sell it</span></li>
+    <li><button type="button" data-detail="Anyone can start an auction on a name nobody holds. It takes bids after about 6 hours (37 blocks on mainnet)."><b>open</b><span>Start the auction</span></button></li>
+    <li><button type="button" data-detail="Bidding lasts about 5 days (720 blocks). Bids are sealed, and your lockup can be larger than your bid to hide what you will pay."><b>bid</b><span>About 5 days, sealed</span></button></li>
+    <li><button type="button" data-detail="Reveal lasts about 10 days (1,440 blocks). A bid you do not reveal loses its whole lockup, so Needs you on the Wallet page lists it with a countdown."><b>reveal</b><span>About 10 days</span></button></li>
+    <li><button type="button" data-detail="The highest bidder pays the second-highest bid and registers the name, with DNS records if you want them. A losing bid is redeemed and its lockup comes back."><b>register</b><span>Win it, set its DNS</span></button></li>
+    <li><button type="button" data-detail="An expired name is lost, so Namehold reminds you before that, and Renew all takes every name that is due, even hundreds."><b>renew</b><span>Keep it yours</span></button></li>
+    <li><button type="button" data-detail="Send a name to another address and finalize after the lockup (about 2 days on mainnet), or list it for sale on the Market."><b>transfer</b><span>Send it, or sell it</span></button></li>
   </ol>
+  <p id="step-detail" aria-live="polite" hidden></p>
 </div></section>
 
 <div class="wrap">
   <section class="feature" id="names">
     <div class="text">
       <h2>All your names, and what each one needs next</h2>
-      <p>The Names page shows every name you own, bid on or watch, with its next step and how long you have.</p>
+      <p>The Names page shows every name you own, bid on or watch, with its next step and how long you have. <a href="https://github.com/DimazzzZ/namehold-wallet/blob/main/docs/USER_MANUAL.md#10-managing-names-you-own">Read about managing names</a>.</p>
       <ul>
         <li>Bid, reveal, renew, finalize or transfer in batches</li>
         <li>Edit DNS records with a typed editor</li>
         <li>A note on names written with look-alike letters</li>
       </ul>
     </div>
-    <img class="shot" src="img/names.jpg" width="1500" height="1032" loading="lazy" alt="The Names page: a table of names with status, countdowns and filters">
+    <a class="zoom" href="img/names.jpg"><img class="shot" src="img/names.jpg" width="1500" height="1032" loading="lazy" alt="The Names page: a table of names with status, countdowns and filters"></a>
   </section>
 
   <section class="feature" id="market">
     <div class="text">
       <h2>Buy and sell names without a middleman</h2>
-      <p>Namehold trades through Shakedex. Before you buy, your own node checks each listing against the chain.</p>
+      <p>Namehold trades through Shakedex. Before you buy, your own node checks each listing against the chain. <a href="https://github.com/DimazzzZ/namehold-wallet#features">See all features</a>.</p>
       <ul>
         <li>Buy Now and reverse auctions</li>
         <li>List your names and lower a price later</li>
         <li>See each purchase through to finalize</li>
       </ul>
     </div>
-    <img class="shot" src="img/market.jpg" width="1500" height="1032" loading="lazy" alt="The Market page: Shakedex listings checked by your node, and your purchases on their way">
+    <a class="zoom" href="img/market.jpg"><img class="shot" src="img/market.jpg" width="1500" height="1032" loading="lazy" alt="The Market page: Shakedex listings checked by your node, and your purchases on their way"></a>
   </section>
 
   <section class="feature">
     <div class="text">
       <h2>One page for each name</h2>
-      <p>See where a name stands, what happened to it and what you can do with it now, including a flag for names also applied for in ICANN's 2026 round.</p>
+      <p>See where a name stands, what happened to it and what you can do with it now, including a flag for names also applied for in ICANN's 2026 round. <a href="https://github.com/DimazzzZ/namehold-wallet/blob/main/docs/USER_MANUAL.md#8-auctions">Read about auctions</a>.</p>
     </div>
-    <img class="shot" src="img/name.jpg" width="1500" height="1032" loading="lazy" alt="A name's page: its timeline, details and actions">
+    <a class="zoom" href="img/name.jpg"><img class="shot" src="img/name.jpg" width="1500" height="1032" loading="lazy" alt="A name's page: its timeline, details and actions"></a>
   </section>
 </div>
 
@@ -170,12 +196,13 @@ footer .wrap { padding-block: 22px; display: flex; flex-wrap: wrap; gap: 8px 18p
       <li><b>Encrypted on your computer.</b> A new mainnet wallet needs a passphrase of at least 8 characters.</li>
       <li><b>Secrets stay in a secure window.</b> Your phrase and passphrase are typed outside the main app window.</li>
       <li><b>Ledger support.</b> With a Ledger Nano, the device signs and you confirm on its screen.</li>
+      <li><a href="https://github.com/DimazzzZ/namehold-wallet/blob/main/docs/USER_MANUAL.md#15-security">Read the security section</a>.</li>
     </ul>
   </div>
   <div>
     <h2>You choose whom to trust</h2>
     <ul class="facts">
-      <li><b>Your own node.</b> Run hsd from the app, or point it at one you trust. Sending needs a node.</li>
+      <li><b>Your own node.</b> Run hsd from the app, or point it at one you trust. Sending needs a node. <a href="https://github.com/DimazzzZ/namehold-wallet/blob/main/docs/USER_MANUAL.md#11-node-control">How nodes work here</a>.</li>
       <li><b>Read without one.</b> Check balances and names through an explorer while you get set up.</li>
       <li><b>Open source.</b> Read the code and check every release file against its signature.</li>
     </ul>
@@ -184,18 +211,22 @@ footer .wrap { padding-block: 22px; display: flex; flex-wrap: wrap; gap: 8px 18p
 
 <section class="wrap" id="download">
   <h2>Download</h2>
+  <p id="dl-status" class="meta" aria-live="polite">Every file is on the <a href="https://github.com/DimazzzZ/namehold-wallet/releases/latest">Releases page</a>.</p>
   <div class="table-scroll"><table>
-    <thead><tr><th>System</th><th>File</th></tr></thead>
+    <thead><tr><th scope="col">System</th><th scope="col">File</th><th scope="col">Size</th></tr></thead>
     <tbody>
-      <tr><td>macOS</td><td><code>Namehold_&lt;version&gt;_universal.dmg</code></td></tr>
-      <tr><td>Windows</td><td><code>Namehold_&lt;version&gt;_x64-setup.exe</code></td></tr>
-      <tr><td>Linux</td><td><code>Namehold_&lt;version&gt;_amd64.AppImage</code>, <code>.deb</code> or <code>.rpm</code></td></tr>
+      <tr data-file="mac"><td>macOS</td><td><a href="https://github.com/DimazzzZ/namehold-wallet/releases/latest"><code class="file-name">Namehold_&lt;version&gt;_universal.dmg</code></a></td><td class="file-size"></td></tr>
+      <tr data-file="windows"><td>Windows</td><td><a href="https://github.com/DimazzzZ/namehold-wallet/releases/latest"><code class="file-name">Namehold_&lt;version&gt;_x64-setup.exe</code></a></td><td class="file-size"></td></tr>
+      <tr data-file="appimage"><td>Linux, any distribution</td><td><a href="https://github.com/DimazzzZ/namehold-wallet/releases/latest"><code class="file-name">Namehold_&lt;version&gt;_amd64.AppImage</code></a></td><td class="file-size"></td></tr>
+      <tr data-file="deb"><td>Debian, Ubuntu</td><td><a href="https://github.com/DimazzzZ/namehold-wallet/releases/latest"><code class="file-name">Namehold_&lt;version&gt;_amd64.deb</code></a></td><td class="file-size"></td></tr>
+      <tr data-file="rpm"><td>Fedora, RHEL</td><td><a href="https://github.com/DimazzzZ/namehold-wallet/releases/latest"><code class="file-name">Namehold-&lt;version&gt;-1.x86_64.rpm</code></a></td><td class="file-size"></td></tr>
     </tbody>
   </table></div>
-  <div class="actions"><a class="btn primary" href="https://github.com/DimazzzZ/namehold-wallet/releases/latest">Get it from GitHub Releases</a></div>
-  <p class="note"><strong>Beta software.</strong> Transactions, transfers and name sales are irreversible. Test with one name or a small amount first. The macOS and Windows builds are not code-signed, so check your download:</p>
-  <pre>shasum -a 256 -c SHA256SUMS --ignore-missing</pre>
-  <p class="meta">The <a href="https://github.com/DimazzzZ/namehold-wallet#macos">README</a> shows how to verify the signature and the build's origin too.</p>
+  <p class="note"><strong>Beta software.</strong> Transactions, transfers and name sales are irreversible. Test with one name or a small amount first. The macOS and Windows builds are not code-signed, so check your download.</p>
+  <h3>Check your download</h3>
+  <p>Save <a data-file="sums" href="https://github.com/DimazzzZ/namehold-wallet/releases/latest">SHA256SUMS</a> and <a data-file="sumsSig" href="https://github.com/DimazzzZ/namehold-wallet/releases/latest">its signature</a> next to the file, then run:</p>
+  <div class="code"><pre id="verify-sum">shasum -a 256 -c SHA256SUMS --ignore-missing</pre><button type="button" class="copy" data-copy="verify-sum">Copy</button></div>
+  <p class="meta">The <a href="https://github.com/DimazzzZ/namehold-wallet#macos">README</a> also shows how to check the signature and the build's origin. <a href="https://github.com/DimazzzZ/namehold-wallet/blob/main/CHANGELOG.md">What changed in each version</a>.</p>
 </section>
 </main>
 
@@ -203,5 +234,11 @@ footer .wrap { padding-block: 22px; display: flex; flex-wrap: wrap; gap: 8px 18p
   <span>Namehold is independent and open source, MIT license.</span>
   <span><a href="https://github.com/DimazzzZ/namehold-wallet/issues">Report a problem</a></span>
 </div></footer>
+
+<dialog id="zoom" aria-label="Screenshot">
+  <figure><img src="" alt=""><figcaption></figcaption></figure>
+  <button type="button" class="btn">Close</button>
+</dialog>
+<script src="site.js"></script>
 </body>
 </html>
