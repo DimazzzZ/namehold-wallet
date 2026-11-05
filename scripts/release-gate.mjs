@@ -9,12 +9,12 @@
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-// Name prefixes: the Rust tests job's name carries a test count. A job renamed
+// Name prefixes, so commits from before a job name changed still pass. A job renamed
 // without updating this stops every release, and a test reads the workflows.
 export const REQUIRED_CHECKS = [
   "Frontend (typecheck",
   "Rust lint (",
-  "Rust tests (",
+  "Rust tests",
   "Validate workflow YAML",
   "E2E Tests (",
 ];

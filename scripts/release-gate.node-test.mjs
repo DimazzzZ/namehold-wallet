@@ -14,7 +14,7 @@ const WORKFLOWS = fileURLToPath(new URL("../.github/workflows/", import.meta.url
 const green = [
   "Frontend (typecheck · build · test)",
   "Rust lint (fmt · clippy)",
-  "Rust tests (926 tests via nextest)",
+  "Rust tests",
   "Validate workflow YAML",
   "E2E Tests (Tauri App)",
 ].map((name) => ({ name, conclusion: "success" }));

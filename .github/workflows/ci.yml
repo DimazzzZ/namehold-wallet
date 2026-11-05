@@ -158,7 +158,7 @@ jobs:
         run: sccache --show-stats
 
   rust-test:
-    name: Rust tests (926 tests via nextest)
+    name: Rust tests
     runs-on: ubuntu-latest
     # A single flaky apt mirror or a stuck runner step must not eat a 6-hour
     # slot — bound the whole job so a hang fails fast and can be re-run.
