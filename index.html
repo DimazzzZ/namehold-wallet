@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="favicon.png">
+<title>Namehold</title>
+<meta name="description" content="A non-custodial desktop wallet for Handshake names and HNS.">
+<style>
+:root { color-scheme: light; }
+body { margin: 0; }
+img { max-width: 100%; }
+/* Layout concept: one long column in the app's own gray and blue. The name's life on chain is the page's signature. */
+:root {
+  --bg: #f3f4f6; --surface: #ffffff; --ink: #111827; --body: #374151; --muted: #6b7280;
+  --line: #e5e7eb; --accent: #2563eb; --accent-ink: #ffffff; --accent-soft: #eff6ff;
+  --warn-bg: #fffbeb; --warn-line: #fde68a; --warn-ink: #92400e; --code-bg: #111827; --code-ink: #e5e7eb;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f1420; --surface: #171d2b; --ink: #f3f4f6; --body: #cbd2dc; --muted: #94a0b1;
+  --line: #2a3344; --accent: #6b9bff; --accent-ink: #0b1220; --accent-soft: #1a2640;
+  --warn-bg: #2b2212; --warn-line: #5c4714; --warn-ink: #f4d58a; --code-bg: #0a0e16; --code-ink: #dbe2ec; color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #0f1420; --surface: #171d2b; --ink: #f3f4f6; --body: #cbd2dc; --muted: #94a0b1;
+  --line: #2a3344; --accent: #6b9bff; --accent-ink: #0b1220; --accent-soft: #1a2640;
+  --warn-bg: #2b2212; --warn-line: #5c4714; --warn-ink: #f4d58a; --code-bg: #0a0e16; --code-ink: #dbe2ec; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--body); font: 16px/1.6 var(--sans); }
+.wrap { max-width: 1080px; margin-inline: auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+h1, h2, h3 { color: var(--ink); margin: 0; text-wrap: balance; }
+p { margin: 0; }
+.mono { font-family: var(--mono); }
+
+header .wrap { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding-block: 18px; }
+.brand { font-weight: 700; color: var(--ink); font-size: 17px; }
+.brand span { font-family: var(--mono); color: var(--accent); font-weight: 600; }
+nav { display: flex; gap: 18px; font-size: 14px; flex-wrap: wrap; }
+nav a { color: var(--body); text-decoration: none; }
+nav a:hover { color: var(--accent); }
+
+.hero { padding-block: 40px 28px; display: flex; flex-direction: column; gap: 18px; }
+.hero h1 { font-family: var(--mono); font-size: clamp(34px, 6.4vw, 64px); line-height: 1.08; letter-spacing: -0.03em; font-weight: 600; }
+.hero h1 em { font-style: normal; color: var(--accent); }
+.lede { font-size: clamp(17px, 2vw, 20px); max-width: 38em; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.btn { display: inline-block; padding: 10px 18px; border-radius: 4px; font-weight: 500; font-size: 15px; text-decoration: none; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.meta { font-size: 13px; color: var(--muted); }
+
+.shot { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+
+.life { margin-block: 44px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 22px; display: flex; flex-direction: column; gap: 14px; }
+.life h2 { font-size: 20px; }
+.track { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0; list-style: none; margin: 0; padding: 0; }
+.track li { padding: 10px 14px 10px 0; border-top: 3px solid var(--line); min-width: 0; }
+.track li.here { border-top-color: var(--accent); }
+.track b { display: block; font-family: var(--mono); color: var(--ink); font-weight: 600; font-size: 14px; }
+.track span { font-size: 13px; color: var(--muted); }
+
+.feature { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 8fr); gap: 32px; align-items: center; margin-block: 48px; }
+.feature:nth-of-type(even) { grid-template-columns: minmax(0, 8fr) minmax(0, 5fr); }
+.feature:nth-of-type(even) .text { order: 2; }
+.feature h2 { font-size: 24px; margin-bottom: 10px; }
+.feature ul { margin: 12px 0 0; padding-left: 18px; font-size: 15px; display: grid; gap: 4px; }
+@media (max-width: 760px) { .feature, .feature:nth-of-type(even) { grid-template-columns: minmax(0, 1fr); gap: 16px; } .feature:nth-of-type(even) .text { order: 0; } }
+
+.band { background: var(--surface); border-block: 1px solid var(--line); margin-top: 56px; }
+.band .wrap { padding-block: 44px; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 32px; }
+.band h2 { font-size: 22px; margin-bottom: 10px; }
+.facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; font-size: 15px; }
+.facts b { color: var(--ink); }
+
+#download { padding-block: 48px; display: flex; flex-direction: column; gap: 18px; }
+#download h2 { font-size: 24px; }
+.table-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; background: var(--surface); border: 1px solid var(--line); font-size: 14px; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+td:first-child { color: var(--ink); font-weight: 500; white-space: nowrap; }
+td code { font-family: var(--mono); font-size: 13px; }
+.note { background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--warn-ink); border-radius: 6px; padding: 10px 14px; font-size: 14px; }
+pre { background: var(--code-bg); color: var(--code-ink); font: 13px/1.6 var(--mono); padding: 14px 16px; border-radius: 6px; overflow-x: auto; margin: 0; }
+footer { border-top: 1px solid var(--line); }
+footer .wrap { padding-block: 22px; display: flex; flex-wrap: wrap; gap: 8px 18px; justify-content: space-between; font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header><div class="wrap">
+  <div class="brand">Namehold <span>beta</span></div>
+  <nav>
+    <a href="#names">Names</a>
+    <a href="#market">Market</a>
+    <a href="#keys">Your keys</a>
+    <a href="#download">Download</a>
+    <a href="https://github.com/DimazzzZ/namehold-wallet">GitHub</a>
+  </nav>
+</div></header>
+
+<main>
+<section class="wrap hero">
+  <h1>Own your <em>.names</em>.<br>Keep your keys.</h1>
+  <p class="lede">Namehold is a desktop wallet for Handshake: hold HNS, win and renew top-level names, edit their DNS, and buy or sell them on the Shakedex market. Your recovery phrase stays on your computer.</p>
+  <div class="actions">
+    <a class="btn primary" href="#download">Download</a>
+    <a class="btn" href="https://github.com/DimazzzZ/namehold-wallet">Read the source</a>
+    <span class="meta">macOS, Windows, Linux · open source, MIT</span>
+  </div>
+  <img class="shot" src="img/wallet.jpg" width="1500" height="1032" alt="The Namehold wallet page: spendable balance, Send and Receive, and the names that need attention">
+</section>
+
+<section class="wrap"><div class="life">
+  <h2>Every step of a name, in one place</h2>
+  <ol class="track">
+    <li class="here"><b>open</b><span>Start the auction</span></li>
+    <li class="here"><b>bid</b><span>About 5 days, sealed</span></li>
+    <li class="here"><b>reveal</b><span>About 10 days. The app reminds you</span></li>
+    <li class="here"><b>register</b><span>Win it, set its DNS</span></li>
+    <li class="here"><b>renew</b><span>Hundreds at once, if you hold them</span></li>
+    <li class="here"><b>transfer</b><span>Send it, or sell it</span></li>
+  </ol>
+</div></section>
+
+<div class="wrap">
+  <section class="feature" id="names">
+    <div class="text">
+      <h2>All your names, and what each one needs next</h2>
+      <p>The Names page shows every name you own, bid on or watch, with its next step and how long you have.</p>
+      <ul>
+        <li>Bid, reveal, renew, finalize or transfer in batches</li>
+        <li>Edit DNS records with a typed editor</li>
+        <li>A note on names written with look-alike letters</li>
+      </ul>
+    </div>
+    <img class="shot" src="img/names.jpg" width="1500" height="1032" loading="lazy" alt="The Names page: a table of names with status, countdowns and filters">
+  </section>
+
+  <section class="feature" id="market">
+    <div class="text">
+      <h2>Buy and sell names without a middleman</h2>
+      <p>Namehold trades through Shakedex. Before you buy, your own node checks each listing against the chain.</p>
+      <ul>
+        <li>Buy Now and reverse auctions</li>
+        <li>List your names and lower a price later</li>
+        <li>See each purchase through to finalize</li>
+      </ul>
+    </div>
+    <img class="shot" src="img/market.jpg" width="1500" height="1032" loading="lazy" alt="The Market page: Shakedex listings checked by your node, and your purchases on their way">
+  </section>
+
+  <section class="feature">
+    <div class="text">
+      <h2>One page for each name</h2>
+      <p>See where a name stands, what happened to it and what you can do with it now, including a flag for names also applied for in ICANN's 2026 round.</p>
+    </div>
+    <img class="shot" src="img/name.jpg" width="1500" height="1032" loading="lazy" alt="A name's page: its timeline, details and actions">
+  </section>
+</div>
+
+<section class="band" id="keys"><div class="wrap">
+  <div>
+    <h2>Your keys stay with you</h2>
+    <ul class="facts">
+      <li><b>Encrypted on your computer.</b> A new mainnet wallet needs a passphrase of at least 8 characters.</li>
+      <li><b>Secrets stay in a secure window.</b> Your phrase and passphrase are typed outside the main app window.</li>
+      <li><b>Ledger support.</b> With a Ledger Nano, the device signs and you confirm on its screen.</li>
+    </ul>
+  </div>
+  <div>
+    <h2>You choose whom to trust</h2>
+    <ul class="facts">
+      <li><b>Your own node.</b> Run hsd from the app, or point it at one you trust. Sending needs a node.</li>
+      <li><b>Read without one.</b> Check balances and names through an explorer while you get set up.</li>
+      <li><b>Open source.</b> Read the code and check every release file against its signature.</li>
+    </ul>
+  </div>
+</div></section>
+
+<section class="wrap" id="download">
+  <h2>Download</h2>
+  <div class="table-scroll"><table>
+    <thead><tr><th>System</th><th>File</th></tr></thead>
+    <tbody>
+      <tr><td>macOS</td><td><code>Namehold_&lt;version&gt;_universal.dmg</code></td></tr>
+      <tr><td>Windows</td><td><code>Namehold_&lt;version&gt;_x64-setup.exe</code></td></tr>
+      <tr><td>Linux</td><td><code>Namehold_&lt;version&gt;_amd64.AppImage</code>, <code>.deb</code> or <code>.rpm</code></td></tr>
+    </tbody>
+  </table></div>
+  <div class="actions"><a class="btn primary" href="https://github.com/DimazzzZ/namehold-wallet/releases/latest">Get it from GitHub Releases</a></div>
+  <p class="note"><strong>Beta software.</strong> Transactions, transfers and name sales are irreversible. Test with one name or a small amount first. The macOS and Windows builds are not code-signed, so check your download:</p>
+  <pre>shasum -a 256 -c SHA256SUMS --ignore-missing</pre>
+  <p class="meta">The <a href="https://github.com/DimazzzZ/namehold-wallet#macos">README</a> shows how to verify the signature and the build's origin too.</p>
+</section>
+</main>
+
+<footer><div class="wrap">
+  <span>Namehold is independent and open source, MIT license.</span>
+  <span><a href="https://github.com/DimazzzZ/namehold-wallet/issues">Report a problem</a></span>
+</div></footer>
+</body>
+</html>
