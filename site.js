@@ -11,6 +11,8 @@
     sums: /^SHA256SUMS$/,
     sumsSig: /^SHA256SUMS\.sig$/,
   };
+  // These names end up in commands people paste into a terminal.
+  var SAFE_NAME = /^[\w.-]+$/;
   var RELEASE_FILES = "https://github.com/DimazzzZ/namehold-wallet/releases/download/";
 
   function detectSystem(userAgent) {
@@ -29,7 +31,7 @@
     Object.keys(FILES).forEach(function (key) {
       var found = assets.filter(function (a) {
         return (
-          a && typeof a.name === "string" && FILES[key].test(a.name) &&
+          a && typeof a.name === "string" && SAFE_NAME.test(a.name) && FILES[key].test(a.name) &&
           typeof a.browser_download_url === "string" &&
           a.browser_download_url.indexOf(RELEASE_FILES) === 0
         );
@@ -45,7 +47,34 @@
 
   var LABELS = { mac: "macOS", windows: "Windows", appimage: "Linux" };
 
+  function wireCopy() {
+    document.querySelectorAll("[data-copy]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        var text = document.getElementById(button.getAttribute("data-copy"));
+        var done = function (label) {
+          button.textContent = label;
+          setTimeout(function () { button.textContent = "Copy"; }, 1800);
+        };
+        var select = function () {
+          var range = document.createRange();
+          range.selectNodeContents(text);
+          var selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          done("Press Cmd/Ctrl+C");
+        };
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(text.textContent).then(function () { done("Copied"); }, select);
+        } else {
+          select();
+        }
+      });
+    });
+  }
+
   function start() {
+    wireCopy();
+    if (!document.getElementById("dl-hero")) return;
     var hero = document.getElementById("dl-hero");
     var heroMeta = document.getElementById("dl-hero-meta");
     var status = document.getElementById("dl-status");
@@ -88,29 +117,6 @@
       .catch(function () {
         status.textContent = "Couldn't load the latest release from GitHub. These links open the Releases page, where every file is listed.";
       });
-
-    document.querySelectorAll("[data-copy]").forEach(function (button) {
-      button.addEventListener("click", function () {
-        var text = document.getElementById(button.getAttribute("data-copy"));
-        var done = function (label) {
-          button.textContent = label;
-          setTimeout(function () { button.textContent = "Copy"; }, 1800);
-        };
-        var select = function () {
-          var range = document.createRange();
-          range.selectNodeContents(text);
-          var selection = window.getSelection();
-          selection.removeAllRanges();
-          selection.addRange(range);
-          done("Press Cmd/Ctrl+C");
-        };
-        if (navigator.clipboard) {
-          navigator.clipboard.writeText(text.textContent).then(function () { done("Copied"); }, select);
-        } else {
-          select();
-        }
-      });
-    });
 
     var steps = document.querySelectorAll(".track button");
     var panel = document.getElementById("step-detail");

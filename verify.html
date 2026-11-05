@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="favicon.png">
+<title>Check your download · Namehold</title>
+<meta name="description" content="Check that a Namehold download is the file its release workflow built and signed.">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header><div class="wrap">
+  <a class="brand" href="./" style="text-decoration:none">Namehold <span>beta</span></a>
+  <nav>
+    <a href="./#download">Download</a>
+    <a href="https://github.com/DimazzzZ/namehold-wallet/blob/main/docs/USER_MANUAL.md">Manual</a>
+    <a href="https://github.com/DimazzzZ/namehold-wallet">GitHub</a>
+  </nav>
+</div></header>
+<main class="wrap">
+  <section class="page-head">
+    <h1>Check your download</h1>
+    <p class="lede">A wallet holds your money, so check the file before you open it. The macOS and Windows builds are not code-signed, so your system can't tell you who made them. These three checks can.</p>
+  </section>
+
+  <div class="picker">
+    <label for="file-pick">File you downloaded
+      <select id="file-pick">
+        <option value="mac">macOS</option>
+        <option value="windows">Windows</option>
+        <option value="appimage">Linux AppImage</option>
+        <option value="deb">Debian, Ubuntu</option>
+        <option value="rpm">Fedora, RHEL</option>
+      </select>
+    </label>
+    <label for="shell-pick">Your terminal
+      <select id="shell-pick">
+        <option value="unix">macOS or Linux</option>
+        <option value="windows">Windows PowerShell</option>
+      </select>
+    </label>
+    <p class="meta">Get <a id="file-link" href="https://github.com/DimazzzZ/namehold-wallet/releases/latest"><span class="filename">the file</span></a>, <a data-file="sums" href="https://github.com/DimazzzZ/namehold-wallet/releases/latest">SHA256SUMS</a> and <a data-file="sumsSig" href="https://github.com/DimazzzZ/namehold-wallet/releases/latest">SHA256SUMS.sig</a>, and put them in one folder.</p>
+  </div>
+
+  <section class="check">
+    <h2>1. Is this the file the release lists?</h2>
+    <p>This catches a damaged or swapped download. It takes a few seconds and needs nothing to install.</p>
+    <div class="code" data-shell="unix"><pre id="sum-unix">shasum -a 256 -c SHA256SUMS --ignore-missing</pre><button type="button" class="copy" data-copy="sum-unix">Copy</button></div>
+    <p class="result" data-shell="unix">You should see <code><span class="filename">Namehold_&lt;version&gt;_universal.dmg</span>: OK</code>. On Linux without <code>shasum</code>, use <code>sha256sum -c SHA256SUMS --ignore-missing</code>.</p>
+    <div class="code" data-shell="windows"><pre id="sum-win">$h = (Get-FileHash .\<span class="filename">Namehold_&lt;version&gt;_universal.dmg</span> -Algorithm SHA256).Hash.ToLower()
+Select-String -Path SHA256SUMS -SimpleMatch "$h  <span class="filename">Namehold_&lt;version&gt;_universal.dmg</span>"</pre><button type="button" class="copy" data-copy="sum-win">Copy</button></div>
+    <p class="result" data-shell="windows">You should see one line naming the file. No line means the file doesn't match.</p>
+  </section>
+
+  <section class="check">
+    <h2>2. Is the list signed by Namehold's key?</h2>
+    <p>This shows that the list itself came from the release, signed with the key that signs updates. You need <a href="https://jedisct1.github.io/minisign/">minisign</a>; on macOS, <code class="inline">brew install minisign</code>.</p>
+    <div class="code" data-shell="unix"><pre id="sig-unix">curl -s https://raw.githubusercontent.com/DimazzzZ/namehold-wallet/main/src-tauri/tauri.conf.json \
+  | jq -r .plugins.updater.pubkey | base64 -d &gt; namehold.pub
+base64 -d &lt; SHA256SUMS.sig &gt; SHA256SUMS.minisig
+minisign -V -m SHA256SUMS -x SHA256SUMS.minisig -p namehold.pub</pre><button type="button" class="copy" data-copy="sig-unix">Copy</button></div>
+    <div class="code" data-shell="windows"><pre id="sig-win">$conf = (Invoke-WebRequest https://raw.githubusercontent.com/DimazzzZ/namehold-wallet/main/src-tauri/tauri.conf.json -UseBasicParsing).Content | ConvertFrom-Json
+[IO.File]::WriteAllBytes("$PWD\namehold.pub", [Convert]::FromBase64String($conf.plugins.updater.pubkey))
+[IO.File]::WriteAllBytes("$PWD\SHA256SUMS.minisig", [Convert]::FromBase64String((Get-Content SHA256SUMS.sig -Raw)))
+minisign -V -m SHA256SUMS -x SHA256SUMS.minisig -p namehold.pub</pre><button type="button" class="copy" data-copy="sig-win">Copy</button></div>
+    <p class="result">minisign should report that the signature is verified. The public key is read from this project's source, and its ID is <code>33AE02F8757D1609</code>.</p>
+  </section>
+
+  <section class="check">
+    <h2>3. Was it built by this repository?</h2>
+    <p>This ties the file to the release workflow on GitHub. You need the <a href="https://cli.github.com/">GitHub CLI</a>, signed in to any account.</p>
+    <div class="code"><pre id="att">gh attestation verify <span class="filename">Namehold_&lt;version&gt;_universal.dmg</span> --repo DimazzzZ/namehold-wallet</pre><button type="button" class="copy" data-copy="att">Copy</button></div>
+    <p class="result">The command should finish without an error. A changed file is refused.</p>
+  </section>
+
+  <section class="check">
+    <h2>What this does and doesn't tell you</h2>
+    <ul>
+      <li>Passing means the file is what the release workflow built and signed. It doesn't prove the code is free of bugs: Namehold is beta software, and the <a href="https://github.com/DimazzzZ/namehold-wallet">source</a> is there to read.</li>
+      <li>If a check fails, don't open the file. Download it again from <a href="https://github.com/DimazzzZ/namehold-wallet/releases/latest">GitHub Releases</a>, and <a href="https://github.com/DimazzzZ/namehold-wallet/issues">tell us</a> if it still fails.</li>
+      <li>macOS may refuse to open the app at first. See <a href="https://github.com/DimazzzZ/namehold-wallet#macos">the README</a> for what to do, and only after these checks pass.</li>
+    </ul>
+  </section>
+</main>
+<footer><div class="wrap">
+  <span>Namehold is independent and open source, MIT license.</span>
+  <span><a href="./">Home</a></span>
+</div></footer>
+<script src="site.js"></script>
+<script src="verify.js"></script>
+</body>
+</html>

@@ -23,6 +23,8 @@ assert.equal(Object.keys(files).length, 7);
 // A link that leaves this repository's releases is never used.
 assert.deepEqual(pickFiles({ assets: [asset("Namehold_0.7.0_universal.dmg", "https://evil.example/x.dmg")] }), {});
 assert.deepEqual(pickFiles({ assets: [asset("Namehold_0.7.0_universal.dmg", "https://github.com/someone/else/releases/download/x.dmg")] }), {});
+// A name goes into commands people paste, so nothing but plain file characters.
+assert.deepEqual(pickFiles({ assets: [asset("x;rm -rf ~_universal.dmg")] }), {});
 assert.deepEqual(pickFiles(null), {});
 assert.equal(formatSize(25338771), "24 MB");
 assert.equal(formatSize(undefined), "");
