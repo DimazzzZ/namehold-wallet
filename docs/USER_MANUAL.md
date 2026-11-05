@@ -138,6 +138,15 @@ wallet passphrase.
 
 The passphrase is **never** stored on disk — you re-enter it each session. A mainnet wallet needs a passphrase of at least 8 characters: it is what keeps the recovery phrase safe in a copy of the wallet's files (a backup, another program on this computer). A testnet or regtest wallet may be created without one; its phrase is then encrypted under a key that is part of the app, which protects nothing, and it unlocks without a prompt. A mainnet wallet created without a passphrase by an earlier version keeps working, but is just as exposed: move its funds to a new wallet with a passphrase.
 
+### A mainnet wallet without a passphrase
+
+A mainnet wallet created before 0.7.0 may have no passphrase. It still opens, but its recovery phrase is encrypted under a key that is part of the public source, so anyone with a copy of the wallet's files, including an old backup, can take its funds. Importing the same phrase again with a passphrase does not help, because the old copies still reveal the phrase. Use a new recovery phrase:
+
+1. Create a new wallet with a passphrase and write down its recovery phrase.
+2. Send your coins to the new wallet.
+3. Transfer your names to it and finalize each transfer after the lockup (about 2 days on mainnet).
+4. Keep the old wallet until its open bids are revealed and its listings are closed, then delete it.
+
 ---
 
 ## 6. Write capability

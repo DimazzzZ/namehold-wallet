@@ -15,6 +15,9 @@
 
 ## [Unreleased]
 
+### Security
+- **A mainnet wallet without a passphrase says so.** The Wallet page warns that anyone with a copy of its files, including an old backup, can take its funds, and links to the steps for moving to a new wallet.
+
 ## [0.7.0] - 2026-11-04
 
 > **Highlights:** a redesigned app, with one Names page, a page per name and a wallet that opens on your balance; a security audit's fixes, so settings that decide whom the wallet trusts and what you sign are confirmed in the secure window; batch actions and renewals for wallets with hundreds of names; and warnings for look-alike names, unknown explorers and first sends. **Saving a node URL now needs https unless the node is on this computer, the node the app starts now requires an API key, and values saved earlier, except the hsd program, are not re-checked, so look over Settings once after updating. On Windows, set a node API key in Settings before starting a node from the app.**
