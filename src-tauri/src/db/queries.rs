@@ -869,6 +869,22 @@ pub fn set_active_profile(conn: &rusqlite::Connection, profile_id: &str) -> Resu
     set_setting(conn, "active_wallet_profile_id", profile_id)
 }
 
+/// Change a wallet profile's label; `NotFound` when there is no such profile.
+pub fn rename_wallet_profile(
+    conn: &rusqlite::Connection,
+    id: &str,
+    label: &str,
+) -> Result<(), AppError> {
+    let changed = conn.execute(
+        "UPDATE wallet_profiles SET label = ?2 WHERE id = ?1",
+        params![id, label],
+    )?;
+    if changed == 0 {
+        return Err(AppError::NotFound(format!("wallet profile {id}")));
+    }
+    Ok(())
+}
+
 /// Insert a new wallet profile. `receive_address` is set later (after the first
 /// address is derived); depths start at 0.
 #[allow(clippy::too_many_arguments)]

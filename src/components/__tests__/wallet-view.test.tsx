@@ -626,6 +626,74 @@ describe("WalletView multi-wallet management", () => {
     });
   });
 
+  describe("renaming a wallet", () => {
+    const openManager = async () => {
+      invokeMock.mockImplementation(
+        routeInvoke({ profiles: [{ ...baseProfile, active: true }, secondProfile] }),
+      );
+      render(<WithShell />, { wrapper: wrapper() });
+      await screen.findByTestId("receive-open");
+      fireEvent.click(screen.getByTestId("wallet-switcher"));
+      fireEvent.click(screen.getByRole("menuitem", { name: /Manage wallets/i }));
+      await screen.findByText("Trading");
+    };
+    const renames = () => invokeMock.mock.calls.filter((c) => c[0] === "rename_wallet_profile");
+
+    it("saves the new name for that wallet", async () => {
+      await openManager();
+      fireEvent.click(screen.getAllByRole("button", { name: "Rename" })[1]!);
+      const input = screen.getByRole("textbox", { name: "Wallet name" });
+      expect(input).toHaveValue("Trading");
+      fireEvent.change(input, { target: { value: "  Long term  " } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() =>
+        expect(renames()[0]?.[1]).toEqual({ walletProfileId: "p2", label: "Long term" }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole("textbox", { name: "Wallet name" })).toBeNull(),
+      );
+    });
+
+    it("Save waits for a real change", async () => {
+      await openManager();
+      fireEvent.click(screen.getAllByRole("button", { name: "Rename" })[1]!);
+      const input = screen.getByRole("textbox", { name: "Wallet name" });
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+      fireEvent.change(input, { target: { value: "   " } });
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+      fireEvent.submit(input);
+      expect(renames()).toHaveLength(0);
+    });
+
+    it("Escape leaves the name as it was and keeps the dialog open", async () => {
+      await openManager();
+      fireEvent.click(screen.getAllByRole("button", { name: "Rename" })[1]!);
+      const input = screen.getByRole("textbox", { name: "Wallet name" });
+      fireEvent.change(input, { target: { value: "Changed" } });
+      fireEvent.keyDown(input, { key: "Escape" });
+      expect(screen.queryByRole("textbox", { name: "Wallet name" })).toBeNull();
+      expect(screen.getByText("Trading")).toBeInTheDocument();
+      expect(renames()).toHaveLength(0);
+    });
+
+    it("a refusal stays on screen with the text kept", async () => {
+      await openManager();
+      const route = invokeMock.getMockImplementation()!;
+      invokeMock.mockImplementation((cmd: string, args: unknown) =>
+        cmd === "rename_wallet_profile"
+          ? Promise.reject("A wallet name can be at most 64 characters.")
+          : route(cmd, args),
+      );
+      fireEvent.click(screen.getAllByRole("button", { name: "Rename" })[1]!);
+      const input = screen.getByRole("textbox", { name: "Wallet name" });
+      fireEvent.change(input, { target: { value: "Too long" } });
+      fireEvent.submit(input);
+      await waitFor(() => expect(renames()).toHaveLength(1));
+      await waitFor(() => expect(input).toHaveValue("Too long"));
+      expect(screen.getByRole("textbox", { name: "Wallet name" })).toBeInTheDocument();
+    });
+  });
+
   it("deleting the active wallet auto-switches to a remaining one", async () => {
     // The secure window confirms a delete (backend); the page asks nothing.
     const nativeConfirm = vi.spyOn(window, "confirm");

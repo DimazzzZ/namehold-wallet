@@ -778,6 +778,88 @@ pub async fn set_active_wallet_profile(
     })
 }
 
+/// The longest wallet name, in characters.
+const MAX_WALLET_LABEL_CHARS: usize = 64;
+
+/// A wallet name as stored: trimmed, not empty, on one line. The secure window
+/// shows it and asks for it to be typed before a delete, so it stays something
+/// a person can read and type.
+fn clean_wallet_label(raw: &str) -> Result<String, AppError> {
+    let label = raw.trim();
+    if label.is_empty() {
+        return Err(AppError::InvalidInput("A wallet needs a name.".into()));
+    }
+    if label.chars().count() > MAX_WALLET_LABEL_CHARS {
+        return Err(AppError::InvalidInput(format!(
+            "A wallet name can be at most {MAX_WALLET_LABEL_CHARS} characters."
+        )));
+    }
+    if label.chars().any(char::is_control) {
+        return Err(AppError::InvalidInput(
+            "A wallet name can't contain line breaks or control characters.".into(),
+        ));
+    }
+    Ok(label.to_string())
+}
+
+/// What the secure window shows before a wallet is renamed.
+pub(crate) fn rename_profile_details(
+    profile: &WalletProfileSummary,
+    new_label: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "rows": [
+            { "label": "Action", "value": "Rename this wallet" },
+            { "label": "Current name", "value": profile.label },
+            { "label": "New name", "value": new_label },
+            { "label": "Network", "value": profile.network },
+            { "label": "Kind", "value": kind_label(profile) },
+            { "label": "Fingerprint", "value": fingerprint(&profile.account_xpub) },
+        ],
+        "confirmLabel": "Rename wallet",
+    })
+}
+
+/// Rename a wallet profile once the user has confirmed it in the secure
+/// window. The name is what that window shows and asks to be typed before a
+/// delete, so a compromised webview must not be able to swap two wallets'
+/// names with a call. Only the label changes: keys, addresses and history are
+/// keyed by the profile's id. Declined or closed: `UserRejected`, nothing
+/// changed. The same name again asks nothing.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn rename_wallet_profile<R: Runtime>(
+    app: AppHandle<R>,
+    wallet_profile_id: String,
+    label: String,
+) -> Result<WalletProfileSummary, AppError> {
+    let label = clean_wallet_label(&label)?;
+    let profile = load_profile(&app, &wallet_profile_id)?;
+    if profile.label == label {
+        return Ok(profile);
+    }
+    let answer = prompt_secure(
+        &app,
+        SecurePromptRequest {
+            mode: "confirm".to_string(),
+            title: "Rename wallet".to_string(),
+            message: "Check that this is the wallet to rename.".to_string(),
+            details: Some(rename_profile_details(&profile, &label)),
+            ..Default::default()
+        },
+    )
+    .await?;
+    if !answer.confirmed {
+        return Err(AppError::UserRejected);
+    }
+    {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::rename_wallet_profile(&conn, &wallet_profile_id, &label)?;
+    }
+    load_profile(&app, &wallet_profile_id)
+}
+
 /// The Warning row of a delete that erases a stored recovery phrase.
 pub(crate) const DELETE_SEED_WARNING: &str = "This erases the encrypted recovery phrase stored on \
      this device. Without the recovery phrase written down, this wallet's funds and names are lost \

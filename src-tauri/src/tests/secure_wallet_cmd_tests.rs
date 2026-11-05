@@ -386,6 +386,114 @@ async fn test_set_active_wallet_profile() {
     assert_eq!(summary.id, "wp1");
 }
 
+fn rename_test_app() -> tauri::App<tauri::test::MockRuntime> {
+    let state = create_full_test_state();
+    insert_profile_of_kind(&state, "wp1", "Old", "watch_only_xpub", true);
+    insert_profile_of_kind(&state, "wp2", "Other", "watch_only_xpub", true);
+    mock_app_with(state)
+}
+
+fn label_of(app: &tauri::App<tauri::test::MockRuntime>, id: &str) -> String {
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().unwrap();
+    crate::db::queries::get_wallet_profile(&conn, id)
+        .unwrap()
+        .unwrap()
+        .label
+}
+
+/// The secure window shows both names and which wallet it is, and only that
+/// wallet's label changes.
+#[tokio::test]
+async fn renaming_asks_the_secure_window_and_changes_only_the_label() {
+    let app = rename_test_app();
+    push_test_answer(confirm_answer(true, None));
+    let summary = secure_wallet::rename_wallet_profile(
+        app.handle().clone(),
+        "wp1".into(),
+        "  Savings  ".into(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (summary.id.as_str(), summary.label.as_str()),
+        ("wp1", "Savings")
+    );
+    assert_eq!(summary.account_xpub, "xpub_wp1");
+    assert_eq!(label_of(&app, "wp2"), "Other");
+
+    let requests = take_test_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].mode, "confirm");
+    assert_eq!(
+        requests[0].details.as_ref().unwrap()["confirmLabel"],
+        "Rename wallet"
+    );
+    let rows = rows_of(&requests[0]);
+    assert_eq!(row(&rows, "Current name"), Some("Old"));
+    assert_eq!(row(&rows, "New name"), Some("Savings"));
+    assert_eq!(
+        row(&rows, "Fingerprint"),
+        Some(secure_wallet::fingerprint("xpub_wp1").as_str())
+    );
+}
+
+/// A webview cannot change a name the secure window shows with a call alone.
+#[tokio::test]
+async fn renaming_declined_keeps_the_name() {
+    let app = rename_test_app();
+    push_test_answer(confirm_answer(false, None));
+    let err =
+        secure_wallet::rename_wallet_profile(app.handle().clone(), "wp1".into(), "New".into())
+            .await
+            .unwrap_err();
+    assert!(matches!(err, AppError::UserRejected), "{err:?}");
+    assert_eq!(label_of(&app, "wp1"), "Old");
+    let _ = take_test_requests();
+}
+
+#[tokio::test]
+async fn renaming_refuses_a_bad_label_without_asking() {
+    let app = rename_test_app();
+    for bad in ["", "   ", "two\nlines", "bell\u{7}", &"x".repeat(65)] {
+        let err =
+            secure_wallet::rename_wallet_profile(app.handle().clone(), "wp1".into(), bad.into())
+                .await
+                .unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)), "{bad:?}: {err}");
+    }
+    assert!(take_test_requests().is_empty());
+    assert_eq!(label_of(&app, "wp1"), "Old");
+    // 64 characters, not bytes: a name in another alphabet is not cut shorter.
+    let long = "\u{44f}".repeat(64);
+    push_test_answer(confirm_answer(true, None));
+    secure_wallet::rename_wallet_profile(app.handle().clone(), "wp1".into(), long.clone())
+        .await
+        .unwrap();
+    let _ = take_test_requests();
+    assert_eq!(label_of(&app, "wp1"), long);
+}
+
+#[tokio::test]
+async fn renaming_to_the_same_name_asks_nothing() {
+    let app = rename_test_app();
+    secure_wallet::rename_wallet_profile(app.handle().clone(), "wp1".into(), " Old ".into())
+        .await
+        .unwrap();
+    assert!(take_test_requests().is_empty());
+}
+
+#[tokio::test]
+async fn renaming_an_unknown_wallet_is_not_found() {
+    let app = rename_test_app();
+    let err =
+        secure_wallet::rename_wallet_profile(app.handle().clone(), "nope".into(), "Name".into())
+            .await
+            .unwrap_err();
+    assert!(matches!(err, AppError::NotFound(_)), "{err}");
+    assert!(take_test_requests().is_empty());
+}
+
 /// Activating a profile (create, every import kind, Ledger) must drop an
 /// unlocked signer that belongs to ANOTHER profile, or the UI shows "Unlocked"
 /// while every use of the key is refused.

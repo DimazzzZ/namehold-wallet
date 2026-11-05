@@ -715,6 +715,7 @@ pub fn run() {
             commands::secure_wallet::get_signer_session,
             commands::secure_wallet::list_wallet_profiles,
             commands::secure_wallet::set_active_wallet_profile,
+            commands::secure_wallet::rename_wallet_profile,
             commands::secure_wallet::delete_wallet_profile,
             commands::tx::sync_wallet_state,
             commands::tx::sync_tracked_names,
