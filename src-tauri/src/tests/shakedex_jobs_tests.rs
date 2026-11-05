@@ -361,6 +361,52 @@ async fn refused_pending_post_is_not_retried() {
     assert!(l.market_error.unwrap().contains("already exists"));
 }
 
+/// R23: the market takes a pending listing only once the TRANSFER is the
+/// name's confirmed owner. Posted before that, its 409 is not a verdict: the
+/// post is tried again after the backoff and goes through once confirmed.
+#[tokio::test]
+async fn pending_post_before_the_transfer_is_confirmed_is_retried() {
+    for error in [
+        "The referenced TRANSFER is not the current name owner",
+        "Current owner must be a confirmed unspent TRANSFER",
+    ] {
+        let f = fx(ListingState::Locking, true);
+        let mut s = market().await;
+        let early = s
+            .mock("POST", "/api/v2/pending-listings")
+            .with_status(409)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::json!({ "error": error }).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+        let n = MockNodeRpc::new();
+        publish(&f, &n, &s, NOW).await;
+        early.assert_async().await;
+        let l = listing(&f);
+        assert_eq!(
+            (l.market_status, l.market_retry_at.as_deref()),
+            (
+                Some(MarketStatus::Retrying),
+                Some(rfc3339(NOW + 300).as_str())
+            )
+        );
+        assert!(l.market_error.unwrap().contains(error));
+        drop(early);
+        let taken = s
+            .mock("POST", "/api/v2/pending-listings")
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"pending":{}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        publish(&f, &n, &s, NOW + 300).await;
+        taken.assert_async().await;
+        assert_eq!(listing(&f).market_status, Some(MarketStatus::Pending));
+    }
+}
+
 /// R23: nothing is uploaded while the FINALIZE into the lock is unmined
 /// (Finalizing); once it is mined (Listed, one confirmation) the current
 /// step is uploaded, as a one-step copy of the stored file, after every

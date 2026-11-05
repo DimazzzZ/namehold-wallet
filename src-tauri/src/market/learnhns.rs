@@ -44,8 +44,9 @@ pub enum MarketReply<T> {
     },
     /// The market's own answer that its node has not seen our chain state
     /// yet (the lock coin, the name's owner, a sale or cancel tx): one of the
-    /// exact status-and-words pairs in [`UPLOAD_NOT_SEEN_YET`] and
-    /// [`REPORT_NOT_SEEN_YET`], recognised here and nowhere else. Not a
+    /// exact status-and-words pairs in [`UPLOAD_NOT_SEEN_YET`],
+    /// [`PENDING_NOT_SEEN_YET`] and [`REPORT_NOT_SEEN_YET`], recognised here
+    /// and nowhere else. Not a
     /// verdict on the listing: the caller backs off as for `NoAnswer` and
     /// checks the chain on our own node before each attempt; our node is the
     /// final word.
@@ -295,7 +296,7 @@ impl LearnHnsClient {
             {
                 MarketReply::Accepted(())
             }
-            Ok((status, v)) => refusal_or_none(status, v, &[]),
+            Ok((status, v)) => refusal_or_none(status, v, PENDING_NOT_SEEN_YET),
             Err(why) => MarketReply::NoAnswer(why),
         })
     }
@@ -552,6 +553,15 @@ const UPLOAD_NOT_SEEN_YET: &[(u16, &str)] = &[
         409,
         "The proof locking output is not the name's current on-chain owner coin",
     ),
+];
+
+/// The market's replies to a pending listing whose TRANSFER is not yet its
+/// view of the name's confirmed owner (MKT PR #2, `create_pending_listing`).
+/// We post once the TRANSFER is broadcast, so the first answer is usually one
+/// of these. A TRANSFER that never confirms backs off until the listing moves.
+const PENDING_NOT_SEEN_YET: &[(u16, &str)] = &[
+    (409, "The referenced TRANSFER is not the current name owner"),
+    (409, "Current owner must be a confirmed unspent TRANSFER"),
 ];
 
 /// The market's chain-lag reply to a sale or cancel report: neither its hsd
