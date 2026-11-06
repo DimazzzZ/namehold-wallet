@@ -4207,7 +4207,7 @@ pub async fn shakedex_lower_price(
 }
 
 /// Renew listing `listing_id`'s expiry on LearnHNS Market, with a signature
-/// from its lock key and no transaction. Since the market's PR #2 only this
+/// from its lock key and no transaction. Since learnhns-market#2 only this
 /// moves the expiry it holds; an upload never does. Needs the wallet unlocked.
 /// The market's copy is read first: it must be this listing (lock and key),
 /// and its expiry is what the request says it replaces.

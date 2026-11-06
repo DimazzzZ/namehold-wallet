@@ -1939,7 +1939,7 @@ fn retry_delays() -> Vec<i64> {
 /// R23: an `expiresAt` within 30 days of now is moved to the node's median
 /// time plus 365 days in the stored file (every other field as written); the
 /// listing's `expires_at` follows. The market is not asked to take it: since
-/// its PR #2 an upload never moves the expiry it holds (a renewal signed with
+/// learnhns-market#2 an upload never moves the expiry it holds (a renewal signed with
 /// the lock key does), so the copy with the old expiry is still ours, and its
 /// expiry is recorded for My listings.
 #[tokio::test]
@@ -4195,7 +4195,7 @@ async fn copies_without_a_foreign_step_are_never_flagged() {
 /// held), up to one refresh period past the expiry a refresh at the node's
 /// median time would write (`latest_own_expiry`); one later than that is
 /// uploaded over (ReplacedReuploaded). One with an **earlier** `expiresAt` is
-/// ours too: the market keeps its own expiry since its PR #2, and only a
+/// ours too: the market keeps its own expiry since learnhns-market#2, and only a
 /// signed renewal moves it.
 #[tokio::test]
 async fn later_expiry_on_the_market_is_kept_and_so_is_an_earlier_one() {

@@ -11061,8 +11061,8 @@ fn market_row(
         .unwrap()
 }
 
-/// Against LearnHNS Market's own local regtest setup (its PR #2 and the
-/// renewal API): the pending listing is refused before its TRANSFER confirms
+/// Against LearnHNS Market's own local regtest setup (learnhns-market#2 and the
+/// renewal API of #4): the pending listing is refused before its TRANSFER confirms
 /// and taken after, the listing goes up once Listed and the market serves our
 /// copy, and a renewal signed with the lock key moves the market's expiry.
 #[tokio::test]

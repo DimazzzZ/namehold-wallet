@@ -500,7 +500,7 @@ pub fn same_market_listing(copy: &ListingFile, ours: &ListingFile) -> bool {
 }
 
 /// Whether `copy` offers a buyer exactly `ours` but for an **earlier**, or
-/// absent, `expiresAt`. Since LearnHNS Market's PR #2 an upload never moves
+/// absent, `expiresAt`. Since learnhns-market#2 an upload never moves
 /// the expiry it holds (the Shakedex signature doesn't cover it), so our own
 /// refresh leaves the market's copy with the old one; only a renewal signed
 /// with the lock key moves it. Such a copy is ours: uploading over it changes

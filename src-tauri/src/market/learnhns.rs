@@ -556,7 +556,7 @@ const UPLOAD_NOT_SEEN_YET: &[(u16, &str)] = &[
 ];
 
 /// The market's replies to a pending listing whose TRANSFER is not yet its
-/// view of the name's confirmed owner (MKT PR #2, `create_pending_listing`).
+/// view of the name's confirmed owner (learnhns-market#2, `create_pending_listing`).
 /// We post once the TRANSFER is broadcast, so the first answer is usually one
 /// of these. A TRANSFER that never confirms backs off until the listing moves.
 const PENDING_NOT_SEEN_YET: &[(u16, &str)] = &[
