@@ -1,0 +1,109 @@
+name: Release smoke test
+
+# Installs the files a release published and starts them on GitHub's Windows
+# and Linux runners, which nobody does by hand: the installer finishes, the app
+# is still running after a while and has created its database. It downloads
+# the published files, so it checks what users get, not a fresh build. It
+# proves the app starts, not that it works.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to check, e.g. v0.7.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-smoke-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: true
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  linux:
+    name: Linux installers start
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::not a release tag: $TAG"; exit 1; }
+
+      - name: Download the release files
+        run: |
+          set -euo pipefail
+          mkdir -p dl
+          gh release download "$TAG" --dir dl --pattern '*_amd64.deb' --pattern '*_amd64.AppImage' --pattern 'SHA256SUMS'
+          (cd dl && sha256sum -c SHA256SUMS --ignore-missing)
+
+      - name: Refresh apt package index
+        run: sudo timeout 120 apt-get update || echo "::warning::apt-get update failed — proceeding with stale index"
+      - name: Install the .deb
+        run: sudo apt-get install -y --no-install-recommends ./dl/*_amd64.deb xvfb
+
+      - name: The .deb app starts
+        run: |
+          set -euo pipefail
+          home="$(mktemp -d)"
+          HOME="$home" timeout 45 xvfb-run -a namehold-wallet > deb.log 2>&1 && code=0 || code=$?
+          # 124: still running when time ran out, which is the pass.
+          [ "$code" -eq 124 ] || { echo "::error::the app exited with $code"; cat deb.log; exit 1; }
+          [ -f "$home/.namehold/portfolio.db" ] || { echo "::error::no database was created"; cat deb.log; exit 1; }
+          echo "started, database created"
+
+      - name: The AppImage starts for another user
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(dl/*.AppImage)
+          [ "${#images[@]}" -eq 1 ] || { echo "::error::expected one AppImage, found ${#images[@]}"; exit 1; }
+          bash scripts/check-appimage.sh "${images[0]}"
+
+  windows:
+    name: Windows installer starts
+    runs-on: windows-latest
+    steps:
+      - name: Download and check the installer
+        shell: pwsh
+        run: |
+          if ($env:TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$') { throw "not a release tag: $env:TAG" }
+          New-Item -ItemType Directory dl | Out-Null
+          gh release download $env:TAG --dir dl --pattern '*_x64-setup.exe' --pattern 'SHA256SUMS'
+          if ($LASTEXITCODE -ne 0) { throw "download failed" }
+          $exe = Get-ChildItem dl -Filter '*_x64-setup.exe' | Select-Object -First 1
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          if (-not (Select-String -Path dl\SHA256SUMS -SimpleMatch "$hash  $($exe.Name)")) { throw "$($exe.Name) is not the file SHA256SUMS lists" }
+
+      - name: Install silently
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dl -Filter '*_x64-setup.exe' | Select-Object -First 1).FullName
+          $p = Start-Process -FilePath $setup -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "the installer exited with $($p.ExitCode)" }
+
+      - name: The app starts
+        shell: pwsh
+        run: |
+          # The .deb installs `namehold-wallet`; accept the product name too.
+          $app = Get-ChildItem $env:LOCALAPPDATA, $env:ProgramFiles -Recurse -Include 'namehold-wallet.exe', 'Namehold.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $app) { throw "the app's .exe was not installed" }
+          Write-Output "installed at $($app.FullName)"
+          $p = Start-Process -FilePath $app.FullName -PassThru
+          Start-Sleep -Seconds 45
+          if ($p.HasExited) { throw "the app exited with $($p.ExitCode)" }
+          if (-not (Test-Path "$env:USERPROFILE\.namehold\portfolio.db")) { throw "no database was created" }
+          Write-Output "started, database created"
+          Stop-Process -Id $p.Id -Force
+          Get-Process -Name 'namehold-syncd' -ErrorAction SilentlyContinue | Stop-Process -Force
