@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="favicon.png">
+<title>Move from Bob · Namehold</title>
+<meta name="description" content="Move a Bob Wallet to Namehold with its recovery phrase: coins, names and unrevealed bids, and the one thing to do in Bob first.">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header><div class="wrap">
+  <a class="brand" href="./" style="text-decoration:none">Namehold <span>beta</span></a>
+  <nav>
+    <a href="./#download">Download</a>
+    <a href="get-hns.html">Get HNS</a>
+    <a href="https://github.com/DimazzzZ/namehold-wallet/blob/main/docs/USER_MANUAL.md">Manual</a>
+    <a href="https://github.com/DimazzzZ/namehold-wallet">GitHub</a>
+  </nav>
+</div></header>
+<main class="wrap">
+  <section class="page-head">
+    <h1>Move from Bob</h1>
+    <p class="lede">Bob Wallet and Namehold derive keys the same way, the way hsd does. Your Bob recovery phrase opens the same wallet in Namehold: the same addresses, the same coins, the same names. Nothing moves on chain, so nothing costs a fee. One thing does not travel with the phrase, so start in Bob.</p>
+  </section>
+
+  <section class="check">
+    <h2>1. In Bob: cancel your Shakedex listings</h2>
+    <p>A name you listed for sale in Bob's Exchange sits in a lock whose key Bob made at random and keeps in its own files. The recovery phrase does not contain that key, so Namehold cannot reach a name that is still locked.</p>
+    <ul>
+      <li>Open <strong>Exchange</strong> in Bob and cancel each listing that has not sold. Cancelling takes two transactions, a transfer and, about two days later, a finalize; the name is back in your wallet once the finalize confirms.</li>
+      <li>A listing you want to keep: list the name again from Namehold's <strong>Market</strong> page once you have moved.</li>
+    </ul>
+    <p class="result">No listings in Bob? Skip this step.</p>
+  </section>
+
+  <section class="check">
+    <h2>2. In Bob: write down your recovery phrase</h2>
+    <p>Open <strong>Settings</strong>, find <strong>Reveal recovery seed phrase</strong>, click <strong>Reveal</strong> and enter your Bob password. Write the words down on paper, in order.</p>
+    <ul>
+      <li>Note the names you have bid on and not yet revealed, with the amounts if you remember them. Namehold can find the amount without them, but knowing it is instant.</li>
+      <li>A Ledger wallet in Bob has no phrase to reveal: skip this step and connect the same Ledger in Namehold with <strong>Import from Ledger</strong>.</li>
+    </ul>
+  </section>
+
+  <section class="check">
+    <h2>3. In Namehold: import the phrase</h2>
+    <ol>
+      <li><a href="./#download">Download Namehold</a>, and <a href="verify.html">check the download</a> before you open it.</li>
+      <li>On the welcome screen choose <strong>Import your wallet</strong>, pick <strong>Mainnet</strong>, and click <strong>Import in secure window</strong>. Already using Namehold? Use <strong>Add wallet</strong> from the wallet card at the top of the sidebar.</li>
+      <li>Paste the phrase into the secure window. Bob never sets the optional BIP-39 passphrase (your Bob password only encrypts Bob's files), so leave that field empty. Set a passphrase of your own for Namehold: it protects the phrase on this computer.</li>
+      <li>Wait for the first sync. Namehold finds your addresses, coins and names through your node or the explorer you chose.</li>
+    </ol>
+  </section>
+
+  <section class="check">
+    <h2>4. In Namehold: reveal your open bids</h2>
+    <p>A bid's amount is sealed on chain, and a wallet needs it to reveal the bid. Namehold works it out from your phrase the way hsd does.</p>
+    <ul>
+      <li>During the reveal period, open the name's page. The <strong>Recover bid</strong> panel asks for the amount; type it and click <strong>Recover bid</strong>.</li>
+      <li>Don't remember it? Click <strong>Auto-recover (brute-force)</strong>: Namehold tries likely amounts and finds most bids in seconds.</li>
+      <li>Then reveal as usual. A bid not revealed before the reveal period ends loses its whole lockup, in any wallet.</li>
+    </ul>
+  </section>
+
+  <section class="check">
+    <h2>Afterwards</h2>
+    <ul>
+      <li>Use one wallet at a time. Bob and Namehold do not know about each other's unconfirmed transactions, so spending from both at once can fail. Once Namehold shows everything, close Bob.</li>
+      <li>Keep the paper with your phrase. It opens your wallet in Namehold, in Bob, or in any other hsd-compatible wallet.</li>
+      <li>Multisig wallets from Bob are not supported in Namehold.</li>
+    </ul>
+  </section>
+</main>
+<footer><div class="wrap">
+  <span>Namehold is independent and open source, MIT license.</span>
+  <span><a href="./">Home</a></span>
+</div></footer>
+</body>
+</html>
