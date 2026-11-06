@@ -111,6 +111,25 @@ export function listedUntilText(expiresAt: number): string | null {
   return `Listed until ${formatDate(d.toISOString().slice(0, 10))} · this date does not end the listing`;
 }
 
+/** How early My listings offers to renew a listing's market expiry (the backend's R23 refresh margin, 30 days). */
+export const MARKET_RENEW_MARGIN_SECS = 30 * 86_400;
+
+/**
+ * What buyers on LearnHNS Market see of a listing's expiry, once it is close
+ * (`marketExpiresAt` as the market last showed it, Unix seconds) — `null`
+ * while it is far off or unknown. Since the market's PR #2 only a renewal
+ * signed with the lock key moves it.
+ */
+export function marketRenewalText(marketExpiresAt: number | null, nowSecs: number): string | null {
+  if (marketExpiresAt == null || marketExpiresAt - nowSecs > MARKET_RENEW_MARGIN_SECS) return null;
+  const d = new Date(marketExpiresAt * 1000);
+  if (Number.isNaN(d.getTime())) return null;
+  const date = formatDate(d.toISOString().slice(0, 10));
+  return marketExpiresAt > nowSecs
+    ? `Buyers on LearnHNS Market see this listing until ${date}. Renew it there to keep it listed; no transaction is needed.`
+    : `Buyers on LearnHNS Market stopped seeing this listing on ${date}. Renew it there to list it again; no transaction is needed.`;
+}
+
 /**
  * A node failure in the user's words. The backend's text names the layer
  * ("Node RPC error: …"); the user needs what happened and where to fix it.

@@ -185,6 +185,7 @@ fn ts_listing_summary_lists_every_field() {
         market_status: None,
         market_error: None,
         market_retry_at: None,
+        market_expires_at: None,
         publish: false,
     };
     let json = serde_json::to_value(&summary).unwrap();

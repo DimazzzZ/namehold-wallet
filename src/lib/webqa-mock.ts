@@ -695,6 +695,7 @@ function listingSummary(l: MockListing): ShakedexListingSummary {
     marketStatus: null,
     marketError: null,
     marketRetryAt: null,
+    marketExpiresAt: null,
     publish: l.publish,
   };
 }
@@ -957,6 +958,12 @@ const sellingHandlers: Record<string, Handler> = {
     l.publish = true;
     return listingSummary(l);
   },
+
+  // The mock keeps no market expiry: a renewal answers with a year from now.
+  shakedex_renew_on_market: (args) => ({
+    ...listingSummary(listingById(args)),
+    marketExpiresAt: Math.floor(Date.now() / 1000) + 365 * 86_400 - 3_600,
+  }),
 
   shakedex_export_listing_file: (args) => {
     const l = listingById(args);

@@ -224,6 +224,12 @@ export const useFinalizeCancel = () =>
     invoke<TxDraftSummary>("shakedex_finalize_cancel", { ...a }),
   );
 
+/** Renew a listing's expiry on LearnHNS Market, signed with its lock key; no transaction. */
+export const useRenewOnMarket = () =>
+  useSellingMutation((listingId: string) =>
+    invoke<ShakedexListingSummary>("shakedex_renew_on_market", { listingId }),
+  );
+
 /** Sign one more, lower price (R26); the price as typed, the secure window asks first. */
 export const useLowerPrice = () =>
   useSellingMutation((a: { listingId: string; price: string }) =>

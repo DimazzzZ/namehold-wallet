@@ -10,7 +10,7 @@ import { parseFeeRateArg } from "../../lib/feeRate";
 import { save } from "../../lib/dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { StagedError, mapError, stageOf, unwrapStaged } from "../../lib/errors";
-import { formatHns } from "../../lib/utils";
+import { formatDate, formatHns } from "../../lib/utils";
 import { displayName } from "../../lib/idn";
 import {
   useCancelListing,
@@ -20,6 +20,7 @@ import {
   useManageListingHere,
   useMyListings,
   usePublishListing,
+  useRenewOnMarket,
   useSaveListingFile,
 } from "../../queries/shakedex";
 import {
@@ -56,6 +57,7 @@ import {
   TONE_DOT,
   type ListingButton,
   listedUntilText,
+  marketRenewalText,
   listingPricesText,
   listingStateLabel,
   lowerPriceProblem,
@@ -143,6 +145,7 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
   const deleteDraft = useDeleteTxDraft();
   const finalizeCancel = useFinalizeCancel();
   const publish = usePublishListing();
+  const renew = useRenewOnMarket();
   const saveFile = useSaveListingFile();
   const keptDraft = useKeptDraft();
   const qc = useQueryClient();
@@ -194,6 +197,17 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
       // Saving the stored file signs nothing: no signer, any wallet.
       await saveFile.mutateAsync({ listingId: listing.id, path });
       showToast("Listing file saved");
+    });
+
+  const renewNow = () =>
+    act(async () => {
+      if (!profile) return;
+      const done = await withSigner.run(profile.id, () => renew.mutateAsync(listing.id));
+      const until =
+        done.marketExpiresAt != null
+          ? formatDate(new Date(done.marketExpiresAt * 1000).toISOString().slice(0, 10))
+          : null;
+      showToast(until ? `Renewed on LearnHNS Market until ${until}` : "Renewed on LearnHNS Market");
     });
 
   const publishNow = () =>
@@ -304,6 +318,11 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
     listing.state === "listed" && listing.expiresAt != null
       ? listedUntilText(listing.expiresAt)
       : null;
+  // The market's own expiry, which only a signed renewal moves.
+  const renewal =
+    listing.state === "listed" && listing.publish && !elsewhere
+      ? marketRenewalText(listing.marketExpiresAt, Math.floor(Date.now() / 1000))
+      : null;
   // R35: buyers stop seeing a lock whose name gets too close to expiring.
   const unbuyable = unbuyableText(
     listing.blocksUntilUnbuyable,
@@ -382,6 +401,23 @@ function ListingRow({ row }: { row: ShakedexMyListing }) {
         </Disclosure>
       )}
       {listedUntil && <div className="mt-1 text-xs text-gray-400">{listedUntil}</div>}
+      {renewal && (
+        <div
+          className="mt-1 flex flex-wrap items-center gap-2 text-xs text-amber-800"
+          data-testid="listing-market-renewal"
+        >
+          <span>{renewal}</span>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={busy}
+            onClick={() => void renewNow()}
+            data-testid="listing-renew-on-market"
+          >
+            Renew on market
+          </Button>
+        </div>
+      )}
       {unbuyable && (
         <p className="mt-1 text-xs text-amber-800" data-testid="listing-unbuyable">
           {unbuyable}

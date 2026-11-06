@@ -44,8 +44,9 @@ pub enum MarketReply<T> {
     },
     /// The market's own answer that its node has not seen our chain state
     /// yet (the lock coin, the name's owner, a sale or cancel tx): one of the
-    /// exact status-and-words pairs in [`UPLOAD_NOT_SEEN_YET`] and
-    /// [`REPORT_NOT_SEEN_YET`], recognised here and nowhere else. Not a
+    /// exact status-and-words pairs in [`UPLOAD_NOT_SEEN_YET`],
+    /// [`PENDING_NOT_SEEN_YET`] and [`REPORT_NOT_SEEN_YET`], recognised here
+    /// and nowhere else. Not a
     /// verdict on the listing: the caller backs off as for `NoAnswer` and
     /// checks the chain on our own node before each attempt; our node is the
     /// final word.
@@ -66,6 +67,28 @@ pub struct UploadAccepted {
 }
 
 pub type UploadResult = MarketReply<UploadAccepted>;
+
+/// A renewal of a listing's market expiry (`POST /api/v2/listings/<name>/renew`,
+/// LearnHNS `docs/listing-renewal.md` v1): the listing's lock outpoint and the
+/// expiry the market holds now, and the one asked for. The market keeps
+/// `expiresAt` from any upload because the Shakedex signature does not cover
+/// it; this request is signed with the lock key instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenewalRequest<'a> {
+    pub name: &'a str,
+    pub lock_txid: &'a str,
+    pub lock_vout: u32,
+    pub previous_expires_at: u64,
+    pub expires_at: u64,
+}
+
+/// What the renewal endpoint took: the expiry the market now holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenewAccepted {
+    pub expires_at: u64,
+    /// The same request again, already applied.
+    pub replayed: bool,
+}
 
 /// How a listing prices the name, in the market's `listingMode` words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +157,10 @@ pub struct LearnHnsClient {
     /// The profile's network; writes refuse unless it is `main`; `None` (not
     /// told) refuses as well.
     network: Option<Network>,
+    /// Debug builds only, and only with `learnhns_base_url` set (loopback):
+    /// writes on regtest too, for a local market from its `compose.regtest.yaml`.
+    /// A release build never sets it.
+    test_network: bool,
 }
 
 #[derive(Deserialize)]
@@ -166,6 +193,7 @@ impl LearnHnsClient {
             http,
             base_url: base_url.trim().trim_end_matches('/').to_string(),
             network: None,
+            test_network: false,
         })
     }
 
@@ -183,12 +211,25 @@ impl LearnHnsClient {
         if base.trim().is_empty() {
             Ok(Self::new())
         } else {
-            Self::with_base_url(base.trim())
+            let mut client = Self::with_base_url(base.trim())?;
+            client.test_network = true;
+            Ok(client)
         }
     }
 
+    /// Whether this client writes for `network`: mainnet, or regtest against
+    /// a local market in a debug build ([`Self::from_settings`]).
+    pub fn writes_on(&self, network: Network) -> bool {
+        network == Network::Main || (self.test_network && network == Network::Regtest)
+    }
+
+    /// The network the market's files and requests are for: the profile's.
+    pub fn market_network(&self) -> Network {
+        self.network.unwrap_or(Network::Main)
+    }
+
     fn writes_allowed(&self) -> Result<(), AppError> {
-        if self.network == Some(Network::Main) {
+        if self.network.is_some_and(|n| self.writes_on(n)) {
             Ok(())
         } else {
             Err(AppError::InvalidInput(MARKET_MAINNET_ONLY.into()))
@@ -203,7 +244,7 @@ impl LearnHnsClient {
         // folder shared by every upload (MKT api.py L2807–2808): name it by
         // the listing's (checked) name and lock txid (hex) so no two uploads
         // collide.
-        let parsed = ListingFile::parse(listing_file, Network::Main)?;
+        let parsed = ListingFile::parse(listing_file, self.market_network())?;
         check_name(&parsed.name)?;
         let file_name = format!("{}-{}.json", parsed.name, hex::encode(parsed.lock_txid));
         let part = reqwest::multipart::Part::text(listing_file.to_string())
@@ -239,7 +280,7 @@ impl LearnHnsClient {
         check_name(p.name)?;
         let body = serde_json::json!({
             "name": p.name,
-            "network": "main",
+            "network": self.market_network().as_str(),
             "transferTxHash": p.transfer_txid,
             "transferOutputIdx": p.transfer_vout,
             "lockScriptAddr": p.lock_address,
@@ -254,6 +295,48 @@ impl LearnHnsClient {
                 if is_2xx(status) && v["success"] == true && v["pending"].is_object() =>
             {
                 MarketReply::Accepted(())
+            }
+            Ok((status, v)) => refusal_or_none(status, v, PENDING_NOT_SEEN_YET),
+            Err(why) => MarketReply::NoAnswer(why),
+        })
+    }
+
+    /// Renew a listing's expiry on the market with a `signature` the caller
+    /// made with the lock key (`shakedex::renewal`); this client never signs. Writes are mainnet only, like
+    /// every other write here. A 409 (the market's expiry moved since it was
+    /// read, or the listing can't be renewed) is the market's refusal.
+    pub async fn renew_listing(
+        &self,
+        r: &RenewalRequest<'_>,
+        signature: &str,
+    ) -> Result<MarketReply<RenewAccepted>, AppError> {
+        self.writes_allowed()?;
+        check_name(r.name)?;
+        let network = self.market_network();
+        let body = serde_json::json!({
+            "network": network.as_str(),
+            "lockingTxHash": r.lock_txid.to_ascii_lowercase(),
+            "lockingOutputIdx": r.lock_vout,
+            "previousExpiresAt": r.previous_expires_at,
+            "expiresAt": r.expires_at,
+            "signature": signature,
+        });
+        let req = self
+            .http
+            .post(format!(
+                "{}/api/v2/listings/{}/renew",
+                self.base_url, r.name
+            ))
+            .json(&body);
+        Ok(match self.send(req).await {
+            Ok((status, Some(v))) if is_2xx(status) && v["success"] == true => {
+                match v["expiresAt"].as_u64() {
+                    Some(expires_at) => MarketReply::Accepted(RenewAccepted {
+                        expires_at,
+                        replayed: v["replayed"] == true,
+                    }),
+                    None => no_shape(status),
+                }
             }
             Ok((status, v)) => refusal_or_none(status, v, &[]),
             Err(why) => MarketReply::NoAnswer(why),
@@ -470,6 +553,15 @@ const UPLOAD_NOT_SEEN_YET: &[(u16, &str)] = &[
         409,
         "The proof locking output is not the name's current on-chain owner coin",
     ),
+];
+
+/// The market's replies to a pending listing whose TRANSFER is not yet its
+/// view of the name's confirmed owner (learnhns-market#2, `create_pending_listing`).
+/// We post once the TRANSFER is broadcast, so the first answer is usually one
+/// of these. A TRANSFER that never confirms backs off until the listing moves.
+const PENDING_NOT_SEEN_YET: &[(u16, &str)] = &[
+    (409, "The referenced TRANSFER is not the current name owner"),
+    (409, "Current owner must be a confirmed unspent TRANSFER"),
 ];
 
 /// The market's chain-lag reply to a sale or cancel report: neither its hsd

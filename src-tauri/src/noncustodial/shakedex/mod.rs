@@ -9,6 +9,7 @@ pub mod funding;
 pub mod listing_file;
 pub mod lock_key;
 pub mod purchase;
+pub mod renewal;
 pub mod script;
 pub mod sell;
 pub mod template;

@@ -162,6 +162,8 @@ function setup(rows: ShakedexMyListing[], o: Opts = {}) {
         return needsSigner(rows[0]!.listing);
       case "shakedex_publish_listing":
         return needsSigner(rows[0]!.listing);
+      case "shakedex_renew_on_market":
+        return needsSigner({ ...rows[0]!.listing, marketExpiresAt: 1_900_000_000 });
       case "sign_tx_draft":
         return needsSigner({ id: (args as { draftId: string }).draftId });
       case "broadcast_tx_draft":
@@ -388,6 +390,47 @@ describe("MyListings", () => {
     setup([makeMyListing("listed", { listing: makeListing(over as never) })]);
     renderIt();
     expect(await screen.findByTestId("listing-market-status")).toHaveTextContent(text);
+  });
+
+  describe("renewing on LearnHNS Market", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const listed = (marketExpiresAt: number | null, over: object = {}) =>
+      makeMyListing("listed", {
+        listing: makeListing({ publish: true, marketStatus: "listed", marketExpiresAt, ...over }),
+      });
+
+    it("offers it near the market's expiry and renews through the signer", async () => {
+      setup([listed(now + 10 * 86_400)]);
+      renderIt();
+      expect(await screen.findByTestId("listing-market-renewal")).toHaveTextContent(
+        "Buyers on LearnHNS Market see this listing until",
+      );
+      fireEvent.click(screen.getByTestId("listing-renew-on-market"));
+      await waitFor(() =>
+        expect(calls("shakedex_renew_on_market")).toEqual([
+          ["shakedex_renew_on_market", { listingId: "l1" }],
+        ]),
+      );
+    });
+
+    it("says buyers stopped seeing it once the market's expiry passed", async () => {
+      setup([listed(now - 86_400)]);
+      renderIt();
+      expect(await screen.findByTestId("listing-market-renewal")).toHaveTextContent(
+        "stopped seeing this listing",
+      );
+    });
+
+    it.each([
+      ["far off", listed(now + 60 * 86_400)],
+      ["unknown", listed(null)],
+      ["not published", listed(now, { publish: false })],
+    ])("says nothing when the expiry is %s", async (_case, row) => {
+      setup([row]);
+      renderIt();
+      await screen.findByTestId("my-listing-row");
+      expect(screen.queryByTestId("listing-market-renewal")).toBeNull();
+    });
   });
 
   it("saves the stored listing file at the path chosen", async () => {

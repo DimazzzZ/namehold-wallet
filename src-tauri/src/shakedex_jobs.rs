@@ -3161,14 +3161,15 @@ fn flagged_by_copy(
     copy: &ProofCopy,
     lock_value: u64,
     now: i64,
+    net: Network,
 ) -> Result<bool, AppError> {
     let ProofCopy::Copy(text) = copy else {
         return Ok(false);
     };
-    let Ok(theirs) = listing_file::ListingFile::parse(text, Network::Main) else {
+    let Ok(theirs) = listing_file::ListingFile::parse(text, net) else {
         return Ok(false);
     };
-    match foreign_step_in(&theirs, listing, lock_value, Network::Main)? {
+    match foreign_step_in(&theirs, listing, lock_value, net)? {
         Some(step) => {
             mark_elsewhere(conn, listing, Some(&step), now)?;
             Ok(true)
@@ -3236,6 +3237,7 @@ fn is_our_sent_step(
     l: &queries::ShakedexListing,
     theirs: &listing_file::ListingFile,
     ours: &listing_file::ListingFile,
+    net: Network,
 ) -> bool {
     let Some(sent) = l.market_sent_step.as_deref() else {
         return false;
@@ -3246,7 +3248,7 @@ fn is_our_sent_step(
     let Some(stored) = l
         .listing_file_json
         .as_deref()
-        .and_then(|f| listing_file::ListingFile::parse(f, Network::Main).ok())
+        .and_then(|f| listing_file::ListingFile::parse(f, net).ok())
     else {
         return false;
     };
@@ -3403,7 +3405,8 @@ pub async fn advance_reverse_auctions_with_client(
     lock: &LockLost,
 ) -> Result<(), AppError> {
     use queries::MarketStatus as S;
-    if queries::profile_network(conn, profile_id)? != Network::Main {
+    let net = queries::profile_network(conn, profile_id)?;
+    if !market.writes_on(net) {
         return Ok(());
     }
     let auctions: Vec<_> = queries::list_listings_kept_on_market(conn, profile_id)?
@@ -3443,9 +3446,10 @@ async fn advance_one(
     mtp: u64,
     now: i64,
 ) -> Result<(), AppError> {
+    let net = market.market_network();
     // The step the copy would be cut to ([`current_file_step`]), from the
     // stored file as `market_copy` reads it.
-    let current = row_for_market(l, Network::Main).and_then(|row| {
+    let current = row_for_market(l, net).and_then(|row| {
         Ok(current_file_step(&row.file, mtp)?
             .and_then(|i| row.file.steps.get(i))
             .map(|s| hex::encode(s.signature)))
@@ -3513,14 +3517,14 @@ fn market_job_clients(
 ) -> Option<(rusqlite::Connection, NodeRpcClient, LearnHnsClient)> {
     let conn = crate::db::connection::open_migrated(db_path).ok()?;
     let network = queries::profile_network(&conn, profile_id).ok()?;
-    if network != Network::Main {
-        return None;
-    }
-    let node = NodeRpcClient::for_profile(&conn, profile_id).ok()?;
     let settings = queries::get_settings(&conn).ok()?;
     let market = LearnHnsClient::from_settings(&settings)
         .ok()?
         .for_network(network);
+    if !market.writes_on(network) {
+        return None;
+    }
+    let node = NodeRpcClient::for_profile(&conn, profile_id).ok()?;
     Some((conn, node, market))
 }
 
@@ -3550,7 +3554,8 @@ pub async fn publish_listings_with_client(
     now: i64,
     lock: &LockLost,
 ) -> Result<(), AppError> {
-    if queries::profile_network(conn, profile_id)? != Network::Main {
+    let net = queries::profile_network(conn, profile_id)?;
+    if !market.writes_on(net) {
         return Ok(());
     }
     // Reports first: a report never waits behind an upload (no listing is
@@ -3660,13 +3665,14 @@ async fn announce(
     l: &queries::ShakedexListing,
     now: i64,
 ) -> Result<(), AppError> {
+    let net = market.market_network();
     let row = l
         .lock_transfer_txid
         .as_deref()
         .ok_or_else(|| {
             AppError::Other(format!("corrupted listing {}: no lock TRANSFER txid", l.id))
         })
-        .and_then(|txid| Ok((txid, listing_lock(Network::Main, l)?)));
+        .and_then(|txid| Ok((txid, listing_lock(net, l)?)));
     let (transfer_txid, lock) = match row {
         Ok(row) => row,
         Err(e) => return record(conn, l, &steps_unverified(l, e.to_string(), now)),
@@ -3710,7 +3716,8 @@ async fn upload_current(
     now: i64,
     mtp: Option<u64>,
 ) -> Result<(), AppError> {
-    match market_copy_at(conn, node, Network::Main, l, now, mtp).await? {
+    let net = market.market_network();
+    match market_copy_at(conn, node, net, l, now, mtp).await? {
         MarketCopy::NotNow(why) => {
             not_now(l, &why);
             Ok(())
@@ -3730,7 +3737,7 @@ async fn upload_current(
             // listing managed elsewhere and nothing is sent; "not listed",
             // no answer, and any other copy are uploaded over as before.
             let theirs = market.proof_copy(&listing.name).await?;
-            if flagged_by_copy(conn, &listing, &theirs, lock_value, now)? {
+            if flagged_by_copy(conn, &listing, &theirs, lock_value, now, net)? {
                 return Ok(());
             }
             let ok = kept_label(&listing);
@@ -3858,7 +3865,8 @@ pub async fn keep_listed_with_client(
     lock: &LockLost,
 ) -> Result<(), AppError> {
     use queries::MarketStatus as S;
-    if queries::profile_network(conn, profile_id)? != Network::Main {
+    let net = queries::profile_network(conn, profile_id)?;
+    if !market.writes_on(net) {
         return Ok(());
     }
     for l in queries::list_listings_kept_on_market(conn, profile_id)? {
@@ -3873,11 +3881,11 @@ pub async fn keep_listed_with_client(
                 }
                 keep_listed(conn, node, market, &l, now).await
             }
-            Some(S::Refused) if listed && due(&l, now) && stored_file_near_expiry(&l, now) => {
+            Some(S::Refused) if listed && due(&l, now) && stored_file_near_expiry(&l, now, net) => {
                 if market_lock_lost(conn, lock, profile_id) {
                     return Ok(());
                 }
-                refresh_refused(conn, node, &l, now).await
+                refresh_refused(conn, node, &l, now, net).await
             }
             _ => continue,
         };
@@ -3916,7 +3924,8 @@ async fn follow_elsewhere(
     l: &queries::ShakedexListing,
     now: i64,
 ) -> Result<(), AppError> {
-    let row = row_for_market(l, Network::Main)?;
+    let net = market.market_network();
+    let row = row_for_market(l, net)?;
     let value = match lock_coin_on_node(node, row.lock, &row.at, &row.file).await? {
         Ok(value) => value,
         Err(why) => {
@@ -3925,9 +3934,9 @@ async fn follow_elsewhere(
         }
     };
     let step = match market.proof_copy(&l.name).await? {
-        ProofCopy::Copy(text) => listing_file::ListingFile::parse(&text, Network::Main)
+        ProofCopy::Copy(text) => listing_file::ListingFile::parse(&text, net)
             .ok()
-            .map(|theirs| foreign_step_in(&theirs, l, value, Network::Main))
+            .map(|theirs| foreign_step_in(&theirs, l, value, net))
             .transpose()?
             .flatten(),
         ProofCopy::NotListed | ProofCopy::NoAnswer(_) => None,
@@ -3943,11 +3952,11 @@ async fn follow_elsewhere(
 /// read. The caller also gates on [`due`]; no code writes a
 /// `market_retry_at` on a Refused listing today, so for Refused it is
 /// always true.
-fn stored_file_near_expiry(l: &queries::ShakedexListing, now: i64) -> bool {
+fn stored_file_near_expiry(l: &queries::ShakedexListing, now: i64, net: Network) -> bool {
     match l
         .listing_file_json
         .as_deref()
-        .map(|f| listing_file::ListingFile::parse(f, Network::Main))
+        .map(|f| listing_file::ListingFile::parse(f, net))
     {
         Some(Ok(file)) => file.expires_at.is_some_and(|e| file_near_expiry(e, now)),
         None | Some(Err(_)) => true,
@@ -3967,8 +3976,9 @@ async fn refresh_refused(
     node: &dyn NodeRpc,
     l: &queries::ShakedexListing,
     now: i64,
+    net: Network,
 ) -> Result<(), AppError> {
-    match market_copy(conn, node, Network::Main, l, now).await? {
+    match market_copy(conn, node, net, l, now).await? {
         MarketCopy::Ready { .. } => Ok(()),
         MarketCopy::StepsUnverified(why) => record(conn, l, &steps_unverified(l, why, now)),
         MarketCopy::NotNow(why) => {
@@ -3987,24 +3997,24 @@ async fn keep_listed(
     l: &queries::ShakedexListing,
     now: i64,
 ) -> Result<(), AppError> {
+    let net = market.market_network();
     use queries::MarketStatus as S;
-    let (file, ours, listing, lock_value, mtp) =
-        match market_copy(conn, node, Network::Main, l, now).await? {
-            MarketCopy::NotNow(why) => {
-                not_now(l, &why);
-                return Ok(());
-            }
-            MarketCopy::StepsUnverified(why) => {
-                return record(conn, l, &steps_unverified(l, why, now));
-            }
-            MarketCopy::Ready {
-                file,
-                copy,
-                listing,
-                lock_value,
-                mtp,
-            } => (file, copy, listing, lock_value, mtp),
-        };
+    let (file, ours, listing, lock_value, mtp) = match market_copy(conn, node, net, l, now).await? {
+        MarketCopy::NotNow(why) => {
+            not_now(l, &why);
+            return Ok(());
+        }
+        MarketCopy::StepsUnverified(why) => {
+            return record(conn, l, &steps_unverified(l, why, now));
+        }
+        MarketCopy::Ready {
+            file,
+            copy,
+            listing,
+            lock_value,
+            mtp,
+        } => (file, copy, listing, lock_value, mtp),
+    };
     // R41: the latest expiry this wallet could have written itself, one
     // refresh period of slack included; a copy expiring later is replaced.
     let latest_expiry = latest_own_expiry(mtp);
@@ -4016,19 +4026,28 @@ async fn keep_listed(
     // already ours with an expiry as late (R41).
     let refreshed = listing.listing_file_json != l.listing_file_json;
     let copy = market.proof_copy(&listing.name).await?;
-    if flagged_by_copy(conn, &listing, &copy, lock_value, now)? {
+    if flagged_by_copy(conn, &listing, &copy, lock_value, now, net)? {
         return Ok(());
     }
     match copy {
         ProofCopy::Copy(text) => {
             // A copy that does not read as a listing file differs from ours
             // and is no step of ours: ours is uploaded over it.
-            let theirs = listing_file::ListingFile::parse(&text, Network::Main).ok();
+            let theirs = listing_file::ListingFile::parse(&text, net).ok();
             // R41: our offer with a later expiry hides nothing: it is ours.
+            // With an earlier one it is ours too: the market keeps its own
+            // expiry until a signed renewal moves it, so an upload is wasted.
             let same = theirs.as_ref().is_some_and(|theirs| {
                 listing_file::same_market_listing(theirs, &ours)
                     || listing_file::same_offer_expiring_later(theirs, &ours, latest_expiry)
+                    || listing_file::same_offer_expiring_earlier(theirs, &ours)
             });
+            // What the market shows buyers, for My listings and its Renew.
+            if same {
+                if let Some(exp) = theirs.as_ref().and_then(|t| t.expires_at) {
+                    queries::set_market_expiry(conn, &listing.id, exp as i64, now)?;
+                }
+            }
             if refreshed && !same {
                 return upload(conn, market, &file, &step, &listing, S::Listed, now).await;
             }
@@ -4040,7 +4059,7 @@ async fn keep_listed(
             let replaced = if listing.market_changed
                 || theirs
                     .as_ref()
-                    .is_some_and(|theirs| is_our_sent_step(&listing, theirs, &ours))
+                    .is_some_and(|theirs| is_our_sent_step(&listing, theirs, &ours, net))
             {
                 S::Listed
             } else {

@@ -15,8 +15,14 @@
 
 ## [Unreleased]
 
+### Added
+- **Renew a listing on LearnHNS Market.** The market no longer takes a new expiry from an upload, so a listing would have dropped off it after a year. From 30 days before then, My listings says until when buyers see it and offers Renew on market. It is signed with the listing's lock key while the wallet is unlocked, with no transaction.
+
 ### Security
 - **A mainnet wallet without a passphrase says so.** The Wallet page warns that anyone with a copy of its files, including an old backup, can take its funds, and links to the steps for moving to a new wallet.
+
+### Fixed
+- **A pending listing is sent again once its transfer is confirmed.** LearnHNS Market now takes a pending listing only after the transfer into the lock confirms. Namehold read the earlier answer as a final refusal, so the listing stayed off the market's pending list and My listings warned of a refusal until the finalize. It now tries again, with growing pauses.
 
 ## [0.7.0] - 2026-11-04
 
