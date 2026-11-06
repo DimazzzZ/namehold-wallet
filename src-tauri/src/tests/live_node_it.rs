@@ -11012,3 +11012,188 @@ async fn live_regtest_and_testnet_nodes_run_side_by_side() {
     assert_eq!(regtest["connected"], true, "regtest's node kept running");
     stop_hsd(app.state()).await.expect("stop regtest");
 }
+
+// --- LearnHNS Market, local regtest setup ------------------------------------
+
+/// The market from learnhns-market's `compose.regtest.yaml`, or `None` (skip).
+fn learnhns_env(test: &str) -> Option<(String, String, String)> {
+    let Some(market) = std::env::var("HNS_IT_LEARNHNS_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+    else {
+        eprintln!("skip {test}: set HNS_IT_LEARNHNS_URL (and HNS_IT_SHAKEDEX=1, HNS_IT_NODE_URL)");
+        return None;
+    };
+    let (url, key) = shakedex_node_env(test)?;
+    Some((url, key, market))
+}
+
+/// The market jobs a sync runs, against the local market at `now`.
+async fn market_jobs(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    cl: &NodeRpcClient,
+    market: &crate::market::learnhns::LearnHnsClient,
+    now: i64,
+) {
+    let conn = std::mem::replace(
+        &mut *app.state::<AppState>().db.lock().unwrap(),
+        rusqlite::Connection::open_in_memory().unwrap(),
+    );
+    let lock = crate::db::sync_lock::LockLost::default();
+    let a =
+        crate::shakedex_jobs::publish_listings_with_client(&conn, cl, market, PROFILE, now, &lock)
+            .await;
+    let b =
+        crate::shakedex_jobs::keep_listed_with_client(&conn, cl, market, PROFILE, now, &lock).await;
+    *app.state::<AppState>().db.lock().unwrap() = conn;
+    a.expect("publish job");
+    b.expect("keep-listed job");
+}
+
+fn market_row(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    id: &str,
+) -> db::queries::ShakedexListing {
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().unwrap();
+    db::queries::get_shakedex_listing(&conn, id)
+        .unwrap()
+        .unwrap()
+}
+
+/// Against LearnHNS Market's own local regtest setup (its PR #2 and the
+/// renewal API): the pending listing is refused before its TRANSFER confirms
+/// and taken after, the listing goes up once Listed and the market serves our
+/// copy, and a renewal signed with the lock key moves the market's expiry.
+#[tokio::test]
+async fn learnhns_local_market_pending_upload_and_renewal() {
+    let Some((url, key, market_url)) =
+        learnhns_env("learnhns_local_market_pending_upload_and_renewal")
+    else {
+        return;
+    };
+    use crate::db::queries::MarketStatus;
+    let (app, cl, addr, name) = own_a_name(&url, &key, "lhmkt").await;
+    {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        db::queries::set_setting(&conn, "learnhns_base_url", &market_url).unwrap();
+    }
+    let mut settings = std::collections::HashMap::new();
+    settings.insert("learnhns_base_url".to_string(), market_url.clone());
+    let market = crate::market::learnhns::LearnHnsClient::from_settings(&settings)
+        .unwrap()
+        .for_network(NET);
+    let now = chrono::Utc::now().timestamp();
+
+    // Day 0: the TRANSFER is sent, not mined. The market says not yet.
+    let draft = shakedex_build_lock_draft(
+        app.state(),
+        name.clone(),
+        ListingMode::BuyNow,
+        true,
+        Some(1),
+    )
+    .await
+    .expect("lock builds");
+    broadcast_only(&app, &draft.id).await;
+    let id = open_listing(&app, &name).expect("listing").id;
+    market_jobs(&app, &cl, &market, now).await;
+    let l = market_row(&app, &id);
+    eprintln!(
+        "before confirmation: {:?} {:?}",
+        l.market_status, l.market_error
+    );
+    assert_eq!(
+        l.market_status,
+        Some(MarketStatus::Retrying),
+        "{:?}",
+        l.market_error
+    );
+
+    // Mined: the retry after the backoff is taken.
+    settle(&app, &cl, &addr, &draft.id).await;
+    market_jobs(&app, &cl, &market, now + 400).await;
+    let l = market_row(&app, &id);
+    eprintln!(
+        "after confirmation: {:?} {:?}",
+        l.market_status, l.market_error
+    );
+    assert_eq!(
+        l.market_status,
+        Some(MarketStatus::Pending),
+        "{:?}",
+        l.market_error
+    );
+
+    // The lockup, then Finalize & sign: Listed, and the first upload.
+    cl.generate_to_address(NET.name_params().transfer_lockup - 1, &addr)
+        .await
+        .expect("mine");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::ReadyToFinalize);
+    finalize_and_sign_on_chain(&app, &cl, &addr, &id, "5", 1).await;
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+    let now = chrono::Utc::now().timestamp();
+    // A listing near its end: a fresh one already runs the market's whole
+    // 365 days, which no renewal can extend. The first upload sets the
+    // expiry the market keeps.
+    {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        let file = db::queries::get_shakedex_listing(&conn, &id)
+            .unwrap()
+            .unwrap()
+            .listing_file_json
+            .unwrap();
+        // Past R23's 30-day refresh, which would set a full year before the upload.
+        let soon = (now + 40 * 86_400) as u64;
+        let short =
+            crate::noncustodial::shakedex::listing_file::with_expiry(&file, soon, NET).unwrap();
+        conn.execute(
+            "UPDATE shakedex_listings SET listing_file_json = ?1, expires_at = ?2 WHERE id = ?3",
+            params![short, soon as i64, id],
+        )
+        .unwrap();
+    }
+    market_jobs(&app, &cl, &market, now).await;
+    let l = market_row(&app, &id);
+    eprintln!("after upload: {:?} {:?}", l.market_status, l.market_error);
+    assert_eq!(
+        l.market_status,
+        Some(MarketStatus::Listed),
+        "{:?}",
+        l.market_error
+    );
+    let served = match market.proof_copy(&name).await.expect("read") {
+        crate::market::learnhns::ProofCopy::Copy(text) => text,
+        other => panic!("the market does not serve our listing: {other:?}"),
+    };
+    let served = crate::noncustodial::shakedex::listing_file::ListingFile::parse(&served, NET)
+        .expect("the market's copy reads");
+    let before = served.expires_at.expect("an expiry");
+
+    // Renew: signed with the lock key, no transaction.
+    unlock(&app);
+    let state = app.state::<AppState>();
+    let ctx = crate::commands::shakedex::software_writer_ctx(&state).expect("ctx");
+    let renewed = crate::commands::shakedex::renew_on_market(&state, &ctx, &market, &id, now)
+        .await
+        .expect("renewal taken");
+    let after = renewed.market_expires_at.expect("recorded");
+    eprintln!("expiry {before} -> {after}");
+    assert!(after as u64 > before);
+    let served = match market.proof_copy(&name).await.expect("read") {
+        crate::market::learnhns::ProofCopy::Copy(text) => text,
+        other => panic!("gone after renewal: {other:?}"),
+    };
+    let served =
+        crate::noncustodial::shakedex::listing_file::ListingFile::parse(&served, NET).unwrap();
+    assert_eq!(
+        served.expires_at,
+        Some(after as u64),
+        "the market serves the renewed expiry"
+    );
+}

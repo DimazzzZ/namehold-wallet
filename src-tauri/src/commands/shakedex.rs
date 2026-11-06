@@ -3749,7 +3749,7 @@ pub async fn shakedex_build_lock_draft(
             crate::noncustodial::shakedex::MAINNET_SELLING_EXPERIMENTAL.into(),
         ));
     }
-    if publish && ctx.network != Network::Main {
+    if publish && !LearnHnsClient::from_settings(&ctx.settings)?.writes_on(ctx.network) {
         return Err(AppError::InvalidInput(MARKET_MAINNET_ONLY.into()));
     }
     // The signer is checked before anything else is read; the key itself is
@@ -4267,7 +4267,7 @@ pub(crate) async fn renew_on_market(
     let pubkey = shakedex_jobs::lock_pubkey(&listing)?;
 
     let copy = match market.proof_copy(&listing.name).await? {
-        ProofCopy::Copy(text) => ListingFile::parse(&text, Network::Main)?,
+        ProofCopy::Copy(text) => ListingFile::parse(&text, market.market_network())?,
         ProofCopy::NotListed => {
             return Err(AppError::InvalidInput(
                 "LearnHNS Market doesn't list this name now: nothing to renew".into(),
