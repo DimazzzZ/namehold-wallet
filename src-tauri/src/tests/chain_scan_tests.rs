@@ -9,7 +9,10 @@
 use crate::tests::command_helpers::set_profile_override;
 use rusqlite::{params, Connection};
 
-use crate::commands::chain_scan::{read_indexed_bids, scan_cursor_height};
+use crate::commands::chain_scan::{
+    advance_scan_window, read_indexed_bids, reclaim_free_space, scan_covers_auction,
+    scan_cursor_height, RETAINED_BLOCKS,
+};
 use crate::commands::read::merge_indexed_bids;
 use crate::db;
 use crate::db::queries::BidCommitmentRow;
@@ -1342,4 +1345,159 @@ fn resolve_scanner_client_uses_builtin_default_when_no_override_or_global() {
     {
         assert_eq!(client.node_url(), "http://127.0.0.1:12037");
     }
+}
+
+fn seed_bid_at(c: &Connection, txid: &str, start: i64) {
+    c.execute(
+        "INSERT INTO name_bid_outpoints
+            (network, bid_txid, bid_vout, name_hash_hex, name_start_height,
+             lockup_value_doos, height)
+         VALUES (?1, ?2, 0, 'aa', ?3, 1, ?3)",
+        params![NET, txid, start],
+    )
+    .unwrap();
+}
+
+fn index_rows(c: &Connection) -> i64 {
+    c.query_row("SELECT COUNT(*) FROM name_bid_outpoints", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// A full auction on every network fits in the window, with room to register.
+#[test]
+fn the_window_holds_a_whole_auction_on_every_network() {
+    use crate::noncustodial::network::Network;
+    for n in [Network::Main, Network::Testnet, Network::Regtest] {
+        let p = n.name_params();
+        let auction =
+            i64::from(p.tree_interval) + i64::from(p.bidding_period) + i64::from(p.reveal_period);
+        assert!(RETAINED_BLOCKS > auction, "{n:?}: {auction}");
+    }
+}
+
+/// A new index starts near the tip, not at genesis.
+#[test]
+fn a_new_index_starts_at_the_window_not_at_genesis() {
+    let c = conn();
+    let tip = 354_460;
+    assert_eq!(
+        advance_scan_window(&c, NET, tip).unwrap(),
+        tip - RETAINED_BLOCKS
+    );
+    assert_eq!(scan_cursor_height(&c, NET), tip - RETAINED_BLOCKS);
+}
+
+/// A chain shorter than the window is scanned whole.
+#[test]
+fn a_short_chain_is_scanned_from_its_start() {
+    let c = conn();
+    assert_eq!(advance_scan_window(&c, NET, 100).unwrap(), 0);
+    assert!(scan_covers_auction(&c, NET, 0));
+}
+
+/// The trap: a cursor past an auction doesn't mean its bids are there. An
+/// aged-out auction must go to the explorer, not read as "no bids".
+#[test]
+fn an_aged_out_auction_is_not_covered_and_a_live_one_is() {
+    let c = conn();
+    let tip = 354_460;
+    let first = tip - RETAINED_BLOCKS + 1;
+    seed_bid_at(&c, "old", first - 1);
+    seed_bid_at(&c, "kept", first);
+    advance_scan_window(&c, NET, tip).unwrap();
+    assert_eq!(index_rows(&c), 1);
+    // Not reached yet.
+    assert!(!scan_covers_auction(&c, NET, first));
+    c.execute(
+        "UPDATE chain_scan_cursor SET last_height = ?1 WHERE network = ?2",
+        params![tip, NET],
+    )
+    .unwrap();
+    assert!(scan_covers_auction(&c, NET, first));
+    assert!(!scan_covers_auction(&c, NET, first - 1), "aged out");
+    assert!(!scan_covers_auction(&c, NET, tip + 1), "not mined yet");
+    assert!(
+        !scan_covers_auction(&c, "main", first),
+        "another chain's cursor"
+    );
+}
+
+/// The window follows the tip, and a lower tip moves nothing back.
+#[test]
+fn the_window_moves_forward_only_and_keeps_the_cursor() {
+    let c = conn();
+    let tip = 10_000;
+    advance_scan_window(&c, NET, tip).unwrap();
+    c.execute(
+        "UPDATE chain_scan_cursor SET last_height = ?1 WHERE network = ?2",
+        params![tip, NET],
+    )
+    .unwrap();
+    seed_bid_at(&c, "a", tip - RETAINED_BLOCKS + 1);
+    assert_eq!(advance_scan_window(&c, NET, tip + 1).unwrap(), tip);
+    assert_eq!(index_rows(&c), 0, "aged out one block later");
+    seed_bid_at(&c, "b", tip - 10);
+    assert_eq!(advance_scan_window(&c, NET, tip - 500).unwrap(), tip);
+    assert_eq!(index_rows(&c), 1);
+    assert!(scan_covers_auction(&c, NET, tip - 10));
+}
+
+fn pages(c: &Connection) -> (i64, i64) {
+    let p = |n: &str| {
+        c.query_row(&format!("PRAGMA {n}"), [], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
+    (p("page_count"), p("freelist_count"))
+}
+
+/// After a huge delete the file shrinks, and what was kept is still there.
+#[test]
+fn reclaim_shrinks_the_file_after_a_huge_delete_and_keeps_the_data() {
+    let (_path, c) = temp_db();
+    c.execute_batch("PRAGMA secure_delete = OFF; BEGIN;")
+        .unwrap();
+    {
+        let mut ins = c
+            .prepare(
+                "INSERT INTO name_bid_outpoints
+                    (network, bid_txid, bid_vout, name_hash_hex, name_start_height,
+                     lockup_value_doos, height)
+                 VALUES ('regtest', ?1, 0, 'aa', 1, 1, 1)",
+            )
+            .unwrap();
+        for i in 0..200_000 {
+            ins.execute(params![format!("{i:0>200}")]).unwrap();
+        }
+    }
+    c.execute(
+        "INSERT INTO settings (key, value) VALUES ('kept_by_reclaim_test', 'yes')",
+        [],
+    )
+    .unwrap();
+    c.execute_batch("COMMIT; DELETE FROM name_bid_outpoints;")
+        .unwrap();
+    let (before, free) = pages(&c);
+    assert!(free > 10_000, "{free}");
+    reclaim_free_space(&c);
+    let (after, free_after) = pages(&c);
+    assert!(after * 2 < before, "{before} -> {after}");
+    assert_eq!(free_after, 0);
+    let kept: String = c
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'kept_by_reclaim_test'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, "yes");
+}
+
+/// A normal database, with a little free space, is left alone.
+#[test]
+fn reclaim_leaves_a_normal_database_alone() {
+    let (_path, c) = temp_db();
+    let before = pages(&c);
+    assert!(before.1 < 10_000);
+    reclaim_free_space(&c);
+    assert_eq!(pages(&c), before);
 }

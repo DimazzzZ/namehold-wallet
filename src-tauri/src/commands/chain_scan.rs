@@ -13,7 +13,9 @@
 //! - Scoped to an auction: a name can be auctioned repeatedly, so rows also
 //!   carry the OPEN height the covenant names (see 029).
 //! - Walks blocks from this network's `chain_scan_cursor.last_height + 1` to
-//!   the node tip.
+//!   the node tip, and keeps recent auctions only ([`RETAINED_BLOCKS`]): the
+//!   whole chain's bids came to 9 GB in the wallet's own database. Older
+//!   auctions are read from the explorer ([`scan_covers_auction`]).
 //! - For each block: `getblock(hash, verbose, verboseTx)` → iterate outputs →
 //!   BID/REVEAL covenants → upsert into `name_bid_outpoints`.
 //! - Advances the cursor per block so it's resumable and never re-scans genesis.
@@ -27,6 +29,13 @@ use crate::noncustodial::sync::{COV_BID, COV_REVEAL};
 use rusqlite::params;
 use std::time::Duration;
 use tokio::time::sleep;
+
+/// How far back the index keeps auctions, in blocks. A mainnet or testnet
+/// auction runs 2,196 blocks from its OPEN (36 + 720 + 1,440); the rest, about
+/// 5.5 days, keeps a just-closed one available while its winner registers. One
+/// number for every network, so a regtest run doesn't lose an auction it mined
+/// a few blocks ago.
+pub(crate) const RETAINED_BLOCKS: i64 = 3_000;
 
 /// How many blocks to process in one batch before yielding. Keeps the scanner
 /// from monopolizing the node RPC and the DB write lock.
@@ -59,6 +68,9 @@ const CAUGHT_UP_SLEEP: Duration = Duration::from_secs(10);
 /// it would require a live node and would still never terminate.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn run_chain_scanner(db_path: String) {
+    if let Ok(conn) = open_conn(&db_path) {
+        reclaim_free_space(&conn);
+    }
     loop {
         // Settings and the active profile's network come from one connection:
         // the scanner must not treat a node on another chain as authoritative
@@ -153,7 +165,15 @@ pub async fn run_chain_scanner(db_path: String) {
                     continue;
                 }
             };
-            get_scan_cursor(&conn, scan_network)
+            // Age out old auctions, and on a new index start near the tip
+            // rather than walking the whole chain.
+            match advance_scan_window(&conn, scan_network, tip) {
+                Ok(cursor) => cursor,
+                Err(_) => {
+                    sleep(NOT_READY_SLEEP).await;
+                    continue;
+                }
+            }
         };
 
         if cursor >= tip {
@@ -454,6 +474,68 @@ pub(crate) fn set_scan_cursor(
         params![network, height],
     )?; // COVERAGE: the Err branch of `?` requires a corrupt/closed DB — not unit-testable.
     Ok(())
+}
+
+/// Drop the auctions that have aged out of [`RETAINED_BLOCKS`] and move the
+/// cursor past them, in one transaction, so `first_height` never promises an
+/// auction that is gone. Returns the height to scan from. Never moves back.
+pub(crate) fn advance_scan_window(
+    conn: &rusqlite::Connection,
+    network: &str,
+    tip: i64,
+) -> Result<i64, crate::error::AppError> {
+    let first = tip - RETAINED_BLOCKS + 1;
+    let tx = conn.unchecked_transaction()?;
+    let moved = tx.execute(
+        "UPDATE chain_scan_cursor
+         SET first_height = ?2, last_height = MAX(last_height, ?2 - 1)
+         WHERE network = ?1 AND first_height < ?2",
+        params![network, first],
+    )?;
+    if moved > 0 {
+        tx.execute(
+            "DELETE FROM name_bid_outpoints WHERE network = ?1 AND name_start_height < ?2",
+            params![network, first],
+        )?;
+    }
+    tx.commit()?;
+    Ok(get_scan_cursor(conn, network))
+}
+
+/// Whether the index has every bid of the auction opened at `start`: the
+/// auction is inside the kept window and the scanner has reached it. Otherwise
+/// the caller asks the explorer, because no rows would mean "not kept", not
+/// "no bids".
+pub(crate) fn scan_covers_auction(conn: &rusqlite::Connection, network: &str, start: i64) -> bool {
+    conn.query_row(
+        "SELECT first_height <= ?2 AND last_height >= ?2
+         FROM chain_scan_cursor WHERE network = ?1",
+        params![network, start],
+        |r| r.get(0),
+    )
+    .unwrap_or(false)
+}
+
+/// Give back the file space of a large delete, once at startup. Only when most
+/// of the file is free, as after migration 042; otherwise SQLite reuses free
+/// pages and a VACUUM buys nothing. Best effort: busy (the daemon is reading)
+/// leaves the file as it is until the next start, and nothing is lost.
+pub(crate) fn reclaim_free_space(conn: &rusqlite::Connection) {
+    /// Below this, about 40 MB, the file isn't worth rewriting.
+    const WORTH_IT_FREE_PAGES: i64 = 10_000;
+    let pragma = |name: &str| conn.query_row(&format!("PRAGMA {name}"), [], |r| r.get::<_, i64>(0));
+    let (Ok(pages), Ok(free)) = (pragma("page_count"), pragma("freelist_count")) else {
+        return;
+    };
+    if free < WORTH_IT_FREE_PAGES || free * 2 < pages {
+        return;
+    }
+    // In memory: the temporary copy holds the encrypted wallets, so it stays
+    // out of the system's temp folder.
+    match conn.execute_batch("PRAGMA temp_store = MEMORY; VACUUM;") {
+        Ok(()) => crate::db::connection::checkpoint_truncate(conn),
+        Err(e) => eprintln!("chain scan: the database was not compacted this start: {e}"),
+    }
 }
 
 // --- Internal row types ------------------------------------------------------

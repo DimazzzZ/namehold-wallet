@@ -19,6 +19,7 @@
 - **Renew a listing on LearnHNS Market.** The market no longer takes a new expiry from an upload, so a listing would have dropped off it after a year. From 30 days before then, My listings says until when buyers see it and offers Renew on market. It is signed with the listing's lock key while the wallet is unlocked, with no transaction.
 
 ### Fixed
+- **The database no longer grows to 9 GB with a local node.** The list of other people's bids covered the whole chain's history. It now keeps recent auctions, about three weeks, and an existing install shrinks when it next starts. With a large database that first start can take about a minute before the window appears. Bids on older auctions come from the explorer. Your own bids aren't affected.
 - **One background sync at a time.** Several `namehold-syncd` processes could run side by side, each syncing every wallet; one was found running for two days next to two others. A second one now exits at start, and a stopping daemon no longer removes the record of another one.
 - **A pending listing is sent again once its transfer is confirmed.** LearnHNS Market now takes a pending listing only after the transfer into the lock confirms. Namehold read the earlier answer as a final refusal, so the listing stayed off the market's pending list and My listings warned of a refusal until the finalize. It now tries again, with growing pauses.
 

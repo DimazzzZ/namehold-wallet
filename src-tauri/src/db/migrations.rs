@@ -72,7 +72,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "041",
         include_str!("../sql/041_shakedex_signed_lock_txids.sql"),
     ),
-    // 042 is taken by the bid index change on its own branch.
+    (
+        "042",
+        include_str!("../sql/042_bid_index_live_auctions.sql"),
+    ),
     ("043", include_str!("../sql/043_shakedex_market_expiry.sql")),
 ];
 
@@ -115,7 +118,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 42, "expected 42 migrations, got {count}");
+        assert_eq!(count, 43, "expected 43 migrations, got {count}");
     }
 
     /// An in-memory database with every migration before `version` applied
@@ -349,6 +352,39 @@ mod tests {
     }
 
     /// A database already at 040 takes 041 on top: every listing that holds
+    /// The old index goes and the scanner starts over; `secure_delete` is back
+    /// on afterwards, because wallet deletes rely on it.
+    #[test]
+    fn migration_042_empties_the_bid_index_and_restores_secure_delete() {
+        let conn = db_before("042");
+        conn.execute_batch("PRAGMA secure_delete = ON;").unwrap();
+        conn.execute(
+            "INSERT INTO name_bid_outpoints
+                 (network, bid_txid, bid_vout, name_hash_hex, name_start_height,
+                  lockup_value_doos, height)
+             VALUES ('main', 'aa', 0, 'bb', 100, 1, 101)",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE chain_scan_cursor SET last_height = 354460", [])
+            .unwrap();
+        run(&conn).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM name_bid_outpoints", [], |r| r.get(0))
+            .unwrap();
+        let (last, first): (i64, i64) = conn
+            .query_row(
+                "SELECT last_height, first_height FROM chain_scan_cursor WHERE network = 'main'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let secure: i64 = conn
+            .query_row("PRAGMA secure_delete", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!((rows, last, first, secure), (0, 0, 0, 1));
+    }
+
     /// a lock outpoint has its txid recorded as signed over, lowercased, and
     /// one without an outpoint has none.
     #[test]
@@ -432,7 +468,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 42);
+        assert_eq!(count, 43);
     }
 
     #[test]
