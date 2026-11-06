@@ -32,6 +32,11 @@
 - **Renew a listing on LearnHNS Market.** The market no longer takes a new expiry from an upload, so a listing would have dropped off it after a year. From 30 days before then, My listings says until when buyers see it and offers Renew on market. It is signed with the listing's lock key while the wallet is unlocked, with no transaction.
 - **Rename a wallet.** Manage wallets… has a Rename button on each wallet, confirmed in the secure window. Only the name changes; keys, addresses and history stay as they are.
 
+### CI / tooling
+- Every published release is installed and started on GitHub's Windows and Linux runners: the Windows installer and the `.deb` must install, the app must still run 45 s after starting with an empty home and create its database, and the AppImage goes through the same check as on pull requests.
+- A pre-release's notes come from its version's changelog section instead of GitHub's list of pull requests.
+- The Rust tests job is named `Rust tests`, without a test count that changed its name, so branch protection can require it; the release gate accepts both names.
+
 ## [0.7.0] - 2026-11-04
 
 > **Highlights:** a redesigned app, with one Names page, a page per name and a wallet that opens on your balance; a security audit's fixes, so settings that decide whom the wallet trusts and what you sign are confirmed in the secure window; batch actions and renewals for wallets with hundreds of names; and warnings for look-alike names, unknown explorers and first sends. **Saving a node URL now needs https unless the node is on this computer, the node the app starts now requires an API key, and values saved earlier, except the hsd program, are not re-checked, so look over Settings once after updating. On Windows, set a node API key in Settings before starting a node from the app.**
@@ -129,7 +134,6 @@
 - Actions updated by Dependabot, and the tests of testnet's real RPC port run one at a time under nextest.
 - Take `async-executor` 1.14.1, since 1.14.0 was yanked. RUSTSEC-2026-0429 (`zip` aborts the process on a crafted symlink entry) is suppressed with the other `zip` advisories: `tauri-plugin-updater` pins `zip` 4.6.1, and extraction runs only on Windows, on a bundle whose signature is already verified. See `SECURITY.md`.
 - A pull request's type label comes from the commit type its title starts with.
-- A pre-release's notes come from its version's changelog section instead of GitHub's list of pull requests.
 
 ## [0.6.1] - 2026-10-25
 
