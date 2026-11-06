@@ -7024,6 +7024,27 @@ fn hsw_rpc(api_key: &str, args: &[&str]) -> String {
         .to_string()
 }
 
+/// Run `hsw-cli` against the regtest wallet [`BOB_WALLET`] (the Bob Wallet
+/// stand-in); its JSON reply. `hsw-cli` prints `null`, and exits 0, for a
+/// wallet or an account it does not have.
+fn hsw_cli(api_key: &str, args: &[&str]) -> serde_json::Value {
+    let out = std::process::Command::new("hsw-cli")
+        .arg("--network=regtest")
+        .arg(format!("--api-key={api_key}"))
+        .arg(format!("--id={BOB_WALLET}"))
+        .args(args)
+        .output()
+        .expect("run hsw-cli (scripts/regtest.sh --with-wallet)");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "hsw-cli {args:?}: {stdout} {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("hsw-cli {args:?} answered no JSON ({e}): {stdout}"))
+}
+
 /// Run the listing step's body (`shakedex_jobs::refresh_listings_with_client`,
 /// both listing jobs) on the app's database against the live node, as
 /// `run_sync_steps` does (connection swapped out, as in `abort_job`).
@@ -11369,4 +11390,676 @@ async fn learnhns_local_market_sale_reorg_and_cancel() {
     let view = market_view(&market_url, &name).await;
     eprintln!("market after the cancel: {view}");
     assert_eq!(view["status"], "cancelled", "{view}");
+}
+
+// =============================================================================
+// Moving from Bob Wallet by the recovery phrase alone
+// =============================================================================
+//
+// Bob Wallet embeds hsd's wallet: a Bob wallet is an hsd wallet made from a
+// BIP39 phrase (empty BIP39 passphrase), deriving m/44'/coin'/account'. So the
+// node's own wallet (`scripts/regtest.sh start --with-wallet`) plays Bob: the
+// wallet [`BOB_WALLET`], made once from [`MNEMONIC`] and kept across runs. hsd
+// numbers accounts in creation order, so the wallet holds `bob1`, `bob2`, …,
+// and a run uses `bob{K}` for K in 25..=74: clear of the fixed private
+// accounts (0-24), of [`fresh_acct`] and of [`unique_acct`], and only ever
+// used through hsd's wallet, so hsd and the chain agree on its whole history.
+
+/// The hsd wallet that plays Bob Wallet.
+const BOB_WALLET: &str = "bobit";
+
+/// The hsd wallet's HTTP API: the regtest default port `hsw-cli` reaches too.
+const BOB_WALLET_URL: &str = "http://127.0.0.1:14039";
+
+/// A client for the hsd wallet's HTTP API, from the crate's builder, which
+/// installs the rustls provider reqwest needs.
+fn bob_http() -> reqwest::Client {
+    crate::http::client_builder().build().expect("http client")
+}
+
+/// A call to the Bob wallet's HTTP API (`lib/wallet/http.js`,
+/// `/wallet/:id…`); its JSON reply. Each call names its wallet, unlike the
+/// wallet RPC, whose selected wallet is shared by every caller of the node.
+async fn bob(
+    api_key: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let url = format!("{BOB_WALLET_URL}/wallet/{BOB_WALLET}{path}");
+    let mut req = bob_http()
+        .request(method.clone(), &url)
+        .basic_auth("x", Some(api_key));
+    if let Some(b) = &body {
+        req = req.json(b);
+    }
+    let resp = req
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("{method} {path}: {e}"));
+    let status = resp.status();
+    let text = resp.text().await.expect("wallet reply");
+    assert!(
+        status.is_success(),
+        "{method} {path} {body:?}: {status} {text}"
+    );
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{method} {path}: {e}: {text}"))
+}
+
+/// The hsd wallet's chain height (`getwalletinfo` → `height`).
+async fn bob_height(api_key: &str) -> i64 {
+    let reply: serde_json::Value = bob_http()
+        .post(BOB_WALLET_URL)
+        .basic_auth("x", Some(api_key))
+        .json(&serde_json::json!({ "method": "getwalletinfo", "params": [] }))
+        .send()
+        .await
+        .expect("getwalletinfo")
+        .json()
+        .await
+        .expect("getwalletinfo");
+    reply["result"]["height"].as_i64().expect("wallet height")
+}
+
+/// Wait until the hsd wallet has caught up with the node's tip: it follows
+/// the chain on its own, and a wallet behind the tip judges a name's auction
+/// by an older height.
+async fn bob_caught_up(cl: &NodeRpcClient, api_key: &str) {
+    let tip = cl.get_blockchain_info().await.expect("info").blocks as i64;
+    for _ in 0..100 {
+        if bob_height(api_key).await >= tip {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the hsd wallet never reached height {tip}");
+}
+
+/// Send a transaction from the Bob wallet (`POST path` with `body`), wait for
+/// the node to have it, and mine it to `miner`; the wallet's transaction JSON.
+async fn bob_sends(
+    cl: &NodeRpcClient,
+    api_key: &str,
+    miner: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    bob_caught_up(cl, api_key).await;
+    let tx = bob(api_key, reqwest::Method::POST, path, Some(body)).await;
+    let txid = tx["hash"].as_str().expect("txid").to_string();
+    wait_until_node_has(cl, &txid).await;
+    cl.generate_to_address(1, miner).await.expect("mine");
+    let mined = cl.get_tx_by_hash(&txid).await.expect("tx lookup");
+    assert!(
+        mined["height"].as_i64().unwrap_or(-1) >= 0,
+        "{path}: {txid} mined: {mined}"
+    );
+    bob_caught_up(cl, api_key).await;
+    tx
+}
+
+/// The Bob wallet's account at BIP44 index `k`, named `bob{k}`: the wallet is
+/// made from [`MNEMONIC`] when missing, and accounts up to `k` are created in
+/// order, each checked to get the index hsd gives it. Its name.
+fn bob_account(api_key: &str, k: u32) -> String {
+    if hsw_cli(api_key, &["get"]).is_null() {
+        let made = hsw_cli(
+            api_key,
+            &["mkwallet", BOB_WALLET, &format!("--mnemonic={MNEMONIC}")],
+        );
+        assert_eq!(made["id"], BOB_WALLET, "{made}");
+    }
+    let names: Vec<String> = hsw_cli(api_key, &["account", "list"])
+        .as_array()
+        .expect("account names")
+        .iter()
+        .map(|n| n.as_str().expect("account name").to_string())
+        .collect();
+    for i in 1..=k {
+        let name = format!("bob{i}");
+        if !names.contains(&name) {
+            let made = hsw_cli(api_key, &["account", "create", &name]);
+            assert_eq!(made["accountIndex"], i, "hsd numbered {name}: {made}");
+        }
+    }
+    format!("bob{k}")
+}
+
+/// A profile restored from [`MNEMONIC`] at BIP44 account `acct` into a fresh
+/// file DB (the sync reopens it by path), as `secure_import_wallet` restores
+/// a phrase: the account xpub derived from the seed, the profile row, the
+/// gap-limit window `[0, gap)` on both branches, the receive address and the
+/// change depth. The import takes account 0; this takes the test's account,
+/// and stores the window under it, as the profile's account index says. The
+/// DB path and the window's first receive address.
+fn restore_from_phrase(url: &str, key: &str, acct: u32) -> (std::path::PathBuf, String) {
+    use crate::commands::secure_wallet::{account_xpub_from_seed, gap_limit};
+    use crate::noncustodial::derivation;
+    let db_path = std::env::temp_dir().join(format!(
+        "namehold_live_bob_{}_{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", url).unwrap();
+    db::queries::set_setting(&conn, "node_rpc_api_key", key).unwrap();
+    let gap = gap_limit(&db::queries::get_settings(&conn).unwrap());
+
+    let account_xpub = account_xpub_from_seed(NET, &seed(), acct).unwrap();
+    db::queries::insert_wallet_profile(
+        &conn,
+        PROFILE,
+        "Bob",
+        "mnemonic_hot",
+        "regtest",
+        &account_xpub,
+        acct as i64,
+        false,
+    )
+    .unwrap();
+    let xpub = ExtendedPubKey::from_xpub(NET, &account_xpub).unwrap();
+    let receive = derivation::ensure_addresses(
+        &conn,
+        PROFILE,
+        acct,
+        NET,
+        &xpub,
+        derivation::BRANCH_RECEIVE,
+        gap,
+    )
+    .unwrap();
+    derivation::ensure_addresses(
+        &conn,
+        PROFILE,
+        acct,
+        NET,
+        &xpub,
+        derivation::BRANCH_CHANGE,
+        gap,
+    )
+    .unwrap();
+    let first = receive[0].address.clone();
+    db::queries::update_profile_receive(&conn, PROFILE, &first, gap as i64).unwrap();
+    db::queries::update_profile_change_depth(&conn, PROFILE, gap as i64).unwrap();
+    db::queries::set_active_profile(&conn, PROFILE).unwrap();
+    (db_path, first)
+}
+
+/// The app's full sync of the profile (`run_sync_steps`: node coins with the
+/// address window grown, then node name discovery).
+async fn full_sync(db_path: &std::path::Path) {
+    use crate::commands::sync::{run_sync_steps, SyncCaller, SyncStatus};
+    let status = std::sync::Arc::new(tokio::sync::Mutex::new(SyncStatus::default()));
+    run_sync_steps(&status, db_path.to_str().unwrap(), PROFILE, SyncCaller::App).await;
+}
+
+/// The profile's unspent tracked coins, as (txid, vout, value), sorted.
+fn tracked_unspent(app: &tauri::App<tauri::test::MockRuntime>) -> Vec<(String, u32, i64)> {
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    let mut stmt = c
+        .prepare(
+            "SELECT txid, vout, value_doos FROM tracked_utxos
+             WHERE wallet_profile_id = ?1 AND spent_by_txid IS NULL
+             ORDER BY txid, vout",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map(params![PROFILE], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    rows
+}
+
+/// The Bob wallet's coins of `account` (`GET /coin`), as (txid, vout, value),
+/// sorted.
+async fn bob_coins(api_key: &str, account: &str) -> Vec<(String, u32, i64)> {
+    let coins = bob(
+        api_key,
+        reqwest::Method::GET,
+        &format!("/coin?account={account}"),
+        None,
+    )
+    .await;
+    let mut out: Vec<(String, u32, i64)> = coins
+        .as_array()
+        .expect("coins")
+        .iter()
+        .map(|c| {
+            (
+                c["hash"].as_str().expect("hash").to_string(),
+                c["index"].as_u64().expect("index") as u32,
+                c["value"].as_i64().expect("value"),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// The Bob wallet's balance of `account` (`GET /balance`): confirmed and
+/// unconfirmed.
+async fn bob_balance(api_key: &str, account: &str) -> (i64, i64) {
+    let b = bob(
+        api_key,
+        reqwest::Method::GET,
+        &format!("/balance?account={account}"),
+        None,
+    )
+    .await;
+    (
+        b["confirmed"].as_i64().expect("confirmed"),
+        b["unconfirmed"].as_i64().expect("unconfirmed"),
+    )
+}
+
+/// Every coin of the Bob wallet's `account` sits at an address hsd derived at
+/// the path Namehold derives it at: hsd's own key record for the address
+/// (`GET /key/:address`) names account `k`, a branch and an index, and
+/// Namehold's derivation of `k/branch/index` from the phrase gives the same
+/// address and public key. The (branch, index) paths checked.
+async fn assert_bob_paths_match(api_key: &str, account: &str, k: u32) -> Vec<(u32, u32)> {
+    let coins = bob(
+        api_key,
+        reqwest::Method::GET,
+        &format!("/coin?account={account}"),
+        None,
+    )
+    .await;
+    let addresses: std::collections::BTreeSet<String> = coins
+        .as_array()
+        .expect("coins")
+        .iter()
+        .map(|c| c["address"].as_str().expect("address").to_string())
+        .collect();
+    let mut paths = Vec::new();
+    for a in &addresses {
+        let key = bob(api_key, reqwest::Method::GET, &format!("/key/{a}"), None).await;
+        assert_eq!(key["account"], k, "hsd's key record of {a}: {key}");
+        let branch = key["branch"].as_u64().expect("branch") as u32;
+        let index = key["index"].as_u64().expect("index") as u32;
+        let (_sk, pk, ours) = hd::derive_address(NET, &seed(), k, branch, index).unwrap();
+        assert_eq!(&ours, a, "Namehold's {k}/{branch}/{index}");
+        assert_eq!(key["publicKey"], hex::encode(pk), "the key at {a}");
+        paths.push((branch, index));
+    }
+    paths.sort();
+    paths
+}
+
+/// A Bob Wallet user moves to Namehold with the recovery phrase alone. hsd's
+/// wallet, made from the phrase, plays Bob at account K: its account xpub and
+/// addresses are the ones Namehold derives from the phrase; it is funded and
+/// sends to its own second address (so it holds coins past 0/0, change
+/// included), and a profile restored from the phrase syncs to hsd's exact
+/// coins and balance; Bob wins a name (open, bid, reveal, register), and a
+/// second profile restored afterwards lists it as owned; Bob bids on another
+/// name and never reveals, and in the reveal period Namehold recovers the bid
+/// from the phrase, by the sweep and with the value given, and reveals it:
+/// the reveal is mined, and hsd's wallet reports it as its own.
+#[tokio::test]
+async fn live_bob_wallet_moves_by_phrase() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_bob_wallet_moves_by_phrase: set HNS_IT_NODE_URL");
+        return;
+    };
+    if bob_http()
+        .get(BOB_WALLET_URL)
+        .basic_auth("x", Some(&key))
+        .send()
+        .await
+        .is_err()
+    {
+        eprintln!(
+            "skip live_bob_wallet_moves_by_phrase: no hsd wallet at {BOB_WALLET_URL} \
+             (scripts/regtest.sh start --with-wallet)"
+        );
+        return;
+    }
+    let cl = client(&url, &key);
+    let miner = leaf00_at(99_999).0;
+    // hsd rolls names out by the week of their hash (`rules.hasRollout`):
+    // on regtest, every name can be opened from height 52 * 2.
+    let start = cl.get_blockchain_info().await.expect("info").blocks;
+    if start < 104 {
+        fund(&cl, &miner, (104 - start) as u32).await;
+    }
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let k = 25 + (tip % 50) as u32;
+    let account = bob_account(&key, k);
+    eprintln!("Bob is {BOB_WALLET}/{account}, BIP44 account {k}, at height {tip}");
+    let salt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos()
+        % 1_000_000;
+
+    // 1. The same account key, and the same first receive address.
+    let (db_a, first_receive) = restore_from_phrase(&url, &key, k);
+    let hsd_account = hsw_cli(&key, &["account", "get", &account]);
+    assert_eq!(hsd_account["accountIndex"], k, "{hsd_account}");
+    let hsd_xpub = hsd_account["accountKey"]
+        .as_str()
+        .expect("accountKey")
+        .to_string();
+    let ours = crate::commands::secure_wallet::account_xpub_from_seed(NET, &seed(), k).unwrap();
+    assert_eq!(
+        ours,
+        account_xpub_at(k),
+        "the import's derivation of account {k}"
+    );
+    // The two strings differ while the key is the same: hsd serializes the
+    // account node with the network's prefix (`rpub` on regtest), depth 3,
+    // its parent's fingerprint and child number k'; Namehold writes
+    // 0x0488b21e (`xpub`) on every network with depth, fingerprint and child
+    // number zeroed (`ExtendedPubKey::to_base58check`). So the key itself is
+    // compared: chain code and public key, and the node hsd says it is.
+    let hsd_node = hd::base58check_decode(&hsd_xpub).unwrap();
+    let our_node = hd::base58check_decode(&ours).unwrap();
+    assert_eq!(
+        (hsd_node[4], &hsd_node[9..13]),
+        (3u8, &(0x8000_0000u32 + k).to_be_bytes()[..]),
+        "hsd's accountKey is the node m/44'/5355'/{k}'"
+    );
+    assert_eq!(
+        hex::encode(&hsd_node[13..78]),
+        hex::encode(&our_node[13..78]),
+        "account {k}: the chain code and public key of hsd's {hsd_xpub} and Namehold's {ours}"
+    );
+    let key00 = bob(
+        &key,
+        reqwest::Method::GET,
+        &format!("/key/{first_receive}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        [&key00["account"], &key00["branch"], &key00["index"]],
+        [
+            &serde_json::json!(k),
+            &serde_json::json!(0),
+            &serde_json::json!(0)
+        ],
+        "hsd derives Namehold's first receive address at {k}/0/0: {key00}"
+    );
+    eprintln!("1. account {k}: xpub {hsd_xpub}; Namehold 0/0 {first_receive}, hsd: {key00}");
+
+    // 2. Bob is funded at its receive address and sends to a second address
+    // of its own; the restored profile syncs to hsd's coins and balance.
+    let bob_receive = hsd_account["receiveAddress"]
+        .as_str()
+        .expect("receiveAddress")
+        .to_string();
+    cl.generate_to_address(2, &bob_receive)
+        .await
+        .expect("fund Bob");
+    // Coinbase maturity, on another wallet's blocks.
+    cl.generate_to_address(4, &miner).await.expect("mature");
+    bob_caught_up(&cl, &key).await;
+    let second = bob(
+        &key,
+        reqwest::Method::POST,
+        "/address",
+        Some(serde_json::json!({ "account": account })),
+    )
+    .await;
+    let second = second["address"].as_str().expect("address").to_string();
+    bob_sends(
+        &cl,
+        &key,
+        &miner,
+        "/send",
+        serde_json::json!({
+            "account": account,
+            "outputs": [{ "address": second, "value": 123_456_789u64 }],
+        }),
+    )
+    .await;
+    let (confirmed, unconfirmed) = bob_balance(&key, &account).await;
+    assert_eq!(confirmed, unconfirmed, "nothing of Bob's is pending");
+    let hsd_coins = bob_coins(&key, &account).await;
+    let paths = assert_bob_paths_match(&key, &account, k).await;
+    assert!(
+        paths.iter().any(|&(b, _)| b == 1) && paths.iter().any(|&(b, i)| b == 0 && i > 0),
+        "Bob holds coins past 0/0, change included: {paths:?}"
+    );
+
+    full_sync(&db_a).await;
+    let app_a = app_with(rusqlite::Connection::open(&db_a).unwrap());
+    let balances = get_wallet_balances(app_a.state(), None)
+        .await
+        .expect("balances");
+    assert_eq!(balances["immatureDoos"], 0, "{balances}");
+    assert_eq!(
+        balances["totalDoos"], confirmed,
+        "Namehold's balance is hsd's getbalance for {account}: {balances}"
+    );
+    assert_eq!(
+        tracked_unspent(&app_a),
+        hsd_coins,
+        "Namehold tracks exactly hsd's coins"
+    );
+    eprintln!(
+        "2. hsd confirmed {confirmed} doos in {} coins at paths {paths:?}; Namehold {balances}",
+        hsd_coins.len(),
+    );
+
+    // 3. Bob wins a name: open, bid, reveal, register.
+    let won = format!("bobmv{tip}w{salt}");
+    bob_sends(
+        &cl,
+        &key,
+        &miner,
+        "/open",
+        serde_json::json!({ "name": won, "account": account }),
+    )
+    .await;
+    assert!(
+        mine_until(&cl, &won, "BIDDING", &miner, 30).await,
+        "{won} reaches BIDDING"
+    );
+    bob_sends(
+        &cl,
+        &key,
+        &miner,
+        "/bid",
+        serde_json::json!({
+            "name": won, "bid": 1_000_000u64, "lockup": 2_000_000u64, "account": account,
+        }),
+    )
+    .await;
+    assert!(
+        mine_until(&cl, &won, "REVEAL", &miner, 30).await,
+        "{won} reaches REVEAL"
+    );
+    bob_sends(
+        &cl,
+        &key,
+        &miner,
+        "/reveal",
+        serde_json::json!({ "name": won, "account": account }),
+    )
+    .await;
+    assert!(
+        mine_until(&cl, &won, "CLOSED", &miner, 40).await,
+        "{won} reaches CLOSED"
+    );
+    bob_sends(
+        &cl,
+        &key,
+        &miner,
+        "/update",
+        serde_json::json!({
+            "name": won,
+            "data": { "records": [{ "type": "TXT", "txt": ["bob-moved"] }] },
+            "account": account,
+        }),
+    )
+    .await;
+    let owner = name_owner(&cl, &won).await;
+    let owner_address = owner_coin_address(&cl, &won).await.expect("owner coin");
+
+    // 4. Bob bids on another name and does not reveal.
+    let held = format!("bobmv{tip}h{salt}");
+    let bid_value: i64 = 1_234_567;
+    let lockup: i64 = 2_000_000;
+    bob_sends(
+        &cl,
+        &key,
+        &miner,
+        "/open",
+        serde_json::json!({ "name": held, "account": account }),
+    )
+    .await;
+    assert!(
+        mine_until(&cl, &held, "BIDDING", &miner, 30).await,
+        "{held} reaches BIDDING"
+    );
+    let bid_tx = bob_sends(
+        &cl,
+        &key,
+        &miner,
+        "/bid",
+        serde_json::json!({
+            "name": held, "bid": bid_value, "lockup": lockup, "account": account,
+        }),
+    )
+    .await;
+    let bid_out = bid_tx["outputs"]
+        .as_array()
+        .expect("outputs")
+        .iter()
+        .find(|o| o["covenant"]["type"].as_u64() == Some(COV_TYPE_BID))
+        .expect("Bob's BID output")
+        .clone();
+    let bid_address = bid_out["address"].as_str().expect("address").to_string();
+    assert_eq!(bid_out["value"], lockup, "{bid_out}");
+    assert!(
+        mine_until(&cl, &held, "REVEAL", &miner, 30).await,
+        "{held} reaches REVEAL"
+    );
+    bob_caught_up(&cl, &key).await;
+
+    // The user restores the phrase now, into a second profile.
+    let (db_b, _) = restore_from_phrase(&url, &key, k);
+    full_sync(&db_b).await;
+    let app_b = app_with(rusqlite::Connection::open(&db_b).unwrap());
+    let (confirmed, unconfirmed) = bob_balance(&key, &account).await;
+    assert_eq!(confirmed, unconfirmed, "nothing of Bob's is pending");
+    let balances = get_wallet_balances(app_b.state(), None)
+        .await
+        .expect("balances");
+    assert_eq!(
+        balances["totalDoos"], confirmed,
+        "after the auctions, Namehold's balance is hsd's getbalance for {account}: {balances}"
+    );
+    assert_eq!(
+        tracked_unspent(&app_b),
+        bob_coins(&key, &account).await,
+        "after the auctions, Namehold tracks exactly hsd's coins"
+    );
+
+    let names = crate::commands::read::read_names(app_b.state(), Some(PROFILE.into()))
+        .await
+        .expect("read names");
+    let listed = names
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|n| n["name"].as_str() == Some(won.as_str()))
+        .cloned()
+        .unwrap_or_else(|| panic!("the restored profile lists {won}: {names}"));
+    assert!(
+        tracked_unspent(&app_b)
+            .iter()
+            .any(|(t, v, _)| (t, *v) == (&owner.0, owner.1)),
+        "the restored profile holds {won}'s owner coin {owner:?}"
+    );
+    eprintln!(
+        "3. {won}: owner coin {owner:?} at {owner_address}; Namehold lists {listed}; \
+         after the auctions: hsd confirmed {confirmed}, Namehold {balances}"
+    );
+
+    // The first profile, synced again, finds the bid by the sweep; the
+    // second is given the value.
+    full_sync(&db_a).await;
+    let swept = crate::commands::bids::brute_force_recover_bid(app_a.state(), None, held.clone())
+        .await
+        .expect("sweep");
+    assert_eq!(
+        (swept.bid_value_doos, swept.lockup_value_doos),
+        (bid_value, lockup)
+    );
+    assert_eq!(swept.address, bid_address);
+    assert_eq!(swept.tier, "sweep", "1.234567 HNS is no round value");
+    let recovered =
+        crate::commands::bids::recover_bid_commitment(app_b.state(), None, held.clone(), bid_value)
+            .await
+            .expect("recover with the value");
+    assert_eq!(
+        (
+            recovered.address.as_str(),
+            recovered.bid_value_doos,
+            recovered.lockup_value_doos
+        ),
+        (bid_address.as_str(), bid_value, lockup)
+    );
+
+    // Namehold reveals Bob's bid.
+    let reveal = build_reveal_draft(app_b.state(), held.clone(), Some(1))
+        .await
+        .expect("build reveal");
+    broadcast_only(&app_b, &reveal.id).await;
+    settle(&app_b, &cl, &miner, &reveal.id).await;
+    let reveal_txid = draft_status(&app_b, &reveal.id).txid.expect("txid");
+    let mined = cl.get_tx_by_hash(&reveal_txid).await.expect("tx lookup");
+    assert!(
+        mined["height"].as_i64().unwrap_or(-1) >= 0,
+        "the reveal is mined: {mined}"
+    );
+    let reveal_out = mined["outputs"]
+        .as_array()
+        .expect("outputs")
+        .iter()
+        .find(|o| o["covenant"]["type"].as_u64() == Some(COV_TYPE_REVEAL))
+        .expect("a REVEAL output")
+        .clone();
+    assert_eq!(reveal_out["address"], bid_address, "{reveal_out}");
+    assert_eq!(reveal_out["value"], bid_value, "{reveal_out}");
+    bob_caught_up(&cl, &key).await;
+    let hsd_reveals = bob(
+        &key,
+        reqwest::Method::GET,
+        &format!("/reveal/{held}?own=true"),
+        None,
+    )
+    .await;
+    let hsd_reveal = hsd_reveals
+        .as_array()
+        .expect("reveals")
+        .iter()
+        .find(|r| r["prevout"]["hash"].as_str() == Some(reveal_txid.as_str()))
+        .cloned()
+        .unwrap_or_else(|| panic!("hsd's wallet has the reveal {reveal_txid}: {hsd_reveals}"));
+    assert_eq!(hsd_reveal["value"], bid_value, "{hsd_reveal}");
+    assert_eq!(hsd_reveal["own"], true, "{hsd_reveal}");
+    eprintln!(
+        "4. {held}: bid {bid_value} of lockup {lockup} at {bid_address}; sweep {swept:?}; \
+         recovered {recovered:?}; reveal {reveal_txid} at height {}; hsd: {hsd_reveal}",
+        mined["height"]
+    );
+
+    drop(app_a);
+    drop(app_b);
+    for db in [db_a, db_b] {
+        let _ = std::fs::remove_file(&db);
+        let _ = std::fs::remove_file(db.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db.with_extension("db-shm"));
+    }
 }
