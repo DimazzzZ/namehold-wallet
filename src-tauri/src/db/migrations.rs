@@ -80,6 +80,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
+    run_with_progress(conn, |_, _, _| {})
+}
+
+fn ensure_version_table(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS schema_version (
@@ -87,21 +91,45 @@ pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
             applied_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         ",
-    )?;
+    )
+}
 
-    for (version, sql) in MIGRATIONS {
+/// The versions this build knows that the database has not applied yet, in
+/// the order they run. Empty for a database that is up to date.
+pub fn pending(conn: &Connection) -> Result<Vec<&'static str>, rusqlite::Error> {
+    ensure_version_table(conn)?;
+    let mut pending = Vec::new();
+    for (version, _) in MIGRATIONS {
         let exists: bool = conn.query_row(
             "SELECT COUNT(*) > 0 FROM schema_version WHERE version = ?1",
             [version],
             |row| row.get(0),
         )?;
         if !exists {
-            conn.execute_batch(sql)?;
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                [version],
-            )?;
+            pending.push(*version);
         }
+    }
+    Ok(pending)
+}
+
+/// [`run`], calling `on_step(step, total, version)` before each pending
+/// migration (`step` counts from 1), so a caller can show progress.
+pub fn run_with_progress(
+    conn: &Connection,
+    mut on_step: impl FnMut(usize, usize, &str),
+) -> Result<(), rusqlite::Error> {
+    let pending = pending(conn)?;
+    let total = pending.len();
+    for (i, version) in pending.into_iter().enumerate() {
+        let Some((_, sql)) = MIGRATIONS.iter().find(|(v, _)| *v == version) else {
+            continue;
+        };
+        on_step(i + 1, total, version);
+        conn.execute_batch(sql)?;
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            [version],
+        )?;
     }
     Ok(())
 }
@@ -109,6 +137,42 @@ pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_lists_what_is_left_and_progress_reports_each_step() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert_eq!(pending(&conn).unwrap().len(), MIGRATIONS.len());
+
+        // A database that stopped before the last two migrations.
+        let (applied, _) = MIGRATIONS.split_at(MIGRATIONS.len() - 2);
+        for (version, sql) in applied {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [version],
+            )
+            .unwrap();
+        }
+        let left = pending(&conn).unwrap();
+        assert_eq!(
+            left,
+            vec![
+                MIGRATIONS[MIGRATIONS.len() - 2].0,
+                MIGRATIONS[MIGRATIONS.len() - 1].0
+            ]
+        );
+
+        let mut steps = Vec::new();
+        run_with_progress(&conn, |step, total, version| {
+            steps.push((step, total, version.to_string()))
+        })
+        .unwrap();
+        assert_eq!(
+            steps,
+            vec![(1, 2, left[0].to_string()), (2, 2, left[1].to_string())]
+        );
+        assert!(pending(&conn).unwrap().is_empty());
+    }
 
     #[test]
     fn run_applies_all_migrations() {

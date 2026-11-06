@@ -109,6 +109,463 @@ pub fn harden_process() {
     }
 }
 
+/// Where the wallet database lives: `~/.namehold/portfolio.db`.
+pub(crate) fn db_file_path(app: &tauri::AppHandle) -> std::path::PathBuf {
+    // Store everything under ~/.namehold (pairs with the node's ~/.hsd),
+    // rather than the OS app-data dir derived from the bundle identifier.
+    // The identifier stays reverse-DNS for packaging/signing but no longer
+    // dictates where data lives.
+    app.path()
+        .home_dir()
+        .expect("failed to get home dir")
+        .join(".namehold")
+        .join("portfolio.db")
+}
+
+/// Everything setup does once the database is migrated: app state, tray,
+/// background tasks, the sync daemon. Runs on the main thread, either inside
+/// setup or, after a migration shown on screen, from
+/// [`commands::startup::spawn_migrations`].
+pub(crate) fn finish_setup(
+    app: &tauri::AppHandle,
+    conn: rusqlite::Connection,
+    db_path: &std::path::Path,
+) -> tauri::Result<()> {
+    // One-shot backfill for subdomain names (pre-fix imports had just the
+    // parent TLD; now we compose {subdomain}.{domain}). Gated by a settings
+    // marker so it runs exactly once.
+    let needs_backfill = db::queries::get_settings(&conn)
+        .ok()
+        .map(|s| !s.contains_key("namebase_history_subdomain_name_backfilled_v1"))
+        .unwrap_or(true);
+    if needs_backfill {
+        if let Err(e) = db::namebase_history::backfill_subdomain_names(&conn) {
+            eprintln!("warning: subdomain name backfill failed: {}", e);
+        } else {
+            // Mark it done so we don't run again.
+            let _ = db::queries::set_setting(
+                &conn,
+                "namebase_history_subdomain_name_backfilled_v1",
+                "1",
+            );
+        }
+    }
+
+    app.manage(AppState {
+        db: Mutex::new(conn),
+        signer: Mutex::new(None),
+        secure_prompts: Mutex::new(HashMap::new()),
+        hsd_children: Mutex::new(HashMap::new()),
+        hsd_starting: Mutex::new(std::collections::HashSet::new()),
+        node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
+        sync_status: Arc::new(AsyncMutex::new(SyncStatus::default())),
+    });
+
+    // -----------------------------------------------------------------
+    // System tray (menu bar on macOS). Lets the user close the window
+    // while the app keeps running (hsd + background daemon stay alive),
+    // and reopen it, control the node, and quit — all from the tray.
+    // -----------------------------------------------------------------
+    {
+        let open = MenuItem::with_id(app, "open", "Open Namehold", true, None::<&str>)?;
+        // Disabled status label — informational only.
+        let status = MenuItem::with_id(app, "status", "Node: …", false, None::<&str>)?;
+        let toggle = MenuItem::with_id(app, "toggle_node", "Start node", true, None::<&str>)?;
+        let bgsync =
+            CheckMenuItem::with_id(app, "bgsync", "Background sync", true, false, None::<&str>)?;
+        let sep = PredefinedMenuItem::separator(app)?;
+        let quit = MenuItem::with_id(app, "quit", "Quit Namehold", true, None::<&str>)?;
+        let menu = Menu::with_items(app, &[&open, &status, &toggle, &bgsync, &sep, &quit])?;
+
+        let tray = TrayIconBuilder::with_id("main-tray")
+            .icon(tauri::include_image!("icons/tray-normal.png"))
+            // On macOS, treat the icon as a template image so it
+            // adapts to light/dark menu bar. On other platforms this
+            // is a no-op. State is conveyed via glyph variants
+            // (filled / outline / badge) rather than color.
+            .icon_as_template(true)
+            // Linux writes the icon to a file. Without
+            // $XDG_RUNTIME_DIR, tray-icon uses the shared
+            // /tmp/tray-icon, which the first user to run the app
+            // creates; for any other user setup then failed with
+            // "tray icon error: Permission denied" and the app did
+            // not start. A directory of this user's own avoids it;
+            // the temp dir is only the fallback of a home-less
+            // session. Ignored on other platforms.
+            .temp_dir_path(
+                app.path()
+                    .app_cache_dir()
+                    .unwrap_or_else(|_| std::env::temp_dir())
+                    .join("tray-icon"),
+            )
+            .menu(&menu)
+            // Show the menu on BOTH left and right click. This
+            // matches every other macOS menu-bar app (Slack, Docker,
+            // 1Password, etc.) and avoids relying on AppKit to
+            // deliver a MouseButton::Left / Up event to our handler
+            // — that event does not reliably fire when a menu is
+            // attached to the NSStatusItem. "Open Namehold" is the
+            // first menu item so activating the window is one click
+            // away.
+            .show_menu_on_left_click(true)
+            .on_menu_event(|app, event| {
+                let app = app.clone();
+                match event.id().as_ref() {
+                    "open" => show_main_window(&app),
+                    "toggle_node" => {
+                        // Start or stop hsd depending on current state,
+                        // then refresh the tray. Runs on the async
+                        // runtime so we don't block the menu callback.
+                        tauri::async_runtime::spawn(async move {
+                            let running = {
+                                let state = app.state::<AppState>();
+                                // Match tray snapshot: reachable RPC OR
+                                // a child we spawned counts as running.
+                                // Fixes the adopted-node case where hsd
+                                // is up but no child of ours runs.
+                                state
+                                    .node_rpc_alive
+                                    .load(std::sync::atomic::Ordering::Relaxed)
+                                    || crate::commands::active_profile::active_profile_network_opt(
+                                        &state,
+                                    )
+                                    .is_some_and(|network| {
+                                        crate::commands::local_node::own_node(&state, network)
+                                            .is_some()
+                                    })
+                            };
+                            let result = if running {
+                                commands::node::stop_hsd(app.state::<AppState>())
+                                    .await
+                                    .map(|_| ())
+                            } else {
+                                commands::node::start_hsd(app.state::<AppState>())
+                                    .await
+                                    .map(|_| ())
+                            };
+                            if let Err(e) = result {
+                                eprintln!("tray: toggle node failed: {e}");
+                            }
+                            commands::tray::refresh_tray(&app);
+                        });
+                    }
+                    "bgsync" => {
+                        tauri::async_runtime::spawn(async move {
+                            // Flip based on the current persisted value.
+                            let currently_on = {
+                                let state = app.state::<AppState>();
+                                commands::daemon_ctl::is_background_sync_enabled(state)
+                                    .await
+                                    .unwrap_or(true)
+                            };
+                            if let Err(e) = commands::daemon_ctl::set_background_sync_enabled(
+                                app.state::<AppState>(),
+                                !currently_on,
+                            )
+                            .await
+                            {
+                                eprintln!("tray: toggle background sync failed: {e}");
+                            }
+                            commands::tray::refresh_tray(&app);
+                        });
+                    }
+                    "quit" => {
+                        commands::tray::REALLY_QUITTING
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        app.exit(0);
+                    }
+                    _ => {}
+                }
+            })
+            .build(app)?;
+
+        app.manage(commands::tray::TrayState {
+            tray,
+            status,
+            toggle,
+            bgsync,
+        });
+
+        // Intercept the MAIN window's close button. When "close to
+        // tray" is on (default) and we're not in a real quit, hide the
+        // window instead of closing it — hsd and the daemon keep
+        // running, and the tray icon brings the window back. When the
+        // setting is off, exit explicitly so `RunEvent::Exit` fires and
+        // the hsd-reap path runs (on macOS, closing the last window
+        // does NOT terminate the process on its own).
+        if let Some(win) = app.get_webview_window("main") {
+            let handle = app.clone();
+            win.on_window_event(move |event| {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    if commands::tray::REALLY_QUITTING.load(std::sync::atomic::Ordering::SeqCst) {
+                        return; // Real quit in progress — let it close.
+                    }
+                    if commands::tray::read_close_to_tray_setting(&handle) {
+                        api.prevent_close();
+                        if let Some(w) = handle.get_webview_window("main") {
+                            let _ = w.hide();
+
+                            // macOS: hide from Dock when closing to tray.
+                            #[cfg(target_os = "macos")]
+                            let _ = handle.set_dock_visibility(false);
+
+                            // Fire first-time tray notification (async, fire-and-forget).
+                            tauri::async_runtime::spawn({
+                                let handle = handle.clone();
+                                async move {
+                                    if let Err(e) =
+                                        commands::tray::fire_tray_hint_notification(&handle).await
+                                    {
+                                        eprintln!("tray hint notification failed: {e}");
+                                    }
+                                }
+                            });
+                        }
+                    } else {
+                        handle.exit(0);
+                    }
+                }
+            });
+        }
+
+        // Initial paint, then a light ticker. The ticker is the
+        // reconciliation path for tray state that changes WITHOUT going
+        // through a tray menu action: the frontend calling
+        // `start_hsd`/`stop_hsd`/`set_background_sync_enabled` via
+        // invoke, hsd autostart at launch, and passive sync-progress
+        // transitions. Tray-initiated actions refresh eagerly in their
+        // own handlers, so this only needs to be "reasonably fresh".
+        let handle = app.clone();
+        commands::tray::refresh_tray(&handle);
+        tauri::async_runtime::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
+            loop {
+                interval.tick().await;
+                commands::tray::refresh_tray(&handle);
+            }
+        });
+
+        // Backend RPC probe loop: every ~5s, check if hsd is reachable
+        // and update the `node_rpc_alive` flag. This keeps the tray
+        // accurate even when the main window is closed to tray (the
+        // frontend's polling pauses when unfocused). The first tick
+        // fires immediately so the flag is fresh within a few hundred ms
+        // of app launch.
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let state = handle.state::<AppState>();
+                let _ = commands::node::probe_and_update(&state).await;
+            }
+        });
+    }
+
+    // Deadline scanner (I1): on start + every ~10 minutes, look for
+    // reveal windows / renewals closing soon, and Shakedex purchases
+    // ready to finalize, and fire an OS
+    // notification (gated + deduped inside `scan_deadline_notifications`
+    // itself — this loop just decides WHEN to ask).
+    //
+    // Design choice: a single Tauri-managed background task beats a
+    // frontend timer here — it runs independently of which page is
+    // open (or whether any window is focused at all), and
+    // `tokio::time::interval`'s first `tick()` resolves immediately,
+    // so "on start" and "every 10 min" are the same loop, not two
+    // mechanisms. It does not persist across a full app quit, but the
+    // very next launch re-scans right away. The Shakedex finalize
+    // reminders are the exception: while the background daemon's
+    // heartbeat is fresh it sends them (also with the window closed)
+    // and this loop skips them, so exactly one process sends each.
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+        loop {
+            interval.tick().await;
+            let state = handle.state::<AppState>();
+            if let Err(e) =
+                commands::deadlines::scan_deadline_notifications(handle.clone(), state).await
+            {
+                eprintln!("deadline scan failed: {e}");
+            }
+        }
+    });
+
+    // Signer expiry sweep: once a second, drop the signer session
+    // if its time box has elapsed, so the decrypted key leaves memory
+    // when the session expires, not at the next command that looks
+    // (the frontend's polling pauses when the window is hidden).
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            commands::secure_wallet::sweep_expired_signer(&handle.state::<AppState>());
+        }
+    });
+
+    // Update checker (I2): on start + every ~4 hours, check for a new
+    // app version and fire an OS notification if one is found (gated by
+    // `update_notify_enabled` setting). Deduped by comparing against
+    // `last_notified_update_version` in settings — only fires if the
+    // version has changed. Runs independently of window focus so users
+    // in tray mode are alerted.
+    #[cfg(desktop)]
+    {
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            use tauri_plugin_updater::UpdaterExt;
+            // First check: 60s after launch (let networking settle).
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+            // Then every 4 hours.
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(4 * 3600));
+            loop {
+                interval.tick().await;
+                let state = handle.state::<AppState>();
+
+                // Check if update notifications are enabled.
+                let enabled = match state.db.lock() {
+                    Ok(db) => match crate::db::queries::get_settings(&db) {
+                        Ok(settings) => {
+                            settings.get("update_notify_enabled").map(String::as_str)
+                                == Some("true")
+                        }
+                        Err(_) => false,
+                    },
+                    Err(_) => false,
+                };
+
+                if !enabled {
+                    continue;
+                }
+
+                // Check for updates.
+                let update = match handle.updater() {
+                    Ok(updater) => match updater.check().await {
+                        Ok(u) => u,
+                        Err(e) => {
+                            eprintln!("update check failed: {e}");
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("updater unavailable: {e}");
+                        None
+                    }
+                };
+
+                if let Some(update) = update {
+                    // Read last notified version from settings.
+                    let last_notified = match state.db.lock() {
+                        Ok(db) => match crate::db::queries::get_settings(&db) {
+                            Ok(settings) => settings.get("last_notified_update_version").cloned(),
+                            Err(_) => None,
+                        },
+                        Err(_) => None,
+                    };
+
+                    let version = update.version.clone();
+
+                    // Stash the checked update so the frontend's
+                    // `get_pending_update_metadata` can hydrate the
+                    // banner without re-checking, and `install_update`
+                    // can install without a second round-trip.
+                    {
+                        let pending =
+                            handle.state::<commands::updates::app_updates::PendingUpdate>();
+                        *pending.0.lock().unwrap() = Some(update);
+                    }
+
+                    // Only notify if version changed (dedup).
+                    if last_notified.as_deref() != Some(version.as_str()) {
+                        // Fire the notification.
+                        use tauri_plugin_notification::NotificationExt;
+                        let title = format!("Namehold v{version} is available");
+                        let body = "Download and install the latest version.".to_string();
+                        let _ = handle
+                            .notification()
+                            .builder()
+                            .title(&title)
+                            .body(&body)
+                            .show();
+
+                        // Persist the notified version.
+                        if let Ok(db) = state.db.lock() {
+                            let _ = crate::db::queries::set_setting(
+                                &db,
+                                "last_notified_update_version",
+                                &version,
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Local node per network (spec 2026-10-24 R4/R5): once a second,
+    // look at the active wallet; when it changed (the first look, at
+    // launch, counts), start its network's node if it is a local-node
+    // wallet whose network starts on its own. Another network's node
+    // keeps running. Acting on a change only means a node the user
+    // stopped stays stopped. Fire-and-forget: a failed start (paths,
+    // version gate, spawn error) is logged and left for Settings, and
+    // `start_hsd` adopts a node that already answers instead of
+    // spawning a duplicate.
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut last = None;
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            let start = {
+                let state = handle.state::<AppState>();
+                let Ok(db) = state.db.lock() else { continue };
+                commands::node::autostart_on_profile_change(&db, &mut last)
+            };
+            if let Some(network) = start {
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = handle.state::<AppState>();
+                    if let Err(e) = commands::node::autostart_network_node(state, network).await {
+                        eprintln!("hsd autostart skipped: {e}");
+                    }
+                });
+            }
+        }
+    });
+
+    // Chain scanner (Feature 3, Stage 2): a background task that walks
+    // blocks from the fully-synced local node and indexes BID/REVEAL
+    // covenant outputs per name into `name_bid_outpoints`. This is what
+    // lets `read_name_bids` show ALL bidders — not just the wallet's
+    // own — without touching the HNSFans explorer once the node is
+    // authoritative. The scanner idles (30s poll) when the node is
+    // disconnected or still syncing, and sleeps (10s) when it's caught
+    // up to the tip. Resumable via `chain_scan_cursor` — the cost of
+    // an app restart is one `getblockchaininfo` + one cursor read, not
+    // a re-scan.
+    let db_path_str = db_path.to_string_lossy().to_string();
+    tauri::async_runtime::spawn(async move {
+        commands::chain_scan::run_chain_scanner(db_path_str).await;
+    });
+
+    // Background sync daemon: if the user has background sync enabled
+    // (default ON), ensure the daemon process is alive. If it crashed
+    // or the machine rebooted, respawn it.
+    {
+        let settings = match app.state::<AppState>().db.lock() {
+            Ok(db) => crate::db::queries::get_settings(&db).unwrap_or_default(),
+            Err(_) => Default::default(),
+        };
+        commands::daemon_ctl::ensure_daemon_if_enabled(&settings);
+    }
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn run() {
@@ -175,469 +632,32 @@ pub fn run() {
                 ));
             }
 
-            // Store everything under ~/.namehold (pairs with the node's ~/.hsd),
-            // rather than the OS app-data dir derived from the bundle identifier.
-            // The identifier stays reverse-DNS for packaging/signing but no longer
-            // dictates where data lives.
-            let db_path = app
-                .path()
-                .home_dir()
-                .expect("failed to get home dir")
-                .join(".namehold")
-                .join("portfolio.db");
+            let db_path = db_file_path(app.handle());
             db::connection::secure_data_dir(db_path.parent().unwrap())
                 .expect("failed to create data dir");
+            // The window must come up even when the database needs a long
+            // migration (0.7.1's took minutes on a 9 GB file, with no window
+            // and macOS reporting the app as not responding). With migrations
+            // pending, setup returns at once, the window shows their progress
+            // (`startup_status`), and the rest of setup runs after them.
+            app.manage(commands::startup::StartupState::default());
             let conn = db::connection::open(&db_path).expect("failed to open database");
-            db::migrations::run(&conn).expect("failed to run migrations");
-
-            // One-shot backfill for subdomain names (pre-fix imports had just the
-            // parent TLD; now we compose {subdomain}.{domain}). Gated by a settings
-            // marker so it runs exactly once.
-            let needs_backfill = db::queries::get_settings(&conn)
-                .ok()
-                .map(|s| !s.contains_key("namebase_history_subdomain_name_backfilled_v1"))
-                .unwrap_or(true);
-            if needs_backfill {
-                if let Err(e) = db::namebase_history::backfill_subdomain_names(&conn) {
-                    eprintln!("warning: subdomain name backfill failed: {}", e);
-                } else {
-                    // Mark it done so we don't run again.
-                    let _ = db::queries::set_setting(
-                        &conn,
-                        "namebase_history_subdomain_name_backfilled_v1",
-                        "1",
-                    );
-                }
-            }
-
-            app.manage(AppState {
-                db: Mutex::new(conn),
-                signer: Mutex::new(None),
-                secure_prompts: Mutex::new(HashMap::new()),
-                hsd_children: Mutex::new(HashMap::new()),
-                hsd_starting: Mutex::new(std::collections::HashSet::new()),
-                node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
-                sync_status: Arc::new(AsyncMutex::new(SyncStatus::default())),
-            });
-
-            // -----------------------------------------------------------------
-            // System tray (menu bar on macOS). Lets the user close the window
-            // while the app keeps running (hsd + background daemon stay alive),
-            // and reopen it, control the node, and quit — all from the tray.
-            // -----------------------------------------------------------------
+            if db::migrations::pending(&conn)
+                .expect("failed to read the applied migrations")
+                .is_empty()
             {
-                let open = MenuItem::with_id(app, "open", "Open Namehold", true, None::<&str>)?;
-                // Disabled status label — informational only.
-                let status = MenuItem::with_id(app, "status", "Node: …", false, None::<&str>)?;
-                let toggle =
-                    MenuItem::with_id(app, "toggle_node", "Start node", true, None::<&str>)?;
-                let bgsync = CheckMenuItem::with_id(
-                    app,
-                    "bgsync",
-                    "Background sync",
-                    true,
-                    false,
-                    None::<&str>,
-                )?;
-                let sep = PredefinedMenuItem::separator(app)?;
-                let quit = MenuItem::with_id(app, "quit", "Quit Namehold", true, None::<&str>)?;
-                let menu = Menu::with_items(app, &[&open, &status, &toggle, &bgsync, &sep, &quit])?;
-
-                let tray = TrayIconBuilder::with_id("main-tray")
-                    .icon(tauri::include_image!("icons/tray-normal.png"))
-                    // On macOS, treat the icon as a template image so it
-                    // adapts to light/dark menu bar. On other platforms this
-                    // is a no-op. State is conveyed via glyph variants
-                    // (filled / outline / badge) rather than color.
-                    .icon_as_template(true)
-                    // Linux writes the icon to a file. Without
-                    // $XDG_RUNTIME_DIR, tray-icon uses the shared
-                    // /tmp/tray-icon, which the first user to run the app
-                    // creates; for any other user setup then failed with
-                    // "tray icon error: Permission denied" and the app did
-                    // not start. A directory of this user's own avoids it;
-                    // the temp dir is only the fallback of a home-less
-                    // session. Ignored on other platforms.
-                    .temp_dir_path(
-                        app.path()
-                            .app_cache_dir()
-                            .unwrap_or_else(|_| std::env::temp_dir())
-                            .join("tray-icon"),
-                    )
-                    .menu(&menu)
-                    // Show the menu on BOTH left and right click. This
-                    // matches every other macOS menu-bar app (Slack, Docker,
-                    // 1Password, etc.) and avoids relying on AppKit to
-                    // deliver a MouseButton::Left / Up event to our handler
-                    // — that event does not reliably fire when a menu is
-                    // attached to the NSStatusItem. "Open Namehold" is the
-                    // first menu item so activating the window is one click
-                    // away.
-                    .show_menu_on_left_click(true)
-                    .on_menu_event(|app, event| {
-                        let app = app.clone();
-                        match event.id().as_ref() {
-                            "open" => show_main_window(&app),
-                            "toggle_node" => {
-                                // Start or stop hsd depending on current state,
-                                // then refresh the tray. Runs on the async
-                                // runtime so we don't block the menu callback.
-                                tauri::async_runtime::spawn(async move {
-                                    let running = {
-                                        let state = app.state::<AppState>();
-                                        // Match tray snapshot: reachable RPC OR
-                                        // a child we spawned counts as running.
-                                        // Fixes the adopted-node case where hsd
-                                        // is up but no child of ours runs.
-                                        state
-                                            .node_rpc_alive
-                                            .load(std::sync::atomic::Ordering::Relaxed)
-                                            || crate::commands::active_profile::active_profile_network_opt(&state)
-                                                .is_some_and(|network| {
-                                                    crate::commands::local_node::own_node(&state, network)
-                                                        .is_some()
-                                                })
-                                    };
-                                    let result = if running {
-                                        commands::node::stop_hsd(app.state::<AppState>())
-                                            .await
-                                            .map(|_| ())
-                                    } else {
-                                        commands::node::start_hsd(app.state::<AppState>())
-                                            .await
-                                            .map(|_| ())
-                                    };
-                                    if let Err(e) = result {
-                                        eprintln!("tray: toggle node failed: {e}");
-                                    }
-                                    commands::tray::refresh_tray(&app);
-                                });
-                            }
-                            "bgsync" => {
-                                tauri::async_runtime::spawn(async move {
-                                    // Flip based on the current persisted value.
-                                    let currently_on = {
-                                        let state = app.state::<AppState>();
-                                        commands::daemon_ctl::is_background_sync_enabled(state)
-                                            .await
-                                            .unwrap_or(true)
-                                    };
-                                    if let Err(e) =
-                                        commands::daemon_ctl::set_background_sync_enabled(
-                                            app.state::<AppState>(),
-                                            !currently_on,
-                                        )
-                                        .await
-                                    {
-                                        eprintln!("tray: toggle background sync failed: {e}");
-                                    }
-                                    commands::tray::refresh_tray(&app);
-                                });
-                            }
-                            "quit" => {
-                                commands::tray::REALLY_QUITTING
-                                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                                app.exit(0);
-                            }
-                            _ => {}
-                        }
-                    })
-                    .build(app)?;
-
-                app.manage(commands::tray::TrayState {
-                    tray,
-                    status,
-                    toggle,
-                    bgsync,
-                });
-
-                // Intercept the MAIN window's close button. When "close to
-                // tray" is on (default) and we're not in a real quit, hide the
-                // window instead of closing it — hsd and the daemon keep
-                // running, and the tray icon brings the window back. When the
-                // setting is off, exit explicitly so `RunEvent::Exit` fires and
-                // the hsd-reap path runs (on macOS, closing the last window
-                // does NOT terminate the process on its own).
-                if let Some(win) = app.get_webview_window("main") {
-                    let handle = app.handle().clone();
-                    win.on_window_event(move |event| {
-                        if let WindowEvent::CloseRequested { api, .. } = event {
-                            if commands::tray::REALLY_QUITTING
-                                .load(std::sync::atomic::Ordering::SeqCst)
-                            {
-                                return; // Real quit in progress — let it close.
-                            }
-                            if commands::tray::read_close_to_tray_setting(&handle) {
-                                api.prevent_close();
-                                if let Some(w) = handle.get_webview_window("main") {
-                                    let _ = w.hide();
-
-                                    // macOS: hide from Dock when closing to tray.
-                                    #[cfg(target_os = "macos")]
-                                    let _ = handle.set_dock_visibility(false);
-
-                                    // Fire first-time tray notification (async, fire-and-forget).
-                                    tauri::async_runtime::spawn({
-                                        let handle = handle.clone();
-                                        async move {
-                                            if let Err(e) =
-                                                commands::tray::fire_tray_hint_notification(&handle)
-                                                    .await
-                                            {
-                                                eprintln!("tray hint notification failed: {e}");
-                                            }
-                                        }
-                                    });
-                                }
-                            } else {
-                                handle.exit(0);
-                            }
-                        }
-                    });
-                }
-
-                // Initial paint, then a light ticker. The ticker is the
-                // reconciliation path for tray state that changes WITHOUT going
-                // through a tray menu action: the frontend calling
-                // `start_hsd`/`stop_hsd`/`set_background_sync_enabled` via
-                // invoke, hsd autostart at launch, and passive sync-progress
-                // transitions. Tray-initiated actions refresh eagerly in their
-                // own handlers, so this only needs to be "reasonably fresh".
-                let handle = app.handle().clone();
-                commands::tray::refresh_tray(&handle);
-                tauri::async_runtime::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
-                    loop {
-                        interval.tick().await;
-                        commands::tray::refresh_tray(&handle);
-                    }
-                });
-
-                // Backend RPC probe loop: every ~5s, check if hsd is reachable
-                // and update the `node_rpc_alive` flag. This keeps the tray
-                // accurate even when the main window is closed to tray (the
-                // frontend's polling pauses when unfocused). The first tick
-                // fires immediately so the flag is fresh within a few hundred ms
-                // of app launch.
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-                    loop {
-                        interval.tick().await;
-                        let state = handle.state::<AppState>();
-                        let _ = commands::node::probe_and_update(&state).await;
-                    }
-                });
-            }
-
-            // Deadline scanner (I1): on start + every ~10 minutes, look for
-            // reveal windows / renewals closing soon, and Shakedex purchases
-            // ready to finalize, and fire an OS
-            // notification (gated + deduped inside `scan_deadline_notifications`
-            // itself — this loop just decides WHEN to ask).
-            //
-            // Design choice: a single Tauri-managed background task beats a
-            // frontend timer here — it runs independently of which page is
-            // open (or whether any window is focused at all), and
-            // `tokio::time::interval`'s first `tick()` resolves immediately,
-            // so "on start" and "every 10 min" are the same loop, not two
-            // mechanisms. It does not persist across a full app quit, but the
-            // very next launch re-scans right away. The Shakedex finalize
-            // reminders are the exception: while the background daemon's
-            // heartbeat is fresh it sends them (also with the window closed)
-            // and this loop skips them, so exactly one process sends each.
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
-                loop {
-                    interval.tick().await;
-                    let state = handle.state::<AppState>();
-                    if let Err(e) =
-                        commands::deadlines::scan_deadline_notifications(handle.clone(), state)
-                            .await
-                    {
-                        eprintln!("deadline scan failed: {e}");
-                    }
-                }
-            });
-
-            // Signer expiry sweep: once a second, drop the signer session
-            // if its time box has elapsed, so the decrypted key leaves memory
-            // when the session expires, not at the next command that looks
-            // (the frontend's polling pauses when the window is hidden).
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-                loop {
-                    interval.tick().await;
-                    commands::secure_wallet::sweep_expired_signer(&handle.state::<AppState>());
-                }
-            });
-
-            // Update checker (I2): on start + every ~4 hours, check for a new
-            // app version and fire an OS notification if one is found (gated by
-            // `update_notify_enabled` setting). Deduped by comparing against
-            // `last_notified_update_version` in settings — only fires if the
-            // version has changed. Runs independently of window focus so users
-            // in tray mode are alerted.
-            #[cfg(desktop)]
-            {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    use tauri_plugin_updater::UpdaterExt;
-                    // First check: 60s after launch (let networking settle).
-                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-
-                    // Then every 4 hours.
-                    let mut interval =
-                        tokio::time::interval(std::time::Duration::from_secs(4 * 3600));
-                    loop {
-                        interval.tick().await;
-                        let state = handle.state::<AppState>();
-
-                        // Check if update notifications are enabled.
-                        let enabled = match state.db.lock() {
-                            Ok(db) => match crate::db::queries::get_settings(&db) {
-                                Ok(settings) => {
-                                    settings.get("update_notify_enabled").map(String::as_str)
-                                        == Some("true")
-                                }
-                                Err(_) => false,
-                            },
-                            Err(_) => false,
-                        };
-
-                        if !enabled {
-                            continue;
-                        }
-
-                        // Check for updates.
-                        let update = match handle.updater() {
-                            Ok(updater) => match updater.check().await {
-                                Ok(u) => u,
-                                Err(e) => {
-                                    eprintln!("update check failed: {e}");
-                                    None
-                                }
-                            },
-                            Err(e) => {
-                                eprintln!("updater unavailable: {e}");
-                                None
-                            }
-                        };
-
-                        if let Some(update) = update {
-                            // Read last notified version from settings.
-                            let last_notified = match state.db.lock() {
-                                Ok(db) => match crate::db::queries::get_settings(&db) {
-                                    Ok(settings) => {
-                                        settings.get("last_notified_update_version").cloned()
-                                    }
-                                    Err(_) => None,
-                                },
-                                Err(_) => None,
-                            };
-
-                            let version = update.version.clone();
-
-                            // Stash the checked update so the frontend's
-                            // `get_pending_update_metadata` can hydrate the
-                            // banner without re-checking, and `install_update`
-                            // can install without a second round-trip.
-                            {
-                                let pending =
-                                    handle.state::<commands::updates::app_updates::PendingUpdate>();
-                                *pending.0.lock().unwrap() = Some(update);
-                            }
-
-                            // Only notify if version changed (dedup).
-                            if last_notified.as_deref() != Some(version.as_str()) {
-                                // Fire the notification.
-                                use tauri_plugin_notification::NotificationExt;
-                                let title = format!("Namehold v{version} is available");
-                                let body = "Download and install the latest version.".to_string();
-                                let _ = handle
-                                    .notification()
-                                    .builder()
-                                    .title(&title)
-                                    .body(&body)
-                                    .show();
-
-                                // Persist the notified version.
-                                if let Ok(db) = state.db.lock() {
-                                    let _ = crate::db::queries::set_setting(
-                                        &db,
-                                        "last_notified_update_version",
-                                        &version,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                });
-            }
-
-            // Local node per network (spec 2026-10-24 R4/R5): once a second,
-            // look at the active wallet; when it changed (the first look, at
-            // launch, counts), start its network's node if it is a local-node
-            // wallet whose network starts on its own. Another network's node
-            // keeps running. Acting on a change only means a node the user
-            // stopped stays stopped. Fire-and-forget: a failed start (paths,
-            // version gate, spawn error) is logged and left for Settings, and
-            // `start_hsd` adopts a node that already answers instead of
-            // spawning a duplicate.
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let mut last = None;
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-                loop {
-                    interval.tick().await;
-                    let start = {
-                        let state = handle.state::<AppState>();
-                        let Ok(db) = state.db.lock() else { continue };
-                        commands::node::autostart_on_profile_change(&db, &mut last)
-                    };
-                    if let Some(network) = start {
-                        let handle = handle.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let state = handle.state::<AppState>();
-                            if let Err(e) = commands::node::autostart_network_node(state, network).await {
-                                eprintln!("hsd autostart skipped: {e}");
-                            }
-                        });
-                    }
-                }
-            });
-
-            // Chain scanner (Feature 3, Stage 2): a background task that walks
-            // blocks from the fully-synced local node and indexes BID/REVEAL
-            // covenant outputs per name into `name_bid_outpoints`. This is what
-            // lets `read_name_bids` show ALL bidders — not just the wallet's
-            // own — without touching the HNSFans explorer once the node is
-            // authoritative. The scanner idles (30s poll) when the node is
-            // disconnected or still syncing, and sleeps (10s) when it's caught
-            // up to the tip. Resumable via `chain_scan_cursor` — the cost of
-            // an app restart is one `getblockchaininfo` + one cursor read, not
-            // a re-scan.
-            let db_path_str = db_path.to_string_lossy().to_string();
-            tauri::async_runtime::spawn(async move {
-                commands::chain_scan::run_chain_scanner(db_path_str).await;
-            });
-
-            // Background sync daemon: if the user has background sync enabled
-            // (default ON), ensure the daemon process is alive. If it crashed
-            // or the machine rebooted, respawn it.
-            {
-                let settings = match app.state::<AppState>().db.lock() {
-                    Ok(db) => crate::db::queries::get_settings(&db).unwrap_or_default(),
-                    Err(_) => Default::default(),
-                };
-                commands::daemon_ctl::ensure_daemon_if_enabled(&settings);
+                finish_setup(app.handle(), conn, &db_path)?;
+                app.state::<commands::startup::StartupState>().set_ready();
+            } else {
+                drop(conn);
+                commands::startup::spawn_migrations(app.handle().clone(), db_path);
             }
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::startup::startup_status,
+            commands::startup::retry_startup,
             commands::assets::list_assets,
             commands::assets::get_asset,
             commands::assets::update_asset,
@@ -827,7 +847,10 @@ pub fn run() {
                 // listener (`api.prevent_exit()`), so it's the wrong place to
                 // kill anything: it may not represent an actual exit at all.
                 tauri::RunEvent::Exit => {
-                    let state = app_handle.state::<AppState>();
+                    // Quit during a startup migration: nothing was set up yet.
+                    let Some(state) = app_handle.try_state::<AppState>() else {
+                        return;
+                    };
 
                     // If background sync is enabled, SKIP killing hsd — the daemon
                     // needs it alive to continue syncing after the app closes. The
