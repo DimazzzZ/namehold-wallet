@@ -72,6 +72,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "041",
         include_str!("../sql/041_shakedex_signed_lock_txids.sql"),
     ),
+    // 042 is taken by the bid index change on its own branch.
+    ("043", include_str!("../sql/043_shakedex_market_expiry.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -113,7 +115,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 41, "expected 41 migrations, got {count}");
+        assert_eq!(count, 42, "expected 42 migrations, got {count}");
     }
 
     /// An in-memory database with every migration before `version` applied
@@ -430,7 +432,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 41);
+        assert_eq!(count, 42);
     }
 
     #[test]

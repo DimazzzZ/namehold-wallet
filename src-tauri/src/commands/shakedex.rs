@@ -1166,6 +1166,9 @@ pub struct ListingSummary {
     pub market_error: Option<String>,
     /// RFC 3339 UTC: when the next market action on the listing is due.
     pub market_retry_at: Option<String>,
+    /// The expiry LearnHNS Market showed for this listing when it was last
+    /// read (Unix seconds), which can be earlier than the file's.
+    pub market_expires_at: Option<i64>,
     /// R23: whether the seller ticked "Publish on LearnHNS Market" (or
     /// published it later from My listings).
     pub publish: bool,
@@ -1177,6 +1180,7 @@ impl ListingSummary {
             l,
             &shakedex_jobs::stored_steps(l)?,
             lockup_left(conn, l)?,
+            queries::market_expiry(conn, &l.id)?,
         ))
     }
 
@@ -1185,6 +1189,7 @@ impl ListingSummary {
         l: &ShakedexListing,
         steps: &[sell::StoredStep],
         blocks_until_finalize: Option<i64>,
+        market_expires_at: Option<i64>,
     ) -> Self {
         Self {
             id: l.id.clone(),
@@ -1205,6 +1210,7 @@ impl ListingSummary {
             market_status: l.market_status,
             market_error: l.market_error.clone(),
             market_retry_at: l.market_retry_at.clone(),
+            market_expires_at,
             publish: l.publish,
         }
     }
@@ -2597,7 +2603,12 @@ pub(crate) fn my_listing_from_conn(
             let refused = || ListingAction::refused_by(Some(e.to_string()));
             return Ok(MyListing {
                 // The degraded row must not fail on the lockup count either.
-                listing: ListingSummary::with_steps(l, &[], lockup_left(conn, l).ok().flatten()),
+                listing: ListingSummary::with_steps(
+                    l,
+                    &[],
+                    lockup_left(conn, l).ok().flatten(),
+                    queries::market_expiry(conn, &l.id).ok().flatten(),
+                ),
                 actions: ListingActions {
                     finalize_and_sign: refused(),
                     lower_price: refused(),
@@ -2627,7 +2638,12 @@ pub(crate) fn my_listing_from_conn(
         }
     };
     let prices = listing_prices(&steps, chain);
-    let mut listing = ListingSummary::with_steps(l, &steps, lockup_left(conn, l)?);
+    let mut listing = ListingSummary::with_steps(
+        l,
+        &steps,
+        lockup_left(conn, l)?,
+        queries::market_expiry(conn, &l.id)?,
+    );
     if counts_buyable_blocks(l.state) {
         listing.blocks_until_unbuyable = buyable.get(&l.name).copied();
     }
@@ -4188,6 +4204,131 @@ pub async fn shakedex_lower_price(
     price: String,
 ) -> Result<ListingSummary, AppError> {
     lower_price_confirmed(&state, &app, &listing_id, &price).await
+}
+
+/// Renew listing `listing_id`'s expiry on LearnHNS Market, with a signature
+/// from its lock key and no transaction. Since the market's PR #2 only this
+/// moves the expiry it holds; an upload never does. Needs the wallet unlocked.
+/// The market's copy is read first: it must be this listing (lock and key),
+/// and its expiry is what the request says it replaces.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_renew_on_market(
+    state: State<'_, AppState>,
+    listing_id: String,
+) -> Result<ListingSummary, AppError> {
+    let ctx = software_writer_ctx(&state)?;
+    let market = LearnHnsClient::from_settings(&ctx.settings)?.for_network(ctx.network);
+    renew_on_market(
+        &state,
+        &ctx,
+        &market,
+        &listing_id,
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+}
+
+/// How far ahead a renewal sets the expiry: the market's 365-day cap, less an
+/// hour for our clock and the market's to disagree.
+pub(crate) const RENEWAL_LIFETIME_SECS: u64 = sell::LISTING_LIFETIME_SECS - 3_600;
+
+/// The testable core of [`shakedex_renew_on_market`], at `now` (Unix).
+pub(crate) async fn renew_on_market(
+    state: &State<'_, AppState>,
+    ctx: &Ctx,
+    market: &LearnHnsClient,
+    listing_id: &str,
+    now: i64,
+) -> Result<ListingSummary, AppError> {
+    use crate::market::learnhns::{MarketReply, ProofCopy, RenewalRequest};
+    use crate::noncustodial::shakedex::renewal;
+    authorize_signer(state, ctx)?;
+    let listing = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        queries::get_shakedex_listing(&conn, listing_id)?
+            .filter(|l| l.wallet_profile_id == ctx.profile_id)
+            .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?
+    };
+    if listing.state != ListingState::Listed || !listing.publish {
+        return Err(AppError::InvalidInput(
+            "only a listing on LearnHNS Market can be renewed there".into(),
+        ));
+    }
+    if listing.managed_elsewhere_at.is_some() {
+        return Err(AppError::InvalidInput(
+            "this listing is managed from another device: renew it there".into(),
+        ));
+    }
+    let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
+    let (lock_txid, lock_vout) = shakedex_jobs::stored_lock(&listing)?
+        .map(|(t, v)| (t.to_ascii_lowercase(), v))
+        .ok_or_else(|| corrupted("lock coin"))?;
+    let pubkey = shakedex_jobs::lock_pubkey(&listing)?;
+
+    let copy = match market.proof_copy(&listing.name).await? {
+        ProofCopy::Copy(text) => ListingFile::parse(&text, Network::Main)?,
+        ProofCopy::NotListed => {
+            return Err(AppError::InvalidInput(
+                "LearnHNS Market doesn't list this name now: nothing to renew".into(),
+            ))
+        }
+        ProofCopy::NoAnswer(why) => {
+            return Err(AppError::Other(format!(
+                "no answer from LearnHNS Market: {why}"
+            )))
+        }
+    };
+    if hex::encode(copy.lock_txid) != lock_txid
+        || copy.lock_vout != lock_vout
+        || copy.public_key != pubkey
+    {
+        return Err(AppError::InvalidInput(
+            "LearnHNS Market lists another lock for this name, not this listing".into(),
+        ));
+    }
+    let previous = copy.expires_at.ok_or_else(|| {
+        AppError::InvalidInput("the market's copy has no expiry: there is nothing to renew".into())
+    })?;
+    let now_secs = u64::try_from(now).map_err(|_| AppError::Other("clock before 1970".into()))?;
+    let expires_at = now_secs.saturating_add(RENEWAL_LIFETIME_SECS);
+    if expires_at <= previous {
+        return Err(AppError::InvalidInput(
+            "this listing already runs as long on LearnHNS Market as a renewal could make it"
+                .into(),
+        ));
+    }
+    let request = RenewalRequest {
+        name: &listing.name,
+        lock_txid: &lock_txid,
+        lock_vout,
+        previous_expires_at: previous,
+        expires_at,
+    };
+    let message = renewal::renewal_message(ctx.network, &request);
+    let key = derive_listing_key(state, ctx, &listing.name)?;
+    if key.pubkey != pubkey {
+        return Err(AppError::InvalidInput(sell::LISTING_KEY_MISMATCH.into()));
+    }
+    let signature = renewal::sign_renewal(&key.secret, &message);
+    match market.renew_listing(&request, &signature).await? {
+        MarketReply::Accepted(done) => {
+            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+            let done_at = i64::try_from(done.expires_at)
+                .map_err(|_| AppError::Other("the market's expiry is out of range".into()))?;
+            queries::set_market_expiry(&conn, &listing.id, done_at, now)?;
+            ListingSummary::of(&conn, &listing)
+        }
+        MarketReply::Refused { status, error } => Err(AppError::InvalidInput(format!(
+            "LearnHNS Market refused the renewal: {error} (HTTP {status})"
+        ))),
+        MarketReply::NotSeenYet { status, error } => Err(AppError::Other(format!(
+            "LearnHNS Market hasn't seen the lock yet: {error} (HTTP {status})"
+        ))),
+        MarketReply::NoAnswer(why) => Err(AppError::Other(format!(
+            "no answer from LearnHNS Market: {why}"
+        ))),
+    }
 }
 
 /// The listings of the profile `wallet_profile_id` (the active one when

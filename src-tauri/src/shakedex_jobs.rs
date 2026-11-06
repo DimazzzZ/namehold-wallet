@@ -4025,10 +4025,19 @@ async fn keep_listed(
             // and is no step of ours: ours is uploaded over it.
             let theirs = listing_file::ListingFile::parse(&text, Network::Main).ok();
             // R41: our offer with a later expiry hides nothing: it is ours.
+            // With an earlier one it is ours too: the market keeps its own
+            // expiry until a signed renewal moves it, so an upload is wasted.
             let same = theirs.as_ref().is_some_and(|theirs| {
                 listing_file::same_market_listing(theirs, &ours)
                     || listing_file::same_offer_expiring_later(theirs, &ours, latest_expiry)
+                    || listing_file::same_offer_expiring_earlier(theirs, &ours)
             });
+            // What the market shows buyers, for My listings and its Renew.
+            if same {
+                if let Some(exp) = theirs.as_ref().and_then(|t| t.expires_at) {
+                    queries::set_market_expiry(conn, &listing.id, exp as i64, now)?;
+                }
+            }
             if refreshed && !same {
                 return upload(conn, market, &file, &step, &listing, S::Listed, now).await;
             }

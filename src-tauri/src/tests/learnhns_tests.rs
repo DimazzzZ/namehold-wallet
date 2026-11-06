@@ -933,3 +933,102 @@ fn a_market_link_to_another_page_names_no_listing() {
         assert_eq!(name_from_listing_link(url), None, "{url}");
     }
 }
+
+/// LearnHNS's language-independent vector (`tests/fixtures/listing-renewal-v1.json`
+/// in learnhns-market, public test key 1): the same text, digest and, as both
+/// sides sign deterministically (RFC 6979), the same signature.
+#[test]
+fn renewal_signature_matches_the_markets_test_vector() {
+    use crate::market::learnhns::RenewalRequest;
+    use crate::noncustodial::shakedex::renewal::{renewal_message, sign_renewal};
+    let txid = "a".repeat(64);
+    let r = RenewalRequest {
+        name: "security-fixture",
+        lock_txid: &txid,
+        lock_vout: 0,
+        previous_expires_at: 1_800_000_000,
+        expires_at: 1_800_086_400,
+    };
+    let message = renewal_message(Network::Main, &r);
+    assert_eq!(
+        message,
+        format!("LearnHNS Market listing renewal v1\nmain\nsecurity-fixture\n{txid}\n0\n1800000000\n1800086400")
+    );
+    use sha2::Digest;
+    assert_eq!(
+        hex::encode(sha2::Sha256::digest(message.as_bytes())),
+        "f8d3168f508116b7ff820e6c3942b34dbbadfbad239f28c4f47ff8a61722733c"
+    );
+    let mut one = [0u8; 32];
+    one[31] = 1;
+    let key = secp256k1::SecretKey::from_byte_array(one).unwrap();
+    assert_eq!(
+        sign_renewal(&key, &message),
+        "db74443f0985f316cf97786408a4c34d0ffb773d12588e7285ac6acd356bc43f1779e63a2e78e6b6fde676148c1da8305aec2b5a58a7af06c0eea8cd72b6ca3b"
+    );
+    // testnet is spelled out, and the name and txid are lowercased.
+    let upper = "A".repeat(64);
+    let r = RenewalRequest {
+        name: "Security-Fixture",
+        lock_txid: &upper,
+        ..r
+    };
+    assert!(renewal_message(Network::Testnet, &r).starts_with(&format!(
+        "LearnHNS Market listing renewal v1\ntestnet\nsecurity-fixture\n{txid}\n"
+    )));
+}
+
+/// The renewal goes to the name's endpoint with the signed fields, and only the
+/// market's JSON success with an expiry counts.
+#[tokio::test]
+async fn renew_posts_the_signed_request_and_reads_the_new_expiry() {
+    use crate::market::learnhns::{RenewAccepted, RenewalRequest};
+    let txid = "ab".repeat(32);
+    let r = RenewalRequest {
+        name: "dexreviews",
+        lock_txid: &txid,
+        lock_vout: 1,
+        previous_expires_at: 100,
+        expires_at: 200,
+    };
+    let mut s = mockito::Server::new_async().await;
+    let (m, seen) = recording(
+        s.mock("POST", "/api/v2/listings/dexreviews/renew"),
+        200,
+        r#"{"success":true,"name":"dexreviews","expiresAt":200,"renewed":true,"replayed":false,"cid":"x"}"#,
+    );
+    let _m = m.create_async().await;
+    let reply = mainnet(&s).renew_listing(&r, "sig").await.unwrap();
+    assert_eq!(
+        reply,
+        MarketReply::Accepted(RenewAccepted {
+            expires_at: 200,
+            replayed: false
+        })
+    );
+    let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0]).unwrap();
+    assert_eq!(
+        sent,
+        serde_json::json!({
+            "network": "main", "lockingTxHash": txid, "lockingOutputIdx": 1,
+            "previousExpiresAt": 100, "expiresAt": 200, "signature": "sig"
+        })
+    );
+
+    let mut s = mockito::Server::new_async().await;
+    let _stale = s
+        .mock("POST", "/api/v2/listings/dexreviews/renew")
+        .with_status(409)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"error":"previousExpiresAt does not match","expiresAt":150}"#)
+        .create_async()
+        .await;
+    assert!(matches!(
+        mainnet(&s).renew_listing(&r, "sig").await.unwrap(),
+        MarketReply::Refused { status: 409, .. }
+    ));
+    let off = LearnHnsClient::with_base_url(&s.url())
+        .unwrap()
+        .for_network(Network::Regtest);
+    assert!(off.renew_listing(&r, "sig").await.is_err(), "mainnet only");
+}

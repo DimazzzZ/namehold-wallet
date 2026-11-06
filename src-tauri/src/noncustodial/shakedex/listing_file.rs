@@ -499,6 +499,25 @@ pub fn same_market_listing(copy: &ListingFile, ours: &ListingFile) -> bool {
         && copy.expires_at == ours.expires_at
 }
 
+/// Whether `copy` offers a buyer exactly `ours` but for an **earlier**, or
+/// absent, `expiresAt`. Since LearnHNS Market's PR #2 an upload never moves
+/// the expiry it holds (the Shakedex signature doesn't cover it), so our own
+/// refresh leaves the market's copy with the old one; only a renewal signed
+/// with the lock key moves it. Such a copy is ours: uploading over it changes
+/// nothing.
+pub fn same_offer_expiring_earlier(copy: &ListingFile, ours: &ListingFile) -> bool {
+    let earlier = match (copy.expires_at, ours.expires_at) {
+        (Some(theirs), Some(mine)) => theirs < mine,
+        (None, Some(_)) => true,
+        _ => false,
+    };
+    earlier && {
+        let mut at_ours = copy.clone();
+        at_ours.expires_at = ours.expires_at;
+        same_market_listing(&at_ours, ours)
+    }
+}
+
 /// R41: whether `copy`, the market's copy of a listing, offers a buyer
 /// exactly `ours` ([`same_market_listing`]) but for a **later** `expiresAt`.
 /// A later expiry hides nothing (an earlier one hides the listing early), so

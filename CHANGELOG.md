@@ -15,6 +15,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Renew a listing on LearnHNS Market.** The market no longer takes a new expiry from an upload, so a listing would have dropped off it after a year. From 30 days before then, My listings says until when buyers see it and offers Renew on market. It is signed with the listing's lock key while the wallet is unlocked, with no transaction.
+
 ### Security
 - **A mainnet wallet without a passphrase says so.** The Wallet page warns that anyone with a copy of its files, including an old backup, can take its funds, and links to the steps for moving to a new wallet.
 

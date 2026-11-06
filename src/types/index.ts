@@ -1080,6 +1080,8 @@ export interface ShakedexListingSummary {
   marketError: string | null;
   /** RFC 3339 UTC: when the next market action on the listing is due. */
   marketRetryAt: string | null;
+  /** Unix seconds: the expiry LearnHNS Market showed when last read, which can be earlier than the file's; null when not read. */
+  marketExpiresAt: number | null;
   /** R23: "Publish on LearnHNS Market" was ticked (or the listing was published later from My listings). */
   publish: boolean;
 }

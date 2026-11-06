@@ -1891,8 +1891,11 @@ fn retry_delays() -> Vec<i64> {
 }
 
 /// R23: an `expiresAt` within 30 days of now is moved to the node's median
-/// time plus 365 days in the stored file (every other field as written) and
-/// on the market; the listing's `expires_at` follows.
+/// time plus 365 days in the stored file (every other field as written); the
+/// listing's `expires_at` follows. The market is not asked to take it: since
+/// its PR #2 an upload never moves the expiry it holds (a renewal signed with
+/// the lock key does), so the copy with the old expiry is still ours, and its
+/// expiry is recorded for My listings.
 #[tokio::test]
 async fn expires_at_refreshed_before_it_lapses() {
     let f = listed_on_market(MarketStatus::Listed);
@@ -1900,10 +1903,7 @@ async fn expires_at_refreshed_before_it_lapses() {
     set_expiry(&f, soon);
     let old = listing(&f).listing_file_json.unwrap();
     let mut s = market().await;
-    let (m, seen) = upload_mock(&mut s, 1).await;
-    // The market still serves the old copy; it is replaced by the refreshed
-    // one. The file just changed: uploaded over the market's copy once that
-    // is read (R37: it carries no foreign step, R36).
+    let (m, _) = upload_mock(&mut s, 0).await;
     let get = copy_mock(&mut s, listing_file_market_copy(&old), 1).await;
     keep(&f, &s, NOW).await;
     m.assert_async().await;
@@ -1921,12 +1921,11 @@ async fn expires_at_refreshed_before_it_lapses() {
         crate::noncustodial::shakedex::listing_file::with_expiry(&old, want, NET).unwrap(),
         "every other field as written"
     );
-    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
-    assert_eq!(
-        ListingFile::parse(&sent, NET).unwrap().expires_at,
-        Some(want)
-    );
     assert_eq!(l.market_status, Some(MarketStatus::Listed));
+    assert_eq!(
+        crate::db::queries::market_expiry(&f.conn, &l.id).unwrap(),
+        Some(soon as i64)
+    );
 
     // 31 days left: not refreshed.
     let g = listed_on_market(MarketStatus::Listed);
@@ -4133,7 +4132,9 @@ async fn copies_without_a_foreign_step_are_never_flagged() {
         }
         let mut s = market().await;
         let get = copy_mock(&mut s, copy.to_string(), 1).await;
-        let (up, _) = upload_mock(&mut s, usize::from(case != "later expiry")).await;
+        // Our copy with another expiry is ours: the market keeps its own.
+        let ours = matches!(case, "later expiry" | "earlier expiry");
+        let (up, _) = upload_mock(&mut s, usize::from(!ours)).await;
         keep(&f, &s, NOW).await;
         get.assert_async().await;
         up.assert_async().await;
@@ -4146,10 +4147,12 @@ async fn copies_without_a_foreign_step_are_never_flagged() {
 /// R41 with R25: our own offer with a **later** `expiresAt` hides nothing:
 /// it is left on the market as our copy (Listed, the step recorded as
 /// held), up to one refresh period past the expiry a refresh at the node's
-/// median time would write (`latest_own_expiry`); one later than that, or
-/// with an earlier `expiresAt`, is uploaded over (ReplacedReuploaded).
+/// median time would write (`latest_own_expiry`); one later than that is
+/// uploaded over (ReplacedReuploaded). One with an **earlier** `expiresAt` is
+/// ours too: the market keeps its own expiry since its PR #2, and only a
+/// signed renewal moves it.
 #[tokio::test]
-async fn later_expiry_on_the_market_is_kept_and_an_earlier_one_replaced() {
+async fn later_expiry_on_the_market_is_kept_and_so_is_an_earlier_one() {
     // Our file expires at MTP + 365 days, what a refresh at MTP writes: the
     // bound is one refresh period past it.
     let slack = i64::try_from(crate::shakedex_jobs::LATER_EXPIRY_SLACK_SECS).unwrap();
@@ -4162,7 +4165,7 @@ async fn later_expiry_on_the_market_is_kept_and_an_earlier_one_replaced() {
         (slack, 0, MarketStatus::Listed),
         // Past the bound: no device's refresh, replaced.
         (slack + 1, 1, MarketStatus::ReplacedReuploaded),
-        (-86_400, 1, MarketStatus::ReplacedReuploaded),
+        (-86_400, 0, MarketStatus::Listed),
     ] {
         let f = listed_on_market(MarketStatus::Listed);
         let mut copy: serde_json::Value = serde_json::from_str(&our_copy(&f)).unwrap();
@@ -4776,4 +4779,163 @@ async fn a_listing_managed_elsewhere_is_not_read_once_the_sync_lock_is_lost() {
         (after.managed_elsewhere_at, after.market_retry_at),
         (before.managed_elsewhere_at, before.market_retry_at)
     );
+}
+
+// --- Renewing a listing's market expiry ---------------------------------------
+
+fn renew_app(f: Fx, unlocked: bool) -> tauri::App<tauri::test::MockRuntime> {
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    let app = mock_builder()
+        .manage(crate::AppState {
+            db: std::sync::Mutex::new(f.conn),
+            signer: std::sync::Mutex::new(None),
+            secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
+            hsd_children: std::sync::Mutex::new(std::collections::HashMap::new()),
+            hsd_starting: std::sync::Mutex::new(std::collections::HashSet::new()),
+            node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
+            sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::commands::sync::SyncStatus::default(),
+            )),
+        })
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    if unlocked {
+        use tauri::Manager;
+        *app.state::<crate::AppState>().signer.lock().unwrap() =
+            Some(crate::noncustodial::session::SignerSession::unlock(
+                PROFILE.into(),
+                NET,
+                ExtendedPrivKey::from_seed(&seed()).unwrap(),
+                600_000,
+            ));
+    }
+    app
+}
+
+/// Our copy as the market serves it, with the expiry the market holds.
+fn copy_expiring(f: &Fx, expires_at: u64) -> String {
+    let mut copy: serde_json::Value = serde_json::from_str(&our_copy(f)).unwrap();
+    copy["expiresAt"] = expires_at.into();
+    copy.to_string()
+}
+
+async fn renew(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    s: &ServerGuard,
+) -> Result<crate::commands::shakedex::ListingSummary, crate::error::AppError> {
+    use tauri::Manager;
+    let state = app.state::<crate::AppState>();
+    let ctx = crate::commands::shakedex::software_writer_ctx(&state)?;
+    crate::commands::shakedex::renew_on_market(&state, &ctx, &client(s), "l1", NOW).await
+}
+
+/// The renewal replaces the expiry the market shows, is signed by this
+/// listing's lock key over the market's v1 message, and is recorded.
+#[tokio::test]
+async fn renewing_signs_with_the_lock_key_and_records_the_new_expiry() {
+    use crate::market::learnhns::RenewalRequest;
+    use crate::noncustodial::shakedex::renewal::renewal_message;
+    let f = listed_on_market(MarketStatus::Listed);
+    let pubkey_bytes = f.key.pubkey;
+    let old = (NOW + 10 * 86_400) as u64;
+    let copy = copy_expiring(&f, old);
+    let txid = listing(&f).lock_txid.unwrap();
+    let mut s = market().await;
+    let get = copy_mock(&mut s, copy, 1).await;
+    let want = NOW as u64 + crate::commands::shakedex::RENEWAL_LIFETIME_SECS;
+    let reply: &'static str = Box::leak(
+        format!(r#"{{"success":true,"name":"{NAME}","expiresAt":{want},"renewed":true,"replayed":false,"cid":"x"}}"#)
+            .into_boxed_str(),
+    );
+    let (m, seen) = recording(
+        s.mock("POST", format!("/api/v2/listings/{NAME}/renew").as_str()),
+        200,
+        reply,
+    );
+    let m = m.expect(1).create_async().await;
+    let app = renew_app(f, true);
+    let summary = renew(&app, &s).await.unwrap();
+    get.assert_async().await;
+    m.assert_async().await;
+    assert_eq!(summary.market_expires_at, Some(want as i64));
+
+    let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0]).unwrap();
+    assert_eq!(sent["previousExpiresAt"], old);
+    assert_eq!(sent["expiresAt"], want);
+    assert_eq!(sent["lockingTxHash"], txid.to_ascii_lowercase());
+    let message = renewal_message(
+        NET,
+        &RenewalRequest {
+            name: NAME,
+            lock_txid: &txid.to_ascii_lowercase(),
+            lock_vout: 0,
+            previous_expires_at: old,
+            expires_at: want,
+        },
+    );
+    use sha2::Digest;
+    let digest: [u8; 32] = sha2::Sha256::digest(message.as_bytes()).into();
+    let sig = secp256k1::ecdsa::Signature::from_compact(
+        &hex::decode(sent["signature"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let pubkey = secp256k1::PublicKey::from_slice(&pubkey_bytes).unwrap();
+    secp256k1::SECP256K1
+        .verify_ecdsa(secp256k1::Message::from_digest(digest), &sig, &pubkey)
+        .expect("signed by the listing's lock key");
+}
+
+/// Nothing is signed or sent with the wallet locked, for another lock on the
+/// market, or when the market's expiry is already as late as a renewal.
+#[tokio::test]
+async fn renewing_asks_nothing_of_the_market_when_it_must_not() {
+    // Locked.
+    let f = listed_on_market(MarketStatus::Listed);
+    let mut s = market().await;
+    let get = copy_mock(&mut s, our_copy(&f), 0).await;
+    let (post, _) = recording(
+        s.mock("POST", format!("/api/v2/listings/{NAME}/renew").as_str()),
+        200,
+        "{}",
+    );
+    let post = post.expect(0).create_async().await;
+    let app = renew_app(f, false);
+    assert!(matches!(
+        renew(&app, &s).await,
+        Err(crate::error::AppError::WalletLocked)
+    ));
+    get.assert_async().await;
+    post.assert_async().await;
+
+    // Another lock for the name on the market.
+    let f = listed_on_market(MarketStatus::Listed);
+    let mut other: serde_json::Value = serde_json::from_str(&our_copy(&f)).unwrap();
+    other["lockingTxHash"] = "cd".repeat(32).into();
+    let mut s = market().await;
+    let _get = copy_mock(&mut s, other.to_string(), 1).await;
+    let (post, _) = recording(
+        s.mock("POST", format!("/api/v2/listings/{NAME}/renew").as_str()),
+        200,
+        "{}",
+    );
+    let post = post.expect(0).create_async().await;
+    let app = renew_app(f, true);
+    let err = renew(&app, &s).await.unwrap_err();
+    assert!(err.to_string().contains("another lock"), "{err}");
+    post.assert_async().await;
+
+    // Already as late as a renewal could make it.
+    let f = listed_on_market(MarketStatus::Listed);
+    let late = NOW as u64 + crate::commands::shakedex::RENEWAL_LIFETIME_SECS;
+    let mut s = market().await;
+    let _get = copy_mock(&mut s, copy_expiring(&f, late), 1).await;
+    let (post, _) = recording(
+        s.mock("POST", format!("/api/v2/listings/{NAME}/renew").as_str()),
+        200,
+        "{}",
+    );
+    let post = post.expect(0).create_async().await;
+    let app = renew_app(f, true);
+    assert!(renew(&app, &s).await.is_err());
+    post.assert_async().await;
 }

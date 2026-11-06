@@ -32,6 +32,7 @@ export function makeListing(over: Partial<ShakedexListingSummary> = {}): Shakede
     marketStatus: null,
     marketError: null,
     marketRetryAt: null,
+    marketExpiresAt: null,
     publish: false,
     ...over,
   };

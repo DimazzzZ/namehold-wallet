@@ -496,6 +496,7 @@ export function myListings(now: Date): ShakedexMyListing[] {
               : null,
         marketError: null,
         marketRetryAt: null,
+        marketExpiresAt: null,
         publish: l.published,
       },
       actions: actionsFor(l),

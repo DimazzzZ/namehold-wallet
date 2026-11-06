@@ -67,6 +67,28 @@ pub struct UploadAccepted {
 
 pub type UploadResult = MarketReply<UploadAccepted>;
 
+/// A renewal of a listing's market expiry (`POST /api/v2/listings/<name>/renew`,
+/// LearnHNS `docs/listing-renewal.md` v1): the listing's lock outpoint and the
+/// expiry the market holds now, and the one asked for. The market keeps
+/// `expiresAt` from any upload because the Shakedex signature does not cover
+/// it; this request is signed with the lock key instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenewalRequest<'a> {
+    pub name: &'a str,
+    pub lock_txid: &'a str,
+    pub lock_vout: u32,
+    pub previous_expires_at: u64,
+    pub expires_at: u64,
+}
+
+/// What the renewal endpoint took: the expiry the market now holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenewAccepted {
+    pub expires_at: u64,
+    /// The same request again, already applied.
+    pub replayed: bool,
+}
+
 /// How a listing prices the name, in the market's `listingMode` words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListingKind {
@@ -254,6 +276,48 @@ impl LearnHnsClient {
                 if is_2xx(status) && v["success"] == true && v["pending"].is_object() =>
             {
                 MarketReply::Accepted(())
+            }
+            Ok((status, v)) => refusal_or_none(status, v, &[]),
+            Err(why) => MarketReply::NoAnswer(why),
+        })
+    }
+
+    /// Renew a listing's expiry on the market with a `signature` the caller
+    /// made with the lock key (`shakedex::renewal`); this client never signs. Writes are mainnet only, like
+    /// every other write here. A 409 (the market's expiry moved since it was
+    /// read, or the listing can't be renewed) is the market's refusal.
+    pub async fn renew_listing(
+        &self,
+        r: &RenewalRequest<'_>,
+        signature: &str,
+    ) -> Result<MarketReply<RenewAccepted>, AppError> {
+        self.writes_allowed()?;
+        check_name(r.name)?;
+        let network = self.network.unwrap_or(Network::Main);
+        let body = serde_json::json!({
+            "network": network.as_str(),
+            "lockingTxHash": r.lock_txid.to_ascii_lowercase(),
+            "lockingOutputIdx": r.lock_vout,
+            "previousExpiresAt": r.previous_expires_at,
+            "expiresAt": r.expires_at,
+            "signature": signature,
+        });
+        let req = self
+            .http
+            .post(format!(
+                "{}/api/v2/listings/{}/renew",
+                self.base_url, r.name
+            ))
+            .json(&body);
+        Ok(match self.send(req).await {
+            Ok((status, Some(v))) if is_2xx(status) && v["success"] == true => {
+                match v["expiresAt"].as_u64() {
+                    Some(expires_at) => MarketReply::Accepted(RenewAccepted {
+                        expires_at,
+                        replayed: v["replayed"] == true,
+                    }),
+                    None => no_shape(status),
+                }
             }
             Ok((status, v)) => refusal_or_none(status, v, &[]),
             Err(why) => MarketReply::NoAnswer(why),

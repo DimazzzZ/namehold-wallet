@@ -3937,6 +3937,32 @@ pub struct MarketUpdate<'a> {
 /// a differing copy stays someone else's.
 ///
 /// Returns how many rows changed.
+/// The expiry LearnHNS Market holds for listing `id`, read at `now` (Unix).
+pub fn set_market_expiry(
+    conn: &rusqlite::Connection,
+    id: &str,
+    expires_at: i64,
+    now: i64,
+) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO shakedex_market_expiry (listing_id, expires_at, read_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(listing_id) DO UPDATE SET expires_at = excluded.expires_at, read_at = excluded.read_at",
+        params![id, expires_at, now],
+    )?;
+    Ok(())
+}
+
+/// The expiry LearnHNS Market last showed for listing `id`, if read.
+pub fn market_expiry(conn: &rusqlite::Connection, id: &str) -> Result<Option<i64>, AppError> {
+    Ok(conn
+        .query_row(
+            "SELECT expires_at FROM shakedex_market_expiry WHERE listing_id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 pub fn record_market_result(
     conn: &rusqlite::Connection,
     id: &str,
