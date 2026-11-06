@@ -18,6 +18,7 @@
 
 ### Fixed
 - **The window opens while the database is updated.** An update's database changes ran before the window was created, so after updating to 0.7.1 with a large database Namehold showed no window, or a frozen one, for minutes and macOS reported it as not responding. The window now opens at once and shows the update's progress (step, share of the file read, time elapsed); the app appears when it finishes. If the update fails, the window says why and offers Try again.
+- **An update stopped halfway no longer blocks the next start.** Each database change was recorded as applied in a separate step after it, so a Namehold quit between the two ran the change again on the next start, and a change that cannot run twice then failed on every start. A change and its record now commit together.
 
 ## [0.7.1] - 2026-11-06
 
