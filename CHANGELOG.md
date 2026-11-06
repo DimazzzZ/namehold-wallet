@@ -2,7 +2,8 @@
 
 ## Releases
 
-- [0.7.0](#070---2026-11-03)
+- [0.7.1](#071---2026-11-06)
+- [0.7.0](#070---2026-11-04)
 - [0.6.1](#061---2026-10-25)
 - [0.6.0](#060---2026-10-23)
 - [0.5.0](#050---2026-08-20)
@@ -15,17 +16,26 @@
 
 ## [Unreleased]
 
-### Added
-- **Renew a listing on LearnHNS Market.** The market no longer takes a new expiry from an upload, so a listing would have dropped off it after a year. From 30 days before then, My listings says until when buyers see it and offers Renew on market. It is signed with the listing's lock key while the wallet is unlocked, with no transaction.
-- **Rename a wallet.** Manage wallets… has a Rename button on each wallet, confirmed in the secure window. Only the name changes; keys, addresses and history stay as they are.
+## [0.7.1] - 2026-11-06
+
+> **Highlights:** the database no longer grows to 9 GB with a local node (with a large database, the first start after updating can take about a minute before the window appears); wallets can be renamed; LearnHNS Market listings can be renewed; and a mainnet wallet without a passphrase now says so.
+
+### Security
+- **A mainnet wallet without a passphrase says so.** The Wallet page warns that anyone with a copy of its files, including an old backup, can take its funds, and links to the steps for moving to a new wallet.
 
 ### Fixed
 - **The database no longer grows to 9 GB with a local node.** The list of other people's bids covered the whole chain's history. It now keeps recent auctions, about three weeks, and an existing install shrinks when it next starts. With a large database that first start can take about a minute before the window appears. Bids on older auctions come from the explorer. Your own bids aren't affected.
 - **One background sync at a time.** Several `namehold-syncd` processes could run side by side, each syncing every wallet; one was found running for two days next to two others. A second one now exits at start, and a stopping daemon no longer removes the record of another one.
 - **A pending listing is sent again once its transfer is confirmed.** LearnHNS Market now takes a pending listing only after the transfer into the lock confirms. Namehold read the earlier answer as a final refusal, so the listing stayed off the market's pending list and My listings warned of a refusal until the finalize. It now tries again, with growing pauses.
 
-### Security
-- **A mainnet wallet without a passphrase says so.** The Wallet page warns that anyone with a copy of its files, including an old backup, can take its funds, and links to the steps for moving to a new wallet.
+### Added
+- **Renew a listing on LearnHNS Market.** The market no longer takes a new expiry from an upload, so a listing would have dropped off it after a year. From 30 days before then, My listings says until when buyers see it and offers Renew on market. It is signed with the listing's lock key while the wallet is unlocked, with no transaction.
+- **Rename a wallet.** Manage wallets… has a Rename button on each wallet, confirmed in the secure window. Only the name changes; keys, addresses and history stay as they are.
+
+### CI / tooling
+- Every published release is installed and started on GitHub's Windows and Linux runners: the Windows installer and the `.deb` must install, the app must still run 45 s after starting with an empty home and create its database, and the AppImage goes through the same check as on pull requests.
+- A pre-release's notes come from its version's changelog section instead of GitHub's list of pull requests.
+- The Rust tests job is named `Rust tests`, without a test count that changed its name, so branch protection can require it; the release gate accepts both names.
 
 ## [0.7.0] - 2026-11-04
 
@@ -124,7 +134,6 @@
 - Actions updated by Dependabot, and the tests of testnet's real RPC port run one at a time under nextest.
 - Take `async-executor` 1.14.1, since 1.14.0 was yanked. RUSTSEC-2026-0429 (`zip` aborts the process on a crafted symlink entry) is suppressed with the other `zip` advisories: `tauri-plugin-updater` pins `zip` 4.6.1, and extraction runs only on Windows, on a bundle whose signature is already verified. See `SECURITY.md`.
 - A pull request's type label comes from the commit type its title starts with.
-- A pre-release's notes come from its version's changelog section instead of GitHub's list of pull requests.
 
 ## [0.6.1] - 2026-10-25
 
