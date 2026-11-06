@@ -1183,6 +1183,10 @@ const handlers: Record<string, Handler> = {
     error: null,
   }),
 
+  // ── Startup (src-tauri/src/commands/startup.rs) ─────────────────────
+  startup_status: () => ({ state: "ready" }),
+  retry_startup: () => null,
+
   // ── Daemon control ────────────────────────────────────────────────────
   is_background_sync_enabled: () => true,
   set_background_sync_enabled: () => null,
