@@ -220,6 +220,10 @@ export function useSetActiveProfile() {
   }));
 }
 
+export function useRenameProfile() {
+  return useWalletMutation<{ walletProfileId: string; label: string }>("rename_wallet_profile");
+}
+
 export function useDeleteProfile() {
   return useWalletMutation<string>("delete_wallet_profile", (walletProfileId) => ({
     walletProfileId,

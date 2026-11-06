@@ -17,6 +17,7 @@
 
 ### Added
 - **Renew a listing on LearnHNS Market.** The market no longer takes a new expiry from an upload, so a listing would have dropped off it after a year. From 30 days before then, My listings says until when buyers see it and offers Renew on market. It is signed with the listing's lock key while the wallet is unlocked, with no transaction.
+- **Rename a wallet.** Manage wallets… has a Rename button on each wallet, confirmed in the secure window. Only the name changes; keys, addresses and history stay as they are.
 
 ### Fixed
 - **The database no longer grows to 9 GB with a local node.** The list of other people's bids covered the whole chain's history. It now keeps recent auctions, about three weeks, and an existing install shrinks when it next starts. With a large database that first start can take about a minute before the window appears. Bids on older auctions come from the explorer. Your own bids aren't affected.

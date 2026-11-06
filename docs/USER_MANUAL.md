@@ -75,7 +75,7 @@ never sees it. Confirm the backup before continuing.
 
 ### Adding more wallets later
 
-Click the wallet card at the top of the sidebar and use **Add wallet** and **Manage wallets…** to switch between wallets, reveal a wallet's phrase in the secure window, or delete one you no longer need. Delete wallet opens the secure window; for a wallet with a stored recovery phrase, type its label to enable Delete wallet. Cancel deletes nothing. Creating a wallet: it exists only after you tick "I have written down my recovery phrase" and press Done; closing the window saves nothing. The reveal window's clipboard clears when you press Done, or about 30 s after copying while the window stays open. Closing the window with its close button cancels that timer, so the phrase stays in the clipboard until something replaces it: copy something else.
+Click the wallet card at the top of the sidebar and use **Add wallet** and **Manage wallets…** to switch between wallets, rename one, reveal a wallet's phrase in the secure window, or delete one you no longer need. Delete wallet opens the secure window; for a wallet with a stored recovery phrase, type its label to enable Delete wallet. Cancel deletes nothing. Creating a wallet: it exists only after you tick "I have written down my recovery phrase" and press Done; closing the window saves nothing. The reveal window's clipboard clears when you press Done, or about 30 s after copying while the window stays open. Closing the window with its close button cancels that timer, so the phrase stays in the clipboard until something replaces it: copy something else.
 
 ### Background sync (enabled by default)
 
