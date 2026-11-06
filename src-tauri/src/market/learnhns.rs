@@ -156,6 +156,10 @@ pub struct LearnHnsClient {
     /// The profile's network; writes refuse unless it is `main`; `None` (not
     /// told) refuses as well.
     network: Option<Network>,
+    /// Debug builds only, and only with `learnhns_base_url` set (loopback):
+    /// writes on regtest too, for a local market from its `compose.regtest.yaml`.
+    /// A release build never sets it.
+    test_network: bool,
 }
 
 #[derive(Deserialize)]
@@ -188,6 +192,7 @@ impl LearnHnsClient {
             http,
             base_url: base_url.trim().trim_end_matches('/').to_string(),
             network: None,
+            test_network: false,
         })
     }
 
@@ -205,12 +210,25 @@ impl LearnHnsClient {
         if base.trim().is_empty() {
             Ok(Self::new())
         } else {
-            Self::with_base_url(base.trim())
+            let mut client = Self::with_base_url(base.trim())?;
+            client.test_network = true;
+            Ok(client)
         }
     }
 
+    /// Whether this client writes for `network`: mainnet, or regtest against
+    /// a local market in a debug build ([`Self::from_settings`]).
+    pub fn writes_on(&self, network: Network) -> bool {
+        network == Network::Main || (self.test_network && network == Network::Regtest)
+    }
+
+    /// The network the market's files and requests are for: the profile's.
+    pub fn market_network(&self) -> Network {
+        self.network.unwrap_or(Network::Main)
+    }
+
     fn writes_allowed(&self) -> Result<(), AppError> {
-        if self.network == Some(Network::Main) {
+        if self.network.is_some_and(|n| self.writes_on(n)) {
             Ok(())
         } else {
             Err(AppError::InvalidInput(MARKET_MAINNET_ONLY.into()))
@@ -225,7 +243,7 @@ impl LearnHnsClient {
         // folder shared by every upload (MKT api.py L2807–2808): name it by
         // the listing's (checked) name and lock txid (hex) so no two uploads
         // collide.
-        let parsed = ListingFile::parse(listing_file, Network::Main)?;
+        let parsed = ListingFile::parse(listing_file, self.market_network())?;
         check_name(&parsed.name)?;
         let file_name = format!("{}-{}.json", parsed.name, hex::encode(parsed.lock_txid));
         let part = reqwest::multipart::Part::text(listing_file.to_string())
@@ -261,7 +279,7 @@ impl LearnHnsClient {
         check_name(p.name)?;
         let body = serde_json::json!({
             "name": p.name,
-            "network": "main",
+            "network": self.market_network().as_str(),
             "transferTxHash": p.transfer_txid,
             "transferOutputIdx": p.transfer_vout,
             "lockScriptAddr": p.lock_address,
@@ -293,7 +311,7 @@ impl LearnHnsClient {
     ) -> Result<MarketReply<RenewAccepted>, AppError> {
         self.writes_allowed()?;
         check_name(r.name)?;
-        let network = self.network.unwrap_or(Network::Main);
+        let network = self.market_network();
         let body = serde_json::json!({
             "network": network.as_str(),
             "lockingTxHash": r.lock_txid.to_ascii_lowercase(),

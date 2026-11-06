@@ -1032,3 +1032,40 @@ async fn renew_posts_the_signed_request_and_reads_the_new_expiry() {
         .for_network(Network::Regtest);
     assert!(off.renew_listing(&r, "sig").await.is_err(), "mainnet only");
 }
+
+/// Regtest writes only against a local market named in `learnhns_base_url`
+/// (debug builds and tests only); the real host stays mainnet-only, as does a
+/// client built without that setting.
+#[tokio::test]
+async fn regtest_writes_only_with_a_local_market_set() {
+    let mut s = mockito::Server::new_async().await;
+    let (m, seen) = recording(
+        s.mock("POST", "/api/v2/pending-listings"),
+        201,
+        PENDING_ACCEPTED,
+    );
+    let _m = m.create_async().await;
+    let mut settings = crate::models::settings::SettingsMap::new();
+    settings.insert("learnhns_base_url".into(), s.url());
+    let local = LearnHnsClient::from_settings(&settings).unwrap();
+    assert!(local.writes_on(Network::Main) && local.writes_on(Network::Regtest));
+    assert!(!local.writes_on(Network::Testnet));
+    let local = local.for_network(Network::Regtest);
+    assert!(matches!(
+        local.post_pending_listing(&pending()).await.unwrap(),
+        MarketReply::Accepted(())
+    ));
+    let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0]).unwrap();
+    assert_eq!(
+        sent["network"], "regtest",
+        "the request names the profile's network"
+    );
+
+    let real = LearnHnsClient::from_settings(&crate::models::settings::SettingsMap::new()).unwrap();
+    assert!(!real.writes_on(Network::Regtest));
+    let direct = LearnHnsClient::with_base_url(&s.url()).unwrap();
+    assert!(
+        !direct.writes_on(Network::Regtest),
+        "no setting, no test network"
+    );
+}
