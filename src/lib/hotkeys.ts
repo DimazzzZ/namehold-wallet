@@ -11,7 +11,7 @@ export type HotkeyCategory = "nav" | "modal" | "action" | "palette" | "list";
  * Which route(s) a binding is active on. "*" means global (fires everywhere).
  * Route strings must match the `to` values in PRIMARY_ROUTES.
  */
-export type RouteScope = "/" | "/names" | "/market" | "/activity" | "/settings" | "*";
+export type RouteScope = "/" | "/names" | "/market" | "/exchange" | "/activity" | "/settings" | "*";
 
 export interface HotkeyBinding {
   keys: string; // react-hotkeys-hook format, e.g. "1", "shift+?"
@@ -35,8 +35,9 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
   { keys: "1", label: "1", description: "Go to Wallet", category: "nav", scope: "*" },
   { keys: "2", label: "2", description: "Go to Names", category: "nav", scope: "*" },
   { keys: "3", label: "3", description: "Go to Market", category: "nav", scope: "*" },
-  { keys: "4", label: "4", description: "Go to Activity", category: "nav", scope: "*" },
-  { keys: "5", label: "5", description: "Go to Settings", category: "nav", scope: "*" },
+  { keys: "4", label: "4", description: "Go to Exchange", category: "nav", scope: "*" },
+  { keys: "5", label: "5", description: "Go to Activity", category: "nav", scope: "*" },
+  { keys: "6", label: "6", description: "Go to Settings", category: "nav", scope: "*" },
 
   // --- Dialogs (global) ---
   {

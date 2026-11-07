@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Globe, History, Settings, Store, Wallet } from "lucide-react";
+import { ArrowLeftRight, Globe, History, Settings, Store, Wallet } from "lucide-react";
 import type { NavKey } from "../types";
 
 export type { NavKey };
@@ -14,7 +14,7 @@ export interface PrimaryRoute {
   icon: LucideIcon;
 }
 
-/** Wallet-first primary navigation; digits 1–5 follow this order. */
+/** Wallet-first primary navigation; digits 1–6 follow this order. */
 export const PRIMARY_ROUTES: PrimaryRoute[] = [
   {
     key: "wallet",
@@ -37,6 +37,13 @@ export const PRIMARY_ROUTES: PrimaryRoute[] = [
     icon: Store,
     description: "Buy and sell names through Shakedex",
     badge: "New",
+  },
+  {
+    key: "exchange",
+    to: "/exchange",
+    label: "Exchange",
+    icon: ArrowLeftRight,
+    description: "Trade HNS for BTC with other people, as atomic swaps",
   },
   {
     key: "activity",

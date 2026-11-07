@@ -639,7 +639,7 @@ export interface WatchlistStatus {
 }
 
 /** The five primary nav sections (shell v2). */
-export type NavKey = "wallet" | "names" | "market" | "activity" | "settings";
+export type NavKey = "wallet" | "names" | "market" | "exchange" | "activity" | "settings";
 
 export type StatusTone = "default" | "info" | "success" | "warning" | "error";
 

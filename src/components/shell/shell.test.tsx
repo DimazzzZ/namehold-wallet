@@ -153,12 +153,12 @@ describe("Layout", () => {
     );
   };
 
-  it("has five nav items in order, a Beta badge and no Beta banner", async () => {
+  it("has six nav items in order, a Beta badge and no Beta banner", async () => {
     renderLayout([p("p1", "Primary", { active: true })]);
     const labels = Array.from(document.querySelectorAll("nav a")).map((a) =>
       a.textContent?.replace("New", ""),
     );
-    expect(labels).toEqual(["Wallet", "Names", "Market", "Activity", "Settings"]);
+    expect(labels).toEqual(["Wallet", "Names", "Market", "Exchange", "Activity", "Settings"]);
     expect(screen.getByTestId("beta-badge")).toBeInTheDocument();
     expect(screen.queryByTestId("beta-banner")).toBeNull();
   });

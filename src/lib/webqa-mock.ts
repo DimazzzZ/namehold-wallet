@@ -12,6 +12,7 @@
 
 import { DEFAULT_SETTINGS } from "./settingsDefaults";
 import listingActionsFixture from "../test/fixtures/listing-actions.json";
+import { __resetExchangeForTests, exchangeHandlers } from "./webqa-exchange";
 import type {
   NodeConnectionCheck,
   Settings,
@@ -1941,6 +1942,7 @@ const handlers: Record<string, Handler> = {
   shakedex_build_purchase_draft: () => null,
   shakedex_build_purchase_finalize_draft: () => null,
   ...sellingHandlers,
+  ...exchangeHandlers,
 
   // ── Watchlist ─────────────────────────────────────────────────────────
   add_to_watchlist: () => null,
@@ -2037,6 +2039,7 @@ export function __resetChainForTests(seedHeight = 100_000): void {
   chain.listings.clear();
   chain.listingDrafts.clear();
   for (const key of Object.keys(savedSettings)) delete savedSettings[key];
+  __resetExchangeForTests();
 }
 
 /** Test-only: mine `n` blocks (same as the dev control / webqa_mine_blocks). */

@@ -20,6 +20,9 @@
 - **The window opens while the database is updated.** An update's database changes ran before the window was created, so after updating to 0.7.1 with a large database Namehold showed no window, or a frozen one, for minutes and macOS reported it as not responding. The window now opens at once and shows the update's progress (step, share of the file read, time elapsed); the app appears when it finishes. If the update fails, the window says why and offers Try again.
 - **An update stopped halfway no longer blocks the next start.** Each database change was recorded as applied in a separate step after it, so a Namehold quit between the two ran the change again on the next start, and a change that cannot run twice then failed on every start. A change and its record now commit together.
 
+### Added
+- **An Exchange page for trading HNS and BTC with other people.** It shows an order book of offers to sell and to buy HNS, your own offers and trades, and a Bitcoin account made from your recovery phrase; each trade asks you to confirm once in the secure window, and when the exchange cannot be used with a wallet every button says why. Exchange sits after Market in the sidebar, so the keys for Activity and Settings are now 5 and 6.
+
 ## [0.7.1] - 2026-11-06
 
 > **Highlights:** the database no longer grows to 9 GB with a local node (with a large database, the first start after updating can take about a minute before the window appears); wallets can be renamed; LearnHNS Market listings can be renewed; and a mainnet wallet without a passphrase now says so.
