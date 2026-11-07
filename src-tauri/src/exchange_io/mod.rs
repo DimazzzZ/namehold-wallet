@@ -3,6 +3,10 @@
 
 pub mod btc_observe;
 pub mod btc_source;
+pub mod btc_wallet;
+pub mod env;
 pub mod hns_observe;
+pub mod job;
 pub mod relay_client;
 pub mod runner;
+pub mod store;

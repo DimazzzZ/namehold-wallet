@@ -138,7 +138,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
 - When enabled, hsd stays running after you close the app so the daemon can
   query it; the next app launch adopts the running node (no duplicate spawned).
 - Crash recovery: if the daemon dies, the app respawns it on startup.
-- The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market (on mainnet, for listings you chose to publish), and sends the Shakedex "Ready to finalize" reminders, so they arrive with the app closed.
+- The background daemon never signs; it publishes listings already signed to LearnHNS Market, sends only the exchange transactions you signed at a trade's Commit (on mainnet, for listings you chose to publish), and sends the Shakedex "Ready to finalize" reminders, so they arrive with the app closed.
 
 ### Connections: local node, remote node, SPV
 

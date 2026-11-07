@@ -26,7 +26,7 @@ available and users have had reasonable time to upgrade.
 | Namebase session cookie | AES-256-GCM under OS-keyring-held DEK (`noncustodial/cookie_vault.rs`) | Held only during the HTTP request | Redacted from `get_settings`; `update_setting` refuses it (not on `RENDERER_SETTING_KEYS`) |
 | hsd node RPC api-key | Not encrypted; the data directory is owner-only on macOS and Linux | Held in `NodeRpcClient` struct | Redacted from `get_settings`; `update_setting` refuses it; written only by `update_protected_settings` after the user confirms in the secure window (the row says set, changed or cleared, never the value); redacted in the audit log. Never sent to the webview |
 | hsd node RPC api-key (transport) | N/A (not stored encrypted) | `guard_transport` rejects remote cleartext HTTP when a key is set; HTTPS required per [hsd API guidance](https://hsd-dev.org/api-docs/#authentication) | N/A |
-| Background sync daemon (`namehold-syncd`) | N/A — daemon holds no secrets and never has access to key material | Reads hsd RPC via the shared settings (api-key never leaves the Rust process); never signs or broadcasts; on mainnet, publishes listings already signed to LearnHNS Market | Rust binary — never touches the webview |
+| Background sync daemon (`namehold-syncd`) | N/A — daemon holds no private key and never has access to key material | Reads hsd RPC via the shared settings (api-key never leaves the Rust process); never signs; on mainnet, publishes listings already signed to LearnHNS Market; for the exchange, sends only the trade transactions the user signed at a Commit (see "The exchange") | Rust binary — never touches the webview |
 
 ---
 
@@ -137,7 +137,7 @@ The background sync daemon (`namehold-syncd`) is a separate Rust binary that:
   node via RPC.
 - Writes sync data to the shared SQLite database (`~/.namehold/portfolio.db`).
 - Writes its process ID to `~/.namehold/syncd.pid` for lifecycle tracking.
-- **Never signs transactions, never broadcasts, never touches key material.** It publishes listings already signed to LearnHNS Market (mainnet only).
+- **Never signs transactions and never touches key material.** It publishes listings already signed to LearnHNS Market (mainnet only). It broadcasts only the HNS ⇄ BTC exchange's transactions the user signed at a trade's Commit (see "The exchange" below), and nothing else.
 
 ### Attack surfaces and mitigations
 
@@ -170,13 +170,27 @@ orphaned processes.
 time. The app's manual Sync and the daemon coordinate via heartbeats and stale
 takeover.
 
-#### 4. The daemon never signs or broadcasts
+#### 4. The daemon never signs; it sends only what you signed
 
-**Guarantee:** The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market. It never has access to key material. Even if the daemon is compromised, it cannot steal funds or sign malicious transactions: it can read the node (and the explorer), write sync data and publish to LearnHNS Market what the app already signed.
+**Guarantee:** The background daemon never signs; it publishes listings already signed to LearnHNS Market, and for the exchange it sends only the transactions the user signed at a trade's Commit ("The exchange", below). Apart from that it never broadcasts. It never has access to key material. Even if the daemon is compromised, it cannot steal funds or sign malicious transactions: it can read the node (and the explorer), write sync data and publish to LearnHNS Market what the app already signed.
 
 The "never broadcasts" half is a runtime rule, not a property of the build: the daemon runs the same `run_sync_steps` as the app, and the Shakedex purchase refresh in it holds the one path that can send (a purchase's single rebroadcast, already signed by the app). That path is closed for the daemon by `Rebroadcast::Never`: `daemon_sync_makes_no_send_call_where_the_apps_sync_does` runs the daemon's own `sync_profile` against a mock hsd holding a purchase due for its rebroadcast and checks that no `sendrawtransaction` reaches it, while the app's sync of the same wallet sends one; `daemon_never_rebroadcasts_and_leaves_it_to_the_app` checks the refresh itself under `Rebroadcast::Never`. Signing stays impossible in the daemon: it has no key material.
 
 Publishing (R23, R25, R28) is the one outbound write it makes besides the database, on a mainnet profile only: `shakedex_jobs.rs::{publish_listings_step, advance_reverse_auctions_step, keep_listed_step}` upload a published listing's current step (a reverse auction's again whenever its schedule moves) from the listing file Finalize & sign (or Lower price) wrote and the app signed, after re-verifying every step over the lock coin hsd reports; post the day-0 pending listing; and report a mined cancel or sale. They hold no key and name no signing call, nor does the market client they write through (`shakedex_layering_tests::shakedex_jobs_hold_no_signing_call`, a lexical scan of `shakedex_jobs.rs` and `market/learnhns.rs`), and `shakedex_jobs_tests::daemon_publishes_but_never_signs_or_broadcasts` runs `run_sync_steps` as the daemon and as the app and checks the upload of the stored step, no `sendrawtransaction` and no draft created or changed, and `daemon_advances_a_reverse_auction_but_never_signs_or_broadcasts` does the same for a reverse auction whose step moved. Each write goes through `market/learnhns.rs::LearnHnsClient`, which refuses it unless the client was given the profile's network and it is mainnet; the jobs build no client off mainnet.
+
+---
+
+## The exchange (HNS ⇄ BTC)
+
+Spec: [docs/specs/2026-11-07-hns-btc-exchange.md](docs/specs/2026-11-07-hns-btc-exchange.md). A trade is an atomic swap: the Seller's HNS and the Buyer's BTC sit in hash-time-locked outputs, and each party signs everything its side will ever need once, at its Commit, in the secure window.
+
+- **What the daemon and the app's sync send.** The exchange step (`exchange_io/env.rs::sync_step`, from `run_sync_steps`) runs in the daemon as in the app. It sends a trade's transactions **that the user signed at its Commit**: the lock's funding again while it is unconfirmed, the Buyer's claim of the HNS lock (with the Buyer's own secret, stored at the Commit), the Seller's claim of the BTC lock (with the secret taken from the HNS chain), and a refund once its time has come. It holds no private key and names no signing call (`tests::exchange_layering_tests`). A compromised daemon could send them early or not at all, never change where they pay: every one pays the party that signed it, and the signature covers it.
+- **What it answers on its own.** A take of the profile's offer is answered with **public** keys derived from the stored swap-branch public key, or with a hash pooled when a buy offer was made. No private key and no secret leave the app.
+- **The Buyer's secret on disk.** From the Buyer's Commit until the reveal, the secret is stored in the database (`exchange_trades.holdings_json`), so the daemon can reveal without the phrase. **Residual risk:** someone who reads that file **and** is the trade's Seller could take the BTC without locking HNS. The data directory is owner-only (`connection::secure_data_dir`); full-disk encryption is the protection against offline reads. The secret never goes to a watchtower or the relay.
+- **The relay and the watchtower** hold no key and no secret. The relay can hide or delay offers and messages; every message is signed and checked, and every chain fact it claims is re-checked on chain. A watchtower holds only presigned transactions that pay their owner; it can fail to send them, never redirect them.
+- **Bitcoin sources are not trusted.** The Seller commits only on a BTC lock proven by a Merkle proof into headers with valid proof of work (and, on mainnet, a difficulty floor), the same block reported by every configured source (`btc_spv.rs`, `exchange_io/btc_observe.rs`).
+- **Liveness.** Once the Buyer reveals, the Seller's BTC claim must be mined before the BTC refund time (12 hours on mainnet). The daemon and a watchtower do it; with both off for that whole window the BTC can be lost. An honest Namehold Buyer never refunds BTC after its HNS claim, whatever the delay (`engine.rs`).
+- **Settings.** The relay, the watchtower and the Bitcoin sources are changed only by `exchange_update_settings`, after the secure window; the bitcoind RPC login is a sensitive setting, redacted from `get_settings`.
 
 ---
 

@@ -77,6 +77,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../sql/042_bid_index_live_auctions.sql"),
     ),
     ("043", include_str!("../sql/043_shakedex_market_expiry.sql")),
+    ("044", include_str!("../sql/044_exchange.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {

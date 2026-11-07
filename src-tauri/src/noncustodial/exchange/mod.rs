@@ -15,6 +15,7 @@ pub mod keys;
 pub mod policy;
 pub mod price;
 pub mod relay_msg;
+pub mod review;
 pub mod script;
 pub mod terms;
 pub mod watch;

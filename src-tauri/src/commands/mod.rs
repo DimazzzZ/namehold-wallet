@@ -11,6 +11,7 @@ pub mod debug_notify;
 #[cfg(all(debug_assertions, not(test)))]
 pub mod dev_updates;
 pub mod draft_ctx;
+pub mod exchange;
 pub mod history;
 pub mod local_node;
 pub mod namebase;

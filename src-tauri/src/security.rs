@@ -86,7 +86,7 @@ pub const PROTECTED_SETTING_KEYS: &[&str] = &[
 
 /// Returns `true` if `key` is a sensitive setting that must be redacted.
 pub fn is_sensitive_key(key: &str) -> bool {
-    SENSITIVE_SETTING_KEYS.contains(&key)
+    SENSITIVE_SETTING_KEYS.contains(&key) || crate::exchange_io::env::is_sensitive(key)
 }
 
 /// Returns `true` if the renderer may write `key` with `update_setting`.
