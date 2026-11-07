@@ -208,8 +208,8 @@ mod tests {
         assert_eq!((now.rlim_cur, now.rlim_max), (0, 0));
     }
 
-    /// The app and the daemon both start hardened: the call comes first in each
-    /// entry point, before anything holds a secret.
+    /// The app, the daemon and the relay server start hardened: the call
+    /// comes first in each entry point, before anything holds a secret.
     #[test]
     fn the_app_and_the_daemon_harden_first_thing() {
         for (at, source, entry, call) in [
@@ -222,6 +222,12 @@ mod tests {
             (
                 "namehold-syncd.rs",
                 include_str!("bin/namehold-syncd.rs"),
+                "fn main() {",
+                "namehold_wallet_lib::harden_process();",
+            ),
+            (
+                "namehold-relay.rs",
+                include_str!("bin/namehold-relay.rs"),
                 "fn main() {",
                 "namehold_wallet_lib::harden_process();",
             ),

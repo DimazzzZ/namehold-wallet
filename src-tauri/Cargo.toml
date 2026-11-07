@@ -21,6 +21,14 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 name = "namehold-syncd"
 path = "src/bin/namehold-syncd.rs"
 
+# The relay and watchtower server of the HNS <-> BTC exchange (docs/RELAY.md).
+# Built only with `--features relay-server`, so the desktop app's build and
+# dependency tree do not change.
+[[bin]]
+name = "namehold-relay"
+path = "src/bin/namehold-relay.rs"
+required-features = ["relay-server"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -97,6 +105,9 @@ rayon = "1.10"
 # rust-bitcoin is the reference Rust implementation. It brings its own
 # secp256k1 (0.29) next to ours; keys cross between them as bytes.
 bitcoin = { version = "0.32", default-features = false, features = ["std"] }
+# The HTTP binding of `namehold-relay` only (feature `relay-server`); the
+# relay's logic is in `relay_server`, compiled and tested without it.
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio"] }
 
 # --- Ledger hardware wallet support ---
 # HID transport for Ledger Nano S/X (vendorId 0x2C97). Mature cross-platform
@@ -144,6 +155,8 @@ bitcoin = { version = "0.32", default-features = false, features = ["std", "bitc
 # Ledger UX path (reject, timeout, wrong app, disconnect, …) without a physical
 # device. Never enabled in release builds.
 mock-ledger = []
+# Builds the `namehold-relay` server binary (docs/RELAY.md).
+relay-server = ["dep:axum"]
 
 # Release build hardening. Stripping symbols reduces the binary size and makes
 # reverse-engineering slightly harder; `panic = "abort"` avoids unwind tables

@@ -160,15 +160,15 @@ JSON over HTTPS (`http://` only to this machine). Every body is at most 16 KiB; 
 | Method and path | Body | Answer |
 |---|---|---|
 | `GET /v1/health` | — | `{"ok": true, "version": "<server version>", "networks": ["main", …]}` |
-| `POST /v1/offers` | a `SignedOffer` | `201 {"id": "<offer id>"}`. Refused: bad signature, `check_shape` fails, network not served, more than 20 live offers for one maker key. Posting the same offer again is its **heartbeat**: it updates `lastSeen`. |
-| `GET /v1/offers?network=<n>` | — | `{"offers": [SignedOffer…], "now": <unix>}`: offers of that network seen within the last 180 s and not expired, newest first, at most 500 |
-| `POST /v1/offers/<id>/withdraw` | `{"signature": "<hex>"}`: the maker key's compact signature over SHA-256 of `"namehold exchange withdraw v1\0" ‖ <id as ASCII hex>` | `200 {}`; the offer is gone |
-| `POST /v1/messages` | an `Envelope` | `201 {"id": "<sha256 of the body>"}`. Refused: bad signature, unknown version, oversized. At most 200 messages per sender key per hour. Kept 7 days. |
-| `GET /v1/messages?to=<pubkey>&after=<cursor>` | — | `{"messages": [Envelope…], "cursor": "<opaque>"}` in arrival order, at most 200; `after` omitted means from the start |
-| `POST /v1/watch` | a `WatchJob` | `201 {"id": "<terms id>-<role>"}`. Refused when `WatchJob::check` fails or the network is not served. Posting the same job again is a no-op. |
-| `GET /v1/watch/<id>` | — | `{"status": Status, "sent": SentLog, "updatedAt": <unix>}` |
+| `POST /v1/offers` | a `SignedOffer` | `201 {"id": "<offer id>"}`. Refused: bad signature, `check_shape` fails, network not served (400); more than 20 live offers for one maker key (429). Posting the same offer again is its **heartbeat**: it updates `lastSeen` and answers `200 {"id"}`; a silent offer that comes back counts against the 20. A withdrawn offer posted again is refused (410) until it expires. |
+| `GET /v1/offers?network=<n>` | — | `{"offers": [SignedOffer…], "now": <unix>}`: offers of that network seen within the last 180 s and not expired, newest first (by when the server first stored them), at most 500 |
+| `POST /v1/offers/<id>/withdraw` | `{"signature": "<hex>"}`: the maker key's compact signature over SHA-256 of `"namehold exchange withdraw v1\0" ‖ <id as ASCII hex>` | `200 {}`; the offer is gone. Another signature: 403; an unknown id: 404 |
+| `POST /v1/messages` | an `Envelope` | `201 {"id": "<sha256 of the body>"}`. Refused: bad signature, unknown version, network not served, `to` not a public key (400); oversized. At most 200 messages per sender key in any hour (429). The same body again stores nothing (`200 {"id"}`). Kept 7 days. |
+| `GET /v1/messages?to=<pubkey>&after=<cursor>` | — | `{"messages": [Envelope…], "cursor": "<opaque>"}` in arrival order, at most 200; `after` omitted means from the start; with nothing new, the same cursor comes back |
+| `POST /v1/watch` | a `WatchJob` | `201 {"id": "<terms id>-<role>"}`. Refused when `WatchJob::check` fails or the server runs no watchtower for the network (400). Posting the same job again is a no-op (`200 {"id"}`); another job under the same id is refused (409). |
+| `GET /v1/watch/<id>` | — | `{"status": Status, "sent": SentLog, "updatedAt": <unix>}`; before the first round, the status of a step that saw neither chain (`cannotCheck`) |
 
-The watchtower runs `engine::step` on every job each minute, with its own HNS node and Bitcoin sources, and sends what it returns.
+The watchtower runs `engine::step` on every job each minute (`exchange_io::runner::run_step`, the daemon's own step), with its own HNS node and Bitcoin sources, and sends what it returns. It uses the node only while the node reports the job's network. A job whose status is final (completed, refunded, expired) is re-checked for a day, then kept 30 days. Server: `src-tauri/src/relay_server/`, binary `namehold-relay` (feature `relay-server`), tests `relay_server_tests`, operator guide [RELAY.md](../RELAY.md).
 
 ## 9. Commands (the Tauri bridge)
 

@@ -22,6 +22,7 @@ mod namebase;
 pub mod noncustodial;
 mod protected_settings;
 mod providers;
+pub mod relay_server;
 mod security;
 pub mod shakedex_jobs;
 #[cfg(test)]

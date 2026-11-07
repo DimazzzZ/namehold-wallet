@@ -86,6 +86,7 @@ mod query_extra_tests;
 mod query_tests;
 mod read_cmd_tests;
 mod read_profile_isolation_tests;
+mod relay_server_tests;
 mod renewals_tests;
 mod repair_convergence_tests;
 mod repair_owned_names_tests;
