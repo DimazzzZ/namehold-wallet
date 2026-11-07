@@ -91,6 +91,12 @@ base64 = "0.22"
 url = "2.5.8"
 # Parallel iterator for brute-force bid-value recovery (Tier-2 full sweep).
 rayon = "1.10"
+# --- HNS <-> BTC exchange (docs/specs/2026-11-07-hns-btc-exchange.md) ---
+# Bitcoin transactions, scripts, BIP143 sighash, addresses, headers and
+# Merkle proofs. Hand-rolling Bitcoin consensus code is how coins get lost;
+# rust-bitcoin is the reference Rust implementation. It brings its own
+# secp256k1 (0.29) next to ours; keys cross between them as bytes.
+bitcoin = { version = "0.32", default-features = false, features = ["std"] }
 
 # --- Ledger hardware wallet support ---
 # HID transport for Ledger Nano S/X (vendorId 0x2C97). Mature cross-platform
@@ -125,6 +131,10 @@ tauri = { version = "2", features = ["test"] }
 # in the same binary. Applied per-test via `#[serial(<key>)]` — different keys
 # run in parallel, only tests sharing a key are mutually excluded.
 serial_test = "3"
+# The Bitcoin Core script interpreter (libbitcoinconsensus, built from the
+# crate's bundled Core 26 sources): every Bitcoin claim and refund the
+# exchange signs is run through it in the tests (spec R5).
+bitcoin = { version = "0.32", default-features = false, features = ["std", "bitcoinconsensus"] }
 
 [features]
 # Dev-only: enables an in-process Ledger device simulator (see
