@@ -24,7 +24,7 @@ The seller profile buys names the Shakedex CLI listed: import a listing file (Im
 
 Steps:
 
-1. Open Market (sidebar, or hotkey 4); stay on `Browse`.
+1. Open Market (sidebar, or hotkey 3); stay on `Browse`.
 2. `Import listing…` → in the `Import a listing` dialog paste `https://market.learnhns.com/listing/foo`; press nothing else. Then `Cancel`.
 
 Expected:
