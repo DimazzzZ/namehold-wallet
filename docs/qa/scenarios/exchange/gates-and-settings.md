@@ -22,7 +22,7 @@ The R17 sentences (`src-tauri/src/commands/exchange.rs::refusal`), checked in th
 - `NEEDS_RECOVERY_PHRASE`: "The exchange needs a wallet whose recovery phrase is on this computer: a Ledger or watch-only wallet cannot sign a trade."
 - `NEEDS_NODE` (the Explorer chain source): "The exchange needs a node: an explorer cannot check a lock."
 - `NEEDS_LOCAL_NODE` (any remote node, sending allowed or not): "The exchange needs a node on this computer: a remote node could show a fake lock and learn your secret."
-- `NEEDS_SENDING_NODE` (a node that cannot send, i.e. SPV now that a remote node is refused first): "The exchange needs a local node, or a remote node with sending allowed."
+- `NEEDS_SENDING_NODE` (a node that cannot send, i.e. SPV now that a remote node is refused first): "The exchange needs Namehold's local node, or your own hsd on this computer, able to send."
 
 So the exchange profiles connect with Chain source `Local full node (this device runs hsd)` to the regtest node ([exchange-setup](../../procedures/exchange-setup.md) step 6).
 
@@ -80,6 +80,7 @@ Expected:
 
 - **Priority:** P1
 - **Covers:** R17 (a remote node, review M3: the Buyer reveals on its node's word, so the node must be its own)
+- **Regression of:** exchange QA finding 15 (the SPV refusal recommended a remote node, which is refused)
 - **Preconditions:** the Buyer, exchange enabled, connected as `Local full node (this device runs hsd)`; no trade between its two Commits. Note the Connections settings first.
 
 Steps:
@@ -92,7 +93,7 @@ Steps:
 Expected:
 
 - Steps 1 and 2: the amber banner "The exchange needs a node on this computer: a remote node could show a fake lock and learn your secret." (a remote node is refused whatever its sending setting); every trading button disabled with it (as E2).
-- Step 3: "The exchange needs a local node, or a remote node with sending allowed." (SPV cannot send). The spec's §3.6 once named SPV as allowed; record the sentence seen.
+- Step 3: "The exchange needs Namehold's local node, or your own hsd on this computer, able to send." (SPV cannot send).
 - Step 4: no banner; buttons enabled.
 - Passes if only a node on this computer that can send lets the exchange act.
 
@@ -182,7 +183,8 @@ Expected:
 ## E7 — The bitcoind login never reaches the screen, the renderer or a log
 
 - **Priority:** P2
-- **Covers:** SECURITY.md "The exchange" › Settings ("the bitcoind RPC login is a sensitive setting, redacted from `get_settings`"), `exchange_io/env.rs`
+- **Covers:** SECURITY.md "The exchange" › Settings ("the bitcoind RPC login is a sensitive setting, redacted from `get_settings`"), `exchange_io/env.rs`, `commands/settings.rs::redact`
+- **Regression of:** exchange QA finding 3 (`get_settings` returned the bitcoind login to the renderer)
 - **Preconditions:** after E6; mode B for step 2 (mode A: step 2 BLOCKED ✗); no trade between its Commits (step 3 breaks the Bitcoin source for a minute).
 
 Steps:
@@ -194,7 +196,7 @@ Steps:
 
 Expected:
 
-- Step 2: the keys `exchange_relay_url.regtest`, `exchange_watchtower_url.regtest`, `exchange_btc_sources.regtest` are there with the values set; `exchange_bitcoind_rpc_auth.regtest` is **absent** (at most a `__has_…` marker), so the second expression gives `undefined`. **Known at writing:** `get_settings` (`src-tauri/src/commands/settings.rs`) removes only the keys listed in `security::SENSITIVE_SETTING_KEYS`, which does not hold the per-network exchange key, so by our reading this check fails: record ❌ with the key's name and whether a value came back, never the value itself.
+- Step 2: the keys `exchange_relay_url.regtest`, `exchange_watchtower_url.regtest`, `exchange_btc_sources.regtest` are there with the values set; `exchange_bitcoind_rpc_auth.regtest` is absent, so the second expression gives `undefined`, and in its place the marker `__has_exchange_bitcoind_rpc_auth.regtest` reads `"true"`. A value under any key holding the login is ❌: record the key's name, never the value.
 - Step 3: the card's red line names the source without any credentials (no `wrong`, no `regtest` in it; record the exact text). After restoring, no red line.
 - Step 4: both counts 0.
 - Passes if the login appears in no window, no renderer answer and no log.

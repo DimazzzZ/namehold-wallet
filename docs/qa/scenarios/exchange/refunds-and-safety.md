@@ -190,25 +190,26 @@ Expected:
 ## E35 — A decoy coin of the exact amount at the lock address
 
 - **Priority:** P3
-- **Covers:** R20 (the Seller watches its own coin; a secret revealed by a claim of any coin with the lock's script counts), SECURITY.md "The exchange" (decoy coins)
+- **Covers:** R20 (the Seller watches its own coin; a secret revealed by a claim of any coin with the lock's script counts), SECURITY.md "The exchange" (decoy coins), `engine.rs` (a Seller's own coin left unspent after a claim of another coin is refunded once its refund time is open)
+- **Regression of:** exchange QA finding 16 (with a decoy claimed first, the Seller's own lock coin stayed stranded)
 - **Preconditions:** as E24; the hsd wallet with at least 3 HNS spendable.
 
-Anyone can pay the lock address. Here a stranger (the hsd wallet) pays it exactly the trade's amount before the Seller commits.
+Anyone can pay the lock address. Here a stranger (the hsd wallet) pays it exactly the trade's amount before the Seller commits. The Buyer's observer prefers the coin the Seller announced, if it is exactly the lock, and otherwise takes the earliest such coin; the Seller's observer watches only its own coin.
 
 Steps:
 
 1. The Buyer takes OS for `2.5`, commits; `bmine 1`. The Seller: `Confirm and sign` → record `HNS_LOCK` → `Cancel`.
 2. `W sendtoaddress "$HNS_LOCK" 2.5`; `mine 1`. Within 3 minutes: `hns_at "$HNS_LOCK"`; read the Buyer's card (`Refresh`), then the Seller's.
-3. If the Seller's card asks for its Commit: `Confirm and sign` → `Confirm & Sign`; `mine 1`. Within 3 minutes `btc_spender $BTC_TX 0`; `bmine 1`; `hns_at "$HNS_LOCK"`.
-4. Past `HNS can go back to the seller from` (path R or agreed M, then `mine 11`), wait 5 minutes; `hns_at "$HNS_LOCK"`; read both cards.
+3. The Seller: `Confirm and sign` → `Confirm & Sign` (before `Seller locks HNS by`); record its `HNS lock` outpoint. `mine 1`. Within 3 minutes: `btc_spender $BTC_TX 0`; `hns_at "$HNS_LOCK"`. `mine 1`; `bmine 1`; read both cards.
+4. Only if the Seller's own coin is still unspent after step 3: reach `HNS can go back to the seller from` ([exchange-time-travel](../../procedures/exchange-time-travel.md), `hns`); within 3 minutes `hns_at "$HNS_LOCK"`; `mine 1`; read the Seller's card.
 
 Expected:
 
-- Step 2: record what happens. By our reading the Buyer claims the decoy coin (it has exactly the lock's script and value, and its presigned claim fits any such coin, R3), so `X` becomes public before the Seller locked anything; the Buyer's card goes "Claiming your HNS" → "Trade complete" after the next block; the Seller's card still asks for its Commit (its own lock does not exist yet).
-- Step 3: after the Seller's Commit its claim of the BTC uses the public `X` (R20); the Seller "Trade complete"; the Buyer never refunds BTC (R20).
-- Step 4: record what becomes of the Seller's own lock coin. By our reading neither side spends it: the Buyer's step watches the decoy it already claimed, and the Seller's step is complete and never refunds; the coin stays in the lock. A coin left stranded is a finding (no money is taken from the Seller beyond the trade itself, but its HNS refund path is never used); an HNS refund of it, or the Buyer claiming it too, is the behaviour to report instead.
-- Passes if, with a decoy at the address, the Seller is still paid and the Buyer never takes both coins.
+- Step 2: the Buyer claims the decoy coin (it has exactly the lock's script and value, and the presigned claim fits any such coin, R3): `hns_at` shows a claim of the decoy with `X` in its witness; the Buyer's card goes "Claiming your HNS", then "Trade complete" after the next block. The Seller's card still reads "Confirm to lock your HNS" (its own lock does not exist yet).
+- Step 3: the Seller's claim of the BTC uses the public `X` (R20) and pays `SELLER_BTC`; the Buyer never refunds its BTC. The Seller's own coin is not left alone: once the Seller's announcement has reached the Buyer, the Buyer prefers that coin and claims it too with the same presigned claim (`hns_at` shows a second claim, of the Seller's outpoint, paying the Buyer's address). Both cards "Trade complete". Record which coins each side ended with: the Buyer both 2.5 HNS coins, the Seller the BTC, the stranger nothing.
+- Step 4 (only if the Buyer did not claim it): the Seller's own coin is refunded to `SELLER_HNS_BACK` once the HNS refund time is open, as the HNS refund described above, while the card stays "Trade complete". A coin still unspent 5 minutes after the refund time opened is ❌ (stranded).
+- Passes if, with a decoy at the address, the Seller is paid, the Buyer never takes the BTC back, and the Seller's own coin is never left stranded.
 
-- **Blocks mined:** HNS 13, BTC 2
-- **Evidence:** `hns_at` and `btc_spender` outputs; screenshots `E35-2-buyer`, `E35-4-cards`.
-- **Cleanup / end state:** 2.5 HNS of the hsd wallet spent to the Buyer; the Seller's lock coin as recorded.
+- **Blocks mined:** HNS 3 (+12 for step 4), BTC 2
+- **Evidence:** `hns_at` and `btc_spender` outputs; screenshots `E35-2-buyer`, `E35-3-cards`.
+- **Cleanup / end state:** 2.5 HNS of the hsd wallet spent to the Buyer.

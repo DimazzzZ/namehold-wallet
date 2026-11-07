@@ -62,6 +62,9 @@ export function canCancel(
   trade: Pick<TradeRow, "status" | "role" | "negotiating" | "declined">,
 ): boolean {
   if (trade.declined !== null) return false;
+  // A trade that already ended (an own cancel, an expired take) has nothing
+  // left to cancel, even while its terms were never agreed.
+  if (trade.status.kind === "expired") return false;
   return trade.negotiating || BEFORE_MY_COMMIT[trade.role].has(trade.status.kind);
 }
 

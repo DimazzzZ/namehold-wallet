@@ -694,7 +694,7 @@ pub async fn exchange_create_offer(
         store::set_offer_published(&conn, &own.id, t, err.as_deref())?;
     }
     if let Some(e) = err {
-        return Err(AppError::Rpc(format!(
+        return Err(AppError::Other(format!(
             "the offer is saved but the relay refused it: {e}"
         )));
     }

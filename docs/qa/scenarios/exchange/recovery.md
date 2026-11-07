@@ -1,7 +1,7 @@
 ---
 area: HNS ⇄ BTC exchange — cancelling, a crash right after a Commit, the relay going away, the watchtower line on the card, restarts, Activity and notifications, the browser mock
 priority: P1–P3
-blocks: HNS ~6, BTC ~20
+blocks: HNS ~8, BTC ~8
 requires:
   - procedures/exchange-setup.md
   - procedures/exchange-time-travel.md
@@ -18,6 +18,7 @@ The order of a Commit (`commands/exchange.rs`, module docs): everything the part
 
 - **Priority:** P1
 - **Covers:** spec §9 `exchange_cancel_trade`, `src/lib/exchangeStatus.ts` `canCancel`
+- **Regression of:** exchange QA finding 7 (the user's own cancel was shown as the other side's decline)
 - **Preconditions:** OS live; the Buyer unlocked. Part (d) runs on any trade after a Commit (fold it into [E17](trades.md#e17--the-happy-path-a-buyer-takes-a-sell-offer) between its steps 4 and 5, and after its step 8); its inspector step needs mode B.
 
 Steps:
@@ -30,9 +31,9 @@ Steps:
 
 Expected:
 
-- (a) Toast "Trade cancelled". The card: "Trade expired", "The trade ended before either side locked any coins.", no `Cancel` and no `Confirm and sign`, and a red line which by our reading is "The other side declined: cancelled by you" (the user's own cancel worded as the other side's decline: record it as a wording finding). The Seller's card: "Trade expired" with "The other side declined: cancelled".
-- (b) The same as (a); nothing was signed.
-- (c) The Seller's card: "Trade expired", "The other side declined: cancelled by you" (same wording note). The Buyer's card ignores the decline after its Commit: it keeps "Waiting for the seller to confirm" (no declined line), and later goes "Waiting to take your BTC back" → "Your BTC is back" as E20.
+- (a) Toast "Trade cancelled". The card: "Trade expired", "The trade ended before either side locked any coins.", no `Cancel` and no `Confirm and sign`, and no "The other side declined…" line (the cancel was the user's own). The Seller's card: "Trade expired" with the red line "The other side declined: cancelled".
+- (b) The same as (a); nothing was signed. The expired card offers no `Cancel` (`canCancel` is false for an expired trade, even one whose terms were never agreed).
+- (c) The Seller's card: "Trade expired", with no declined line. The Buyer's card ignores the decline after its Commit: it keeps "Waiting for the seller to confirm" (no declined line), and later goes "Waiting to take your BTC back" → "Your BTC is back" as E20.
 - (d) No `Cancel` on either card once that party has committed. The inspector call is refused with "Invalid input: you have locked coins in this trade: it ends on the chains, by a claim or a refund"; the card is unchanged.
 - Step 5: no transaction from (a) or (b); in (c) only the Buyer's BTC lock (and later its refund).
 - Passes if a trade can be dropped before the party's Commit with nothing signed or sent, and never after it.
@@ -68,6 +69,7 @@ Expected:
 
 - **Priority:** P2
 - **Covers:** spec §3.4 ("the relay lies": it can only waste time), §3.6 (chain facts found on chain)
+- **Regression of:** exchange QA finding 11 (relay errors read "Node RPC error: …")
 - **Preconditions:** a trade after both Commits with its HNS lock not yet mined (E17 at the end of its step 8); OS live.
 
 Steps:
@@ -79,8 +81,8 @@ Steps:
 
 Expected:
 
-- Step 1: a red line above the order book (record the exact text; it names the relay, never a key) and empty tables ("Nobody is selling HNS right now." / "Nobody is buying HNS right now."); the rest of the page works.
-- Step 2: after the secure window, the dialog shows in red the backend's "… the offer is saved but the relay refused it: <reason>" (by our reading prefixed "Node RPC error: ": the relay is not a node, a misleading prefix; record it). The offer is in My offers as `Paused`; OS too after 3 minutes (its heartbeat fails).
+- Step 1: a red line above the order book, by our reading "relay http://127.0.0.1:8787…: <reason>" with no "Node RPC error:" prefix (record the exact text; it names the relay, never a key) and empty tables ("Nobody is selling HNS right now." / "Nobody is buying HNS right now."); the rest of the page works.
+- Step 2: after the secure window, the dialog shows in red "… the offer is saved but the relay refused it: relay http://127.0.0.1:8787…: <reason>" with no "Node RPC error:" prefix (record it exactly; a prefix is a regression of exchange QA finding 11). The offer is in My offers as `Paused`; OS too after 3 minutes (its heartbeat fails).
 - Step 3: the reveal and the claim happen as in E17 step 9 with no relay (the Buyer finds the HNS lock by its address on its own node; the Seller reads the secret from the HNS chain); both cards "Trade complete"; no relay error on the cards.
 - Step 4: the offers are `Live` again and listed by the relay, including the one made while it was down (record if not).
 - Passes if a relay outage after the Commits costs nothing and the offers come back by themselves.
@@ -92,27 +94,28 @@ Expected:
 ## E29 — The relay is down at the moment of the Buyer's Commit
 
 - **Priority:** P2
-- **Covers:** spec §3.3 step 3 (`btc_locked` announced), §3.4 ("the relay lies"); the watchtower registration retried
-- **Preconditions:** as E17; a refund wait can be shared with E20.
+- **Covers:** spec §3.3 step 3 (`btc_locked` announced), §3.4 ("the relay lies": it can only waste time); the watchtower registration retried
+- **Regression of:** exchange QA finding 4 (the BTC lock was announced only once, so a relay outage at the Buyer's Commit lost the trade)
+- **Preconditions:** as E17.
 
-The Buyer's announcement of its BTC lock is sent once, at the Commit, as best effort; the Seller learns the BTC lock only from it (it cannot look the lock up on Bitcoin without its txid). This case records what an outage at that moment does.
+The Seller learns the Buyer's BTC lock only from the Buyer's announcement (it cannot look the lock up on Bitcoin without its txid). A committed party announces its lock again about every 5 minutes while the other side waits for it (`exchange_io/job.rs::reannounce`: on a step that falls in the first minute of each 300-second period).
 
 Steps:
 
 1. The Buyer takes OS for `2.5`; once "Confirm to start the trade" shows, `relay_stop`; `Confirm and sign` → `Confirm & Sign`. `Refresh`; read the card.
-2. `bmine 1`. `relay_start`. Within 3 minutes `Refresh` on the Buyer and read its `Watchtower` line; switch to the Seller and read its card; repeat until `Buyer locks BTC by` has passed.
-3. Let it end like E20 from its step 3.
+2. `bmine 1`. Within a minute, `relay_start`. Then every minute for up to 8 minutes: `Refresh` on the Buyer and read its `Watchtower` line; switch to the Seller, `Refresh` and read its card.
+3. Finish the trade as E17 steps 7–10.
 
 Expected:
 
 - Step 1: "Locking your BTC"; the lock in bitcoind's mempool; `Watchtower` "Registering with the watchtower failed".
-- Step 2: the Buyer's line becomes "Registered with the watchtower" once the relay is back (failed registrations are retried each step). The Seller's card, by our reading, never reaches "Confirm to lock your HNS": it stays "Waiting for the buyer to confirm" ("The buyer has until <Buyer locks BTC by> to confirm and lock their BTC. You have not signed anything yet.") and turns "Trade expired" after that time. Record exactly what it shows; if it never asks for the Seller's Commit, file a finding: an outage of seconds at the Buyer's Commit costs the trade and locks the Buyer's BTC for two hours.
-- Step 3: the Buyer's BTC comes back after its refund time.
-- Passes if the Seller is asked to commit once the relay is back (the spec's "it can only waste time"); the outcome by our reading of the code is the finding above.
+- Step 2: the Buyer's line becomes "Registered with the watchtower" once the relay is back (failed registrations are retried each step). Within about 6 minutes of the relay's return (the next 5-minute announcement, then a step of the Seller), and before `Seller locks HNS by`, the Seller's card reads "Confirm to lock your HNS". Before that it reads "Waiting for the buyer to confirm"; if `Buyer locks BTC by` passes first it may read "Trade expired" until the announcement arrives: record what it showed and when. A Seller never asked to commit before its deadline is ❌.
+- Step 3: the trade completes as E17.
+- Passes if a relay outage at the Buyer's Commit only delays the trade.
 
-- **Blocks mined:** HNS 0, BTC 13 (1 + 11 + 1)
-- **Evidence:** screenshots `E29-1-failed`, `E29-2-registered`, `E29-2-seller`.
-- **Cleanup / end state:** the relay running; the Buyer refunded.
+- **Blocks mined:** HNS 2, BTC 2
+- **Evidence:** screenshots `E29-1-failed`, `E29-2-registered`, `E29-2-seller-asked`; the times of the relay's return and of the Seller's prompt.
+- **Cleanup / end state:** the relay running; the trade complete.
 
 ## E30 — The watchtower line on the trade card
 
@@ -162,25 +165,32 @@ Expected:
 ## E32 — Activity, the Wallet page and notifications
 
 - **Priority:** P3
-- **Covers:** spec §3.4 ("the app notifies at the reveal"), [ui](../../ui.md#where-things-are) (Activity, Needs you)
-- **Preconditions:** after E17 and one refund case (E20 or E21).
+- **Covers:** spec §3.4 ("the app notifies at the reveal"), `exchange_io/job.rs::event_text`, [ui](../../ui.md#where-things-are) (Activity, Needs you)
+- **Regression of:** exchange QA finding 6 (no notification of a needed Commit, the reveal, a completion or a refund)
+- **Preconditions:** after E17 and one refund case (E20 or E21); Settings › Notifications `Enable deadline notifications` on (note its value); Namehold allowed to post notifications in macOS (the maintainer's call, never changed by the agent); the maintainer watching the screen for step 3. Banners are outside Namehold's windows: never screenshot them ([rules](../../rules.md#secrets-and-evidence)); the maintainer, or Namehold's group in Notification Center, reads them, and the report says who.
 
 Steps:
 
 1. On each profile open Activity; search and filter for the trade's HNS transactions (the Seller's lock funding and refund, the Buyer's claim; their txids from `hns_at`).
 2. Wallet page: `Needs you`, the balance card; the sidebar's `Exchange` item, during a trade that waits for this profile's Commit.
-3. `grep "exchange:" "$QA_DIR/tauri-dev.log"`; note any macOS notification from Namehold during the trades (the maintainer reads it; never screenshot it, [rules](../../rules.md#secrets-and-evidence)).
+3. During the trades of E17 and the refund case, note each Namehold banner about the exchange and when it came. Then untick `Enable deadline notifications` → `Save settings`; take OS for `1` on the Buyer (its terms arriving start a wait for its Commit); wait 3 minutes; `Cancel` the trade; tick the setting again → `Save settings`.
 
 Expected:
 
 - Step 1: the code has no exchange-specific Activity rows, labels or actions: record how each HNS transaction shows (an ordinary row of the wallet's address with the chain's generic label, or nothing) and its amount. No Bitcoin transaction appears in Activity. A `Speed up`, `Retry` or `Discard` on these rows would be a finding (they have no draft).
-- Step 2: no exchange entry in `Needs you` and no count on the sidebar's `Exchange` (only the `My trades` tab's badge on the Exchange page): record. The Spendable HNS moves by what the trade moved, after a Sync.
-- Step 3: the trade's events (needs commit, completed, refunded) are only written to the log by our reading; no notification is posted. Spec §3.4 says the app notifies at the reveal: if no notification ever comes, file it as a finding.
-- Passes if the HNS side of a trade is accounted for and nothing claims to be an exchange action that is not.
+- Step 2: no exchange entry in `Needs you` and no count on the sidebar's `Exchange` (only the `My trades` tab's badge on the Exchange page). The Spendable HNS moves by what the trade moved, after a Sync.
+- Step 3, with the setting on, one banner per profile and event (the app and the daemon do not both post it):
+  - a trade waiting for this profile's Commit: "Exchange: your confirmation is needed", body "Open Namehold and confirm the trade before <the deadline, YYYY-MM-DD HH:MM UTC>.";
+  - the Seller, when the Buyer's claim reveals the secret: "Exchange: the buyer took the HNS", body "Namehold is claiming your BTC. Keep the background sync on until the trade completes: the claim must be mined before <BTC refund time>.";
+  - a completed trade: "Exchange: trade complete", "Both sides are paid.";
+  - a refunded one: "Exchange: coins returned", "The trade did not happen and your coins came back.";
+  - a trade needing attention (E24): "Exchange: a trade needs you", "Open the Exchange page to see what happened.".
+  With the setting off: no exchange banner for the new take. A missed banner is ◐ with the reason (permission, timing), never ❌.
+- Passes if the HNS side of a trade is accounted for, nothing claims to be an exchange action that is not, and the trade's moments are notified only while notifications are on.
 
 - **Blocks mined:** HNS 0, BTC 0
-- **Evidence:** screenshots `E32-1-activity-buyer`, `E32-1-activity-seller`, `E32-2-wallet`; the log lines.
-- **Cleanup / end state:** none.
+- **Evidence:** screenshots `E32-1-activity-buyer`, `E32-1-activity-seller`, `E32-2-wallet`; the banners as read by the maintainer (title, time).
+- **Cleanup / end state:** `Enable deadline notifications` at its noted value.
 
 ## E33 — The Exchange page in the browser mock
 

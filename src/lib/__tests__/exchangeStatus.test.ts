@@ -150,6 +150,11 @@ describe("canCancel", () => {
     }
   });
 
+  it("is not offered on a trade that already ended, even one never agreed", () => {
+    // An own cancel ends a negotiating trade as expired, with no decline.
+    expect(canCancel(makeTrade({ negotiating: true, status: { kind: "expired" } }))).toBe(false);
+  });
+
   it("is not offered on a declined trade", () => {
     expect(canCancel(makeTrade({ declined: "price moved", negotiating: true }))).toBe(false);
   });

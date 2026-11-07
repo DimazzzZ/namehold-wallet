@@ -28,7 +28,7 @@ Steps:
 Expected:
 
 - Step 1: `Receive address` starts `bcrt1q` and is 44 characters; `getaddressinfo` reads `"iswitness": true`, `"witness_version": 0` and a 40-hex `witness_program` (P2WPKH). `Locked in trades` `0.00000000 BTC` / `0 sats` with no trade committed.
-- Step 2: by our reading of the code `Unconfirmed` stays `0 sats` and `Confirmed` is unchanged: the bitcoind source sees only mined coins. Record what the card shows; an unconfirmed amount here would mean the code reads otherwise. (Spec §9 has an unconfirmed balance that a bitcoind source can never fill: note it as a finding if `Unconfirmed` stays 0.)
+- Step 2: `Unconfirmed` stays `0 sats` and `Confirmed` is unchanged: a Bitcoin Core source lists only confirmed coins (`scantxoutset`; spec §6 "Known gaps"). An unconfirmed amount here means the code reads otherwise: record it.
 - Step 3: `Confirmed` higher by exactly `0.00200000 BTC` / `200,000 sats`; `Checked` shows the new time.
 - Step 4: with bitcoind stopped the card shows a red line under the amounts (record the exact text; it names the source without credentials); record whether the amounts then read 0 (a source error shown as a zero balance is a finding). After the restart the amounts are back and the red line is gone.
 - Step 5: the derived address equals the card's address while no trade has taken a new one (each Buyer Commit and Seller Commit takes the next receive address for a refund or a claim). Without such a wallet: BLOCKED ✗.
@@ -42,6 +42,7 @@ Expected:
 
 - **Priority:** P1
 - **Covers:** spec §9 `exchange_btc_withdraw`, R16 (the secure window shows what leaves and where)
+- **Regression of:** exchange QA finding 10 (a withdrawal with the signer locked opened the secure window, then failed)
 - **Preconditions:** the Buyer with at least 0.005 BTC confirmed; the signer unlocked.
 
 Steps:
@@ -52,7 +53,7 @@ Steps:
 4. `Withdraw` again → `Confirm & Sign`. Read the toast.
 5. `B getrawmempool`; for the txid that starts with the toast's 12 hex: `B getrawtransaction <txid> true`, `B getmempoolentry <txid>`.
 6. `bmine 1`; `Refresh`; `BW getreceivedbyaddress $DEST`.
-7. Optional (P3): lock the signer (readiness pill › Lock) and start another withdrawal of `10000` to `$DEST`; confirm the window if it opens.
+7. Lock the signer (readiness pill › Lock); start another withdrawal of `10000` to `$DEST` → `Withdraw`. Unlock again after.
 
 Expected:
 
@@ -62,7 +63,7 @@ Expected:
 - Step 4: toast "BTC sent · <first 12 hex of the txid>…"; the dialog closes.
 - Step 5: the transaction pays exactly `0.00100000` to `$DEST`; its other output is the `Change back to this wallet` amount; `getmempoolentry` `fees.base` equals the `Network fee` row; inputs = 100 000 + fee + change sats.
 - Step 6: `Confirmed` lower by exactly 100 000 sats plus the fee (the change counts again once mined); `getreceivedbyaddress` `0.00100000`.
-- Step 7: record the order: by our reading the secure window opens and the signing then fails with "Your signer is locked — click Unlock first." and nothing is sent (a window shown for a send that cannot be signed is a UX finding). Unlock again after.
+- Step 7: no secure window opens; the dialog shows in red "Your signer is locked — click Unlock first."; nothing new in `B getrawmempool`.
 - Passes if every refusal is named before signing and the sent transaction is exactly what the window showed.
 
 - **Blocks mined:** HNS 0, BTC 1

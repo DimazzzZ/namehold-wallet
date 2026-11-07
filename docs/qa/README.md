@@ -36,7 +36,7 @@ Procedures: [mine-and-sync](procedures/mine-and-sync.md), [switch-profile](proce
 | [exchange/offers-and-taking.md](scenarios/exchange/offers-and-taking.md) | sell and buy offers, the order book on the other profile, own offers, the Take dialog and its exact BTC, withdrawing, the per-offer limit | E10 … E16 | P1–P3 | 0 |
 | [exchange/trades.md](scenarios/exchange/trades.md) | the happy path: both Commits and their secure windows, the locks, the reveal and the claim without a click, with the app closed, with either party the maker | E17 E18 E19 | P1–P2 | 6 (BTC 6) |
 | [exchange/refunds-and-safety.md](scenarios/exchange/refunds-and-safety.md) | the Seller never commits, the Buyer offline before the reveal, the Seller offline after it (the watchtower claims), the honest-wallet rule, a wrong-amount lock, the reveal deadline, a decoy coin | E20 … E25, E35 | P1–P3 | ~54 (BTC ~80) |
-| [exchange/recovery.md](scenarios/exchange/recovery.md) | cancelling, a kill right after a Commit, a deadline passing in the Commit window, relay outages, the watchtower line, restarts, Activity and notifications, the browser mock | E26 … E34 | P1–P3 | ~6 (BTC ~20) |
+| [exchange/recovery.md](scenarios/exchange/recovery.md) | cancelling, a kill right after a Commit, a deadline passing in the Commit window, relay outages, the watchtower line, restarts, Activity and notifications, the browser mock | E26 … E34 | P1–P3 | ~8 (BTC ~8) |
 
 Case ids are unique across all files. Setup ([environment](environment.md#test-names-for-a-run)) costs about 90 blocks more. The exchange's Bitcoin blocks (in brackets) are mined on its own bitcoind and do not count against the mining budget; its setup ([exchange-setup](procedures/exchange-setup.md)) costs about 12 HNS blocks.
 
@@ -61,10 +61,10 @@ About 380 blocks in all, about 570 in the worst case with retries.
 The exchange cases need [exchange-setup](procedures/exchange-setup.md) (mode B is assumed) and take wall-clock time: on regtest a trade's HNS refund opens 60 minutes after it starts and its BTC refund 120 minutes after. [exchange-time-travel](procedures/exchange-time-travel.md) moves a chain's median time: in real time (always allowed), or by mocktime (the exchange's own bitcoind; on hsd only with the maintainer's agreement, [rules](rules.md#the-regtest-chain)). After a mocktime jump no new trade may start until both chains' median time is back at or before the real clock, so the cases that travel come last.
 
 1. Setup, with [E4](scenarios/exchange/gates-and-settings.md) folded in on the Seller before it is enabled, [E6](scenarios/exchange/gates-and-settings.md) as the first settings save, and [E8](scenarios/exchange/btc-account.md) at the Buyer's funding.
-2. E10, E11, then **E14 at once**: if the Take dialog refuses every offer (the HNS-amount format noted at the top of [offers-and-taking](scenarios/exchange/offers-and-taking.md)), every trade case is BLOCKED ✗ unless the maintainer agrees to take offers through the inspector for this run.
+2. E10, E11, then E14 at once: every trade case starts with a take, so a Take dialog that refuses the offers blocks them all.
 3. P1 without waiting: E1, E3, E9, E12, E17 with E26(d) folded in (between its steps 4 and 5, and after 8), E18, E26(a)(b), E27(a).
 4. P1 that wait, started back to back so one wait serves them all: E20 with [E30](scenarios/exchange/recovery.md) folded in before its Commit, E24, E26(c); then E23 (from its step 4 the daemon is off and the Buyer stays active: start it once the others no longer need a Seller click); then E22 (about 10 minutes, daemon off, Buyer active). E21 last, alone (the app and the daemon stay off until both its refunds).
-5. P2: E2, E5, E7, E11's step 2, E13, E15, E19, E27(b)(c), E28, E29 (its refund can share a wait with step 4), E30 if not folded, E34, E31.
+5. P2: E2, E5, E7, E11's step 2, E13, E15, E19, E27(b)(c), E28, E29, E30 if not folded, E34, E31.
 6. P3: E16; E35; E25 alone (no HNS block for 30 minutes); E32 over everything mined; E33 in the browser mock.
 
 With real time only, the waiting group takes about 2½ hours (the BTC refunds) and a full run 4–5 hours; with mocktime on both chains, well under 2 hours. About 60 HNS blocks and 110 Bitcoin blocks in all.

@@ -14,19 +14,13 @@ An offer is a signed announcement on the relay (spec §2, §8): a side, a price 
 
 The BTC of a trade is `floor(doos × msat per HNS / 10^9)` sats, the same number on both sides (spec §9, `price.rs`, `exchangeAmount.ts`). Amounts below are those of the roles OS, OX and OB ([exchange-setup](../../procedures/exchange-setup.md#roles-used-by-the-cases)). In the order book and My offers a price reads without its unit (`10,000`), in dialogs with it (`10,000 sats/HNS`); HNS amounts drop trailing zeros (`1 HNS`, `2.5 HNS`).
 
-**Known at writing (blocks the take):** the backend sends the HNS amounts of `OfferRow` (`minHns`, `maxHns`) and `TradeRow` (`hnsAmount`) through `noncustodial::types::doos_to_hns_string`, which writes `"1.000000 HNS"` (with the unit), while the page reads only digits (`hnsAmount.ts`, spec §9 "strings of whole HNS with up to 6 decimals"). By our reading the order book's and My offers' `Amount` and the trade cards' amounts then read `—`, and the Take dialog refuses every offer with "This offer's price or limits cannot be read, so it cannot be taken." E14 checks it first. If it fails that way, mark the trade cases BLOCKED ✗, or, only if the maintainer agrees for the run (mode B), take offers through the inspector instead of the dialog and say so in the report:
-
-```js
-// inspector, on the taker's Exchange page; the id is the row's data-offer-id
-await window.__TAURI_INTERNALS__.invoke("exchange_take_offer", { offerId: "<offer id>", hnsAmount: "5" })
-```
-
-The same function writes the HNS amounts of the secure windows' rows, which add their own ` HNS`: by our reading they read `5.000000 HNS HNS` (the unit twice). The Expected lines below give the intended text; record the doubled unit once as a cosmetic finding.
+HNS amounts cross the bridge as plain decimals with six places and no unit (`commands/exchange.rs::hns_text`: `"1.000000"`), which the page shows without trailing zeros (`1 HNS`); the secure windows write them with six places and the unit once (`5.000000 HNS`). A sentence that repeats an offer's own limit (`TAKE_BELOW_MIN`, `TAKE_ABOVE_MAX`) shows it as the bridge carries it (`1.000000 HNS`).
 
 ## E10 — Publish a sell offer
 
 - **Priority:** P1
 - **Covers:** spec §3.3 step 1, §8 `POST /v1/offers`, R16 (the window shows what is offered), R18
+- **Regression of:** exchange QA finding 1 (HNS amounts carried with their unit read `—` on the page), exchange QA finding 2 (the unit written twice in the window's rows)
 - **Preconditions:** [exchange-setup](../../procedures/exchange-setup.md) done; the Seller active (the signer may be locked: a sell offer needs no key).
 
 Steps:
@@ -41,10 +35,10 @@ Steps:
 Expected:
 
 - Step 1: title `Make an offer`; two choices `Sell HNS` ("You lock HNS and receive BTC") and `Buy HNS` ("You lock BTC and receive HNS"); the three fields; "The offer stays listed only while your Namehold keeps renewing it. Every trade someone starts from it still asks you to confirm in the secure window."; `Cancel`, and `Publish offer` disabled until all three fields read.
-- Step 2: the button reads "Confirm in the secure window…"; secure window `Publish an offer`, message "Nothing is signed or locked now. Each trade someone starts on this offer asks you to confirm it here, and needs Namehold open.", rows `Offer` "Sell HNS for BTC", `Price` "10000 sats per HNS", `Each trade` "1.000000 to 20.000000 HNS (10000 to 200000 sats)" (by our reading the code prints "1.000000 HNS to 20.000000 HNS HNS (10000 to 200000 sats)"), `Relay` "http://127.0.0.1:8787".
+- Step 2: the button reads "Confirm in the secure window…"; secure window `Publish an offer`, message "Nothing is signed or locked now. Each trade someone starts on this offer asks you to confirm it here, and needs Namehold open.", rows `Offer` "Sell HNS for BTC", `Price` "10000 sats per HNS", `Each trade` "1.000000 HNS to 20.000000 HNS (10000 to 200000 sats)", `Relay` "http://127.0.0.1:8787".
 - Step 3: toast "Offer published"; the page is on `My offers` (badge `1`); one row: Side `Sell HNS`, Price `10,000`, Amount `1 – 20 HNS`, BTC `≈ 0.00010000 – 0.00200000 BTC`, State `Live` (hover "Published on the relay and renewed by this Namehold"), `Withdraw`.
 - Step 4: the list holds the offer with `"side":"sell"`, `"priceMsatPerHns":10000000`, `"minHns":1000000`, `"maxHns":20000000`, `"network":"regtest"`, and a `signature`.
-- Step 5: rows `Price` "333.333 sats per HNS", `Each trade` "… (1666 to 6666 sats)"; My offers now has two rows; OX: Price `333.333`, Amount `5 – 20 HNS`, BTC `≈ 0.00001666 – 0.00006666 BTC`.
+- Step 5: rows `Price` "333.333 sats per HNS", `Each trade` "5.000000 HNS to 20.000000 HNS (1666 to 6666 sats)"; My offers now has two rows; OX: Price `333.333`, Amount `5 – 20 HNS`, BTC `≈ 0.00001666 – 0.00006666 BTC`.
 - Step 6: both still `Live` and still listed by the relay; the relay log shows a `POST /v1/offers` about every 60 s per offer.
 - Passes if the offer is published exactly as confirmed and kept alive without the user.
 
@@ -56,17 +50,18 @@ Expected:
 
 - **Priority:** P2
 - **Covers:** spec §3.3 step 2 (a Buyer-maker's pool of hashes, made from the phrase at publishing), §9 `exchange_create_offer`
+- **Regression of:** exchange QA finding 10 (a buy offer with the signer locked opened the secure window, then failed)
 - **Preconditions:** the Buyer active, the signer **unlocked**.
 
 Steps:
 
 1. `Make an offer…` → `Buy HNS`, `10000`, `1`, `20` → `Publish offer` → read → `Confirm & Sign`.
-2. Optional (P3): lock the signer; make the same offer again; confirm the window if it opens; read My offers.
+2. Lock the signer (readiness pill › Lock); make the same offer again (`Publish offer`); read the dialog and My offers. Unlock again.
 
 Expected:
 
 - Step 1: rows `Offer` "Buy HNS with BTC", `Price` "10000 sats per HNS", `Each trade` as in E10, `Relay`; toast "Offer published"; My offers row Side `Buy HNS`, `Live`.
-- Step 2: by our reading the window opens and the publish then fails after it with "Your signer is locked — click Unlock first." (the pool of hashes needs the phrase); no new row in My offers, nothing new on the relay. Record the order (a window for an offer that cannot be made is a UX finding). Unlock again after.
+- Step 2: no secure window opens; the dialog shows in red "Your signer is locked — click Unlock first." (the pool of hashes needs the phrase, so the signer is checked before the window); no new row in My offers, nothing new on the relay.
 - Passes if a buy offer is published as confirmed.
 
 - **Blocks mined:** HNS 0, BTC 0
@@ -77,6 +72,7 @@ Expected:
 
 - **Priority:** P1
 - **Covers:** spec §3.3 step 1, `takeRefusal` (`OWN_OFFER`)
+- **Regression of:** exchange QA finding 1 (the order book's Amount read `—`)
 - **Preconditions:** OS and OX (E10) and OB (E11) live.
 
 Steps:
@@ -123,6 +119,7 @@ Expected:
 
 - **Priority:** P1
 - **Covers:** R7, spec §9 (exact sats, rounded down)
+- **Regression of:** exchange QA finding 1 (the Take dialog refused every offer as unreadable)
 - **Preconditions:** OS, OX, OB live; the Buyer active.
 
 Steps:
@@ -134,8 +131,8 @@ Steps:
 
 Expected:
 
-- Step 1: title `Buy HNS`; `Price` `10,000 sats/HNS`; `Limits` `1 HNS to 20 HNS`; `Maker` (8 hex); field `HNS to buy`; "Nothing is signed now. Once both sides agree the terms, the trade asks you to confirm in the secure window."; `Cancel`, `Take offer` disabled. (Known at writing: `Limits` `— to —` and "This offer's price or limits cannot be read, so it cannot be taken." under the field: ❌, see the note at the top of this file.)
-- Step 2: "This offer takes at least 1 HNS"; "This offer takes at most 20 HNS"; "HNS has at most 6 decimals"; "Enter an amount greater than 0, in digits like 12.5"; for `7.777777` "You pay **0.00077777 BTC** (77,777 sats)." (77 777.77 rounded down); for `5` "You pay **0.00050000 BTC** (50,000 sats)." and `Take offer` enabled.
+- Step 1: title `Buy HNS`; `Price` `10,000 sats/HNS`; `Limits` `1 HNS to 20 HNS`; `Maker` (8 hex); field `HNS to buy`; "Nothing is signed now. Once both sides agree the terms, the trade asks you to confirm in the secure window."; `Cancel`, `Take offer` disabled. "This offer's price or limits cannot be read, so it cannot be taken." never shows for these offers.
+- Step 2: "This offer takes at least 1.000000 HNS"; "This offer takes at most 20.000000 HNS"; "HNS has at most 6 decimals"; "Enter an amount greater than 0, in digits like 12.5"; for `7.777777` "You pay **0.00077777 BTC** (77,777 sats)." (77 777.77 rounded down); for `5` "You pay **0.00050000 BTC** (50,000 sats)." and `Take offer` enabled.
 - Step 3: "You pay **0.00002592 BTC** (2,592 sats)." (7 777 777 doos × 333 333 msat / 10^9 = 2 592.58…).
 - Step 4: title `Sell HNS`, field `HNS to sell`; `5` gives "You receive **0.00050000 BTC** (50,000 sats)."
 - Passes if every bad amount is named and the BTC shown is exact and rounded down.
@@ -148,6 +145,7 @@ Expected:
 
 - **Priority:** P2
 - **Covers:** spec §8 `POST /v1/offers/<id>/withdraw`, §9 `exchange_withdraw_offer`
+- **Regression of:** exchange QA finding 9 (a withdrawn offer stayed in My offers as Paused)
 - **Preconditions:** OX live; no trade of OX open.
 
 Steps:
@@ -160,7 +158,7 @@ Expected:
 
 - Step 1: toast "Offer withdrawn".
 - Step 2: OX is gone from the Buyer's order book and from the relay's list; OS and OB stay.
-- Step 3: record how OX shows in My offers: by our reading the withdrawn offer stays listed there with the badge `Paused` ("Not renewed on the relay right now, so others do not see it") and an enabled `Withdraw`, and is never renewed again (no new `POST /v1/offers` for it in `relay.log`). A withdrawn offer shown as merely paused is a UX finding; an offer that comes back to the relay is ❌.
+- Step 3: OX is gone from My offers (the badge counts the remaining offers), before and after the 3 minutes; it is never renewed again (no new `POST /v1/offers` for it in `relay.log`). OX shown as `Paused`, or back on the relay, is ❌.
 - Passes if the withdrawn offer leaves the order book for good.
 
 - **Blocks mined:** HNS 0, BTC 0
