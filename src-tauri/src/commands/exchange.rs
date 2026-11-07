@@ -34,7 +34,7 @@ pub const NEEDS_NODE: &str = "The exchange needs a node: an explorer cannot chec
 pub const NEEDS_LOCAL_NODE: &str =
     "The exchange needs a node on this computer: a remote node could show a fake lock and learn your secret.";
 pub const NEEDS_SENDING_NODE: &str =
-    "The exchange needs a local node, or a remote node with sending allowed.";
+    "The exchange needs Namehold's local node, or your own hsd on this computer, able to send.";
 
 /// Why the exchange is refused for this profile and node, or `None`.
 pub fn refusal(
@@ -401,6 +401,8 @@ pub async fn exchange_btc_withdraw(
     amount_sats: Option<u64>,
 ) -> Result<Sent, AppError> {
     let ctx = trading_ctx(&state)?;
+    // Unlocked before the secure window opens, not after it.
+    with_signer(&state, &ctx, |_| Ok(()))?;
     let to = btc_htlc::parse_address(ctx.network, &to_address)?;
     let acct = {
         let conn = lock(&state)?;
@@ -493,14 +495,20 @@ pub struct OfferRow {
     pub live: bool,
 }
 
+/// Whole HNS with six decimals and no unit, as the bridge carries amounts
+/// (`src/lib/hnsAmount.ts` parses exactly this).
+pub fn hns_text(doos: u64) -> String {
+    format!("{}.{:06}", doos / 1_000_000, doos % 1_000_000)
+}
+
 pub fn offer_row(o: &SignedOffer, own: bool, live: bool) -> OfferRow {
     let f = &o.offer;
     OfferRow {
         id: f.id(),
         side: f.side,
         price: price::format_sats_per_hns(f.price_msat_per_hns),
-        min_hns: crate::noncustodial::types::doos_to_hns_string(f.min_hns),
-        max_hns: crate::noncustodial::types::doos_to_hns_string(f.max_hns),
+        min_hns: hns_text(f.min_hns),
+        max_hns: hns_text(f.max_hns),
         min_sats: price::btc_for(f.min_hns, f.price_msat_per_hns).unwrap_or(0),
         max_sats: price::btc_for(f.max_hns, f.price_msat_per_hns).unwrap_or(u64::MAX),
         own,
@@ -577,6 +585,10 @@ pub async fn exchange_create_offer(
     max_hns: String,
 ) -> Result<OfferRow, AppError> {
     let ctx = trading_ctx(&state)?;
+    // Unlocked before the secure window opens, not after it.
+    if side == Side::Buy {
+        with_signer(&state, &ctx, |_| Ok(()))?;
+    }
     let msat = price::parse_sats_per_hns(&price)?;
     let min = parse_hns(&min_hns)?;
     let max = parse_hns(&max_hns)?;
@@ -614,7 +626,7 @@ pub async fn exchange_create_offer(
         serde_json::json!({ "rows": [
             { "label": "Offer", "value": what },
             { "label": "Price", "value": format!("{} sats per HNS", price::format_sats_per_hns(msat)) },
-            { "label": "Each trade", "value": format!("{} to {} HNS ({} to {} sats)",
+            { "label": "Each trade", "value": format!("{} to {} ({} to {} sats)",
                 crate::noncustodial::types::doos_to_hns_string(min), crate::noncustodial::types::doos_to_hns_string(max), lo, hi) },
             { "label": "Relay", "value": cfg.relay_url.clone() },
         ]}),
@@ -762,7 +774,7 @@ pub async fn exchange_my_offers(state: State<'_, AppState>) -> Result<Vec<OfferR
     let t = now();
     Ok(store::offers(&conn, &ctx.profile_id)?
         .iter()
-        .filter(|o| o.network == ctx.network.as_str())
+        .filter(|o| o.network == ctx.network.as_str() && o.live)
         .map(|o| {
             let live = o.live
                 && o.last_error.is_none()
@@ -819,8 +831,12 @@ pub fn trade_row(t: &Trade) -> TradeRow {
         (Some(x), _) => Status::AwaitingBuyerCommit {
             deadline: x.buyer_fund_deadline,
         },
+        // Negotiating: the take ends after the Buyer's funding window.
         (None, _) => Status::AwaitingBuyerCommit {
-            deadline: t.created_at,
+            deadline: t.created_at
+                + Network::from_str_opt(&t.network)
+                    .map(|n| env::policy(n).buyer_fund_window)
+                    .unwrap_or(0),
         },
     });
     TradeRow {
@@ -829,7 +845,7 @@ pub fn trade_row(t: &Trade) -> TradeRow {
         role: t.role,
         maker: t.maker,
         offer_id: t.offer.offer.id(),
-        hns_amount: crate::noncustodial::types::doos_to_hns_string(t.hns_amount),
+        hns_amount: hns_text(t.hns_amount),
         btc_sats: t.btc_sats,
         price: price::format_sats_per_hns(t.price_msat),
         status,
@@ -1027,8 +1043,8 @@ pub async fn exchange_cancel_trade(
         .sign(&t.relay_key)?;
         let _ = relay.send(&m).await;
     }
+    // Our own cancel is not the other side's decline.
     t.status = Some(Status::Expired);
-    t.declined = Some("cancelled by you".into());
     t.terminal_at = Some(now());
     t.finished = true;
     let conn = lock(&state)?;

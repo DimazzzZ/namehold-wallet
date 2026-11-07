@@ -368,14 +368,14 @@ mod observer {
             },
         ];
         // The Seller watches its own coin and sees it claimed.
-        let v = seen_from(t, &txs, 13, 0, Some(&own_ref)).unwrap();
+        let v = seen_from(t, &txs, 13, 0, Some(&own_ref), true).unwrap();
         let lock = v.lock.unwrap();
         assert_eq!(lock.outpoint, own_ref);
         assert_eq!(lock.spend.unwrap().secret, Some(f.secret()));
         assert_eq!(v.revealed, Some(f.secret()));
         // Without its own coin (the Buyer's view) the earliest is chosen,
         // and the secret is still found.
-        let v = seen_from(t, &txs, 13, 0, None).unwrap();
+        let v = seen_from(t, &txs, 13, 0, None, false).unwrap();
         assert_eq!(v.lock.unwrap().outpoint.txid, decoy.txid());
         assert_eq!(v.revealed, Some(f.secret()));
     }
@@ -392,7 +392,7 @@ mod observer {
             txid: "11".repeat(32),
             vout: 0,
         };
-        let v = seen_from(&f.terms, &txs, 10, 0, Some(&own)).unwrap();
+        let v = seen_from(&f.terms, &txs, 10, 0, Some(&own), true).unwrap();
         assert!(v.lock.is_none());
         assert!(v.revealed.is_none());
     }

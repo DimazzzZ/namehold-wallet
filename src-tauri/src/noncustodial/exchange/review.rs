@@ -33,6 +33,15 @@ pub fn time_text(unix: u64) -> String {
         .unwrap_or_else(|| format!("{unix} (not a date)"))
 }
 
+/// "1 confirmation", "6 confirmations".
+pub fn confirmations_text(n: u32) -> String {
+    if n == 1 {
+        "1 confirmation".into()
+    } else {
+        format!("{n} confirmations")
+    }
+}
+
 fn row(label: &str, value: String) -> Value {
     json!({ "label": label, "value": value })
 }
@@ -72,22 +81,28 @@ pub fn buyer_rows(c: &BuyerCommit, terms: &Terms, btc_lock_address: &str) -> Val
         row(
             "You receive",
             format!(
-                "{} HNS, to {}",
+                "{}, to {}",
                 doos_to_hns_string(c.hns_claim.to_value),
                 c.hns_claim.to_address
             ),
         ),
         row(
             "HNS network fee (taken from what you receive)",
-            format!("{} HNS", doos_to_hns_string(c.hns_claim.lock_value - c.hns_claim.to_value)),
+            doos_to_hns_string(c.hns_claim.lock_value - c.hns_claim.to_value),
         ),
-        row("Price", format!("{} sats per HNS", price::format_sats_per_hns(terms.price_msat_per_hns))),
+        row(
+            "Price",
+            format!(
+                "{} sats per HNS",
+                price::format_sats_per_hns(terms.price_msat_per_hns)
+            ),
+        ),
         row("BTC lock", btc_lock_address.to_owned()),
         row(
             "When you get the HNS",
             format!(
-                "Automatically, once the seller's HNS lock has {} confirmations, if that happens before {}",
-                terms.hns_confirmations,
+                "Automatically, once the seller's HNS lock has {}, if that happens before {}",
+                confirmations_text(terms.hns_confirmations),
                 time_text(terms.reveal_deadline)
             ),
         ),
@@ -146,8 +161,8 @@ pub fn seller_rows(
         .unwrap_or_else(|| "(unreadable)".into());
     let refund_fee = terms.hns_amount - c.hns_refund.outputs.first().map(|o| o.value).unwrap_or(0);
     let rows = vec![
-        row("You lock", format!("{} HNS", doos_to_hns_string(terms.hns_amount))),
-        row("HNS network fee", format!("{} HNS", doos_to_hns_string(funding_fee))),
+        row("You lock", doos_to_hns_string(terms.hns_amount)),
+        row("HNS network fee", doos_to_hns_string(funding_fee)),
         row(
             "You receive",
             format!(
@@ -156,7 +171,7 @@ pub fn seller_rows(
             ),
         ),
         row("Price", format!("{} sats per HNS", price::format_sats_per_hns(terms.price_msat_per_hns))),
-        row("The buyer's BTC lock", format!("{} confirmations, checked by proof of work", terms.btc_confirmations)),
+        row("The buyer's BTC lock", format!("{}, checked by proof of work", confirmations_text(terms.btc_confirmations))),
         row("HNS lock", hns_lock_address.to_owned()),
         row(
             "When you get the BTC",
@@ -165,7 +180,7 @@ pub fn seller_rows(
         row(
             "If the buyer does not take the HNS",
             format!(
-                "Your HNS comes back to {refund_to} after {}, less a fee of {} HNS",
+                "Your HNS comes back to {refund_to} after {}, less a fee of {}",
                 time_text(terms.hns_refund_time),
                 doos_to_hns_string(refund_fee)
             ),

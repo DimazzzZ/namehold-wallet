@@ -106,6 +106,39 @@ pub enum Event {
     NeedsAttention {
         trade_id: String,
     },
+    /// The Buyer revealed: the Seller's BTC claim must be mined before
+    /// `claim_by` (spec §3.4).
+    Revealed {
+        trade_id: String,
+        claim_by: u64,
+    },
+}
+
+/// What an OS notification says about `e`.
+pub fn event_text(e: &Event) -> (String, String) {
+    let when = crate::noncustodial::exchange::review::time_text;
+    match e {
+        Event::NeedsCommit { deadline, .. } => (
+            "Exchange: your confirmation is needed".into(),
+            format!("Open Namehold and confirm the trade before {}.", when(*deadline)),
+        ),
+        Event::Revealed { claim_by, .. } => (
+            "Exchange: the buyer took the HNS".into(),
+            format!(
+                "Namehold is claiming your BTC. Keep the background sync on until the trade completes: the claim must be mined before {}.",
+                when(*claim_by)
+            ),
+        ),
+        Event::Completed { .. } => ("Exchange: trade complete".into(), "Both sides are paid.".into()),
+        Event::Refunded { .. } => (
+            "Exchange: coins returned".into(),
+            "The trade did not happen and your coins came back.".into(),
+        ),
+        Event::NeedsAttention { .. } => (
+            "Exchange: a trade needs you".into(),
+            "Open the Exchange page to see what happened.".into(),
+        ),
+    }
 }
 
 #[derive(Debug, Default)]
@@ -139,6 +172,11 @@ pub async fn tick(ctx: &Ctx<'_>) -> TickReport {
     match step_trades(ctx).await {
         Ok(ev) => report.events.extend(ev),
         Err(e) => report.errors.push(e.to_string()),
+    }
+    if let Some(relay) = ctx.relay {
+        if let Err(e) = reannounce(ctx, relay).await {
+            report.errors.push(e.to_string());
+        }
     }
     if let Some(w) = ctx.watchtower {
         if let Err(e) = register_watch_jobs(ctx, w).await {
@@ -573,6 +611,14 @@ fn on_hns_locked(ctx: &Ctx<'_>, m: &Message, a: &LockAnnouncement) -> Result<(),
     let mut t = counterparty_trade(ctx, m, &a.terms_id)?;
     if t.role == Role::Buyer && t.hns_lock.is_none() {
         t.hns_lock = Some((a.txid.clone(), a.vout));
+        // Preferred, never trusted: the Buyer's observer takes this coin
+        // only if it is exactly the lock, and the earliest one otherwise.
+        if let Some(h) = t.holdings.as_mut() {
+            h.hns_lock = Some(crate::noncustodial::exchange::engine::LockRef {
+                txid: a.txid.clone(),
+                vout: a.vout,
+            });
+        }
         store::update_trade(ctx.conn, &mut t, ctx.now)?;
     }
     Ok(())
@@ -620,22 +666,31 @@ async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
         let rep = runner::run_step(ctx.node, ctx.sources, &mut h, ctx.now, &ctx.policy).await;
         let Some(step) = rep.step else { continue };
         let before = t.status.clone();
+        let mut new_events = Vec::new();
         if before.as_ref() != Some(&step.status) {
             match (&step.status, t.role) {
                 (Status::AwaitingBuyerCommit { deadline }, Role::Buyer)
                 | (Status::AwaitingSellerCommit { deadline }, Role::Seller) => {
-                    events.push(Event::NeedsCommit {
+                    new_events.push(Event::NeedsCommit {
                         trade_id: t.trade_id.clone(),
                         deadline: *deadline,
                     })
                 }
-                (Status::Completed, _) => events.push(Event::Completed {
+                (Status::Claiming { .. }, Role::Seller)
+                    if !matches!(before, Some(Status::Claiming { .. })) =>
+                {
+                    new_events.push(Event::Revealed {
+                        trade_id: t.trade_id.clone(),
+                        claim_by: t.terms.as_ref().map(|x| x.btc_refund_time).unwrap_or(0),
+                    })
+                }
+                (Status::Completed, _) => new_events.push(Event::Completed {
                     trade_id: t.trade_id.clone(),
                 }),
-                (Status::Refunded { .. }, _) => events.push(Event::Refunded {
+                (Status::Refunded { .. }, _) => new_events.push(Event::Refunded {
                     trade_id: t.trade_id.clone(),
                 }),
-                (Status::NeedsAttention { .. }, _) => events.push(Event::NeedsAttention {
+                (Status::NeedsAttention { .. }, _) => new_events.push(Event::NeedsAttention {
                     trade_id: t.trade_id.clone(),
                 }),
                 _ => {}
@@ -652,7 +707,11 @@ async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
         t.last_error = (!rep.errors.is_empty()).then(|| rep.errors.join("; "));
         t.status = Some(step.status);
         t.holdings = Some(h);
-        store::update_trade(ctx.conn, &mut t, ctx.now)?;
+        // Only the writer whose step was stored tells the person, so the app
+        // and the daemon do not both notify.
+        if store::update_trade(ctx.conn, &mut t, ctx.now)? {
+            events.extend(new_events);
+        }
     }
     Ok(events)
 }
@@ -675,6 +734,73 @@ async fn register_watch_jobs(ctx: &Ctx<'_>, w: &dyn Relay) -> Result<(), AppErro
             }
         };
         store::update_trade(ctx.conn, &mut t, ctx.now)?;
+    }
+    Ok(())
+}
+
+/// How often a lock is announced again while the other side waits for it.
+pub const REANNOUNCE_EVERY_SECS: u64 = 300;
+
+/// Announce our lock again while the counterparty still waits for it (QA
+/// finding: a relay down at the Commit lost the only announcement, and the
+/// Seller cannot find the Buyer's BTC lock without it).
+async fn reannounce(ctx: &Ctx<'_>, relay: &dyn Relay) -> Result<(), AppError> {
+    if ctx.now % REANNOUNCE_EVERY_SECS >= 60 {
+        return Ok(()); // about once per period, on the tick that falls in its first minute
+    }
+    for t in store::trades(ctx.conn, ctx.profile_id)? {
+        let (Some(h), Some(terms)) = (&t.holdings, &t.terms) else {
+            continue;
+        };
+        if t.finished || !h.committed {
+            continue;
+        }
+        let waiting = |s: &Option<Status>| {
+            matches!(
+                s,
+                Some(Status::AwaitingBtcLock { .. })
+                    | Some(Status::AwaitingSellerCommit { .. })
+                    | Some(Status::AwaitingHnsLock { .. })
+                    | Some(Status::AwaitingReveal { .. })
+                    | Some(Status::CannotCheck { .. })
+            )
+        };
+        if !waiting(&t.status) {
+            continue;
+        }
+        let (to, body) = match t.role {
+            Role::Buyer => {
+                let Some(l) = &h.btc_lock else { continue };
+                (
+                    terms.seller_relay_pubkey.clone(),
+                    Body::BtcLocked(LockAnnouncement {
+                        terms_id: terms.id(),
+                        txid: l.txid.clone(),
+                        vout: l.vout,
+                    }),
+                )
+            }
+            Role::Seller => {
+                let Some(l) = &h.hns_lock else { continue };
+                (
+                    terms.buyer_relay_pubkey.clone(),
+                    Body::HnsLocked(LockAnnouncement {
+                        terms_id: terms.id(),
+                        txid: l.txid.clone(),
+                        vout: l.vout,
+                    }),
+                )
+            }
+        };
+        let e = reply(
+            ctx,
+            &t.relay_key,
+            &to,
+            &t.offer.offer.id(),
+            &t.trade_id,
+            body,
+        )?;
+        relay.send(&e).await?;
     }
     Ok(())
 }

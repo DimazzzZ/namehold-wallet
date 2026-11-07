@@ -976,12 +976,34 @@ fn the_seller_claims_btc_when_the_secret_is_revealed_on_another_coin() {
     );
     let (tx, _) = btc_tx(only_action(&s), SpendKind::BtcClaim);
     core_ok(&t, &tx);
-    // And with the HNS refund time open it still claims, never refunds.
+    // With the HNS refund time open it still claims the BTC, and takes back
+    // its own coin nobody claimed (the decoy case of review E35).
     let mut v = t.hns_locked(hns_open(&t), 2);
     v.revealed = Some(t.secret());
     let s = run(
         &t.seller(),
         Some(&v),
+        Some(&t.btc_locked(hns_open(&t), 1)),
+        hns_open(&t),
+    );
+    assert!(s.actions.iter().any(|a| matches!(
+        a,
+        Action::SendBtc {
+            kind: SpendKind::BtcClaim,
+            ..
+        }
+    )));
+    assert!(s.actions.iter().any(|a| matches!(
+        a,
+        Action::SendHns {
+            kind: SpendKind::HnsRefund,
+            ..
+        }
+    )));
+    // But never while a claim of its own coin is seen.
+    let s = run(
+        &t.seller(),
+        Some(&t.hns_claimed(hns_open(&t), 0)),
         Some(&t.btc_locked(hns_open(&t), 1)),
         hns_open(&t),
     );
@@ -1037,4 +1059,32 @@ fn a_committed_buyer_whose_lock_no_source_shows_is_never_expired() {
     );
     assert_eq!(s.status, Status::CannotCheck { chain: Chain::Btc });
     btc_tx(only_action(&s), SpendKind::BtcFunding);
+}
+
+#[test]
+fn a_seller_whose_own_coin_stayed_unspent_after_a_decoy_claim_takes_it_back_after_its_time() {
+    // Review E35: the secret came from a claim of another coin; the
+    // Seller's own coin, never claimed, comes back once its refund opens.
+    let t = fx::trade();
+    let mut v = t.hns_locked(hns_open(&t), 5);
+    v.revealed = Some(t.secret());
+    let s = run(
+        &t.seller(),
+        Some(&v),
+        Some(&t.btc_spent(hns_open(&t), 1, true)),
+        hns_open(&t),
+    );
+    assert_eq!(s.status, Status::Completed);
+    hns_tx(only_action(&s), SpendKind::HnsRefund);
+    // Before its refund time it is left for the Buyer to claim.
+    let mut v = t.hns_locked(START + 900, 5);
+    v.revealed = Some(t.secret());
+    let s = run(
+        &t.seller(),
+        Some(&v),
+        Some(&t.btc_spent(START + 900, 1, true)),
+        START + 900,
+    );
+    assert_eq!(s.status, Status::Completed);
+    assert!(s.actions.is_empty());
 }

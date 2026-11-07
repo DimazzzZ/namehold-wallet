@@ -698,12 +698,30 @@ fn seller_step(
 
     // The Buyer claimed (even in the mempool): the secret is ours to use.
     if let Some(x) = spend.and_then(|s| s.secret).or(hns.revealed) {
+        // The secret came from a claim of another coin at the lock's
+        // script (a decoy, review C1) while our own coin is still unspent:
+        // once its refund time is open it is ours to take back, or it
+        // would stay stranded. Until then the Buyer may still claim it.
+        let own_back: Vec<Action> = match (lock, &h.hns_refund_hex) {
+            (Some(l), Some(r))
+                if l.spend.is_none() && hns_htlc::time_lock_open(hp.refund_lock_time, hns.mtp) =>
+            {
+                vec![Action::SendHns {
+                    kind: SpendKind::HnsRefund,
+                    tx_hex: r.clone(),
+                }]
+            }
+            _ => Vec::new(),
+        };
         let btc_spend = btc
             .and_then(|b| b.lock.as_ref())
             .and_then(|l| l.spend.as_ref());
         match btc_spend {
             Some(s) if s.secret.is_some() && s.confirmations >= 1 => {
-                return Step::just(Status::Completed);
+                return Step {
+                    status: Status::Completed,
+                    actions: own_back,
+                };
             }
             Some(s) if s.secret.is_none() && s.confirmations >= 1 => {
                 // The Buyer's refund, proven mined: we were too late.
@@ -737,11 +755,13 @@ fn seller_step(
         return match btc_htlc::finish_claim(presigned, &bp, &x) {
             Ok(tx) => Step {
                 status: Status::Claiming { rung },
-                actions: vec![Action::SendBtc {
+                actions: std::iter::once(Action::SendBtc {
                     kind: SpendKind::BtcClaim,
                     tx_hex: btc_htlc::encode_tx(&tx),
                     rung,
-                }],
+                })
+                .chain(own_back)
+                .collect(),
             },
             Err(_) => Step::just(Status::NeedsAttention {
                 reason: Attention::MissingPresigned,

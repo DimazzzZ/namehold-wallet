@@ -122,3 +122,52 @@ fn a_commit_without_committed_holdings_is_an_error() {
     let mut t = trade(&c);
     assert!(store::commit_trade(&c, &mut t, 1).is_err());
 }
+
+#[tokio::test]
+async fn a_committed_buyer_announces_its_btc_lock_again_while_the_seller_waits() {
+    // QA finding: one announcement at the Commit was all the Seller would
+    // ever get; a relay down at that moment lost the trade.
+    use super::exchange_fake_btc::FakeRelay;
+    use crate::exchange_io::job::{tick, Ctx, Relay};
+    use crate::noncustodial::exchange::relay_msg::Body;
+    let c = conn();
+    let m = fx::buyer_master();
+    store::insert_account(
+        &c,
+        &store::Account {
+            profile_id: "p".into(),
+            network: "regtest".into(),
+            btc_xpub: crate::noncustodial::exchange::btc_account::account_xpub(&m, fx::NET, 0).unwrap(),
+            swap_xpub: crate::noncustodial::exchange::keys::branch_xpub(&m, fx::NET, 0).unwrap(),
+            account: 0,
+            next_trade_index: 0,
+            next_btc_receive: 0,
+            next_btc_change: 0,
+        },
+        fx::START,
+    )
+    .unwrap();
+    let mut t = trade(&c);
+    t.holdings = Some(fx::trade().buyer());
+    t.status = Some(Status::AwaitingSellerCommit { deadline: fx::START + 1200 });
+    assert!(store::commit_trade(&c, &mut t, 1).unwrap());
+    let relay = FakeRelay::default();
+    let now = fx::START + 300 * 7; // the first minute of a period
+    let ctx = Ctx {
+        conn: &c,
+        profile_id: "p",
+        network: fx::NET,
+        policy: fx::policy(),
+        node: None,
+        sources: &[],
+        relay: Some(&relay as &dyn Relay),
+        watchtower: None,
+        now,
+    };
+    tick(&ctx).await;
+    let sent = relay.messages.lock().unwrap().clone();
+    assert!(
+        sent.iter().any(|e| matches!(e.message.body, Body::BtcLocked(_))),
+        "{sent:?}"
+    );
+}

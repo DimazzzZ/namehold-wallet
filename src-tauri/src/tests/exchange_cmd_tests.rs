@@ -92,3 +92,70 @@ fn the_bitcoind_login_is_a_sensitive_setting_on_every_network() {
         crate::noncustodial::network::Network::Main
     )));
 }
+
+#[test]
+fn hns_amounts_cross_the_bridge_as_plain_decimals() {
+    // QA finding: "1.000000 HNS" with its unit made every offer untakeable
+    // in the UI, which parses digits only (src/lib/hnsAmount.ts).
+    use crate::commands::exchange::hns_text;
+    assert_eq!(hns_text(1_000_000), "1.000000");
+    assert_eq!(hns_text(7_777_777), "7.777777");
+    assert_eq!(hns_text(0), "0.000000");
+    assert_eq!(hns_text(u64::MAX), "18446744073709.551615");
+}
+
+#[test]
+fn get_settings_redacts_the_exchange_bitcoind_login() {
+    // QA finding: the redaction listed sensitive keys by name and missed the
+    // exchange's per-network login.
+    let mut m = std::collections::HashMap::new();
+    let k = env::key(env::BITCOIND_AUTH_KEY, crate::noncustodial::network::Network::Regtest);
+    m.insert(k.clone(), "u:secretpass".to_string());
+    m.insert("node_rpc_api_key".to_string(), "abc".to_string());
+    m.insert("close_to_tray".to_string(), "true".to_string());
+    crate::commands::settings::redact(&mut m);
+    assert!(!m.contains_key(&k));
+    assert_eq!(m.get(&format!("__has_{k}")).map(String::as_str), Some("true"));
+    assert!(!m.contains_key("node_rpc_api_key"));
+    assert_eq!(m.get("close_to_tray").map(String::as_str), Some("true"));
+    assert!(!serde_json::to_string(&m).unwrap().contains("secretpass"));
+}
+
+#[test]
+fn every_event_has_a_notification_sentence() {
+    use crate::exchange_io::job::{event_text, Event};
+    for e in [
+        Event::NeedsCommit { trade_id: "t".into(), deadline: 1_800_000_000 },
+        Event::Revealed { trade_id: "t".into(), claim_by: 1_800_000_000 },
+        Event::Completed { trade_id: "t".into() },
+        Event::Refunded { trade_id: "t".into() },
+        Event::NeedsAttention { trade_id: "t".into() },
+    ] {
+        let (s, b) = event_text(&e);
+        assert!(s.starts_with("Exchange: ") && !b.is_empty());
+    }
+    let (_, b) = event_text(&Event::Revealed { trade_id: "t".into(), claim_by: 1_800_000_000 });
+    assert!(b.contains("2027-01-15"), "{b}");
+}
+
+#[test]
+fn the_commit_windows_show_what_the_signed_transactions_do() {
+    // Spec R16: amounts and destinations read from the transactions.
+    use super::exchange_fixture as fx;
+    use crate::noncustodial::exchange::{btc_htlc, hns_htlc, review};
+    let t = fx::trade();
+    let lock = btc_htlc::lock_address(fx::NET, &t.terms.btc_params().unwrap()).to_string();
+    let b = review::buyer_rows(&t.buyer, &t.terms, &lock).to_string();
+    assert!(b.contains(&review::sats_text(t.buyer.funding.output[0].value.to_sat())));
+    assert!(b.contains(&t.buyer.hns_claim.to_address));
+    assert!(b.contains(&lock));
+    assert!(b.contains("1 confirmation,"), "{b}");
+    assert!(!b.contains("HNS HNS"), "{b}");
+    let hlock = hns_htlc::lock_address(fx::NET, &t.terms.hns_params().unwrap()).unwrap();
+    let s = review::seller_rows(&t.seller, &t.terms, 1234, &hlock).to_string();
+    assert!(s.contains("5000.000000 HNS"), "{s}");
+    assert!(s.contains("0.001234 HNS"), "{s}");
+    assert!(s.contains(&fx::btc_address(&fx::seller_master(), 0, 0).to_string()));
+    assert!(!s.contains("HNS HNS"), "{s}");
+    assert_eq!(review::confirmations_text(6), "6 confirmations");
+}

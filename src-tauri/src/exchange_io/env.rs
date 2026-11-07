@@ -225,8 +225,17 @@ pub async fn sync_step(db_path: &str, profile_id: &str) {
     for e in &report.errors {
         eprintln!("exchange: {profile_id}: {e}");
     }
+    let notify = settings
+        .get("deadline_notify_enabled")
+        .is_none_or(|v| v.trim() != "false");
     for ev in &report.events {
         eprintln!("exchange: {profile_id}: {ev:?}");
+        if notify {
+            let (summary, body) = crate::exchange_io::job::event_text(ev);
+            if let Err(e) = crate::daemon::watched_names::emit_os_notification(&summary, &body) {
+                eprintln!("exchange: notification not shown: {e}");
+            }
+        }
     }
 }
 

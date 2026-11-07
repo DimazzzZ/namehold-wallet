@@ -69,7 +69,14 @@ pub async fn run_step(
 ) -> StepReport {
     let mut report = StepReport::default();
     let hns = match node {
-        Some(n) => match hns_observe::observe(n, &h.terms, h.hns_lock.as_ref()).await {
+        Some(n) => match hns_observe::observe(
+            n,
+            &h.terms,
+            h.hns_lock.as_ref(),
+            h.role == crate::noncustodial::exchange::engine::Role::Seller,
+        )
+        .await
+        {
             Ok(v) => Some(v),
             Err(e) => {
                 report.errors.push(format!("HNS: {e}"));

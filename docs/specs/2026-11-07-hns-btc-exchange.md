@@ -94,7 +94,7 @@ Bitcoin signatures always commit to the outpoint they spend, so the Seller can s
 | a Bitcoin source lies | the BTC lock is accepted only with a Merkle proof into headers with valid proof of work above a floor, linked to the confirmation count, and two sources must agree (§3.6) |
 | the watchtower is dishonest | it can only fail to send; everything it holds pays its owner, and the daemon sends the same transactions |
 
-What remains is a liveness risk, not a theft: a Seller whose daemon **and** watchtowers are all offline from the reveal until the BTC refund time can lose the BTC claim. The window is 12 hours on mainnet and the app notifies at the reveal.
+What remains is a liveness risk, not a theft: a Seller whose daemon **and** watchtowers are all offline from the reveal until the BTC refund time can lose the BTC claim. The window is 12 hours on mainnet. The sync shows an OS notification when the Buyer reveals ("the buyer took the HNS"), when a Commit is needed, and when a trade completes, is refunded or needs attention, unless deadline notifications are off (`job::event_text`).
 
 ### 3.5 Policy (mainnet; regtest and testnet use minutes, `noncustodial/exchange/policy.rs`)
 
@@ -127,8 +127,8 @@ What remains is a liveness risk, not a theft: a Seller whose daemon **and** watc
 | R9 | The Seller commits only after the BTC lock passes §3.6 and before the funding deadline; the command refuses otherwise | `engine::seller_may_commit`, `commands/exchange.rs` | `exchange_engine_tests::seller_*`, `exchange_btc_spv_tests` |
 | R10 | A secret taken from the HNS chain is used only if its SHA-256 is `H` | `engine` | `exchange_engine_tests::seller_ignores_a_wrong_secret` |
 | R11 | Refunds are sent only once the chain's median time past is past the refund time | `engine` | `exchange_engine_tests::*refund*` |
-| R12 | The fee ladder escalates as §3.5 and never above 20 % of the coin | `exchange/fees.rs` | `exchange_fees_tests` |
-| R13 | Everything the daemon and the watchtower send is a transaction the user signed at Commit, with at most the public or own secret put into its empty slot; neither holds a private key | `exchange/watch.rs`, `daemon` | `exchange_watch_tests`, `exchange_layering_tests` |
+| R12 | The fee ladder escalates as §3.5 and never above 20 % of the coin | `exchange/fees.rs` | `exchange_keys_tests::{the_ladder_*, the_rung_follows_time_and_the_deadline}` |
+| R13 | Everything the daemon and the watchtower send is a transaction the user signed at Commit, with at most the public or own secret put into its empty slot; neither holds a private key | `exchange/watch.rs`, `daemon` | `exchange_engine_tests::{a_watch_job_*, the_*_watchtower_*}`, `exchange_layering_tests` |
 | R14 | Swap keys follow §2 and the stored branch public key yields the same public keys as the phrase; a secret depends on its nonce, so a repeated trade index never repeats a secret | `exchange/keys.rs` | `exchange_keys_tests` |
 | R19 | A watchtower takes a job only when every presigned spend in it spends the job's lock and carries the lock key's valid signature, so nobody but the key's holder can register (or squat) a job | `exchange/watch.rs::check`, `btc_htlc::spend_signed_by` | `exchange_engine_tests::a_watch_job_signed_by_someone_else_is_refused` |
 | R20 | The Seller watches only its own HNS lock coin, and a secret revealed by a claim of any coin with the lock's script makes the Seller claim and the Buyer never refund | `exchange_io/hns_observe.rs::seen_from`, `engine.rs` | `exchange_hns_htlc_tests::observer::*`, `exchange_engine_tests::the_seller_claims_btc_when_the_secret_is_revealed_on_another_coin`, `the_buyer_never_refunds_once_a_secret_is_public_on_hns` |
@@ -137,7 +137,7 @@ What remains is a liveness risk, not a theft: a Seller whose daemon **and** watc
 | R23 | A committed Buyer's trade is never Expired because no source shows the BTC lock; the funding is sent again | `engine.rs::refund_btc_when_open` | `exchange_engine_tests::a_committed_buyer_whose_lock_no_source_shows_is_never_expired` |
 | R24 | Terms carry exactly the policy's confirmation counts; a watchtower takes only jobs whose times are the policy's windows and whose start is near now; a Commit re-checks its deadline after the secure window | `terms.rs::check`, `watch.rs::check_fresh`, `commands/exchange.rs` | `exchange_terms_tests::terms_asking_for_more_confirmations_than_the_policy_are_refused`, `a_watch_job_with_far_future_times_is_refused_by_the_watchtower` |
 | R15 | The BTC account derives the same addresses as any BIP 84 wallet from the same phrase | `exchange/btc_account.rs` | `exchange_btc_account_tests::bip84_test_vectors` |
-| R16 | Each Commit shows, in the secure window, what leaves, what arrives and where, the fee, the refund times and the deadline, computed from the transactions that are signed | `exchange/review.rs` | `exchange_review_tests` |
+| R16 | Each Commit shows, in the secure window, what leaves, what arrives and where, the fee, the refund times and the deadline, computed from the transactions that are signed | `exchange/review.rs` | `exchange_cmd_tests::the_commit_windows_show_what_the_signed_transactions_do` |
 | R17 | The exchange is refused on a watch-only or Ledger profile, on the Explorer chain source, on a remote node and on a node that cannot send, with the same sentence on every button | `commands/exchange.rs`, `src/lib/exchangeText.ts` | `exchange_cmd_tests`, `Exchange.test.tsx` |
 | R18 | Relay messages are signed by the sender's offer or trade key and checked on receipt; a message that fails is dropped | `exchange/relay_msg.rs` | `exchange_relay_msg_tests` |
 
@@ -149,6 +149,10 @@ What remains is a liveness risk, not a theft: a Seller whose daemon **and** watc
 - The price is not checked against any market price.
 
 ## 6. Known gaps
+
+- **Lock announcements are repeated, not required.** The Seller learns the BTC lock's outpoint from the Buyer's announcement on the relay; the Buyer's sync repeats it about every five minutes while the Seller waits (`job::reannounce`), so a relay down at the Commit delays the trade instead of losing it. A relay down for the whole Seller window still ends the trade, the BTC coming back at its refund time.
+- **A Bitcoin Core source lists only confirmed coins** (`scantxoutset`): the BTC account's unconfirmed balance reads 0 and change appears once mined.
+- **Exchange settings are per network for the whole app**, not per wallet.
 
 - **No re-sign of a claim at a higher fee.** The Bitcoin claim ladder stops at 20 % of the coin and HNS spends are signed once; a fee spike above the top rung for the whole claim window would leave the claim unmined. The beta's 50 000-sat minimum keeps the top rung near 66 sat/vB.
 - **The watchtower has no per-client rate limit.** Jobs must be signed by the lock's key and be fresh (R19, R24), but a client may still register many real jobs; an operator should rate-limit at the reverse proxy.

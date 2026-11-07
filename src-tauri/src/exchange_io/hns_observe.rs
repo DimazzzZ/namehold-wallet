@@ -53,12 +53,17 @@ fn confirmations(height: Option<i64>, tip: i64) -> u32 {
 /// decoy coin mined earlier must not blind the Seller to the claim of its
 /// own). Whatever coin it watches, a claim of **any** coin with the lock's
 /// script reveals the secret, and `revealed` carries it.
+///
+/// `strict`: only `own` is the lock (the Seller's view). Otherwise `own` is
+/// only preferred (the Buyer's view of the Seller's announced coin), and the
+/// earliest confirmed coin is taken when it is not found.
 pub fn seen_from(
     terms: &Terms,
     txs: &[NodeTx],
     tip: i64,
     mtp: u64,
     own: Option<&LockRef>,
+    strict: bool,
 ) -> Result<HnsSeen, AppError> {
     let hp = terms.hns_params()?;
     let program = hns_htlc::program(&hp.script());
@@ -90,10 +95,15 @@ pub fn seen_from(
     // The Seller's own coin, or else the earliest confirmed one: for the
     // Buyer any coin of exactly the lock's script and value is claimable.
     candidates.sort();
-    let chosen = match own {
-        Some(o) => candidates
-            .into_iter()
-            .find(|(_, t, v, _)| *t == o.txid && *v == o.vout),
+    let preferred = own.and_then(|o| {
+        candidates
+            .iter()
+            .find(|(_, t, v, _)| *t == o.txid && *v == o.vout)
+            .cloned()
+    });
+    let chosen = match preferred {
+        Some(c) => Some(c),
+        None if strict && own.is_some() => None,
         None => candidates.into_iter().next(),
     };
     let Some((_, txid, vout, confs)) = chosen else {
@@ -149,6 +159,7 @@ pub async fn observe(
     node: &dyn NodeRpc,
     terms: &Terms,
     own: Option<&LockRef>,
+    strict: bool,
 ) -> Result<HnsSeen, AppError> {
     let idx = crate::noncustodial::node_rpc::node_indexes(node).await?;
     if !idx.tx || !idx.address {
@@ -164,5 +175,5 @@ pub async fn observe(
     let addr = hns_htlc::lock_address(network, &terms.hns_params()?)?;
     let raw = node.get_txs_by_address(&addr).await?;
     let txs = raw.iter().map(node_tx).collect::<Result<Vec<_>, _>>()?;
-    seen_from(terms, &txs, info.blocks, mtp, own)
+    seen_from(terms, &txs, info.blocks, mtp, own, strict)
 }

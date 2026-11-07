@@ -38,7 +38,7 @@ impl RelayClient {
     }
 
     fn err(&self, m: impl std::fmt::Display) -> AppError {
-        AppError::Rpc(format!("relay {}: {m}", self.base))
+        AppError::Other(format!("relay {}: {m}", self.base))
     }
 
     async fn post(
