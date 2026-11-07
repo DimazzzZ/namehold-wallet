@@ -13,6 +13,7 @@ pub mod commands;
 pub mod daemon;
 pub mod db;
 pub mod error;
+pub mod exchange_io;
 mod hsd;
 mod http;
 pub mod market;
