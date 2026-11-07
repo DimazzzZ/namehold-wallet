@@ -109,13 +109,19 @@ fn get_settings_redacts_the_exchange_bitcoind_login() {
     // QA finding: the redaction listed sensitive keys by name and missed the
     // exchange's per-network login.
     let mut m = std::collections::HashMap::new();
-    let k = env::key(env::BITCOIND_AUTH_KEY, crate::noncustodial::network::Network::Regtest);
+    let k = env::key(
+        env::BITCOIND_AUTH_KEY,
+        crate::noncustodial::network::Network::Regtest,
+    );
     m.insert(k.clone(), "u:secretpass".to_string());
     m.insert("node_rpc_api_key".to_string(), "abc".to_string());
     m.insert("close_to_tray".to_string(), "true".to_string());
     crate::commands::settings::redact(&mut m);
     assert!(!m.contains_key(&k));
-    assert_eq!(m.get(&format!("__has_{k}")).map(String::as_str), Some("true"));
+    assert_eq!(
+        m.get(&format!("__has_{k}")).map(String::as_str),
+        Some("true")
+    );
     assert!(!m.contains_key("node_rpc_api_key"));
     assert_eq!(m.get("close_to_tray").map(String::as_str), Some("true"));
     assert!(!serde_json::to_string(&m).unwrap().contains("secretpass"));
@@ -125,16 +131,31 @@ fn get_settings_redacts_the_exchange_bitcoind_login() {
 fn every_event_has_a_notification_sentence() {
     use crate::exchange_io::job::{event_text, Event};
     for e in [
-        Event::NeedsCommit { trade_id: "t".into(), deadline: 1_800_000_000 },
-        Event::Revealed { trade_id: "t".into(), claim_by: 1_800_000_000 },
-        Event::Completed { trade_id: "t".into() },
-        Event::Refunded { trade_id: "t".into() },
-        Event::NeedsAttention { trade_id: "t".into() },
+        Event::NeedsCommit {
+            trade_id: "t".into(),
+            deadline: 1_800_000_000,
+        },
+        Event::Revealed {
+            trade_id: "t".into(),
+            claim_by: 1_800_000_000,
+        },
+        Event::Completed {
+            trade_id: "t".into(),
+        },
+        Event::Refunded {
+            trade_id: "t".into(),
+        },
+        Event::NeedsAttention {
+            trade_id: "t".into(),
+        },
     ] {
         let (s, b) = event_text(&e);
         assert!(s.starts_with("Exchange: ") && !b.is_empty());
     }
-    let (_, b) = event_text(&Event::Revealed { trade_id: "t".into(), claim_by: 1_800_000_000 });
+    let (_, b) = event_text(&Event::Revealed {
+        trade_id: "t".into(),
+        claim_by: 1_800_000_000,
+    });
     assert!(b.contains("2027-01-15"), "{b}");
 }
 
