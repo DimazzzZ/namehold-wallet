@@ -140,7 +140,7 @@ async fn live_exchange_hns_claim_signed_before_the_lock_is_mined_and_reveals_the
     // 4. The presigned claim, finished with the real outpoint and the
     //    secret, enters the mempool and is mined.
     let mut h = [0u8; 32];
-    hex::decode_to_slice(&funding.txid(), &mut h).unwrap();
+    hex::decode_to_slice(funding.txid(), &mut h).unwrap();
     let tx = claim
         .finish(NET, &p, Outpoint { hash: h, index: 0 }, &secret)
         .unwrap();
@@ -198,7 +198,7 @@ async fn live_exchange_hns_claim_does_not_fit_a_lock_of_another_value() {
     assert!(seen.mismatched_payment);
     // And hsd refuses the claim on it.
     let mut h = [0u8; 32];
-    hex::decode_to_slice(&funding.txid(), &mut h).unwrap();
+    hex::decode_to_slice(funding.txid(), &mut h).unwrap();
     let tx = claim
         .finish(NET, &p, Outpoint { hash: h, index: 0 }, &secret)
         .unwrap();
@@ -231,7 +231,7 @@ async fn live_exchange_hns_refund_is_refused_before_its_time_and_mined_after() {
     node.send_raw_transaction(&funding.to_hex()).await.unwrap();
     mine(&node, 1, &addr(&key("miner"))).await;
     let mut h = [0u8; 32];
-    hex::decode_to_slice(&funding.txid(), &mut h).unwrap();
+    hex::decode_to_slice(funding.txid(), &mut h).unwrap();
     let refund = hns_htlc::sign_refund(
         NET,
         &future,
@@ -258,7 +258,7 @@ async fn live_exchange_hns_refund_is_refused_before_its_time_and_mined_after() {
     let funding = lock_tx(&seller, &coin, &past, value);
     node.send_raw_transaction(&funding.to_hex()).await.unwrap();
     mine(&node, 1, &addr(&key("miner"))).await;
-    hex::decode_to_slice(&funding.txid(), &mut h).unwrap();
+    hex::decode_to_slice(funding.txid(), &mut h).unwrap();
     let refund = hns_htlc::sign_refund(
         NET,
         &past,
