@@ -281,7 +281,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 43, "expected 43 migrations, got {count}");
+        assert_eq!(count, 44, "expected 44 migrations, got {count}");
     }
 
     /// An in-memory database with every migration before `version` applied
@@ -631,7 +631,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 43);
+        assert_eq!(count, 44);
     }
 
     #[test]

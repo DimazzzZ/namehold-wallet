@@ -18,7 +18,7 @@ The server holds **no private key and no secret** that is not already public. It
 Limits that follow from this design:
 
 - A signed offer is public. Anyone who has fetched one can post it again, and posting is the heartbeat, so a third party can keep an offer listed until it expires or its maker withdraws it. A withdrawal is final: the server refuses the same offer until it expires.
-- A job is identified by `<terms id>-<role>`, and the server keeps the first job registered under an id; a different job under the same id is refused (409). The server checks a job's shape (`WatchJob::check`), not its signatures, so a counterparty who knows the terms could register a job under the other party's id first. That job sends nothing that works; the party's own daemon still does.
+- A job is identified by `<terms id>-<role>`, and the server keeps the first job registered under an id; a different job under the same id is refused (409). A job is taken only when every presigned spend in it spends the job's lock and carries the lock key's valid signature (`WatchJob::check`, spec R19), so only the holder of that key can register it: a counterparty who knows the terms cannot take the other party's id first.
 
 ## Build
 

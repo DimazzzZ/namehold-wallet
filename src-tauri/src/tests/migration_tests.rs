@@ -81,7 +81,7 @@ fn test_schema_version_tracking() {
     // 040 (shakedex_managed_elsewhere: a listing another device manages).
     // 041 (shakedex_signed_lock_txids: every FINALIZE price steps were
     //      signed over).
-    assert_eq!(count, 43);
+    assert_eq!(count, 44);
 }
 
 #[test]
