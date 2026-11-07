@@ -17,11 +17,14 @@ The Exchange page (sidebar `Exchange`, hotkey `4`, route `/exchange`) asks the b
 [...document.querySelectorAll('[data-refusal]')].map(b => [b.textContent.trim(), b.dataset.refusal])
 ```
 
-The three R17 sentences (`src-tauri/src/commands/exchange.rs`):
+The R17 sentences (`src-tauri/src/commands/exchange.rs::refusal`), checked in this order:
 
 - `NEEDS_RECOVERY_PHRASE`: "The exchange needs a wallet whose recovery phrase is on this computer: a Ledger or watch-only wallet cannot sign a trade."
-- `NEEDS_NODE`: "The exchange needs a node: an explorer cannot check a lock."
-- `NEEDS_SENDING_NODE`: "The exchange needs a local node, or a remote node with sending allowed."
+- `NEEDS_NODE` (the Explorer chain source): "The exchange needs a node: an explorer cannot check a lock."
+- `NEEDS_LOCAL_NODE` (any remote node, sending allowed or not): "The exchange needs a node on this computer: a remote node could show a fake lock and learn your secret."
+- `NEEDS_SENDING_NODE` (a node that cannot send, i.e. SPV now that a remote node is refused first): "The exchange needs a local node, or a remote node with sending allowed."
+
+So the exchange profiles connect with Chain source `Local full node (this device runs hsd)` to the regtest node ([exchange-setup](../../procedures/exchange-setup.md) step 6).
 
 ## E1 — A watch-only (or Ledger) profile cannot trade
 
@@ -60,7 +63,7 @@ Steps:
 1. Settings › Connections › `Chain source` → `Read-only (never send)` → `Save settings` → confirm in the secure window.
 2. Exchange: read the banner and the buttons (as E1 step 2).
 3. Switch to the Seller and look at its Exchange page; switch back. (Whether Connections are per profile is recorded, not judged here.)
-4. Settings › Connections › `Chain source` back to `Remote node (point at someone else's hsd)` with `http://127.0.0.1:14037`, key `test`, `Allow sending via remote node` ticked → `Save settings` → confirm. Exchange again.
+4. Settings › Connections › `Chain source` back to `Local full node (this device runs hsd)` with `Node RPC URL (sending)` `http://127.0.0.1:14037` and `Node RPC API key` `test` → `Save settings` → confirm. Exchange again.
 
 Expected:
 
@@ -73,27 +76,29 @@ Expected:
 - **Evidence:** screenshot `E2-1-explorer`.
 - **Cleanup / end state:** Connections as noted before step 1.
 
-## E3 — A remote node without sending refuses the exchange
+## E3 — A remote node refuses the exchange, with or without sending
 
 - **Priority:** P1
-- **Covers:** R17
-- **Preconditions:** the Buyer, exchange enabled; no trade between its two Commits.
+- **Covers:** R17 (a remote node, review M3: the Buyer reveals on its node's word, so the node must be its own)
+- **Preconditions:** the Buyer, exchange enabled, connected as `Local full node (this device runs hsd)`; no trade between its two Commits. Note the Connections settings first.
 
 Steps:
 
-1. Settings › Connections → untick `Allow sending via remote node` → `Save settings` (confirm if asked).
-2. Exchange: banner and buttons as E1 step 2.
-3. Tick it again → `Save settings`. Exchange again.
+1. Settings › Connections › `Chain source` → `Remote node (point at someone else's hsd)`, `Node RPC URL (sending)` `http://127.0.0.1:14037`, key `test`, `Allow sending via remote node` ticked → `Save settings` → confirm. Exchange: banner and buttons as E1 step 2.
+2. Untick `Allow sending via remote node` → `Save settings`. Exchange again.
+3. Optional (P3): `Chain source` `SPV — lightweight, read-only (headers only, explorer for data)` (it needs an hsd restart: only if the maintainer agrees), Exchange again.
+4. Back to `Local full node (this device runs hsd)` with the URL and key → `Save settings` → confirm. Exchange again.
 
 Expected:
 
-- Step 2: the amber banner "The exchange needs a local node, or a remote node with sending allowed."; every trading button disabled with it (as E2).
-- Step 3: no banner; buttons enabled.
-- Passes if the sending gate refuses with that sentence and lifts after.
+- Steps 1 and 2: the amber banner "The exchange needs a node on this computer: a remote node could show a fake lock and learn your secret." (a remote node is refused whatever its sending setting); every trading button disabled with it (as E2).
+- Step 3: "The exchange needs a local node, or a remote node with sending allowed." (SPV cannot send). The spec's §3.6 once named SPV as allowed; record the sentence seen.
+- Step 4: no banner; buttons enabled.
+- Passes if only a node on this computer that can send lets the exchange act.
 
 - **Blocks mined:** HNS 0, BTC 0
-- **Evidence:** screenshot `E3-1-no-sending`.
-- **Cleanup / end state:** `Allow sending via remote node` ticked.
+- **Evidence:** screenshots `E3-1-remote`, `E3-2-remote-no-sending`.
+- **Cleanup / end state:** Connections as noted.
 
 ## E4 — Not enabled yet, and enabling
 

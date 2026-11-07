@@ -22,7 +22,7 @@ The amount checks and the trade cards' HNS amounts are subject to the HNS format
 ## E17 — The happy path: a Buyer takes a sell offer
 
 - **Priority:** P1
-- **Covers:** R1, R3, R7, R8, R9, R10, R12, R13, R16, spec §3.2, §3.3
+- **Covers:** R1, R3, R7, R8, R9, R10, R12, R13, R16, R22, spec §3.2, §3.3
 - **Preconditions:** [exchange-setup](../../procedures/exchange-setup.md) done; OS live ([E10](offers-and-taking.md#e10--publish-a-sell-offer)); `mtp` shows both chains at or before now; the daemon running (`pgrep -fl namehold-syncd`); the Buyer with at least 0.002 BTC confirmed, the Seller with at least 10 HNS spendable; record both balances (BTC card `Confirmed` of each profile, Wallet `Spendable` of each after a Sync). No other trade open (so the mempools hold only this trade's transactions).
 
 Steps:

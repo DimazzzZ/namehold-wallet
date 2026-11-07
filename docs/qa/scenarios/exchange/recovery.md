@@ -44,7 +44,7 @@ Expected:
 ## E27 — Killed right after a Commit: the trade is kept and the funding is sent again
 
 - **Priority:** P1
-- **Covers:** `commands/exchange.rs` (store first, then send), `engine.rs` (the funding sent again while unconfirmed), R13
+- **Covers:** R21 (a Commit is stored once, and nothing is sent unless it was stored), R23 (a committed Buyer's trade is never given up because no source shows its lock), `commands/exchange.rs` (store first, then send), R13
 - **Preconditions:** as E17; mode B for the kill; no other trade between its Commits (part (a) stops bitcoind, part (c) stops hsd for a few minutes; the watchtower then reports errors in its log, which is expected).
 
 Steps:
@@ -204,3 +204,24 @@ Expected:
 - **Blocks mined:** none (no chain)
 - **Evidence:** screenshots `E33-3-steps`.
 - **Cleanup / end state:** stop `pnpm dev` if you started it.
+
+## E34 — The deadline passes while the Commit window is open
+
+- **Priority:** P2
+- **Covers:** R24 (a Commit re-checks its deadline after the secure window), R9
+- **Preconditions:** as E17; OS live.
+
+Steps:
+
+1. The Buyer takes OS for `1`; on "Confirm to start the trade" press `Confirm and sign` and leave the secure window open. Wait in real time until 1 minute past `Buyer locks BTC by` (at most 10 minutes after the start). `Confirm & Sign`. Read the toast and the card; `B getrawmempool`.
+2. Optional: the same on the Seller's side: a trade at "Confirm to lock your HNS", its window left open until 1 minute past `Seller locks HNS by`, then `Confirm & Sign`; `H getrawmempool`.
+
+Expected:
+
+- Step 1: a red toast "Invalid input: the deadline passed while the window was open: nothing was sent"; nothing new in bitcoind's mempool; the card turns "Trade expired" ("The trade ended before either side locked any coins.") within a step; `Locked in trades` unchanged.
+- Step 2: the same sentence; nothing new in hsd's mempool; the Buyer of that trade later gets its BTC back as in E20.
+- Passes if a Commit confirmed after its deadline signs into nothing that is sent.
+
+- **Blocks mined:** HNS 0, BTC 0 (step 2: 1, plus its refund)
+- **Evidence:** screenshot `E34-1-too-late`; the mempool outputs.
+- **Cleanup / end state:** the trade expired.

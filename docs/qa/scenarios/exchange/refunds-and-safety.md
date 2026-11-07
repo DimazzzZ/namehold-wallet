@@ -1,7 +1,7 @@
 ---
 area: HNS ⇄ BTC exchange — trades that do not complete and the rules that keep the coins safe: refunds only after their time, the watchtower standing in for an absent party, the honest-wallet rule, a wrong-amount lock, no reveal after the deadline
 priority: P1–P3
-blocks: HNS ~40, BTC ~80 (mostly the 11-block MTP moves; path M and shared waits make it less)
+blocks: HNS ~54, BTC ~80 (mostly the 11-block MTP moves; path M and shared waits make it less)
 requires:
   - procedures/exchange-setup.md
   - procedures/exchange-time-travel.md
@@ -80,7 +80,7 @@ Expected:
 ## E22 — The Seller is offline after the reveal: the watchtower claims the BTC
 
 - **Priority:** P1
-- **Covers:** R10, R13, spec §3.4 row 5 ("the Seller's Namehold is off after the reveal")
+- **Covers:** R10, R13, R22 (the claim read from the spending transaction's witness), spec §3.4 row 5 ("the Seller's Namehold is off after the reveal")
 - **Preconditions:** as E17; the watchtower set.
 
 Steps:
@@ -105,7 +105,7 @@ Expected:
 ## E23 — The honest-wallet rule: after its claim, the Buyer never takes the BTC back
 
 - **Priority:** P1
-- **Covers:** spec §3.4 row 4, SECURITY.md "The exchange" › Liveness ("An honest Namehold Buyer never refunds BTC after its HNS claim, whatever the delay"), `engine.rs` (a secret public on the HNS chain ends the Buyer's refund path)
+- **Covers:** R20 (a public secret ends the Buyer's refund path), spec §3.4 row 4, SECURITY.md "The exchange" › Liveness ("An honest Namehold Buyer never refunds BTC after its HNS claim, whatever the delay"), `engine.rs` (a secret public on the HNS chain ends the Buyer's refund path)
 - **Preconditions:** as E17; the watchtower set.
 
 Steps:
@@ -186,3 +186,29 @@ Expected:
 - **Blocks mined:** HNS 23 (11 + 11 + 1), BTC 13
 - **Evidence:** `hns_at` outputs; screenshots `E25-3-buyer`, `E25-3-seller`.
 - **Cleanup / end state:** both refunded; mocktimes reset.
+
+## E35 — A decoy coin of the exact amount at the lock address
+
+- **Priority:** P3
+- **Covers:** R20 (the Seller watches its own coin; a secret revealed by a claim of any coin with the lock's script counts), SECURITY.md "The exchange" (decoy coins)
+- **Preconditions:** as E24; the hsd wallet with at least 3 HNS spendable.
+
+Anyone can pay the lock address. Here a stranger (the hsd wallet) pays it exactly the trade's amount before the Seller commits.
+
+Steps:
+
+1. The Buyer takes OS for `2.5`, commits; `bmine 1`. The Seller: `Confirm and sign` → record `HNS_LOCK` → `Cancel`.
+2. `W sendtoaddress "$HNS_LOCK" 2.5`; `mine 1`. Within 3 minutes: `hns_at "$HNS_LOCK"`; read the Buyer's card (`Refresh`), then the Seller's.
+3. If the Seller's card asks for its Commit: `Confirm and sign` → `Confirm & Sign`; `mine 1`. Within 3 minutes `btc_spender $BTC_TX 0`; `bmine 1`; `hns_at "$HNS_LOCK"`.
+4. Past `HNS can go back to the seller from` (path R or agreed M, then `mine 11`), wait 5 minutes; `hns_at "$HNS_LOCK"`; read both cards.
+
+Expected:
+
+- Step 2: record what happens. By our reading the Buyer claims the decoy coin (it has exactly the lock's script and value, and its presigned claim fits any such coin, R3), so `X` becomes public before the Seller locked anything; the Buyer's card goes "Claiming your HNS" → "Trade complete" after the next block; the Seller's card still asks for its Commit (its own lock does not exist yet).
+- Step 3: after the Seller's Commit its claim of the BTC uses the public `X` (R20); the Seller "Trade complete"; the Buyer never refunds BTC (R20).
+- Step 4: record what becomes of the Seller's own lock coin. By our reading neither side spends it: the Buyer's step watches the decoy it already claimed, and the Seller's step is complete and never refunds; the coin stays in the lock. A coin left stranded is a finding (no money is taken from the Seller beyond the trade itself, but its HNS refund path is never used); an HNS refund of it, or the Buyer claiming it too, is the behaviour to report instead.
+- Passes if, with a decoy at the address, the Seller is still paid and the Buyer never takes both coins.
+
+- **Blocks mined:** HNS 13, BTC 2
+- **Evidence:** `hns_at` and `btc_spender` outputs; screenshots `E35-2-buyer`, `E35-4-cards`.
+- **Cleanup / end state:** 2.5 HNS of the hsd wallet spent to the Buyer; the Seller's lock coin as recorded.
