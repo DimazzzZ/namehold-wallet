@@ -344,3 +344,47 @@ pub fn parse_txid(s: &str) -> Result<Txid, AppError> {
 pub fn decode(hex_tx: &str) -> Result<Transaction, AppError> {
     decode_tx(hex_tx)
 }
+
+/// Whether input 0 of `tx`, a spend of `params`'s lock worth `lock_value`,
+/// carries a valid `SIGHASH_ALL` signature of `pubkey` (BIP 143, low S),
+/// whatever sits in the secret slot (the signature does not cover the
+/// witness). A watchtower checks a job with this, so that only the holder
+/// of the lock's key can register spends of it.
+pub fn spend_signed_by(
+    tx: &Transaction,
+    params: &HtlcParams,
+    lock_value: u64,
+    pubkey: &[u8; 33],
+) -> bool {
+    let Some(sig_item) = tx.input.first().and_then(|i| i.witness.nth(0)) else {
+        return false;
+    };
+    let Some((&hash_type, der)) = sig_item.split_last() else {
+        return false;
+    };
+    if hash_type != EcdsaSighashType::All as u8 {
+        return false;
+    }
+    let Ok(sig) = bsecp::ecdsa::Signature::from_der(der) else {
+        return false;
+    };
+    let mut low = sig;
+    low.normalize_s();
+    if low != sig {
+        return false;
+    }
+    let Ok(pk) = bsecp::PublicKey::from_slice(pubkey) else {
+        return false;
+    };
+    let Ok(sighash) = SighashCache::new(tx).p2wsh_signature_hash(
+        0,
+        &lock_script(params),
+        Amount::from_sat(lock_value),
+        EcdsaSighashType::All,
+    ) else {
+        return false;
+    };
+    Secp256k1::verification_only()
+        .verify_ecdsa(&Message::from_digest(sighash.to_byte_array()), &sig, &pk)
+        .is_ok()
+}

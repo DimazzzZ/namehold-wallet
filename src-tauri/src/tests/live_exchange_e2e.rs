@@ -27,7 +27,9 @@ use crate::exchange_io::{btc_wallet, runner};
 use crate::noncustodial::address;
 use crate::noncustodial::exchange::engine::{Role, Status};
 use crate::noncustodial::exchange::policy::Policy;
-use crate::noncustodial::exchange::relay_msg::{self, Body, LockAnnouncement, Message, Offer, Side, TakeRequest};
+use crate::noncustodial::exchange::relay_msg::{
+    self, Body, LockAnnouncement, Message, Offer, Side, TakeRequest,
+};
 use crate::noncustodial::exchange::{btc_account, btc_htlc, commit, hns_htlc, keys};
 use crate::noncustodial::network::Network;
 use crate::noncustodial::node_rpc::NodeRpc;
@@ -39,7 +41,9 @@ const BUYER: &str = "e2e-buyer";
 const SELLER: &str = "e2e-seller";
 
 fn it_client() -> Option<NodeRpcClient> {
-    let url = std::env::var("HNS_IT_NODE_URL").ok().filter(|s| !s.trim().is_empty())?;
+    let url = std::env::var("HNS_IT_NODE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
     let key = std::env::var("HNS_IT_NODE_API_KEY").unwrap_or_default();
     Some(NodeRpcClient::new(&url, &key, ChainSource::LocalNode))
 }
@@ -57,7 +61,11 @@ fn run_key(label: &str) -> SecretKey {
 }
 
 fn hns_addr_of(k: &SecretKey) -> String {
-    address::address_from_pubkey(NET, &PublicKey::from_secret_key(&Secp256k1::new(), k).serialize()).unwrap()
+    address::address_from_pubkey(
+        NET,
+        &PublicKey::from_secret_key(&Secp256k1::new(), k).serialize(),
+    )
+    .unwrap()
 }
 
 /// A trade-local miner address, so mining pays nobody in the test.
@@ -65,7 +73,14 @@ fn miner() -> String {
     hns_addr_of(&run_key("miner"))
 }
 
-async fn tick(conn: &Connection, profile: &str, node: &NodeRpcClient, srcs: &[Box<dyn BtcSource>], relay: &FakeRelay, watch: &FakeRelay) -> job::TickReport {
+async fn tick(
+    conn: &Connection,
+    profile: &str,
+    node: &NodeRpcClient,
+    srcs: &[Box<dyn BtcSource>],
+    relay: &FakeRelay,
+    watch: &FakeRelay,
+) -> job::TickReport {
     let ctx = Ctx {
         conn,
         profile_id: profile,
@@ -159,18 +174,25 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
     )
     .unwrap();
     tick(&conn, SELLER, &node, &srcs, &relay, &watch).await;
-    assert_eq!(relay.offers.lock().unwrap().len(), 1, "the heartbeat published the offer");
+    assert_eq!(
+        relay.offers.lock().unwrap().len(),
+        1,
+        "the heartbeat published the offer"
+    );
 
     // 2. The Buyer takes 1000 HNS (as `exchange_take_offer` does).
     let amount = 1_000_000_000u64;
     let acct = store::account(&conn, BUYER).unwrap().unwrap();
     let index = store::take_trade_indexes(&conn, BUYER, 1).unwrap();
     let (hpk, bpk) = keys::trade_pubkeys(&acct.swap_xpub, index).unwrap();
+    let nonce = keys::new_secret_nonce();
     let req = TakeRequest {
         hns_amount: amount,
         hns_pubkey: hex::encode(hpk),
         btc_pubkey: hex::encode(bpk),
-        hash: Some(hex::encode(keys::trade_keys(&bm, NET, 0, index).unwrap().hash())),
+        hash: Some(hex::encode(
+            keys::trade_keys(&bm, NET, 0, index).unwrap().hash(&nonce),
+        )),
         start: now(),
     };
     let taker_key = relay_msg::new_relay_key();
@@ -198,6 +220,7 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
             watchtower: "none".into(),
             hns_lock: None,
             request: Some(req.clone()),
+            secret_nonce: Some(nonce),
             terminal_at: None,
             finished: false,
             created_at: now(),
@@ -228,21 +251,38 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
     tick(&conn, BUYER, &node, &srcs, &relay, &watch).await;
     tick(&conn, BUYER, &node, &srcs, &relay, &watch).await;
     let bt = only_trade(&conn, BUYER);
-    let terms = bt.terms.clone().expect("the Buyer accepted the maker's terms");
+    let terms = bt
+        .terms
+        .clone()
+        .expect("the Buyer accepted the maker's terms");
     assert_eq!(terms.btc_amount, 20_000);
-    assert!(matches!(bt.status, Some(Status::AwaitingBuyerCommit { .. })), "{:?}", bt.status);
+    assert!(
+        matches!(bt.status, Some(Status::AwaitingBuyerCommit { .. })),
+        "{:?}",
+        bt.status
+    );
     let st = only_trade(&conn, SELLER);
-    assert_eq!(st.terms.as_ref().unwrap().id(), terms.id(), "both hold the same terms");
+    assert_eq!(
+        st.terms.as_ref().unwrap().id(),
+        terms.id(),
+        "both hold the same terms"
+    );
 
     // 4. The Buyer's Commit (as `exchange_commit` does: store, then send).
     let acct = store::account(&conn, BUYER).unwrap().unwrap();
-    fake.fund(&btc_account::address_at(&acct.btc_xpub, NET, 0, 0).unwrap(), 1_000_000);
-    let coins = btc_wallet::coins(srcs[0].as_ref(), &acct, NET).await.unwrap();
-    let buyer_hns_to = fx::hns_address(&bm, 900);
+    fake.fund(
+        &btc_account::address_at(&acct.btc_xpub, NET, 0, 0).unwrap(),
+        1_000_000,
+    );
+    let coins = btc_wallet::coins(srcs[0].as_ref(), &acct, NET)
+        .await
+        .unwrap();
+    let buyer_hns_to = hns_addr_of(&run_key("buyer payout"));
     let c = commit::buyer_commit(&commit::BuyerCommitInput {
         master: &bm,
         account: 0,
         trade_index: bt.trade_index,
+        secret_nonce: &nonce,
         terms: &terms,
         policy: &p,
         btc_coins: &coins,
@@ -256,7 +296,9 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
     let mut bt = bt;
     bt.holdings = Some(c.holdings.clone());
     store::update_trade(&conn, &bt, now()).unwrap();
-    runner::send_btc(&srcs, &btc_htlc::encode_tx(&c.funding)).await.unwrap();
+    runner::send_btc(&srcs, &btc_htlc::encode_tx(&c.funding))
+        .await
+        .unwrap();
     relay
         .send(
             &Message {
@@ -282,31 +324,63 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
     // Unconfirmed: the Seller's job does not offer the Commit yet.
     tick(&conn, SELLER, &node, &srcs, &relay, &watch).await;
     let st = only_trade(&conn, SELLER);
-    assert!(matches!(st.status, Some(Status::AwaitingBtcLock { confirmations: 0, .. })), "{:?}", st.status);
+    assert!(
+        matches!(
+            st.status,
+            Some(Status::AwaitingBtcLock {
+                confirmations: 0,
+                ..
+            })
+        ),
+        "{:?}",
+        st.status
+    );
     fake.mine(1);
     tick(&conn, SELLER, &node, &srcs, &relay, &watch).await;
     let st = only_trade(&conn, SELLER);
-    assert!(matches!(st.status, Some(Status::AwaitingSellerCommit { .. })), "{:?}", st.status);
+    assert!(
+        matches!(st.status, Some(Status::AwaitingSellerCommit { .. })),
+        "{:?}",
+        st.status
+    );
 
     // 5. The Seller's Commit: an HNS funding of the lock, then the rest.
     let funder = run_key("seller hns");
-    node.generate_to_address(1, &hns_addr_of(&funder)).await.unwrap();
+    node.generate_to_address(1, &hns_addr_of(&funder))
+        .await
+        .unwrap();
     node.generate_to_address(3, &miner()).await.unwrap();
-    let coin = node.get_coins_by_address(&hns_addr_of(&funder)).await.unwrap().remove(0);
+    let coin = node
+        .get_coins_by_address(&hns_addr_of(&funder))
+        .await
+        .unwrap()
+        .remove(0);
     let hp = terms.hns_params().unwrap();
     let mut funding = Transaction::new();
     let mut h = [0u8; 32];
     hex::decode_to_slice(&coin.txid, &mut h).unwrap();
-    funding.inputs.push(Input::new(Outpoint { hash: h, index: coin.vout }));
-    funding.outputs.push(hns_htlc::lock_output(&hp, terms.hns_amount));
+    funding.inputs.push(Input::new(Outpoint {
+        hash: h,
+        index: coin.vout,
+    }));
+    funding
+        .outputs
+        .push(hns_htlc::lock_output(&hp, terms.hns_amount));
     funding.outputs.push(Output {
         value: coin.value as u64 - terms.hns_amount - 100_000,
-        address: crate::noncustodial::tx::output_address_from_string(NET, &hns_addr_of(&funder)).unwrap(),
+        address: crate::noncustodial::tx::output_address_from_string(NET, &hns_addr_of(&funder))
+            .unwrap(),
         covenant: Covenant::default(),
     });
     let fpk = PublicKey::from_secret_key(&Secp256k1::new(), &funder).serialize();
     funding
-        .sign_p2wpkh_input(0, &funder, &address::pubkey_to_hash160(&fpk), coin.value as u64, sighash::ALL)
+        .sign_p2wpkh_input(
+            0,
+            &funder,
+            &address::pubkey_to_hash160(&fpk),
+            coin.value as u64,
+            sighash::ALL,
+        )
         .unwrap();
     let st = only_trade(&conn, SELLER);
     let sacct = store::account(&conn, SELLER).unwrap().unwrap();
@@ -318,7 +392,13 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
         terms: &terms,
         policy: &p,
         hns_funding: &funding,
-        btc_lock: st.holdings.as_ref().unwrap().btc_lock.as_ref().expect("the announcement was kept"),
+        btc_lock: st
+            .holdings
+            .as_ref()
+            .unwrap()
+            .btc_lock
+            .as_ref()
+            .expect("the announcement was kept"),
         hns_rate: 1,
         hns_refund_to: &fx::hns_address(&sm, 901),
         btc_rate: 1,
@@ -329,23 +409,36 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
     st.holdings = Some(sc.holdings.clone());
     st.hns_lock = Some((sc.hns_lock.txid.clone(), sc.hns_lock.vout));
     store::update_trade(&conn, &st, now()).unwrap();
-    assert!(runner::send_hns(&node, &funding.to_hex()).await.unwrap(), "hsd took the HNS lock");
+    assert!(
+        runner::send_hns(&node, &funding.to_hex()).await.unwrap(),
+        "hsd took the HNS lock"
+    );
     node.generate_to_address(1, &miner()).await.unwrap();
 
     // 6. From here on only the jobs act.
     tick(&conn, BUYER, &node, &srcs, &relay, &watch).await;
     let bt = only_trade(&conn, BUYER);
-    assert_eq!(bt.status, Some(Status::Revealing), "the Buyer's job revealed");
+    assert_eq!(
+        bt.status,
+        Some(Status::Revealing),
+        "the Buyer's job revealed"
+    );
     assert!(bt.holdings.as_ref().unwrap().sent.hns_claim_at.is_some());
 
     tick(&conn, SELLER, &node, &srcs, &relay, &watch).await;
     let st = only_trade(&conn, SELLER);
-    assert!(matches!(st.status, Some(Status::Claiming { .. })), "{:?}", st.status);
+    assert!(
+        matches!(st.status, Some(Status::Claiming { .. })),
+        "{:?}",
+        st.status
+    );
     let lock_op = bitcoin::OutPoint {
         txid: btc_htlc::parse_txid(&c.btc_lock.txid).unwrap(),
         vout: c.btc_lock.vout,
     };
-    let claim = fake.spender_of(&lock_op).expect("the Seller's job claimed the BTC lock");
+    let claim = fake
+        .spender_of(&lock_op)
+        .expect("the Seller's job claimed the BTC lock");
     assert_eq!(claim.output[0].script_pubkey, seller_btc_to.script_pubkey());
 
     node.generate_to_address(1, &miner()).await.unwrap();
@@ -364,7 +457,7 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
     // Both sides were handed to the watchtower, neither with the secret.
     let jobs = watch.jobs.lock().unwrap();
     assert_eq!(jobs.len(), 2);
-    let secret = hex::encode(keys::trade_keys(&bm, NET, 0, index).unwrap().secret());
+    let secret = hex::encode(keys::trade_keys(&bm, NET, 0, index).unwrap().secret(&nonce));
     for j in jobs.iter() {
         assert!(!serde_json::to_string(j).unwrap().contains(&secret));
     }

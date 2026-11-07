@@ -18,7 +18,7 @@ People who want to buy or sell HNS have nowhere to meet. This feature adds one p
 
 **Terms** — everything both scripts are made from, agreed before any coin moves: networks, `hns_amount` (dollarydoos), `btc_amount` (satoshis), the secret's hash `H`, the four public keys (Seller's HNS refund key, Buyer's HNS claim key, Buyer's BTC refund key, Seller's BTC claim key), the trade's start `t0`, the Seller's funding deadline, the two refund times, the confirmation counts. The terms id is SHA-256 of their canonical encoding.
 
-**Secret** (`x`) — 32 bytes chosen by the Buyer, derived from the Buyer's recovery phrase and the trade, so a restore can recompute it. `H = SHA-256(x)`.
+**Secret** (`x`) — 32 bytes chosen by the Buyer: `HMAC-SHA256` keyed by a private key of the trade's swap keys, over a tag and a random 32-byte nonce kept with the trade (`keys.rs`). `H = SHA-256(x)`. The nonce makes every secret unique even if a trade index is handed out twice, as after a restore into an empty database: a repeated secret would let the later trade's Seller open the BTC lock with the secret the earlier trade made public.
 
 **BTC lock** — the Buyer's BTC, paid into a P2WSH output the Seller can take with the secret and the Seller's key, or the Buyer can take back after the BTC refund time.
 
@@ -127,7 +127,8 @@ What remains is a liveness risk, not a theft: a Seller whose daemon **and** watc
 | R11 | Refunds are sent only once the chain's median time past is past the refund time | `engine` | `exchange_engine_tests::*refund*` |
 | R12 | The fee ladder escalates as §3.5 and never above 20 % of the coin | `exchange/fees.rs` | `exchange_fees_tests` |
 | R13 | Everything the daemon and the watchtower send is a transaction the user signed at Commit, with at most the public or own secret put into its empty slot; neither holds a private key | `exchange/watch.rs`, `daemon` | `exchange_watch_tests`, `exchange_layering_tests` |
-| R14 | Swap keys follow §2 and the stored branch public key yields the same public keys as the phrase | `exchange/keys.rs` | `exchange_keys_tests` |
+| R14 | Swap keys follow §2 and the stored branch public key yields the same public keys as the phrase; a secret depends on its nonce, so a repeated trade index never repeats a secret | `exchange/keys.rs` | `exchange_keys_tests` |
+| R19 | A watchtower takes a job only when every presigned spend in it spends the job's lock and carries the lock key's valid signature, so nobody but the key's holder can register (or squat) a job | `exchange/watch.rs::check`, `btc_htlc::spend_signed_by` | `exchange_engine_tests::a_watch_job_signed_by_someone_else_is_refused` |
 | R15 | The BTC account derives the same addresses as any BIP 84 wallet from the same phrase | `exchange/btc_account.rs` | `exchange_btc_account_tests::bip84_test_vectors` |
 | R16 | Each Commit shows, in the secure window, what leaves, what arrives and where, the fee, the refund times and the deadline, computed from the transactions that are signed | `exchange/review.rs` | `exchange_review_tests` |
 | R17 | The exchange is refused on a watch-only or Ledger profile, on the Explorer chain source and on a node that cannot send, with the same sentence on every button | `commands/exchange.rs`, `src/lib/exchangeText.ts` | `exchange_cmd_tests`, `Exchange.test.tsx` |
@@ -141,6 +142,8 @@ What remains is a liveness risk, not a theft: a Seller whose daemon **and** watc
 - The price is not checked against any market price.
 
 ## 6. Known gaps
+
+- **Heartbeats are replayable.** Re-posting a signed offer is its heartbeat, so anyone holding the offer can keep it listed until it expires (7 days at most) after its maker went away. A take of such an offer gets no answer, and the take ends after the Buyer's funding window with nothing signed or locked.
 
 - **Presence of the maker.** Every trade needs a Commit from each side; a maker whose Namehold is not open when someone takes the offer delays the trade, and if the maker is the Seller the Buyer's BTC waits for its refund time. A maker cannot pre-authorise trades: that would need the phrase in the daemon, which this design refuses.
 - **The Buyer's secret on disk.** From the Buyer's Commit until the reveal the secret is stored in the database (owner-only file), because the daemon must reveal without the phrase. Someone who reads that file **and** is the Seller could take the BTC without locking HNS. The secret is never sent to a watchtower before it is public.

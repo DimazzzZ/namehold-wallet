@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::AppError;
 use crate::noncustodial::exchange::btc_htlc::{self, PresignedSpend};
 use crate::noncustodial::exchange::engine::{Holdings, LockRef, Role, SentLog};
-use crate::noncustodial::exchange::script;
+use crate::noncustodial::exchange::hns_htlc;
 use crate::noncustodial::exchange::terms::Terms;
 use crate::noncustodial::tx::Transaction;
 
@@ -79,7 +79,19 @@ impl WatchJob {
                     return bad("a Buyer's job holds only BTC refunds");
                 }
                 for r in &self.btc_refunds {
-                    btc_htlc::refund_tx(r, &bp)?;
+                    let tx = btc_htlc::refund_tx(r, &bp)?;
+                    if !self.spends_btc_lock(&tx)
+                        || !btc_htlc::spend_signed_by(
+                            &tx,
+                            &bp,
+                            self.terms.btc_amount,
+                            &bp.refund_pubkey,
+                        )
+                    {
+                        return bad(
+                            "a BTC refund is not signed by the lock's refund key for this lock",
+                        );
+                    }
                 }
             }
             Role::Seller => {
@@ -100,6 +112,23 @@ impl WatchJob {
                 if tx.inputs.len() != 1 || w.len() != 3 || !w[1].is_empty() || !hp.matches(&w[2]) {
                     return bad("its HNS refund is not a refund of the HNS lock");
                 }
+                let sig: Option<[u8; 65]> = w[0].as_slice().try_into().ok();
+                let signed = sig.is_some_and(|sig| {
+                    hns_htlc::verify_input_signature(
+                        &tx,
+                        &w[2],
+                        self.terms.hns_amount,
+                        &sig,
+                        hns_htlc::REFUND_SIGHASH,
+                        &hp.refund_pubkey,
+                    )
+                });
+                if !signed || tx.locktime != hp.refund_lock_time {
+                    return bad("its HNS refund is not signed by the lock's refund key");
+                }
+                if self.btc_lock.is_none() {
+                    return bad("a Seller's job names the BTC lock it claims");
+                }
                 for c in &self.btc_claims {
                     let tx = btc_htlc::decode(&c.tx_hex)?;
                     let items = tx
@@ -116,10 +145,31 @@ impl WatchJob {
                             "a BTC claim is not a claim of the BTC lock with an empty secret slot",
                         );
                     }
+                    if !self.spends_btc_lock(&tx)
+                        || !btc_htlc::spend_signed_by(
+                            &tx,
+                            &bp,
+                            self.terms.btc_amount,
+                            &bp.claim_pubkey,
+                        )
+                    {
+                        return bad(
+                            "a BTC claim is not signed by the lock's claim key for this lock",
+                        );
+                    }
                 }
             }
         }
-        let _ = script::SECRET_LEN;
         Ok(())
+    }
+
+    /// Whether `tx` spends exactly the job's BTC lock.
+    fn spends_btc_lock(&self, tx: &bitcoin::Transaction) -> bool {
+        let Some(l) = &self.btc_lock else {
+            return false;
+        };
+        tx.input.len() == 1
+            && tx.input[0].previous_output.txid.to_string() == l.txid
+            && tx.input[0].previous_output.vout == l.vout
     }
 }

@@ -14,7 +14,10 @@ use bitcoin::block::{Header, Version};
 use bitcoin::consensus::validation::verify_transaction;
 use bitcoin::hashes::Hash;
 use bitcoin::pow::CompactTarget;
-use bitcoin::{Address, Amount, BlockHash, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxMerkleNode, TxOut, Txid, Witness};
+use bitcoin::{
+    Address, Amount, BlockHash, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxMerkleNode,
+    TxOut, Txid, Witness,
+};
 
 use crate::error::AppError;
 use crate::exchange_io::btc_source::{branch_for, BtcSource, Outspend, SourceUtxo};
@@ -47,7 +50,10 @@ pub struct FakeBtc {
 }
 
 fn merkle_root(txs: &[Transaction]) -> TxMerkleNode {
-    let mut level: Vec<[u8; 32]> = txs.iter().map(|t| t.compute_txid().to_raw_hash().to_byte_array()).collect();
+    let mut level: Vec<[u8; 32]> = txs
+        .iter()
+        .map(|t| t.compute_txid().to_raw_hash().to_byte_array())
+        .collect();
     if level.is_empty() {
         return TxMerkleNode::all_zeros();
     }
@@ -70,7 +76,13 @@ fn merkle_root(txs: &[Transaction]) -> TxMerkleNode {
 
 impl Chain {
     fn mtp(&self) -> u64 {
-        let mut t: Vec<u32> = self.blocks.iter().rev().take(11).map(|b| b.header.time).collect();
+        let mut t: Vec<u32> = self
+            .blocks
+            .iter()
+            .rev()
+            .take(11)
+            .map(|b| b.header.time)
+            .collect();
         t.sort();
         u64::from(t[t.len() / 2])
     }
@@ -97,7 +109,11 @@ impl Chain {
         let mut all = vec![cb];
         all.extend(txs);
         self.time += 600;
-        let prev = self.blocks.last().map(|b| b.header.block_hash()).unwrap_or_else(BlockHash::all_zeros);
+        let prev = self
+            .blocks
+            .last()
+            .map(|b| b.header.block_hash())
+            .unwrap_or_else(BlockHash::all_zeros);
         let mut h = Header {
             version: Version::TWO,
             prev_blockhash: prev,
@@ -112,7 +128,10 @@ impl Chain {
         for t in &all {
             self.txs.insert(t.compute_txid(), t.clone());
         }
-        self.blocks.push(Block { header: h, txs: all });
+        self.blocks.push(Block {
+            header: h,
+            txs: all,
+        });
     }
 
     fn height_of(&self, txid: &Txid) -> Option<u64> {
@@ -180,12 +199,15 @@ impl FakeBtc {
 
     pub fn spender_of(&self, op: &OutPoint) -> Option<Transaction> {
         let c = self.chain.lock().unwrap();
-        c.spent_by.get(op).and_then(|t| c.txs.get(t).cloned()).or_else(|| {
-            c.mempool
-                .iter()
-                .find(|t| t.input.iter().any(|i| i.previous_output == *op))
-                .cloned()
-        })
+        c.spent_by
+            .get(op)
+            .and_then(|t| c.txs.get(t).cloned())
+            .or_else(|| {
+                c.mempool
+                    .iter()
+                    .find(|t| t.input.iter().any(|i| i.previous_output == *op))
+                    .cloned()
+            })
     }
 }
 
@@ -206,18 +228,25 @@ impl BtcSource for FakeBtc {
 
     async fn raw_tx(&self, txid: &Txid) -> Result<Option<Transaction>, AppError> {
         let c = self.chain.lock().unwrap();
-        Ok(c.txs
-            .get(txid)
-            .cloned()
-            .or_else(|| c.mempool.iter().find(|t| t.compute_txid() == *txid).cloned()))
+        Ok(c.txs.get(txid).cloned().or_else(|| {
+            c.mempool
+                .iter()
+                .find(|t| t.compute_txid() == *txid)
+                .cloned()
+        }))
     }
 
     async fn tx_block(&self, txid: &Txid) -> Result<Option<(u64, BlockHash)>, AppError> {
         let c = self.chain.lock().unwrap();
-        Ok(c.height_of(txid).map(|h| (h, c.blocks[h as usize].header.block_hash())))
+        Ok(c.height_of(txid)
+            .map(|h| (h, c.blocks[h as usize].header.block_hash())))
     }
 
-    async fn merkle(&self, txid: &Txid, block: &BlockHash) -> Result<(Vec<TxMerkleNode>, u32), AppError> {
+    async fn merkle(
+        &self,
+        txid: &Txid,
+        block: &BlockHash,
+    ) -> Result<(Vec<TxMerkleNode>, u32), AppError> {
         let c = self.chain.lock().unwrap();
         let b = c
             .blocks
@@ -230,7 +259,10 @@ impl BtcSource for FakeBtc {
 
     async fn header_at(&self, height: u64) -> Result<Header, AppError> {
         let c = self.chain.lock().unwrap();
-        c.blocks.get(height as usize).map(|b| b.header).ok_or_else(|| err("no such height"))
+        c.blocks
+            .get(height as usize)
+            .map(|b| b.header)
+            .ok_or_else(|| err("no such height"))
     }
 
     async fn header(&self, hash: &BlockHash) -> Result<Header, AppError> {
@@ -274,7 +306,8 @@ impl BtcSource for FakeBtc {
     }
 
     async fn broadcast(&self, tx_hex: &str) -> Result<Txid, AppError> {
-        let tx: Transaction = bitcoin::consensus::deserialize(&hex::decode(tx_hex).map_err(err)?).map_err(err)?;
+        let tx: Transaction =
+            bitcoin::consensus::deserialize(&hex::decode(tx_hex).map_err(err)?).map_err(err)?;
         let txid = tx.compute_txid();
         let mut c = self.chain.lock().unwrap();
         if c.txs.contains_key(&txid) || c.mempool.iter().any(|t| t.compute_txid() == txid) {
@@ -286,7 +319,13 @@ impl BtcSource for FakeBtc {
             .mempool
             .iter()
             .enumerate()
-            .filter(|(_, m)| m.input.iter().any(|i| tx.input.iter().any(|j| j.previous_output == i.previous_output)))
+            .filter(|(_, m)| {
+                m.input.iter().any(|i| {
+                    tx.input
+                        .iter()
+                        .any(|j| j.previous_output == i.previous_output)
+                })
+            })
             .map(|(n, _)| n)
             .collect();
         for i in &tx.input {
@@ -310,8 +349,13 @@ impl BtcSource for FakeBtc {
             }
         }
         let coins = c.coins.clone();
-        verify_transaction(&tx, |o| coins.get(o).map(|(out, _)| out.clone())).map_err(|e| err(format!("{e:?}")))?;
-        let fee_in: u64 = tx.input.iter().map(|i| coins[&i.previous_output].0.value.to_sat()).sum();
+        verify_transaction(&tx, |o| coins.get(o).map(|(out, _)| out.clone()))
+            .map_err(|e| err(format!("{e:?}")))?;
+        let fee_in: u64 = tx
+            .input
+            .iter()
+            .map(|i| coins[&i.previous_output].0.value.to_sat())
+            .sum();
         let fee_out: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
         let fee = fee_in - fee_out;
         for n in conflicts.iter().rev() {
@@ -327,7 +371,13 @@ impl BtcSource for FakeBtc {
             c.spent_by.insert(i.previous_output, txid);
         }
         for (v, o) in tx.output.iter().enumerate() {
-            c.coins.insert(OutPoint { txid, vout: v as u32 }, (o.clone(), false));
+            c.coins.insert(
+                OutPoint {
+                    txid,
+                    vout: v as u32,
+                },
+                (o.clone(), false),
+            );
         }
         c.mempool.push(tx.clone());
         drop(c);
@@ -358,10 +408,20 @@ impl Relay for FakeRelay {
         self.messages.lock().unwrap().push(e.clone());
         Ok(())
     }
-    async fn inbox(&self, to: &str, _network: &str, cursor: Option<&str>) -> Result<(Vec<Envelope>, Option<String>), AppError> {
+    async fn inbox(
+        &self,
+        to: &str,
+        _network: &str,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<Envelope>, Option<String>), AppError> {
         let v = self.messages.lock().unwrap();
         let from: usize = cursor.and_then(|c| c.parse().ok()).unwrap_or(0);
-        let msgs = v.iter().skip(from).filter(|e| e.message.to == to).cloned().collect();
+        let msgs = v
+            .iter()
+            .skip(from)
+            .filter(|e| e.message.to == to)
+            .cloned()
+            .collect();
         Ok((msgs, Some(v.len().to_string())))
     }
     async fn watch(&self, job: &WatchJob) -> Result<String, AppError> {

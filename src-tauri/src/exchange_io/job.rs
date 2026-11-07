@@ -323,7 +323,7 @@ async fn on_take(
     let taker_btc = parse_pk(&req.btc_pubkey)?;
     let taker_relay = parse_pk(&m.from)?;
     let maker_relay = parse_pk(&m.to)?;
-    let (index, hash) = match role {
+    let (index, hash, secret_nonce) = match role {
         Role::Seller => {
             let Some(h) = req.hash.as_deref() else {
                 relay
@@ -334,7 +334,11 @@ async fn on_take(
             let mut hb = [0u8; 32];
             hex::decode_to_slice(h, &mut hb)
                 .map_err(|_| AppError::InvalidInput("the take's hash is malformed".into()))?;
-            (store::take_trade_indexes(ctx.conn, ctx.profile_id, 1)?, hb)
+            (
+                store::take_trade_indexes(ctx.conn, ctx.profile_id, 1)?,
+                hb,
+                None,
+            )
         }
         Role::Buyer => {
             if req.hash.is_some() {
@@ -344,7 +348,7 @@ async fn on_take(
                 return Ok(());
             }
             match store::take_hash(ctx.conn, ctx.profile_id)? {
-                Some(x) => x,
+                Some((i, h, n)) => (i, h, Some(n)),
                 None => {
                     relay
                         .send(&decline(
@@ -419,6 +423,7 @@ async fn on_take(
         watchtower: "none".into(),
         hns_lock: None,
         request: None,
+        secret_nonce,
         terminal_at: None,
         finished: false,
         created_at: ctx.now,

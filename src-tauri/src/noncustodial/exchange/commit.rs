@@ -30,6 +30,8 @@ pub struct BuyerCommitInput<'a> {
     pub master: &'a ExtendedPrivKey,
     pub account: u32,
     pub trade_index: u32,
+    /// The nonce of the Buyer's secret, kept with the trade.
+    pub secret_nonce: &'a [u8; 32],
     pub terms: &'a Terms,
     pub policy: &'a Policy,
     pub btc_coins: &'a [BtcCoin],
@@ -67,7 +69,7 @@ pub fn buyer_commit(i: &BuyerCommitInput<'_>) -> Result<BuyerCommit, AppError> {
     {
         return Err(refuse("its keys are not this wallet's"));
     }
-    if hex::encode(k.hash()) != t.hash {
+    if hex::encode(k.hash(i.secret_nonce)) != t.hash {
         return Err(refuse("its hash is not this wallet's secret"));
     }
     let hp = t.hns_params()?;
@@ -121,7 +123,7 @@ pub fn buyer_commit(i: &BuyerCommitInput<'_>) -> Result<BuyerCommit, AppError> {
         role: Role::Buyer,
         terms: t.clone(),
         committed: true,
-        secret: Some(k.secret()),
+        secret: Some(k.secret(i.secret_nonce)),
         hns_claim: Some(hns_claim.clone()),
         btc_funding_hex: Some(funding_hex),
         btc_refunds: btc_refunds.clone(),

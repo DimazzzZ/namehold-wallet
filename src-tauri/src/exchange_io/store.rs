@@ -268,31 +268,36 @@ pub fn withdraw_offer(conn: &Connection, profile_id: &str, id: &str) -> Result<b
 pub fn insert_hashes(
     conn: &Connection,
     profile_id: &str,
-    hashes: &[(u32, [u8; 32])],
+    hashes: &[(u32, [u8; 32], [u8; 32])],
 ) -> Result<(), AppError> {
-    for (i, h) in hashes {
+    for (i, h, n) in hashes {
         conn.execute(
-            "INSERT OR IGNORE INTO exchange_hash_pool (profile_id, trade_index, hash_hex) VALUES (?1, ?2, ?3)",
-            params![profile_id, i, hex::encode(h)],
+            "INSERT OR IGNORE INTO exchange_hash_pool (profile_id, trade_index, hash_hex, nonce_hex) VALUES (?1, ?2, ?3, ?4)",
+            params![profile_id, i, hex::encode(h), hex::encode(n)],
         )
         .map_err(db)?;
     }
     Ok(())
 }
 
+/// A pooled hash: `(trade index, hash, nonce)`.
+pub type PooledHash = (u32, [u8; 32], [u8; 32]);
+
 /// The next unused pooled hash, marked used.
-pub fn take_hash(conn: &Connection, profile_id: &str) -> Result<Option<(u32, [u8; 32])>, AppError> {
+pub fn take_hash(conn: &Connection, profile_id: &str) -> Result<Option<PooledHash>, AppError> {
     let tx = conn.unchecked_transaction().map_err(db)?;
     let row = tx
         .query_row(
-            "SELECT trade_index, hash_hex FROM exchange_hash_pool WHERE profile_id = ?1 AND used = 0
+            "SELECT trade_index, hash_hex, nonce_hex FROM exchange_hash_pool WHERE profile_id = ?1 AND used = 0
              ORDER BY trade_index LIMIT 1",
             [profile_id],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
         )
         .optional()
         .map_err(db)?;
-    let Some((i, h)) = row else { return Ok(None) };
+    let Some((i, h, n)) = row else {
+        return Ok(None);
+    };
     tx.execute(
         "UPDATE exchange_hash_pool SET used = 1 WHERE profile_id = ?1 AND trade_index = ?2",
         params![profile_id, i],
@@ -301,9 +306,12 @@ pub fn take_hash(conn: &Connection, profile_id: &str) -> Result<Option<(u32, [u8
     tx.commit().map_err(db)?;
     let mut b = [0u8; 32];
     hex::decode_to_slice(&h, &mut b).map_err(|_| corrupt("pooled hash"))?;
+    let mut nb = [0u8; 32];
+    hex::decode_to_slice(&n, &mut nb).map_err(|_| corrupt("pooled nonce"))?;
     Ok(Some((
         u32::try_from(i).map_err(|_| corrupt("pool index"))?,
         b,
+        nb,
     )))
 }
 
@@ -331,6 +339,8 @@ pub struct Trade {
     pub watchtower: String,
     pub hns_lock: Option<(String, u32)>,
     pub request: Option<crate::noncustodial::exchange::relay_msg::TakeRequest>,
+    /// The Buyer's secret nonce (`keys` module docs); `None` for the Seller.
+    pub secret_nonce: Option<[u8; 32]>,
     pub terminal_at: Option<u64>,
     pub finished: bool,
     pub created_at: u64,
@@ -376,7 +386,8 @@ pub fn update_trade(conn: &Connection, t: &Trade, now: u64) -> Result<(), AppErr
     conn.execute(
         "UPDATE exchange_trades SET counterparty_key = ?3, terms_json = ?4, terms_id = ?5, holdings_json = ?6,
             status_json = ?7, declined = ?8, last_error = ?9, watchtower = ?10, hns_lock_txid = ?11,
-            hns_lock_vout = ?12, finished = ?13, updated_at = ?14, terminal_at = ?15
+            hns_lock_vout = ?12, finished = ?13, updated_at = ?14, terminal_at = ?15,
+            secret_nonce_hex = ?16
          WHERE profile_id = ?1 AND trade_id = ?2",
         params![
             t.profile_id,
@@ -394,6 +405,7 @@ pub fn update_trade(conn: &Connection, t: &Trade, now: u64) -> Result<(), AppErr
             t.finished as i64,
             now as i64,
             t.terminal_at.map(|v| v as i64),
+            t.secret_nonce.map(hex::encode),
         ],
     )
     .map_err(db)?;
@@ -402,7 +414,7 @@ pub fn update_trade(conn: &Connection, t: &Trade, now: u64) -> Result<(), AppErr
 
 const TRADE_COLS: &str = "profile_id, trade_id, network, role, maker, offer_json, trade_index, relay_key_hex,
     counterparty_key, hns_amount, btc_sats, price_msat, terms_json, holdings_json, status_json, declined,
-    last_error, watchtower, hns_lock_txid, hns_lock_vout, finished, created_at, updated_at, request_json, terminal_at";
+    last_error, watchtower, hns_lock_txid, hns_lock_vout, finished, created_at, updated_at, request_json, terminal_at, secret_nonce_hex";
 
 fn trade_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Trade, AppError>> {
     let role: String = r.get(3)?;
@@ -431,6 +443,7 @@ fn trade_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Trade, AppEr
         r.get::<_, i64>(22)?,
         r.get::<_, Option<String>>(23)?,
         r.get::<_, Option<i64>>(24)?,
+        r.get::<_, Option<String>>(25)?,
     );
     Ok((|| {
         let (
@@ -451,6 +464,7 @@ fn trade_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Trade, AppEr
             u,
             req,
             term,
+            nonce,
         ) = base;
         Ok(Trade {
             profile_id,
@@ -493,6 +507,13 @@ fn trade_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Trade, AppEr
                 .transpose()
                 .map_err(|_| corrupt("request json"))?,
             terminal_at: term.map(|v| v as u64),
+            secret_nonce: nonce
+                .map(|h| {
+                    let mut b = [0u8; 32];
+                    hex::decode_to_slice(&h, &mut b).map(|_| b)
+                })
+                .transpose()
+                .map_err(|_| corrupt("secret nonce"))?,
             finished: fin != 0,
             created_at: c as u64,
             updated_at: u as u64,

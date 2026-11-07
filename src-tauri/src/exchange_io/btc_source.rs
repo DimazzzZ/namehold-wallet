@@ -332,14 +332,15 @@ impl BitcoinCore {
     pub fn new(spec: &str) -> Result<BitcoinCore, AppError> {
         let rest = spec
             .strip_prefix("bitcoind+")
-            .ok_or_else(|| AppError::InvalidInput(format!("'{spec}' is not a bitcoind source")))?;
+            .ok_or_else(|| AppError::InvalidInput("not a bitcoind source".into()))?;
         let mut url =
-            url::Url::parse(rest).map_err(|e| AppError::InvalidInput(format!("'{spec}': {e}")))?;
-        check_transport(&url)?;
+            // The spec may carry the RPC password: never put it in an error.
+            url::Url::parse(rest).map_err(|e| AppError::InvalidInput(format!("a bitcoind source is not a URL: {e}")))?;
         let user = url.username().to_owned();
         let pass = url.password().unwrap_or("").to_owned();
         let _ = url.set_username("");
         let _ = url.set_password(None);
+        check_transport(&url)?;
         Ok(BitcoinCore {
             url: url.to_string(),
             user,

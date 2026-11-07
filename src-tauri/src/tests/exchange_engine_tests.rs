@@ -923,3 +923,37 @@ fn in_every_scripted_failure_nobody_ends_with_both_coins_or_neither() {
         }
     }
 }
+
+#[test]
+fn a_watch_job_signed_by_someone_else_is_refused() {
+    // A counterparty who knows the terms must not be able to register a job
+    // under the other party's id: every presigned spend in a job must carry
+    // the lock key's signature.
+    let t = fx::trade();
+    let other = fx::trade_at(START + 1000); // same keys, other locks
+    let mut job = WatchJob::from_holdings(&t.buyer());
+    job.btc_refunds = other.buyer.btc_refunds.clone();
+    assert!(job.check().is_err(), "refunds of another lock");
+    let mut job = WatchJob::from_holdings(&t.seller());
+    job.hns_refund_hex = other.seller.holdings.hns_refund_hex.clone();
+    assert!(job.check().is_err(), "a refund of another lock");
+    // A claim whose signature was replaced by garbage.
+    let mut job = WatchJob::from_holdings(&t.seller());
+    let mut tx = btc_htlc::decode(&job.btc_claims[0].tx_hex).unwrap();
+    let mut items = tx.input[0].witness.to_vec();
+    items[0][10] ^= 1;
+    tx.input[0].witness = bitcoin::Witness::from_slice(&items);
+    job.btc_claims[0].tx_hex = btc_htlc::encode_tx(&tx);
+    assert!(job.check().is_err(), "a claim with a broken signature");
+}
+
+#[test]
+fn a_bitcoind_source_error_never_shows_its_password() {
+    let e = crate::exchange_io::btc_source::source_from_spec(
+        "bitcoind+http://alice:hunter2@example.com:8332",
+    )
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(!e.contains("hunter2"), "{e}");
+}

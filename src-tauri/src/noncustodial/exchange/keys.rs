@@ -8,13 +8,19 @@
 //! - `t/1` — the BTC key: the Seller's BTC claim key or the Buyer's BTC
 //!   refund key;
 //! - `t/2` — never a public key: its private key is the HMAC key of the
-//!   Buyer's secret, `x = HMAC-SHA256(k, "namehold exchange secret v1")`.
+//!   Buyer's secret, `x = HMAC-SHA256(k, "namehold exchange secret v1" ‖ n)`
+//!   with `n` a random 32-byte nonce kept with the trade.
+//!
+//! The nonce makes every secret unique even if a trade index is handed out
+//! twice (a restore from the phrase into an empty database starts the
+//! indexes again): a repeated secret would let the Seller of the later trade
+//! open the BTC lock with the secret the earlier trade made public.
 //!
 //! The branch's extended public key is stored, so the daemon can give a
 //! counterparty `t/0` and `t/1` without the phrase. Because `t/2`'s private
 //! key is needed for `x`, no holder of the extended public key can compute a
-//! secret; a restore from the phrase recomputes every key and secret of a
-//! known trade index.
+//! secret; a restore from the phrase recomputes every key of a known trade
+//! index, and its secret given the nonce.
 
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
@@ -92,18 +98,26 @@ pub struct TradeKeys {
 }
 
 impl TradeKeys {
-    /// The Buyer's secret of this trade.
-    pub fn secret(&self) -> [u8; 32] {
+    /// The Buyer's secret of this trade and `nonce`.
+    pub fn secret(&self, nonce: &[u8; 32]) -> [u8; 32] {
         let mut mac = Hmac::<Sha256>::new_from_slice(self.secret_key.as_ref())
             .expect("hmac takes any key length");
         mac.update(SECRET_TAG);
+        mac.update(nonce);
         mac.finalize().into_bytes().into()
     }
 
     /// `SHA-256(secret)`.
-    pub fn hash(&self) -> [u8; 32] {
-        Sha256::digest(self.secret()).into()
+    pub fn hash(&self, nonce: &[u8; 32]) -> [u8; 32] {
+        Sha256::digest(self.secret(nonce)).into()
     }
+}
+
+/// A fresh nonce for a Buyer's secret.
+pub fn new_secret_nonce() -> [u8; 32] {
+    let mut n = [0u8; 32];
+    rand::Rng::fill(&mut rand::rng(), &mut n);
+    n
 }
 
 pub fn trade_keys(

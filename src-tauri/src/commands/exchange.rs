@@ -623,7 +623,14 @@ pub async fn exchange_create_offer(
         let hashes = with_signer(&state, &ctx, |s| {
             let m = s.master()?;
             (first..first + HASH_POOL)
-                .map(|i| Ok((i, keys::trade_keys(m, ctx.network, ctx.account, i)?.hash())))
+                .map(|i| {
+                    let n = keys::new_secret_nonce();
+                    Ok((
+                        i,
+                        keys::trade_keys(m, ctx.network, ctx.account, i)?.hash(&n),
+                        n,
+                    ))
+                })
                 .collect::<Result<Vec<_>, AppError>>()
         })?;
         let conn = lock(&state)?;
@@ -914,12 +921,13 @@ pub async fn exchange_take_offer(
         store::take_trade_indexes(&conn, &ctx.profile_id, 1)?
     };
     let (hns_pk, btc_pk) = keys::trade_pubkeys(&acct.swap_xpub, index)?;
-    let hash = match role {
-        // The Buyer's hash, from the phrase.
-        Role::Buyer => Some(hex::encode(with_signer(&state, &ctx, |s| {
-            Ok(keys::trade_keys(s.master()?, ctx.network, ctx.account, index)?.hash())
+    let secret_nonce = (role == Role::Buyer).then(keys::new_secret_nonce);
+    let hash = match &secret_nonce {
+        // The Buyer's hash, from the phrase and a fresh nonce.
+        Some(n) => Some(hex::encode(with_signer(&state, &ctx, |s| {
+            Ok(keys::trade_keys(s.master()?, ctx.network, ctx.account, index)?.hash(n))
         })?)),
-        Role::Seller => None,
+        None => None,
     };
     let req = TakeRequest {
         hns_amount: amount,
@@ -951,6 +959,7 @@ pub async fn exchange_take_offer(
         watchtower: "none".into(),
         hns_lock: None,
         request: Some(req.clone()),
+        secret_nonce,
         terminal_at: None,
         finished: false,
         created_at: t,
@@ -1106,11 +1115,15 @@ async fn buyer_commit(
             btc_account::address_at(&acct.btc_xpub, ctx.network, 0, r)?,
         )
     };
+    let nonce = t
+        .secret_nonce
+        .ok_or_else(|| AppError::Other("this trade has no secret nonce".into()))?;
     let build = |s: &mut SignerSession| {
         commit::buyer_commit(&commit::BuyerCommitInput {
             master: s.master()?,
             account: ctx.account,
             trade_index: t.trade_index,
+            secret_nonce: &nonce,
             terms: &terms,
             policy: p,
             btc_coins: &coins,

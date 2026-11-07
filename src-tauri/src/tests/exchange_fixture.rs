@@ -26,6 +26,8 @@ pub const NET: Network = Network::Regtest;
 pub const START: u64 = 1_800_000_000;
 pub const HNS_AMOUNT: u64 = 5_000 * 1_000_000; // 5000 HNS
 pub const PRICE: u64 = 20_000; // 20 sats per HNS → 100 000 sats
+/// The Buyer's secret nonce of the fixture trade.
+pub const NONCE: [u8; 32] = [7u8; 32];
 
 pub fn master(passphrase: &str) -> ExtendedPrivKey {
     ExtendedPrivKey::from_seed(&seed_from_mnemonic(PHRASE, passphrase).unwrap()).unwrap()
@@ -79,7 +81,7 @@ pub fn terms_at(start: u64) -> Terms {
             trade_id: &"cd".repeat(16),
             hns_amount: HNS_AMOUNT,
             price_msat_per_hns: PRICE,
-            hash: b.hash(),
+            hash: b.hash(&NONCE),
             seller_hns_refund_pubkey: s.hns_pubkey,
             buyer_hns_claim_pubkey: b.hns_pubkey,
             buyer_btc_refund_pubkey: b.btc_pubkey,
@@ -152,6 +154,7 @@ pub fn trade_at(start: u64) -> Trade {
         master: &bm,
         account: 0,
         trade_index: 0,
+        secret_nonce: &NONCE,
         terms: &terms,
         policy: &p,
         btc_coins: std::slice::from_ref(&coin.0),

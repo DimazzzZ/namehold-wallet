@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS exchange_hash_pool (
     profile_id   TEXT NOT NULL,
     trade_index  INTEGER NOT NULL,
     hash_hex     TEXT NOT NULL,
+    -- The secret's nonce (noncustodial/exchange/keys.rs).
+    nonce_hex    TEXT NOT NULL,
     used         INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (profile_id, trade_index)
 );
@@ -70,6 +72,8 @@ CREATE TABLE IF NOT EXISTS exchange_trades (
     hns_lock_vout      INTEGER,
     -- The taker's own request, to check the maker's answer against.
     request_json       TEXT,
+    -- The Buyer's secret nonce; NULL for the Seller.
+    secret_nonce_hex   TEXT,
     -- When the trade first reached Completed, Refunded or Expired; it is
     -- still followed for a day after (a reorg can undo a last step).
     terminal_at        INTEGER,

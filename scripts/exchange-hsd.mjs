@@ -23,25 +23,25 @@
 // hsd is found through HSD_LIB (a path to hsd's package directory), else
 // the global npm root.
 
-import { createRequire } from 'node:module';
-import { execSync } from 'node:child_process';
-import path from 'node:path';
-import fs from 'node:fs';
+import { createRequire } from "node:module";
+import { execSync } from "node:child_process";
+import path from "node:path";
+import fs from "node:fs";
 
 function hsdDir() {
   if (process.env.HSD_LIB) return process.env.HSD_LIB;
-  const root = execSync('npm root -g', { encoding: 'utf8' }).trim();
-  return path.join(root, 'hsd');
+  const root = execSync("npm root -g", { encoding: "utf8" }).trim();
+  return path.join(root, "hsd");
 }
 
 const dir = hsdDir();
-const require = createRequire(path.join(dir, 'package.json'));
+const require = createRequire(path.join(dir, "package.json"));
 const hsd = require(dir);
-const secp256k1 = require('bcrypto/lib/secp256k1');
-const sha256 = require('bcrypto/lib/sha256');
+const secp256k1 = require("bcrypto/lib/secp256k1");
+const sha256 = require("bcrypto/lib/sha256");
 const { Script, MTX, TX, Coin, CoinView, Address, Outpoint } = hsd;
 const consensus = hsd.consensus;
-const common = require(path.join(dir, 'lib/script/common.js'));
+const common = require(path.join(dir, "lib/script/common.js"));
 
 const ALL = common.hashType.ALL;
 const NOINPUT = common.hashType.NOINPUT;
@@ -49,26 +49,26 @@ const ANYONECANPAY = common.hashType.ANYONECANPAY;
 
 function keyFrom(label) {
   // sha256 of a public label; valid secp256k1 scalars for these labels.
-  return sha256.digest(Buffer.from(label, 'utf8'));
+  return sha256.digest(Buffer.from(label, "utf8"));
 }
 
 function htlcScript(hash, claimPub, refundPub, lockTime) {
   const s = new Script();
-  s.pushSym('OP_IF');
-  s.pushSym('OP_SIZE');
+  s.pushSym("OP_IF");
+  s.pushSym("OP_SIZE");
   s.pushInt(32);
-  s.pushSym('OP_EQUALVERIFY');
-  s.pushSym('OP_SHA256');
+  s.pushSym("OP_EQUALVERIFY");
+  s.pushSym("OP_SHA256");
   s.pushData(hash);
-  s.pushSym('OP_EQUALVERIFY');
+  s.pushSym("OP_EQUALVERIFY");
   s.pushData(claimPub);
-  s.pushSym('OP_ELSE');
+  s.pushSym("OP_ELSE");
   s.pushInt(lockTime);
-  s.pushSym('OP_CHECKLOCKTIMEVERIFY');
-  s.pushSym('OP_DROP');
+  s.pushSym("OP_CHECKLOCKTIMEVERIFY");
+  s.pushSym("OP_DROP");
   s.pushData(refundPub);
-  s.pushSym('OP_ENDIF');
-  s.pushSym('OP_CHECKSIG');
+  s.pushSym("OP_ENDIF");
+  s.pushSym("OP_CHECKSIG");
   s.compile();
   return s;
 }
@@ -78,11 +78,11 @@ function sigWithType(hash, priv, type) {
 }
 
 function vectors() {
-  const claimPriv = keyFrom('namehold exchange vector: buyer hns claim');
-  const refundPriv = keyFrom('namehold exchange vector: seller hns refund');
+  const claimPriv = keyFrom("namehold exchange vector: buyer hns claim");
+  const refundPriv = keyFrom("namehold exchange vector: seller hns refund");
   const claimPub = secp256k1.publicKeyCreate(claimPriv, true);
   const refundPub = secp256k1.publicKeyCreate(refundPriv, true);
-  const secret = sha256.digest(Buffer.from('namehold exchange vector: preimage', 'utf8'));
+  const secret = sha256.digest(Buffer.from("namehold exchange vector: preimage", "utf8"));
   const hash = sha256.digest(secret);
   const refundUnix = 1793000000; // a fixed Unix time
   const units = Math.ceil(refundUnix / consensus.LOCKTIME_MULT);
@@ -91,7 +91,7 @@ function vectors() {
   const lockAddr = Address.fromScript(script);
   const lockValue = 12345678000;
   const lockPrev = Buffer.alloc(32, 0x42);
-  const toPub = secp256k1.publicKeyCreate(keyFrom('namehold exchange vector: buyer payout'), true);
+  const toPub = secp256k1.publicKeyCreate(keyFrom("namehold exchange vector: buyer payout"), true);
   const toAddr = Address.fromPubkey(toPub);
   const fee = 50000;
 
@@ -122,7 +122,8 @@ function vectors() {
 
   // Refund: lock time = the script's, sequence below final, sighash ALL.
   const refundTo = Address.fromPubkey(
-    secp256k1.publicKeyCreate(keyFrom('namehold exchange vector: seller payout'), true));
+    secp256k1.publicKeyCreate(keyFrom("namehold exchange vector: seller payout"), true),
+  );
   const refund = new MTX();
   refund.locktime = lockTime;
   refund.addOutpoint(new Outpoint(lockPrev, 1));
@@ -136,36 +137,36 @@ function vectors() {
   const refundOk = refundTx.verify(view);
 
   return {
-    hsdVersion: require(path.join(dir, 'package.json')).version,
+    hsdVersion: require(path.join(dir, "package.json")).version,
     labels: {
-      claimKey: 'namehold exchange vector: buyer hns claim',
-      refundKey: 'namehold exchange vector: seller hns refund',
-      secret: 'namehold exchange vector: preimage',
-      buyerPayout: 'namehold exchange vector: buyer payout',
-      sellerPayout: 'namehold exchange vector: seller payout',
+      claimKey: "namehold exchange vector: buyer hns claim",
+      refundKey: "namehold exchange vector: seller hns refund",
+      secret: "namehold exchange vector: preimage",
+      buyerPayout: "namehold exchange vector: buyer payout",
+      sellerPayout: "namehold exchange vector: seller payout",
     },
-    hashHex: hash.toString('hex'),
-    claimPubHex: claimPub.toString('hex'),
-    refundPubHex: refundPub.toString('hex'),
+    hashHex: hash.toString("hex"),
+    claimPubHex: claimPub.toString("hex"),
+    refundPubHex: refundPub.toString("hex"),
     refundUnix,
     lockTime,
-    scriptHex: script.encode().toString('hex'),
-    lockAddressMain: lockAddr.toString('main'),
-    lockAddressRegtest: lockAddr.toString('regtest'),
+    scriptHex: script.encode().toString("hex"),
+    lockAddressMain: lockAddr.toString("main"),
+    lockAddressRegtest: lockAddr.toString("regtest"),
     lockValue,
     fee,
-    lockPrevHex: lockPrev.toString('hex'),
+    lockPrevHex: lockPrev.toString("hex"),
     lockPrevIndex: 1,
-    buyerPayoutMain: toAddr.toString('main'),
-    sellerPayoutMain: refundTo.toString('main'),
-    claimSighashHex: claimHash.toString('hex'),
-    claimSighashOtherOutpointHex: otherHash.toString('hex'),
-    claimSignatureHex: claimSig.toString('hex'),
+    buyerPayoutMain: toAddr.toString("main"),
+    sellerPayoutMain: refundTo.toString("main"),
+    claimSighashHex: claimHash.toString("hex"),
+    claimSighashOtherOutpointHex: otherHash.toString("hex"),
+    claimSignatureHex: claimSig.toString("hex"),
     claimTxHex: claimTx.toHex(),
     claimTxid: claimTx.txid(),
     claimVerifies: claimOk,
-    refundSighashHex: refundHash.toString('hex'),
-    refundSignatureHex: refundSig.toString('hex'),
+    refundSighashHex: refundHash.toString("hex"),
+    refundSignatureHex: refundSig.toString("hex"),
     refundTxHex: refundTx.toHex(),
     refundTxid: refundTx.txid(),
     refundVerifies: refundOk,
@@ -179,10 +180,10 @@ function verify(items) {
       const view = new CoinView();
       for (const c of item.coins) {
         const coin = new Coin();
-        coin.hash = Buffer.from(c.hash, 'hex');
+        coin.hash = Buffer.from(c.hash, "hex");
         coin.index = c.index;
         coin.value = c.value;
-        coin.address = Address.fromScript(Script.decode(Buffer.from(c.scriptHex, 'hex')));
+        coin.address = Address.fromScript(Script.decode(Buffer.from(c.scriptHex, "hex")));
         view.addCoin(coin);
       }
       try {
@@ -197,7 +198,7 @@ function verify(items) {
           return { ok: false, error: `input ${i}: ${e.code || e.message}` };
         }
       }
-      return { ok: true, error: '' };
+      return { ok: true, error: "" };
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -205,12 +206,12 @@ function verify(items) {
 }
 
 const mode = process.argv[2];
-if (mode === 'vectors') {
-  process.stdout.write(JSON.stringify(vectors(), null, 2) + '\n');
-} else if (mode === 'verify') {
-  const input = fs.readFileSync(0, 'utf8');
-  process.stdout.write(JSON.stringify(verify(JSON.parse(input))) + '\n');
+if (mode === "vectors") {
+  process.stdout.write(JSON.stringify(vectors(), null, 2) + "\n");
+} else if (mode === "verify") {
+  const input = fs.readFileSync(0, "utf8");
+  process.stdout.write(JSON.stringify(verify(JSON.parse(input))) + "\n");
 } else {
-  process.stderr.write('usage: exchange-hsd.mjs vectors | verify < input.json\n');
+  process.stderr.write("usage: exchange-hsd.mjs vectors | verify < input.json\n");
   process.exit(2);
 }

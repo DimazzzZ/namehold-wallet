@@ -51,17 +51,20 @@ fn the_secret_is_stable_per_trade_and_differs_between_trades_and_wallets() {
     let b = keys::trade_keys(&m, Network::Main, 0, 5).unwrap();
     let c = keys::trade_keys(&m, Network::Main, 0, 6).unwrap();
     let d = keys::trade_keys(&fx::seller_master(), Network::Main, 0, 5).unwrap();
-    assert_eq!(a.secret(), b.secret());
-    assert_ne!(a.secret(), c.secret());
-    assert_ne!(a.secret(), d.secret());
+    assert_eq!(a.secret(&[1; 32]), b.secret(&[1; 32]));
+    assert_ne!(a.secret(&[1; 32]), c.secret(&[1; 32]));
+    assert_ne!(a.secret(&[1; 32]), d.secret(&[1; 32]));
     use sha2::Digest;
-    assert_eq!(a.hash(), <[u8; 32]>::from(sha2::Sha256::digest(a.secret())));
+    assert_eq!(
+        a.hash(&[1; 32]),
+        <[u8; 32]>::from(sha2::Sha256::digest(a.secret(&[1; 32])))
+    );
     // The secret is not a public key's hash of the branch (an xpub holder
     // derives every public key, none of which gives the secret).
     let (h, btc) =
         keys::trade_pubkeys(&keys::branch_xpub(&m, Network::Main, 0).unwrap(), 5).unwrap();
-    assert_ne!(&a.secret()[..], &h[1..]);
-    assert_ne!(&a.secret()[..], &btc[1..]);
+    assert_ne!(&a.secret(&[1; 32])[..], &h[1..]);
+    assert_ne!(&a.secret(&[1; 32])[..], &btc[1..]);
 }
 
 #[test]
@@ -130,6 +133,7 @@ fn a_commit_refuses_terms_that_are_not_this_wallets() {
         master: &sm,
         account: 0,
         trade_index: 0,
+        secret_nonce: &fx::NONCE,
         terms: &t.terms,
         policy: &p,
         btc_coins: &[coin.0],
@@ -148,6 +152,7 @@ fn a_commit_refuses_terms_that_are_not_this_wallets() {
         master: &bm,
         account: 0,
         trade_index: 1,
+        secret_nonce: &fx::NONCE,
         terms: &t.terms,
         policy: &p,
         btc_coins: &[coin.0],
@@ -211,4 +216,37 @@ fn the_buyers_commit_signs_a_funding_of_exactly_the_lock() {
         .buyer
         .hns_claim
         .verify(fx::NET, &t.terms.hns_params().unwrap()));
+}
+
+#[test]
+fn the_same_trade_index_with_another_nonce_has_another_secret() {
+    // A restore into an empty database hands trade indexes out again: the
+    // nonce keeps the secret from repeating (a repeated secret would let
+    // the later Seller open the BTC lock with the earlier public secret).
+    let k = keys::trade_keys(&fx::buyer_master(), Network::Main, 0, 0).unwrap();
+    assert_ne!(k.secret(&[1; 32]), k.secret(&[2; 32]));
+    assert_ne!(keys::new_secret_nonce(), keys::new_secret_nonce());
+}
+
+#[test]
+fn a_commit_refuses_the_wrong_nonce() {
+    let t = fx::trade_at(START);
+    let bm = fx::buyer_master();
+    let coin = fx::btc_coin(1_000_000);
+    let err = commit::buyer_commit(&commit::BuyerCommitInput {
+        master: &bm,
+        account: 0,
+        trade_index: 0,
+        secret_nonce: &[9; 32],
+        terms: &t.terms,
+        policy: &fx::policy(),
+        btc_coins: &[coin.0],
+        btc_change_to: &fx::btc_address(&bm, 1, 0),
+        btc_refund_to: &fx::btc_address(&bm, 0, 1),
+        btc_rate: 2,
+        hns_rate: 1,
+        hns_to: &fx::hns_address(&bm, 0),
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("hash"), "{err}");
 }
