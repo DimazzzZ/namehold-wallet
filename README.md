@@ -164,7 +164,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
 - **Command palette** (⌘K / Ctrl+K) — fuzzy-searchable list of navigation targets
   and view actions on the current page. Type to filter, ↑/↓ to move, Enter to run.
 - **Cheatsheet** (Shift+?) — overlay documenting all bindings for the current page.
-- **Sections** — `1` Wallet, `2` Names, `3` Market, `4` Activity, `5` Settings.
+- **Sections** — `1` Wallet, `2` Names, `3` Market, `4` Exchange, `5` Activity, `6` Settings.
 - **Per-page shortcuts** — common flows without the mouse:
   - **Wallet** (`/`): `s` send, `r` sync, `u` lock or unlock, `q` open Receive
   - **Names** (`/names`): `/` find a name, `b` batch bid, `j`/`k` + Enter to walk the list and open a name

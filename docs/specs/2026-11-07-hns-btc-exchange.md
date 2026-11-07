@@ -1,6 +1,6 @@
 # HNS ⇄ BTC exchange
 
-**Status:** draft (2026-11-07), being implemented on branch `feat/exchange`. Not released. Requirements marked _(planned)_ have no code yet; every other requirement names the code that enforces it and the test that pins it.
+**Status:** implemented on branch `feat/exchange` (2026-11-07), not released. Every requirement names the code that enforces it and the test that pins it.
 
 ## 1. Summary
 
@@ -152,8 +152,8 @@ What remains is a liveness risk, not a theft: a Seller whose daemon **and** watc
 
 ## 7. Pointers
 
-- Code: `src-tauri/src/noncustodial/exchange/`, `src-tauri/src/commands/exchange.rs`, `src/pages/Exchange*`.
-- Tests: `src-tauri/src/tests/exchange_*_tests.rs`, `src-tauri/src/tests/live_exchange_it.rs`.
+- Code: `src-tauri/src/noncustodial/exchange/` (pure), `src-tauri/src/exchange_io/` (chains, relay, database, the sync step), `src-tauri/src/commands/exchange.rs`, `src-tauri/src/relay_server/` and `src/bin/namehold-relay.rs` (server), `src/components/exchange/`, `src/lib/exchange*.ts`.
+- Tests: `src-tauri/src/tests/exchange_*_tests.rs`, `relay_server_tests.rs`, the live `live_exchange_it.rs` and `live_exchange_e2e.rs` (regtest hsd + an in-memory Bitcoin chain checked by Bitcoin Core's interpreter), `scripts/exchange-hsd.mjs` (hsd's own verdicts), `src/components/__tests__/Exchange.test.tsx`.
 - QA: [docs/qa/scenarios/exchange/](../qa/scenarios/exchange/).
 
 ## 8. Relay and watchtower API (v1)

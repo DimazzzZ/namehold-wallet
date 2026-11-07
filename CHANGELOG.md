@@ -21,7 +21,14 @@
 - **An update stopped halfway no longer blocks the next start.** Each database change was recorded as applied in a separate step after it, so a Namehold quit between the two ran the change again on the next start, and a change that cannot run twice then failed on every start. A change and its record now commit together.
 
 ### Added
-- **An Exchange page for trading HNS and BTC with other people.** It shows an order book of offers to sell and to buy HNS, your own offers and trades, and a Bitcoin account made from your recovery phrase; each trade asks you to confirm once in the secure window, and when the exchange cannot be used with a wallet every button says why. Exchange sits after Market in the sidebar, so the keys for Activity and Settings are now 5 and 6.
+- **An Exchange for trading HNS and BTC with other people (beta).** The new Exchange page has an order book of offers to sell and to buy HNS, your own offers and trades, and a Bitcoin account made from your recovery phrase (BIP 84, so any Bitcoin wallet restores it).
+  - Each trade is an atomic swap: both sides get paid, or both get their own coins back. Nobody holds your coins in between, not even the relay or the watchtower.
+  - You confirm once in the secure window, and that one confirmation signs every transaction of your side. After it, the background sync reveals, claims and refunds on its own. It sends only what you signed.
+  - Bitcoin is checked by proof of work, and every configured source must agree.
+  - An optional watchtower claims for you while your computer is off.
+  - When the exchange cannot be used with a wallet, every button says why.
+  - Exchange sits after Market in the sidebar, so the keys for Activity and Settings are now 5 and 6.
+  - The relay and watchtower server is `namehold-relay` (docs/RELAY.md). Trades are limited to 0.1 BTC each on mainnet.
 
 ## [0.7.1] - 2026-11-06
 
