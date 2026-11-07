@@ -22,6 +22,7 @@ pub const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 
 const OFFER_TAG: &[u8] = b"namehold exchange offer v1\0";
 const MESSAGE_TAG: &[u8] = b"namehold exchange message v1\0";
+const WITHDRAW_TAG: &[u8] = b"namehold exchange withdraw v1\0";
 
 /// Which side of HNS the maker is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -283,4 +284,14 @@ pub fn random_hex16() -> String {
     let mut bytes = [0u8; 16];
     rand::Rng::fill(&mut rand::rng(), &mut bytes);
     hex::encode(bytes)
+}
+
+/// The maker's signature that withdraws offer `id` from the relay (spec §8).
+pub fn sign_withdraw(key: &SecretKey, id: &str) -> String {
+    sign_digest(key, digest(WITHDRAW_TAG, id.as_bytes()))
+}
+
+/// Whether `signature` withdraws offer `id` for the maker key `maker_pubkey`.
+pub fn verify_withdraw(maker_pubkey: &str, id: &str, signature: &str) -> bool {
+    verify_digest(maker_pubkey, digest(WITHDRAW_TAG, id.as_bytes()), signature)
 }

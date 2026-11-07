@@ -186,7 +186,11 @@ pub enum Attention {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Status {
     /// The Buyer has to commit by `deadline` (for the Seller: waits for it).
     AwaitingBuyerCommit {

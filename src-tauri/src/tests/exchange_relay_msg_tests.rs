@@ -147,3 +147,42 @@ fn an_oversized_message_is_refused_before_parsing() {
         .to_string()
         .contains("too large"));
 }
+
+#[test]
+fn only_the_maker_can_withdraw_its_offer() {
+    let k = relay_msg::new_relay_key();
+    let o = offer(&k);
+    let id = o.id();
+    let sig = relay_msg::sign_withdraw(&k, &id);
+    assert!(relay_msg::verify_withdraw(&o.maker_relay_pubkey, &id, &sig));
+    assert!(!relay_msg::verify_withdraw(
+        &o.maker_relay_pubkey,
+        &"00".repeat(32),
+        &sig
+    ));
+    let other = relay_msg::new_relay_key();
+    assert!(!relay_msg::verify_withdraw(
+        &o.maker_relay_pubkey,
+        &id,
+        &relay_msg::sign_withdraw(&other, &id)
+    ));
+}
+
+#[test]
+fn a_status_crosses_the_bridge_in_camel_case() {
+    use crate::noncustodial::exchange::engine::{Chain, Status};
+    let s = serde_json::to_value(Status::AwaitingRefund {
+        chain: Chain::Btc,
+        opens_at: 5,
+    })
+    .unwrap();
+    assert_eq!(
+        s,
+        serde_json::json!({"kind": "awaitingRefund", "chain": "btc", "opensAt": 5})
+    );
+    let s = serde_json::to_value(Status::AwaitingReveal { refund_opens_at: 7 }).unwrap();
+    assert_eq!(
+        s,
+        serde_json::json!({"kind": "awaitingReveal", "refundOpensAt": 7})
+    );
+}

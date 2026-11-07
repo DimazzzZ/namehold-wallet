@@ -152,3 +152,111 @@ What remains is a liveness risk, not a theft: a Seller whose daemon **and** watc
 - Code: `src-tauri/src/noncustodial/exchange/`, `src-tauri/src/commands/exchange.rs`, `src/pages/Exchange*`.
 - Tests: `src-tauri/src/tests/exchange_*_tests.rs`, `src-tauri/src/tests/live_exchange_it.rs`.
 - QA: [docs/qa/scenarios/exchange/](../qa/scenarios/exchange/).
+
+## 8. Relay and watchtower API (v1)
+
+JSON over HTTPS (`http://` only to this machine). Every body is at most 16 KiB; a larger one is refused with 413. Errors are `{"error": "<sentence>"}` with a 4xx/5xx status. The server keeps nothing it cannot verify: it checks every signature with `noncustodial::exchange::relay_msg` before storing. It never sees a private key or a secret, and nothing it stores can move a coin.
+
+| Method and path | Body | Answer |
+|---|---|---|
+| `GET /v1/health` | — | `{"ok": true, "version": "<server version>", "networks": ["main", …]}` |
+| `POST /v1/offers` | a `SignedOffer` | `201 {"id": "<offer id>"}`. Refused: bad signature, `check_shape` fails, network not served, more than 20 live offers for one maker key. Posting the same offer again is its **heartbeat**: it updates `lastSeen`. |
+| `GET /v1/offers?network=<n>` | — | `{"offers": [SignedOffer…], "now": <unix>}`: offers of that network seen within the last 180 s and not expired, newest first, at most 500 |
+| `POST /v1/offers/<id>/withdraw` | `{"signature": "<hex>"}`: the maker key's compact signature over SHA-256 of `"namehold exchange withdraw v1\0" ‖ <id as ASCII hex>` | `200 {}`; the offer is gone |
+| `POST /v1/messages` | an `Envelope` | `201 {"id": "<sha256 of the body>"}`. Refused: bad signature, unknown version, oversized. At most 200 messages per sender key per hour. Kept 7 days. |
+| `GET /v1/messages?to=<pubkey>&after=<cursor>` | — | `{"messages": [Envelope…], "cursor": "<opaque>"}` in arrival order, at most 200; `after` omitted means from the start |
+| `POST /v1/watch` | a `WatchJob` | `201 {"id": "<terms id>-<role>"}`. Refused when `WatchJob::check` fails or the network is not served. Posting the same job again is a no-op. |
+| `GET /v1/watch/<id>` | — | `{"status": Status, "sent": SentLog, "updatedAt": <unix>}` |
+
+The watchtower runs `engine::step` on every job each minute, with its own HNS node and Bitcoin sources, and sends what it returns.
+
+## 9. Commands (the Tauri bridge)
+
+All act on the active profile. Structs are camelCase (`src/types/exchange.ts` mirrors them field for field). Amounts of HNS cross as strings of whole HNS with up to 6 decimals (`hnsAmount.ts`), BTC as integer satoshis, prices as strings of sats per HNS with up to 3 decimals, times as Unix seconds.
+
+| Command | Arguments | Returns | Secure window |
+|---|---|---|---|
+| `exchange_overview` | — | `ExchangeOverview` | — |
+| `exchange_enable` | — | `ExchangeOverview` | no (stores the BTC account's and the swap branch's public keys; needs the unlocked session) |
+| `exchange_btc_balance` | — | `BtcBalance` | — |
+| `exchange_btc_withdraw` | `to_address`, `amount_sats: number \| null` (null = everything) | `{ txid }` | yes |
+| `exchange_list_offers` | — | `MarketOffers` | — |
+| `exchange_create_offer` | `side: "sell" \| "buy"`, `price: string`, `min_hns: string`, `max_hns: string` | `OfferRow` | yes |
+| `exchange_withdraw_offer` | `offer_id` | `null` | — |
+| `exchange_my_offers` | — | `OfferRow[]` | — |
+| `exchange_take_offer` | `offer_id`, `hns_amount: string` | `TradeRow` | — (nothing is signed; the Commit asks) |
+| `exchange_list_trades` | — | `TradeRow[]` | — |
+| `exchange_commit` | `trade_id` | `TradeRow` | yes: the Commit (§3.2) |
+| `exchange_cancel_trade` | `trade_id` | `TradeRow` | — (only before this party's Commit) |
+| `exchange_refresh` | — | `TradeRow[]` | — (runs one engine step for every trade now) |
+
+```ts
+type ExchangeOverview = {
+  network: string;                 // "main" | "testnet" | "regtest" | "simnet"
+  available: boolean;              // false: `refusal` says why (R17)
+  refusal: string | null;
+  enabled: boolean;                // the BTC account and swap keys exist
+  relayUrl: string;
+  watchtowerUrl: string | null;
+  btcSources: string[];
+  btcNetwork: string;              // "bitcoin" | "testnet" | "regtest"
+};
+type BtcBalance = {
+  confirmedSats: number;
+  unconfirmedSats: number;
+  receiveAddress: string;
+  lockedInTradesSats: number;      // BTC in this profile's BTC locks
+  checkedAt: number;
+  error: string | null;            // the source could not be read
+};
+type OfferRow = {
+  id: string;
+  side: "sell" | "buy";            // the maker's side
+  price: string;                   // sats per HNS
+  minHns: string; maxHns: string;
+  minSats: number; maxSats: number;
+  own: boolean;
+  makerKey: string;                // first 8 hex of the maker's relay key
+  expiresAt: number;
+  live: boolean;                   // own offers: published and heartbeating
+};
+type MarketOffers = { offers: OfferRow[]; fetchedAt: number; error: string | null };
+type TradeRow = {
+  tradeId: string;
+  termsId: string | null;          // null while negotiating
+  role: "buyer" | "seller";
+  maker: boolean;
+  offerId: string;
+  hnsAmount: string;
+  btcSats: number;
+  price: string;
+  status: TradeStatus;             // engine::Status, tagged by `kind`
+  negotiating: boolean;            // terms not agreed yet
+  declined: string | null;         // the counterparty's reason
+  timeline: { buyerFundDeadline: number; sellerFundDeadline: number; revealDeadline: number;
+              hnsRefundTime: number; btcRefundTime: number } | null;
+  hnsLock: { txid: string; vout: number } | null;
+  btcLock: { txid: string; vout: number } | null;
+  watchtower: "none" | "registered" | "failed";
+  lastError: string | null;
+  createdAt: number; updatedAt: number;
+};
+type TradeStatus =
+  | { kind: "awaitingBuyerCommit"; deadline: number }
+  | { kind: "awaitingBtcLock"; confirmations: number; needed: number }
+  | { kind: "awaitingSellerCommit"; deadline: number }
+  | { kind: "awaitingHnsLock"; confirmations: number; needed: number }
+  | { kind: "revealing" }
+  | { kind: "awaitingReveal"; refundOpensAt: number }
+  | { kind: "claiming"; rung: number }
+  | { kind: "completed" }
+  | { kind: "awaitingRefund"; chain: "hns" | "btc"; opensAt: number }
+  | { kind: "refunding"; chain: "hns" | "btc" }
+  | { kind: "refunded"; chain: "hns" | "btc" }
+  | { kind: "expired" }
+  | { kind: "cannotCheck"; chain: "hns" | "btc" }
+  | { kind: "needsAttention"; reason: "sellerLockedWrongAmount" | "buyerLockedWrongAmount"
+        | "btcRefundedAfterReveal" | "hnsRefundedAfterReveal" | "missingPresigned"; chain: "hns" | "btc" };
+```
+
+A trade needs this party's Commit when its status is `awaitingBuyerCommit` and the role is `buyer`, or `awaitingSellerCommit` and the role is `seller` (`src/lib/exchangeStatus.ts::needsMyCommit`).
