@@ -47,7 +47,19 @@ fn confirmations(height: Option<i64>, tip: i64) -> u32 {
 }
 
 /// The HNS view of `terms` from the transactions at the lock's address.
-pub fn seen_from(terms: &Terms, txs: &[NodeTx], tip: i64, mtp: u64) -> Result<HnsSeen, AppError> {
+/// The HNS view of `terms` from the transactions at the lock's address.
+/// `own` is the Seller's own lock coin: when given, only that coin is the
+/// lock (spec 2026-11-07, review C1: anyone can pay the lock address, and a
+/// decoy coin mined earlier must not blind the Seller to the claim of its
+/// own). Whatever coin it watches, a claim of **any** coin with the lock's
+/// script reveals the secret, and `revealed` carries it.
+pub fn seen_from(
+    terms: &Terms,
+    txs: &[NodeTx],
+    tip: i64,
+    mtp: u64,
+    own: Option<&LockRef>,
+) -> Result<HnsSeen, AppError> {
     let hp = terms.hns_params()?;
     let program = hns_htlc::program(&hp.script());
     let mut mismatched = false;
@@ -71,14 +83,25 @@ pub fn seen_from(terms: &Terms, txs: &[NodeTx], tip: i64, mtp: u64) -> Result<Hn
             }
         }
     }
-    // The earliest confirmed lock coin; the Seller's Commit makes exactly
-    // one, so this choice matters only for someone else's extra payment.
+    // A secret revealed by a claim of any coin with the lock's script.
+    let revealed = txs.iter().find_map(|nt| {
+        (0..nt.tx.inputs.len()).find_map(|i| hns_htlc::secret_from_spend(&nt.tx, i, &hp))
+    });
+    // The Seller's own coin, or else the earliest confirmed one: for the
+    // Buyer any coin of exactly the lock's script and value is claimable.
     candidates.sort();
-    let Some((_, txid, vout, confs)) = candidates.into_iter().next() else {
+    let chosen = match own {
+        Some(o) => candidates
+            .into_iter()
+            .find(|(_, t, v, _)| *t == o.txid && *v == o.vout),
+        None => candidates.into_iter().next(),
+    };
+    let Some((_, txid, vout, confs)) = chosen else {
         return Ok(HnsSeen {
             mtp,
             lock: None,
             mismatched_payment: mismatched,
+            revealed,
         });
     };
     let mut hash = [0u8; 32];
@@ -112,6 +135,7 @@ pub fn seen_from(terms: &Terms, txs: &[NodeTx], tip: i64, mtp: u64) -> Result<Hn
             spend,
         }),
         mismatched_payment: mismatched,
+        revealed,
     })
 }
 
@@ -121,7 +145,11 @@ pub const NEEDS_INDEXED_NODE: &str =
 
 /// The HNS view of `terms` from `node`. An `Err` is "could not check":
 /// the engine then decides nothing on the HNS chain.
-pub async fn observe(node: &dyn NodeRpc, terms: &Terms) -> Result<HnsSeen, AppError> {
+pub async fn observe(
+    node: &dyn NodeRpc,
+    terms: &Terms,
+    own: Option<&LockRef>,
+) -> Result<HnsSeen, AppError> {
     let idx = crate::noncustodial::node_rpc::node_indexes(node).await?;
     if !idx.tx || !idx.address {
         return Err(AppError::InvalidInput(NEEDS_INDEXED_NODE.into()));
@@ -136,5 +164,5 @@ pub async fn observe(node: &dyn NodeRpc, terms: &Terms) -> Result<HnsSeen, AppEr
     let addr = hns_htlc::lock_address(network, &terms.hns_params()?)?;
     let raw = node.get_txs_by_address(&addr).await?;
     let txs = raw.iter().map(node_tx).collect::<Result<Vec<_>, _>>()?;
-    seen_from(terms, &txs, info.blocks, mtp)
+    seen_from(terms, &txs, info.blocks, mtp, own)
 }

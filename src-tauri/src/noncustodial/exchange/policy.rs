@@ -70,7 +70,9 @@ impl Policy {
                 reveal_margin: 3 * HOUR,
                 btc_refund_after_hns: 12 * HOUR,
                 clock_skew: 10 * MINUTE,
-                min_btc_sats: 20_000,
+                // The fee cap is 20 % of the coin: at 50 000 sats a claim may
+                // pay up to ~66 sat/vB through a fee spike (review M4).
+                min_btc_sats: 50_000,
                 max_btc_sats: 10_000_000,
                 large_from_sats: 2_000_000,
                 btc_confirmations_small: 2,

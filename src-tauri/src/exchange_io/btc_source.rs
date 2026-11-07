@@ -34,6 +34,11 @@ pub struct SourceUtxo {
 pub trait BtcSource: Send + Sync {
     /// For messages: the source's host.
     fn label(&self) -> String;
+    /// Whether the source can answer what the exchange asks (Bitcoin Core
+    /// needs `-txindex`, review H2). `Err` says why not.
+    async fn ready(&self) -> Result<(), AppError> {
+        Ok(())
+    }
     /// The tip's height and median time past.
     async fn tip(&self) -> Result<(u64, u64), AppError>;
     /// The transaction, or `None` when the source does not know it.

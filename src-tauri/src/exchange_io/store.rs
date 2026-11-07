@@ -343,6 +343,8 @@ pub struct Trade {
     pub secret_nonce: Option<[u8; 32]>,
     pub terminal_at: Option<u64>,
     pub finished: bool,
+    /// The row's version when it was read (`update_trade` compares it).
+    pub version: i64,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -381,40 +383,76 @@ pub fn insert_trade(conn: &Connection, t: &Trade) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Store everything that changes after a trade's start.
-pub fn update_trade(conn: &Connection, t: &Trade, now: u64) -> Result<(), AppError> {
-    conn.execute(
-        "UPDATE exchange_trades SET counterparty_key = ?3, terms_json = ?4, terms_id = ?5, holdings_json = ?6,
-            status_json = ?7, declined = ?8, last_error = ?9, watchtower = ?10, hns_lock_txid = ?11,
-            hns_lock_vout = ?12, finished = ?13, updated_at = ?14, terminal_at = ?15,
-            secret_nonce_hex = ?16
-         WHERE profile_id = ?1 AND trade_id = ?2",
-        params![
-            t.profile_id,
-            t.trade_id,
-            t.counterparty_key,
-            t.terms.as_ref().map(|x| serde_json::to_string(x).expect("terms serialize")),
-            t.terms.as_ref().map(|x| x.id()),
-            t.holdings.as_ref().map(|x| serde_json::to_string(x).expect("holdings serialize")),
-            t.status.as_ref().map(|x| serde_json::to_string(x).expect("status serializes")),
-            t.declined,
-            t.last_error,
-            t.watchtower,
-            t.hns_lock.as_ref().map(|x| x.0.clone()),
-            t.hns_lock.as_ref().map(|x| x.1),
-            t.finished as i64,
-            now as i64,
-            t.terminal_at.map(|v| v as i64),
-            t.secret_nonce.map(hex::encode),
-        ],
-    )
-    .map_err(db)?;
-    Ok(())
+/// Store everything that changes after a trade's start, only if the row
+/// is still the version `t` was read at (and never undoing a Commit).
+/// `Ok(false)` when someone else wrote it meanwhile: the caller drops its
+/// change, and the next step starts again from the stored row. On success
+/// `t.version` is the new version.
+pub fn update_trade(conn: &Connection, t: &mut Trade, now: u64) -> Result<bool, AppError> {
+    write_trade(conn, t, now, false)
+}
+
+/// Store this party's Commit: like [`update_trade`], and only if no Commit
+/// is stored yet. `Ok(false)` means nothing was stored, so the caller must
+/// send nothing (review C2, M1: a Commit racing the background step or a
+/// second Commit of the same trade).
+pub fn commit_trade(conn: &Connection, t: &mut Trade, now: u64) -> Result<bool, AppError> {
+    write_trade(conn, t, now, true)
+}
+
+fn write_trade(
+    conn: &Connection,
+    t: &mut Trade,
+    now: u64,
+    committing: bool,
+) -> Result<bool, AppError> {
+    let committed = t.holdings.as_ref().is_some_and(|h| h.committed);
+    if committing && !committed {
+        return Err(AppError::Other(
+            "a Commit without committed holdings".into(),
+        ));
+    }
+    let n = conn
+        .execute(
+            "UPDATE exchange_trades SET counterparty_key = ?3, terms_json = ?4, terms_id = ?5, holdings_json = ?6,
+                status_json = ?7, declined = ?8, last_error = ?9, watchtower = ?10, hns_lock_txid = ?11,
+                hns_lock_vout = ?12, finished = ?13, updated_at = ?14, terminal_at = ?15,
+                secret_nonce_hex = ?16, committed = MAX(committed, ?17), version = version + 1
+             WHERE profile_id = ?1 AND trade_id = ?2 AND version = ?18
+               AND (?19 = 0 OR committed = 0)
+               AND (committed = 0 OR ?17 = 1)",
+            params![
+                t.profile_id,
+                t.trade_id,
+                t.counterparty_key,
+                t.terms.as_ref().map(|x| serde_json::to_string(x).expect("terms serialize")),
+                t.terms.as_ref().map(|x| x.id()),
+                t.holdings.as_ref().map(|x| serde_json::to_string(x).expect("holdings serialize")),
+                t.status.as_ref().map(|x| serde_json::to_string(x).expect("status serializes")),
+                t.declined,
+                t.last_error,
+                t.watchtower,
+                t.hns_lock.as_ref().map(|x| x.0.clone()),
+                t.hns_lock.as_ref().map(|x| x.1),
+                t.finished as i64,
+                now as i64,
+                t.terminal_at.map(|v| v as i64),
+                t.secret_nonce.map(hex::encode),
+                committed as i64,
+                t.version,
+                committing as i64,
+            ],
+        )
+        .map_err(db)?;
+    if n == 1 {
+        t.version += 1;
+    }
+    Ok(n == 1)
 }
 
 const TRADE_COLS: &str = "profile_id, trade_id, network, role, maker, offer_json, trade_index, relay_key_hex,
     counterparty_key, hns_amount, btc_sats, price_msat, terms_json, holdings_json, status_json, declined,
-    last_error, watchtower, hns_lock_txid, hns_lock_vout, finished, created_at, updated_at, request_json, terminal_at, secret_nonce_hex";
+    last_error, watchtower, hns_lock_txid, hns_lock_vout, finished, created_at, updated_at, request_json, terminal_at, secret_nonce_hex, version";
 
 fn trade_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Trade, AppError>> {
     let role: String = r.get(3)?;
@@ -444,6 +482,7 @@ fn trade_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Trade, AppEr
         r.get::<_, Option<String>>(23)?,
         r.get::<_, Option<i64>>(24)?,
         r.get::<_, Option<String>>(25)?,
+        r.get::<_, i64>(26)?,
     );
     Ok((|| {
         let (
@@ -465,6 +504,7 @@ fn trade_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Trade, AppEr
             req,
             term,
             nonce,
+            version,
         ) = base;
         Ok(Trade {
             profile_id,
@@ -515,6 +555,7 @@ fn trade_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Trade, AppEr
                 .transpose()
                 .map_err(|_| corrupt("secret nonce"))?,
             finished: fin != 0,
+            version,
             created_at: c as u64,
             updated_at: u as u64,
         })

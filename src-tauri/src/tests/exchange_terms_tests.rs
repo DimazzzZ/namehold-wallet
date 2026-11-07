@@ -32,7 +32,7 @@ fn mainnet_policy_is_the_specs() {
     assert_eq!(p.hns_refund_after, 12 * 3600);
     assert_eq!(p.reveal_margin, 3 * 3600);
     assert_eq!(p.btc_refund_after_hns, 12 * 3600);
-    assert_eq!((p.min_btc_sats, p.max_btc_sats), (20_000, 10_000_000));
+    assert_eq!((p.min_btc_sats, p.max_btc_sats), (50_000, 10_000_000));
     assert_eq!(p.btc_confirmations(1_999_999), 2);
     assert_eq!(p.btc_confirmations(2_000_000), 3);
     assert_eq!(p.hns_confirmations(1_999_999), 6);
@@ -125,7 +125,7 @@ fn terms_with_too_few_confirmations_or_a_repeated_key_are_refused() {
         .check(&p, &offer(&t), START)
         .unwrap_err()
         .to_string()
-        .contains("confirmations"));
+        .contains("confirmation"));
     let mut t = fx::terms_at(START);
     t.seller_btc_claim_pubkey = t.buyer_btc_refund_pubkey.clone();
     assert!(refused(&t, START).contains("same"));
@@ -160,4 +160,26 @@ fn prices_convert_exactly_and_round_down() {
     assert_eq!(price::format_sats_per_hns(12_500), "12.5");
     assert_eq!(price::format_sats_per_hns(12_000), "12");
     assert_eq!(price::format_sats_per_hns(125), "0.125");
+}
+
+#[test]
+fn terms_asking_for_more_confirmations_than_the_policy_are_refused() {
+    // Review L6: more confirmations would keep the other side's coins
+    // locked until the refund times.
+    let mut t = fx::terms_at(START);
+    t.btc_confirmations += 100;
+    assert!(refused(&t, START).contains("confirmation"));
+}
+
+#[test]
+fn a_watch_job_with_far_future_times_is_refused_by_the_watchtower() {
+    // Review M2: junk terms must not occupy a watchtower forever.
+    let f = fx::trade_at(START);
+    let job = crate::noncustodial::exchange::watch::WatchJob::from_holdings(&f.buyer());
+    assert!(job.check_fresh(START).is_ok());
+    assert!(
+        job.check_fresh(START - 3600).is_err(),
+        "starts an hour ahead"
+    );
+    assert!(job.check_fresh(START + 10 * 86_400).is_err(), "long over");
 }

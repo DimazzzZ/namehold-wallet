@@ -1,0 +1,124 @@
+//! The exchange's stored rows under concurrent writers (review C2, M1).
+
+use rusqlite::Connection;
+
+use super::exchange_fixture as fx;
+use crate::exchange_io::job::uncommitted;
+use crate::exchange_io::store::{self, Trade};
+use crate::noncustodial::exchange::engine::{Role, Status};
+use crate::noncustodial::exchange::relay_msg;
+
+fn conn() -> Connection {
+    let c = Connection::open_in_memory().unwrap();
+    crate::db::migrations::run(&c).unwrap();
+    c
+}
+
+fn trade(c: &Connection) -> Trade {
+    let f = fx::trade();
+    let k = relay_msg::new_relay_key();
+    let offer = crate::noncustodial::exchange::relay_msg::Offer {
+        version: 1,
+        network: "regtest".into(),
+        side: relay_msg::Side::Sell,
+        price_msat_per_hns: fx::PRICE,
+        min_hns: 1,
+        max_hns: u64::MAX / 2,
+        maker_relay_pubkey: relay_msg::relay_pubkey_hex(&k),
+        created_at: fx::START,
+        expires_at: fx::START + 99,
+        nonce: relay_msg::random_hex16(),
+    }
+    .sign(&k)
+    .unwrap();
+    let t = Trade {
+        profile_id: "p".into(),
+        trade_id: "ab".repeat(16),
+        network: "regtest".into(),
+        role: Role::Buyer,
+        maker: false,
+        offer,
+        trade_index: 0,
+        relay_key: k,
+        counterparty_key: None,
+        hns_amount: fx::HNS_AMOUNT,
+        btc_sats: 100_000,
+        price_msat: fx::PRICE,
+        terms: Some(f.terms.clone()),
+        holdings: Some(uncommitted(Role::Buyer, &f.terms)),
+        status: None,
+        declined: None,
+        last_error: None,
+        watchtower: "none".into(),
+        hns_lock: None,
+        request: None,
+        secret_nonce: Some(fx::NONCE),
+        terminal_at: None,
+        finished: false,
+        version: 0,
+        created_at: fx::START,
+        updated_at: fx::START,
+    };
+    store::insert_trade(c, &t).unwrap();
+    let mut t = t;
+    assert!(store::update_trade(c, &mut t, fx::START).unwrap());
+    store::trade(c, "p", &t.trade_id).unwrap().unwrap()
+}
+
+#[test]
+fn a_step_that_read_the_trade_before_a_commit_cannot_write_it_back() {
+    let c = conn();
+    let mut step_copy = trade(&c);
+    let mut commit_copy = step_copy.clone();
+    // The Commit lands while the step is busy on the network.
+    commit_copy.holdings = Some(fx::trade().buyer());
+    assert!(store::commit_trade(&c, &mut commit_copy, 1).unwrap());
+    // The step writes its stale, uncommitted copy: refused.
+    step_copy.status = Some(Status::Expired);
+    assert!(!store::update_trade(&c, &mut step_copy, 2).unwrap());
+    let stored = store::trade(&c, "p", &step_copy.trade_id).unwrap().unwrap();
+    assert!(
+        stored.holdings.unwrap().committed,
+        "the presigned transactions are kept"
+    );
+    assert_ne!(stored.status, Some(Status::Expired));
+}
+
+#[test]
+fn a_second_commit_of_the_same_trade_stores_nothing() {
+    let c = conn();
+    let mut a = trade(&c);
+    let mut b = a.clone();
+    a.holdings = Some(fx::trade().buyer());
+    b.holdings = Some(fx::trade().buyer());
+    assert!(store::commit_trade(&c, &mut a, 1).unwrap());
+    assert!(!store::commit_trade(&c, &mut b, 1).unwrap());
+    // Even a fresh read cannot commit again.
+    let mut fresh = store::trade(&c, "p", &a.trade_id).unwrap().unwrap();
+    assert!(!store::commit_trade(&c, &mut fresh, 2).unwrap());
+}
+
+#[test]
+fn a_write_never_undoes_a_commit_and_versions_advance() {
+    let c = conn();
+    let mut t = trade(&c);
+    t.holdings = Some(fx::trade().buyer());
+    assert!(store::commit_trade(&c, &mut t, 1).unwrap());
+    let v = t.version;
+    // A later write with the current version but uncommitted holdings.
+    t.holdings = Some(uncommitted(Role::Buyer, t.terms.as_ref().unwrap()));
+    assert!(!store::update_trade(&c, &mut t, 2).unwrap());
+    // A normal later write (committed holdings, current version) goes in.
+    let mut t = store::trade(&c, "p", &t.trade_id).unwrap().unwrap();
+    assert_eq!(t.version, v);
+    t.last_error = Some("x".into());
+    assert!(store::update_trade(&c, &mut t, 3).unwrap());
+    assert_eq!(t.version, v + 1);
+}
+
+#[test]
+fn a_commit_without_committed_holdings_is_an_error() {
+    let c = conn();
+    let mut t = trade(&c);
+    assert!(store::commit_trade(&c, &mut t, 1).is_err());
+}

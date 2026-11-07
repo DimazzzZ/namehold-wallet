@@ -216,6 +216,7 @@ impl Trade {
                 spend: None,
             }),
             mismatched_payment: false,
+            revealed: None,
         }
     }
 
@@ -226,6 +227,7 @@ impl Trade {
             confirmations: claim_confs,
             secret: Some(self.secret()),
         });
+        v.revealed = Some(self.secret());
         v
     }
 
@@ -244,6 +246,7 @@ impl Trade {
             mtp,
             lock: None,
             mismatched_payment: false,
+            revealed: None,
         }
     }
 

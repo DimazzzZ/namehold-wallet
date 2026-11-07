@@ -84,6 +84,9 @@ pub struct Holdings {
     pub btc_claims: Vec<PresignedSpend>,
     /// The BTC lock, once known (the Buyer's Commit, or its announcement).
     pub btc_lock: Option<LockRef>,
+    /// Seller: its own HNS lock coin, the only coin it watches (review C1).
+    #[serde(default)]
+    pub hns_lock: Option<LockRef>,
     pub sent: SentLog,
 }
 
@@ -114,6 +117,9 @@ pub struct HnsSeen {
     pub lock: Option<HnsLockSeen>,
     /// A payment to the lock's address of another value, or with a covenant.
     pub mismatched_payment: bool,
+    /// A secret revealed by a claim of any coin with the lock's script,
+    /// checked against `H`.
+    pub revealed: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -408,24 +414,37 @@ fn buyer_step(
     }
 
     let Some(hns) = hns else {
-        // Without the HNS chain we cannot know whether a reveal is due. The
-        // BTC refund is still safe if we never revealed: the secret never
-        // left this computer.
-        // Only the Buyer itself knows it never revealed; a watchtower
-        // without the HNS chain does nothing.
-        if h.secret.is_some() && h.sent.hns_claim_at.is_none() {
-            if let Some(b) = btc {
-                if btc_htlc::time_lock_open(bp.refund_lock_time, b.mtp) && btc_lock.is_some() {
-                    let actions = btc_refund_action(h, now, p).into_iter().collect();
-                    return Step {
-                        status: Status::Refunding { chain: Chain::Btc },
-                        actions,
-                    };
+        // Without the HNS chain nothing is decided, not even a refund of
+        // BTC we believe we never revealed for: the record of a reveal can
+        // be lost in a crash between the send and the store (review L5),
+        // and a refund after a reveal would take the Seller's BTC.
+        return Step::just(Status::CannotCheck { chain: Chain::Hns });
+    };
+
+    // A secret is public on the HNS chain (our claim of this or any coin
+    // with the lock's script): the HNS is ours to take and the BTC is the
+    // Seller's. Never refund; keep claiming while the lock is unspent.
+    if hns.revealed.is_some() {
+        let mut actions = Vec::new();
+        if let (Some(c), Some(x), Some(lock)) = (
+            &h.hns_claim,
+            h.secret,
+            hns.lock.as_ref().filter(|l| l.spend.is_none()),
+        ) {
+            if let (Some(op), Ok(n)) = (outpoint_of(&lock.outpoint), t.network()) {
+                if let Ok(tx) = c.finish(n, &hp, op, &x) {
+                    actions.push(Action::SendHns {
+                        kind: SpendKind::HnsClaim,
+                        tx_hex: tx.to_hex(),
+                    });
                 }
             }
         }
-        return Step::just(Status::CannotCheck { chain: Chain::Hns });
-    };
+        return Step {
+            status: Status::Revealing,
+            actions,
+        };
+    }
 
     // The HNS lock refunded by the Seller.
     if hns.lock.as_ref().and_then(|l| l.spend.as_ref()).is_some() {
@@ -546,8 +565,23 @@ fn refund_btc_when_open(
         return Step::just(Status::CannotCheck { chain: Chain::Btc });
     };
     if b.lock.is_none() {
-        // The BTC funding was never mined: nothing is locked.
-        return Step::just(Status::Expired);
+        // No source shows the BTC lock. That is not "it does not exist"
+        // (review H2: a lagging source, a node without -txindex): a
+        // committed trade is never given up on it. Send the funding again
+        // and keep looking; the refund is presigned whatever happens.
+        let actions = h
+            .btc_funding_hex
+            .iter()
+            .map(|f| Action::SendBtc {
+                kind: SpendKind::BtcFunding,
+                tx_hex: f.clone(),
+                rung: 0,
+            })
+            .collect();
+        return Step {
+            status: Status::CannotCheck { chain: Chain::Btc },
+            actions,
+        };
     }
     if btc_htlc::time_lock_open(bp.refund_lock_time, b.mtp) {
         let actions: Vec<Action> = btc_refund_action(h, now, p).into_iter().collect();
@@ -663,7 +697,7 @@ fn seller_step(
     let spend = lock.and_then(|l| l.spend.as_ref());
 
     // The Buyer claimed (even in the mempool): the secret is ours to use.
-    if let Some(x) = spend.and_then(|s| s.secret) {
+    if let Some(x) = spend.and_then(|s| s.secret).or(hns.revealed) {
         let btc_spend = btc
             .and_then(|b| b.lock.as_ref())
             .and_then(|l| l.spend.as_ref());
@@ -671,8 +705,8 @@ fn seller_step(
             Some(s) if s.secret.is_some() && s.confirmations >= 1 => {
                 return Step::just(Status::Completed);
             }
-            Some(s) if s.secret.is_none() => {
-                // The Buyer refunded: we were too late.
+            Some(s) if s.secret.is_none() && s.confirmations >= 1 => {
+                // The Buyer's refund, proven mined: we were too late.
                 return Step::just(Status::NeedsAttention {
                     reason: Attention::BtcRefundedAfterReveal,
                     chain: Chain::Btc,
@@ -680,13 +714,20 @@ fn seller_step(
             }
             _ => {}
         }
-        let rung = fees::rung_now(
-            h.btc_claims.len(),
-            h.sent.btc_claim_first_at,
-            now,
-            Some(t.btc_refund_time),
-            p,
-        );
+        // A competing spend in the mempool (the Buyer's refund racing our
+        // claim): go straight to the top rung and keep it there (review L7).
+        let competing = btc_spend.is_some_and(|s| s.secret.is_none() && s.confirmations == 0);
+        let rung = if competing {
+            h.btc_claims.len().saturating_sub(1)
+        } else {
+            fees::rung_now(
+                h.btc_claims.len(),
+                h.sent.btc_claim_first_at,
+                now,
+                Some(t.btc_refund_time),
+                p,
+            )
+        };
         let Some(presigned) = h.btc_claims.get(rung) else {
             return Step::just(Status::NeedsAttention {
                 reason: Attention::MissingPresigned,

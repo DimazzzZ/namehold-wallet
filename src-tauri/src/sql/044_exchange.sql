@@ -78,6 +78,11 @@ CREATE TABLE IF NOT EXISTS exchange_trades (
     -- still followed for a day after (a reorg can undo a last step).
     terminal_at        INTEGER,
     finished           INTEGER NOT NULL DEFAULT 0,
+    -- 1 once this party's Commit is stored; never back to 0.
+    committed          INTEGER NOT NULL DEFAULT 0,
+    -- Bumped by every write: writers compare it (review C2), so a step that
+    -- read the row before a Commit cannot write the old row back over it.
+    version            INTEGER NOT NULL DEFAULT 0,
     created_at         INTEGER NOT NULL,
     updated_at         INTEGER NOT NULL,
     PRIMARY KEY (profile_id, trade_id)

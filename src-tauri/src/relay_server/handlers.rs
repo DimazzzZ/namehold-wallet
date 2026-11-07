@@ -346,7 +346,7 @@ pub fn post_watch(store: &Store, cfg: &Config, body: &str, now: u64) -> ApiResul
             network.as_str()
         )));
     }
-    job.check()?;
+    job.check_fresh(now)?;
     let id = job_id(&job);
     let json = serde_json::to_string(&job).map_err(AppError::from)?;
     let c = store.lock()?;

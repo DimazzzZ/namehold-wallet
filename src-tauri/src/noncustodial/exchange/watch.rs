@@ -24,6 +24,9 @@ pub struct WatchJob {
     pub role: Role,
     pub terms: Terms,
     pub btc_lock: Option<LockRef>,
+    /// The Seller's own HNS lock coin.
+    #[serde(default)]
+    pub hns_lock: Option<LockRef>,
     pub btc_refunds: Vec<PresignedSpend>,
     pub hns_refund_hex: Option<String>,
     pub btc_claims: Vec<PresignedSpend>,
@@ -36,6 +39,7 @@ impl WatchJob {
             role: h.role,
             terms: h.terms.clone(),
             btc_lock: h.btc_lock.clone(),
+            hns_lock: h.hns_lock.clone(),
             btc_refunds: h.btc_refunds.clone(),
             hns_refund_hex: h.hns_refund_hex.clone(),
             btc_claims: h.btc_claims.clone(),
@@ -56,6 +60,7 @@ impl WatchJob {
             hns_refund_hex: self.hns_refund_hex.clone(),
             btc_claims: self.btc_claims.clone(),
             btc_lock: self.btc_lock.clone(),
+            hns_lock: self.hns_lock.clone(),
             sent,
         }
     }
@@ -159,6 +164,35 @@ impl WatchJob {
                     }
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// [`check`](Self::check), and the job's terms are a trade the server
+    /// can still have to act on (review M2): their times follow the
+    /// network's policy windows from their start, and the start lies between
+    /// the longest a trade lives ago and the allowed clock skew ahead. Junk
+    /// terms with far-future times are refused.
+    pub fn check_fresh(&self, now: u64) -> Result<(), AppError> {
+        self.check()?;
+        let p = crate::noncustodial::exchange::policy::Policy::for_network(self.terms.network()?);
+        let t = crate::noncustodial::exchange::terms::timeline(&p, self.terms.start);
+        let tt = &self.terms;
+        if tt.buyer_fund_deadline != t.buyer_fund_deadline
+            || tt.seller_fund_deadline != t.seller_fund_deadline
+            || tt.reveal_deadline != t.reveal_deadline
+            || tt.hns_refund_time != t.hns_refund_time
+            || tt.btc_refund_time != t.btc_refund_time
+        {
+            return Err(AppError::InvalidInput(
+                "the watch job is refused: its times are not the network's windows".into(),
+            ));
+        }
+        let life = p.hns_refund_after + p.btc_refund_after_hns + 24 * 3600;
+        if tt.start > now + p.clock_skew || tt.start + life < now {
+            return Err(AppError::InvalidInput(
+                "the watch job is refused: its trade starts too far from now".into(),
+            ));
         }
         Ok(())
     }

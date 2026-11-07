@@ -347,20 +347,20 @@ fn buyer_whose_reveal_was_beaten_by_a_refund_refunds_btc_when_it_can() {
 }
 
 #[test]
-fn buyer_without_the_hns_chain_refunds_only_if_it_never_revealed() {
+fn buyer_without_the_hns_chain_never_refunds() {
+    // Review L5: a reveal's record can be lost in a crash between the send
+    // and the store, so "I never revealed" is not known for sure; without
+    // the HNS chain nothing is decided.
     let t = fx::trade();
-    let s = run(
-        &t.buyer(),
-        None,
-        Some(&t.btc_locked(btc_open(&t), 5)),
-        btc_open(&t),
-    );
-    btc_tx(only_action(&s), SpendKind::BtcRefund);
-    let mut h = t.buyer();
-    h.sent.hns_claim_at = Some(START + 600);
-    let s = run(&h, None, Some(&t.btc_locked(btc_open(&t), 5)), btc_open(&t));
-    assert_eq!(s.status, Status::CannotCheck { chain: Chain::Hns });
-    assert!(s.actions.is_empty());
+    for revealed in [false, true] {
+        let mut h = t.buyer();
+        if revealed {
+            h.sent.hns_claim_at = Some(START + 600);
+        }
+        let s = run(&h, None, Some(&t.btc_locked(btc_open(&t), 5)), btc_open(&t));
+        assert_eq!(s.status, Status::CannotCheck { chain: Chain::Hns });
+        assert!(s.actions.is_empty());
+    }
 }
 
 #[test]
@@ -956,4 +956,85 @@ fn a_bitcoind_source_error_never_shows_its_password() {
     .unwrap()
     .to_string();
     assert!(!e.contains("hunter2"), "{e}");
+}
+
+// ------------------------------------------------- Review C1, H1, H2
+
+#[test]
+fn the_seller_claims_btc_when_the_secret_is_revealed_on_another_coin() {
+    // Review C1: the Buyer claims the Seller's coin while the view's lock is
+    // something else; the secret revealed anywhere at the lock's script is
+    // enough for the Seller to claim.
+    let t = fx::trade();
+    let mut v = t.hns_locked(START + 900, 2);
+    v.revealed = Some(t.secret());
+    let s = run(
+        &t.seller(),
+        Some(&v),
+        Some(&t.btc_locked(START, 1)),
+        START + 900,
+    );
+    let (tx, _) = btc_tx(only_action(&s), SpendKind::BtcClaim);
+    core_ok(&t, &tx);
+    // And with the HNS refund time open it still claims, never refunds.
+    let mut v = t.hns_locked(hns_open(&t), 2);
+    v.revealed = Some(t.secret());
+    let s = run(
+        &t.seller(),
+        Some(&v),
+        Some(&t.btc_locked(hns_open(&t), 1)),
+        hns_open(&t),
+    );
+    assert!(s
+        .actions
+        .iter()
+        .all(|a| !matches!(a, Action::SendHns { .. })));
+}
+
+#[test]
+fn the_buyer_never_refunds_once_a_secret_is_public_on_hns() {
+    let t = fx::trade();
+    let mut v = Trade::hns_empty(btc_open(&t));
+    v.revealed = Some(t.secret());
+    let s = run(
+        &t.buyer(),
+        Some(&v),
+        Some(&t.btc_locked(btc_open(&t), 5)),
+        btc_open(&t),
+    );
+    assert_eq!(s.status, Status::Revealing);
+    assert!(s
+        .actions
+        .iter()
+        .all(|a| !matches!(a, Action::SendBtc { .. })));
+}
+
+#[test]
+fn an_unconfirmed_competing_refund_keeps_the_seller_on_its_top_rung() {
+    // Review H1/L7: only a refund proven mined ends the Seller's claiming.
+    let t = fx::trade();
+    let s = run(
+        &t.seller(),
+        Some(&t.hns_claimed(START + 900, 1)),
+        Some(&t.btc_spent(START + 900, 0, false)),
+        START + 900,
+    );
+    let (_, rung) = btc_tx(only_action(&s), SpendKind::BtcClaim);
+    assert_eq!(rung, t.seller.btc_claims.len() - 1);
+}
+
+#[test]
+fn a_committed_buyer_whose_lock_no_source_shows_is_never_expired() {
+    // Review H2: past every deadline, a BTC lock no source knows is not a
+    // lock that does not exist.
+    let t = fx::trade();
+    let late = btc_open(&t) + 3600;
+    let s = run(
+        &t.buyer(),
+        Some(&Trade::hns_empty(late)),
+        Some(&Trade::btc_empty(late)),
+        late,
+    );
+    assert_eq!(s.status, Status::CannotCheck { chain: Chain::Btc });
+    btc_tx(only_action(&s), SpendKind::BtcFunding);
 }

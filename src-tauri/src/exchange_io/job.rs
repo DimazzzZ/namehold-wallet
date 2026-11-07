@@ -402,7 +402,7 @@ async fn on_take(
         relay.send(&decline(&e.to_string())?).await?;
         return Ok(());
     }
-    let t = Trade {
+    let mut t = Trade {
         profile_id: ctx.profile_id.to_owned(),
         trade_id: m.trade_id.clone(),
         network: ctx.network.as_str().to_owned(),
@@ -426,11 +426,12 @@ async fn on_take(
         secret_nonce,
         terminal_at: None,
         finished: false,
+        version: 0,
         created_at: ctx.now,
         updated_at: ctx.now,
     };
     store::insert_trade(ctx.conn, &t)?;
-    store::update_trade(ctx.conn, &t, ctx.now)?;
+    store::update_trade(ctx.conn, &mut t, ctx.now)?;
     let accept = reply(
         ctx,
         &o.relay_key,
@@ -457,6 +458,7 @@ pub fn uncommitted(role: Role, terms: &Terms) -> Holdings {
         hns_refund_hex: None,
         btc_claims: Vec::new(),
         btc_lock: None,
+        hns_lock: None,
         sent: SentLog::default(),
     }
 }
@@ -520,7 +522,7 @@ fn on_accept(ctx: &Ctx<'_>, m: &Message, terms: &Terms) -> Result<(), AppError> 
     t.btc_sats = terms.btc_amount;
     t.holdings = Some(uncommitted(t.role, terms));
     t.terms = Some(terms.clone());
-    store::update_trade(ctx.conn, &t, ctx.now)
+    store::update_trade(ctx.conn, &mut t, ctx.now).map(|_| ())
 }
 
 fn counterparty_trade(ctx: &Ctx<'_>, m: &Message, terms_id: &str) -> Result<Trade, AppError> {
@@ -562,7 +564,7 @@ fn on_btc_locked(ctx: &Ctx<'_>, m: &Message, a: &LockAnnouncement) -> Result<(),
             });
         }
     }
-    store::update_trade(ctx.conn, &t, ctx.now)
+    store::update_trade(ctx.conn, &mut t, ctx.now).map(|_| ())
 }
 
 /// The Seller's HNS lock: shown on the trade; the Buyer's step finds the
@@ -571,7 +573,7 @@ fn on_hns_locked(ctx: &Ctx<'_>, m: &Message, a: &LockAnnouncement) -> Result<(),
     let mut t = counterparty_trade(ctx, m, &a.terms_id)?;
     if t.role == Role::Buyer && t.hns_lock.is_none() {
         t.hns_lock = Some((a.txid.clone(), a.vout));
-        store::update_trade(ctx.conn, &t, ctx.now)?;
+        store::update_trade(ctx.conn, &mut t, ctx.now)?;
     }
     Ok(())
 }
@@ -596,7 +598,7 @@ fn on_decline(ctx: &Ctx<'_>, m: &Message, reason: &str) -> Result<(), AppError> 
     t.status = Some(Status::Expired);
     t.terminal_at = Some(ctx.now);
     t.finished = true;
-    store::update_trade(ctx.conn, &t, ctx.now)
+    store::update_trade(ctx.conn, &mut t, ctx.now).map(|_| ())
 }
 
 async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
@@ -611,7 +613,7 @@ async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
                 t.status = Some(Status::Expired);
                 t.terminal_at = Some(ctx.now);
                 t.finished = true;
-                store::update_trade(ctx.conn, &t, ctx.now)?;
+                store::update_trade(ctx.conn, &mut t, ctx.now)?;
             }
             continue;
         };
@@ -650,7 +652,7 @@ async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
         t.last_error = (!rep.errors.is_empty()).then(|| rep.errors.join("; "));
         t.status = Some(step.status);
         t.holdings = Some(h);
-        store::update_trade(ctx.conn, &t, ctx.now)?;
+        store::update_trade(ctx.conn, &mut t, ctx.now)?;
     }
     Ok(events)
 }
@@ -672,7 +674,7 @@ async fn register_watch_jobs(ctx: &Ctx<'_>, w: &dyn Relay) -> Result<(), AppErro
                 "failed".into()
             }
         };
-        store::update_trade(ctx.conn, &t, ctx.now)?;
+        store::update_trade(ctx.conn, &mut t, ctx.now)?;
     }
     Ok(())
 }

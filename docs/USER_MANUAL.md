@@ -513,14 +513,14 @@ The "Ready to finalize" reminders of a Shakedex purchase, listing or cancel (see
 
 ## 10c. Exchange: HNS ⇄ BTC
 
-> ⚠️ **Beta.** Trades are limited to 0.1 BTC each on mainnet. Try a small trade first.
+> ⚠️ **Beta.** Trades are limited to 50 000 sats to 0.1 BTC each on mainnet. Try a small trade first.
 
 The Exchange page (sidebar, hotkey `4`) is an order book where people who want to sell HNS for BTC and people who want to buy HNS with BTC meet. Each trade is an **atomic swap**: both sides get paid, or both get their own coins back. Nobody holds your coins in between. That includes the relay that carries the offers, the watchtower and the project.
 
 **What you need:**
 
 - A wallet whose recovery phrase is on this computer. A Ledger or watch-only wallet cannot sign a trade.
-- A node: a local node, or a remote node with sending allowed. An explorer cannot check a lock.
+- A node on this computer (Namehold's own local node, or your hsd with `--index-address --index-tx`). A remote node or an explorer cannot be trusted with a trade.
 - **Enable exchange.** This creates a Bitcoin account from the same recovery phrase (BIP 84: any Bitcoin wallet such as Sparrow or Electrum restores it from the same phrase).
 - **Exchange settings:** a relay URL, an optional watchtower URL, and Bitcoin sources. Two public servers are the default on mainnet; a local Bitcoin Core works too, as `bitcoind+http://127.0.0.1:8332` with its login. Namehold does not trust the Bitcoin sources: it checks every lock by proof of work and needs every source to agree.
 

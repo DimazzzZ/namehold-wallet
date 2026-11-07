@@ -131,6 +131,7 @@ pub fn buyer_commit(i: &BuyerCommitInput<'_>) -> Result<BuyerCommit, AppError> {
         hns_refund_hex: None,
         btc_claims: Vec::new(),
         btc_lock: Some(btc_lock.clone()),
+        hns_lock: None,
         sent: SentLog::default(),
     };
     Ok(BuyerCommit {
@@ -250,6 +251,7 @@ pub fn seller_commit(i: &SellerCommitInput<'_>) -> Result<SellerCommit, AppError
         hns_refund_hex: Some(hns_refund.to_hex()),
         btc_claims: btc_claims.clone(),
         btc_lock: Some(i.btc_lock.clone()),
+        hns_lock: Some(hns_lock.clone()),
         sent: SentLog::default(),
     };
     Ok(SellerCommit {

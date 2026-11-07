@@ -308,3 +308,92 @@ fn fees_are_sized_on_the_real_witness() {
     .unwrap();
     assert_eq!(r.vsize(), refund);
 }
+
+// ------------------------------------------------ the node observer, C1
+
+mod observer {
+    use super::super::exchange_fixture as fx;
+    use crate::exchange_io::hns_observe::{seen_from, NodeTx};
+    use crate::noncustodial::exchange::engine::LockRef;
+    use crate::noncustodial::exchange::hns_htlc;
+    use crate::noncustodial::tx::{Input, Outpoint, Transaction};
+
+    fn pay_lock(t: &crate::noncustodial::exchange::terms::Terms, tag: u8) -> Transaction {
+        let mut tx = Transaction::new();
+        tx.inputs.push(Input::new(Outpoint {
+            hash: [tag; 32],
+            index: 0,
+        }));
+        tx.outputs.push(hns_htlc::lock_output(
+            &t.hns_params().unwrap(),
+            t.hns_amount,
+        ));
+        tx
+    }
+
+    #[test]
+    fn a_decoy_coin_cannot_blind_the_seller_to_the_claim_of_its_own() {
+        let f = fx::trade();
+        let t = &f.terms;
+        let decoy = pay_lock(t, 1); // mined first, by the Buyer
+        let own = pay_lock(t, 2); // the Seller's lock
+        let own_ref = LockRef {
+            txid: own.txid(),
+            vout: 0,
+        };
+        let mut h = [0u8; 32];
+        hex::decode_to_slice(own.txid(), &mut h).unwrap();
+        let claim = f
+            .buyer
+            .hns_claim
+            .finish(
+                fx::NET,
+                &t.hns_params().unwrap(),
+                Outpoint { hash: h, index: 0 },
+                &f.secret(),
+            )
+            .unwrap();
+        let txs = vec![
+            NodeTx {
+                tx: decoy.clone(),
+                height: Some(10),
+            },
+            NodeTx {
+                tx: own.clone(),
+                height: Some(12),
+            },
+            NodeTx {
+                tx: claim.clone(),
+                height: Some(13),
+            },
+        ];
+        // The Seller watches its own coin and sees it claimed.
+        let v = seen_from(t, &txs, 13, 0, Some(&own_ref)).unwrap();
+        let lock = v.lock.unwrap();
+        assert_eq!(lock.outpoint, own_ref);
+        assert_eq!(lock.spend.unwrap().secret, Some(f.secret()));
+        assert_eq!(v.revealed, Some(f.secret()));
+        // Without its own coin (the Buyer's view) the earliest is chosen,
+        // and the secret is still found.
+        let v = seen_from(t, &txs, 13, 0, None).unwrap();
+        assert_eq!(v.lock.unwrap().outpoint.txid, decoy.txid());
+        assert_eq!(v.revealed, Some(f.secret()));
+    }
+
+    #[test]
+    fn the_sellers_own_coin_not_yet_seen_is_no_lock() {
+        let f = fx::trade();
+        let decoy = pay_lock(&f.terms, 1);
+        let txs = vec![NodeTx {
+            tx: decoy,
+            height: Some(10),
+        }];
+        let own = LockRef {
+            txid: "11".repeat(32),
+            vout: 0,
+        };
+        let v = seen_from(&f.terms, &txs, 10, 0, Some(&own)).unwrap();
+        assert!(v.lock.is_none());
+        assert!(v.revealed.is_none());
+    }
+}

@@ -223,6 +223,7 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
             secret_nonce: Some(nonce),
             terminal_at: None,
             finished: false,
+            version: 0,
             created_at: now(),
             updated_at: now(),
         },
@@ -295,7 +296,7 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
     .unwrap();
     let mut bt = bt;
     bt.holdings = Some(c.holdings.clone());
-    store::update_trade(&conn, &bt, now()).unwrap();
+    assert!(store::commit_trade(&conn, &mut bt, now()).unwrap());
     runner::send_btc(&srcs, &btc_htlc::encode_tx(&c.funding))
         .await
         .unwrap();
@@ -408,7 +409,7 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
     let mut st = st;
     st.holdings = Some(sc.holdings.clone());
     st.hns_lock = Some((sc.hns_lock.txid.clone(), sc.hns_lock.vout));
-    store::update_trade(&conn, &st, now()).unwrap();
+    assert!(store::commit_trade(&conn, &mut st, now()).unwrap());
     assert!(
         runner::send_hns(&node, &funding.to_hex()).await.unwrap(),
         "hsd took the HNS lock"

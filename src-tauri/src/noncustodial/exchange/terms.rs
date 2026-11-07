@@ -222,10 +222,12 @@ impl Terms {
         if self.start + policy.clock_skew < now || self.start > now + policy.clock_skew {
             return bad("its start is too far from this computer's clock");
         }
-        if self.btc_confirmations < policy.btc_confirmations(self.btc_amount)
-            || self.hns_confirmations < policy.hns_confirmations(self.btc_amount)
+        // Exactly the policy's counts (review L6): more would let one party
+        // keep the other's coins locked until the refund times.
+        if self.btc_confirmations != policy.btc_confirmations(self.btc_amount)
+            || self.hns_confirmations != policy.hns_confirmations(self.btc_amount)
         {
-            return bad("too few confirmations");
+            return bad("not this network's confirmation counts");
         }
         let keys = [
             pubkey(

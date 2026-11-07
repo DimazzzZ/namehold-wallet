@@ -31,6 +31,8 @@ use crate::AppState;
 pub const NEEDS_RECOVERY_PHRASE: &str =
     "The exchange needs a wallet whose recovery phrase is on this computer: a Ledger or watch-only wallet cannot sign a trade.";
 pub const NEEDS_NODE: &str = "The exchange needs a node: an explorer cannot check a lock.";
+pub const NEEDS_LOCAL_NODE: &str =
+    "The exchange needs a node on this computer: a remote node could show a fake lock and learn your secret.";
 pub const NEEDS_SENDING_NODE: &str =
     "The exchange needs a local node, or a remote node with sending allowed.";
 
@@ -45,6 +47,11 @@ pub fn refusal(
     }
     if source == rpc::ChainSource::Explorer {
         return Some(NEEDS_NODE);
+    }
+    // Review M3: the Buyer reveals on the word of the node it reads, so that
+    // node must be its own.
+    if source == rpc::ChainSource::RemoteNode {
+        return Some(NEEDS_LOCAL_NODE);
     }
     if !can_send {
         return Some(NEEDS_SENDING_NODE);
@@ -962,6 +969,7 @@ pub async fn exchange_take_offer(
         secret_nonce,
         terminal_at: None,
         finished: false,
+        version: 0,
         created_at: t,
         updated_at: t,
     };
@@ -1024,7 +1032,11 @@ pub async fn exchange_cancel_trade(
     t.terminal_at = Some(now());
     t.finished = true;
     let conn = lock(&state)?;
-    store::update_trade(&conn, &t, now())?;
+    if !store::update_trade(&conn, &mut t, now())? {
+        return Err(AppError::InvalidInput(
+            "the trade changed meanwhile: look again and retry".into(),
+        ));
+    }
     Ok(trade_row(&t))
 }
 
@@ -1160,7 +1172,19 @@ async fn buyer_commit(
     });
     {
         let conn = lock(state)?;
-        store::update_trade(&conn, &t, n)?;
+        // The deadline again, after the time the window took (review L4).
+        if now() > terms.buyer_fund_deadline {
+            return Err(AppError::InvalidInput(
+                "the deadline passed while the window was open: nothing was sent".into(),
+            ));
+        }
+        // Only if no Commit is stored yet and nobody wrote the trade since it
+        // was read (review C2, M1); otherwise nothing is sent.
+        if !store::commit_trade(&conn, &mut t, n)? {
+            return Err(AppError::InvalidInput(
+                "nothing was sent: this trade was confirmed already, or changed while the window was open; look again".into(),
+            ));
+        }
     }
     let sent = runner::send_btc(srcs, &btc_htlc::encode_tx(&c.funding)).await;
     if let Err(e) = &sent {
@@ -1168,7 +1192,7 @@ async fn buyer_commit(
             "Bitcoin: the BTC lock was not sent yet ({e}); it is sent again on every sync"
         ));
         let conn = lock(state)?;
-        store::update_trade(&conn, &t, n)?;
+        store::update_trade(&conn, &mut t, n)?;
     }
     announce(
         ctx,
@@ -1321,7 +1345,19 @@ async fn seller_commit(
     });
     {
         let conn = lock(state)?;
-        store::update_trade(&conn, &t, n)?;
+        // The deadline again, after the time the window took (review L4).
+        if now() > terms.seller_fund_deadline {
+            return Err(AppError::InvalidInput(
+                "the deadline passed while the window was open: nothing was sent".into(),
+            ));
+        }
+        // Only if no Commit is stored yet and nobody wrote the trade since it
+        // was read (review C2, M1); otherwise nothing is sent.
+        if !store::commit_trade(&conn, &mut t, n)? {
+            return Err(AppError::InvalidInput(
+                "nothing was sent: this trade was confirmed already, or changed while the window was open; look again".into(),
+            ));
+        }
     }
     match runner::send_hns(&ctx.node, &funding_hex).await {
         Ok(true) => {}
@@ -1338,7 +1374,7 @@ async fn seller_commit(
     }
     {
         let conn = lock(state)?;
-        store::update_trade(&conn, &t, n)?;
+        store::update_trade(&conn, &mut t, n)?;
     }
     announce(
         ctx,

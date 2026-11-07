@@ -295,7 +295,7 @@ async fn observe_params(
     node: &NodeRpcClient,
     t: &crate::noncustodial::exchange::terms::Terms,
 ) -> crate::noncustodial::exchange::engine::HnsSeen {
-    hns_observe::observe(node, t).await.unwrap()
+    hns_observe::observe(node, t, None).await.unwrap()
 }
 
 /// hsd's `sendrawtransaction` answers the txid whatever its mempool does

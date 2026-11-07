@@ -18,7 +18,7 @@ use crate::error::AppError;
 use crate::exchange_io::btc_source::{BtcSource, Outspend};
 use crate::noncustodial::exchange::btc_htlc;
 use crate::noncustodial::exchange::btc_spv::{self, InclusionProof};
-use crate::noncustodial::exchange::engine::{BtcLockSeen, BtcSeen, Holdings, Role, SpendSeen};
+use crate::noncustodial::exchange::engine::{BtcLockSeen, BtcSeen, Holdings, SpendSeen};
 use crate::noncustodial::exchange::script;
 
 /// The txids of `h`'s own presigned spends of the BTC lock (the witness is
@@ -79,6 +79,9 @@ pub async fn observe(sources: &[Box<dyn BtcSource>], h: &Holdings) -> Result<Btc
             "no Bitcoin source is configured".into(),
         ));
     };
+    for src in sources {
+        src.ready().await?;
+    }
     let t = &h.terms;
     let network = t.network()?;
     let bp = t.btc_params()?;
@@ -92,46 +95,30 @@ pub async fn observe(sources: &[Box<dyn BtcSource>], h: &Holdings) -> Result<Btc
         vout: lock_ref.vout,
     };
 
-    let Some(tx) = first.raw_tx(&txid).await? else {
+    // The lock transaction from whichever source has it (review H2: one
+    // source that does not know it is not "it does not exist").
+    let mut found = None;
+    for src in sources {
+        if let Some(tx) = src.raw_tx(&txid).await? {
+            if tx.compute_txid() != txid {
+                return Err(AppError::Rpc(
+                    "a Bitcoin source returned another transaction".into(),
+                ));
+            }
+            found = Some(tx);
+            break;
+        }
+    }
+    let Some(tx) = found else {
         return Ok(BtcSeen { mtp, lock: None });
     };
-    if tx.compute_txid() != txid {
-        return Err(AppError::Rpc(
-            "a Bitcoin source returned another transaction".into(),
-        ));
-    }
     let matches = tx
         .output
         .get(lock_ref.vout as usize)
         .is_some_and(|o| btc_htlc::is_lock_output(o, &bp, t.btc_amount));
+    let confs = proven_everywhere(sources, &tx, t.btc_confirmations, tip, network).await?;
 
-    // Proven confirmations, the same block from every source.
-    let mut confs = u32::MAX;
-    let mut block = None;
-    for src in sources {
-        let (c, b) =
-            proven_confirmations(src.as_ref(), &tx, t.btc_confirmations, tip, network).await?;
-        match (&block, b) {
-            (None, b) => block = Some(b),
-            (Some(prev), b) if *prev != b => {
-                confs = 0; // the sources disagree: nothing is proven
-            }
-            _ => {}
-        }
-        confs = confs.min(c);
-    }
-    if confs == u32::MAX {
-        confs = 0;
-    }
-
-    // The spend.
-    let spend = match first.outspend(&outpoint).await? {
-        None | Some(Outspend::Unspent) => None,
-        Some(Outspend::Spent { txid: spender }) => {
-            Some(classify_spend(first.as_ref(), h, spender).await?)
-        }
-    };
-
+    let spend = observe_spend(sources, h, &outpoint, tip, network).await?;
     Ok(BtcSeen {
         mtp,
         lock: Some(BtcLockSeen {
@@ -143,66 +130,83 @@ pub async fn observe(sources: &[Box<dyn BtcSource>], h: &Holdings) -> Result<Btc
     })
 }
 
-async fn classify_spend(
-    src: &dyn BtcSource,
+/// Confirmations of `tx` proven through every source, the same block from
+/// each; 0 when any disagrees.
+async fn proven_everywhere(
+    sources: &[Box<dyn BtcSource>],
+    tx: &Transaction,
+    want: u32,
+    tip: u64,
+    network: crate::noncustodial::network::Network,
+) -> Result<u32, AppError> {
+    let mut confs = u32::MAX;
+    let mut block: Option<Option<bitcoin::BlockHash>> = None;
+    for src in sources {
+        let (c, b) = proven_confirmations(src.as_ref(), tx, want, tip, network).await?;
+        match &block {
+            None => block = Some(b),
+            Some(prev) if *prev != b => return Ok(0),
+            _ => {}
+        }
+        confs = confs.min(c);
+    }
+    Ok(if confs == u32::MAX { 0 } else { confs })
+}
+
+/// The spend of the BTC lock, read from the spending transaction itself
+/// (review H1): a claim only when its witness carries a secret that hashes
+/// to `H`, a refund only when its witness is the lock's refund, and its
+/// confirmations proven like the lock's. A spend no source can show is
+/// `None`: nothing is decided on a source's word that the lock is spent.
+async fn observe_spend(
+    sources: &[Box<dyn BtcSource>],
     h: &Holdings,
-    spender: Option<Txid>,
-) -> Result<SpendSeen, AppError> {
+    outpoint: &OutPoint,
+    tip: u64,
+    network: crate::noncustodial::network::Network,
+) -> Result<Option<SpendSeen>, AppError> {
     let bp = h.terms.btc_params()?;
-    let own = own_spend_txids(h);
-    // Which known transaction spent it, if the source cannot say.
-    let spender = match spender {
-        Some(s) => Some(s),
-        None => {
-            let mut found = None;
-            for id in &own {
-                if src.raw_tx(id).await?.is_some() {
-                    found = Some(*id);
+    // The spender, named by a source or one of our own presigned spends.
+    let mut candidates: Vec<Txid> = Vec::new();
+    for src in sources {
+        if let Some(Outspend::Spent { txid: Some(id) }) = src.outspend(outpoint).await? {
+            if !candidates.contains(&id) {
+                candidates.push(id);
+            }
+        }
+    }
+    for id in own_spend_txids(h) {
+        if !candidates.contains(&id) {
+            candidates.push(id);
+        }
+    }
+    for id in candidates {
+        let mut spender = None;
+        for src in sources {
+            if let Some(tx) = src.raw_tx(&id).await? {
+                if tx.compute_txid() == id {
+                    spender = Some(tx);
                     break;
                 }
             }
-            found
         }
-    };
-    let confirmations = match &spender {
-        Some(id) => match src.tx_block(id).await? {
-            Some((height, _)) => {
-                let (tip, _) = src.tip().await?;
-                u32::try_from(tip.saturating_sub(height) + 1).unwrap_or(u32::MAX)
-            }
-            None => 0,
-        },
-        None => 0,
-    };
-    let txid = spender.map(|s| s.to_string()).unwrap_or_default();
-    // A claim carries the secret; read it from the spender's witness when we
-    // can, else infer it from who we are: a spend that is not ours is the
-    // other path.
-    let witness_secret = match &spender {
-        Some(id) => src.raw_tx(id).await?.and_then(|tx| {
-            tx.input
-                .iter()
-                .find_map(|i| script::secret_from_claim_witness(&bp, &i.witness.to_vec()))
-        }),
-        None => None,
-    };
-    let is_ours = spender.is_some_and(|s| own.contains(&s));
-    let is_claim = match h.role {
-        // The Buyer's own spends are refunds; anything else is the Seller's claim.
-        Role::Buyer => !is_ours,
-        // The Seller's own spends are claims; anything else is the Buyer's refund.
-        Role::Seller => is_ours,
-    };
-    let secret = if is_claim {
-        // The Buyer knows its secret; the Seller read it from the HNS chain
-        // and put it in its claim. Either way a claim is marked by `Some`.
-        witness_secret.or(h.secret).or(Some([0u8; 32]))
-    } else {
-        None
-    };
-    Ok(SpendSeen {
-        txid,
-        confirmations,
-        secret,
-    })
+        let Some(tx) = spender else { continue };
+        let Some(input) = tx.input.iter().find(|i| i.previous_output == *outpoint) else {
+            continue;
+        };
+        let items = input.witness.to_vec();
+        let secret = script::secret_from_claim_witness(&bp, &items);
+        let is_refund = items.len() == 3 && items[1].is_empty() && bp.matches(&items[2]);
+        if secret.is_none() && !is_refund {
+            continue; // not a spend of this lock
+        }
+        // Proven confirmations of the spend; 1 is enough to call it mined.
+        let confirmations = proven_everywhere(sources, &tx, 1, tip, network).await?;
+        return Ok(Some(SpendSeen {
+            txid: id.to_string(),
+            confirmations,
+            secret,
+        }));
+    }
+    Ok(None)
 }
