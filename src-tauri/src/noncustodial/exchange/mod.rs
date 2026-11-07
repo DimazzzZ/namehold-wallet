@@ -6,5 +6,15 @@
 
 pub mod btc_account;
 pub mod btc_htlc;
+pub mod btc_spv;
+pub mod commit;
+pub mod engine;
+pub mod fees;
 pub mod hns_htlc;
+pub mod keys;
+pub mod policy;
+pub mod price;
+pub mod relay_msg;
 pub mod script;
+pub mod terms;
+pub mod watch;
