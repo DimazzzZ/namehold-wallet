@@ -37,6 +37,8 @@ mod discover_names_tests;
 mod draft_ctx_tests;
 mod draft_status_tests;
 mod error_tests;
+mod exchange_btc_account_tests;
+mod exchange_btc_htlc_tests;
 mod exchange_hns_htlc_tests;
 mod exchange_hsd_vectors_tests;
 mod exchange_hsd_verify_tests;
