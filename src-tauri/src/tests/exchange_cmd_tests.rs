@@ -189,17 +189,71 @@ fn the_commit_windows_show_what_the_signed_transactions_do() {
     use crate::noncustodial::exchange::{btc_htlc, hns_htlc, review};
     let t = fx::trade();
     let lock = btc_htlc::lock_address(fx::NET, &t.terms.btc_params().unwrap()).to_string();
-    let b = review::buyer_rows(&t.buyer, &t.terms, &lock).to_string();
+    let b = review::buyer_rows(&t.buyer, &t.terms, &lock)
+        .unwrap()
+        .to_string();
     assert!(b.contains(&review::sats_text(t.buyer.funding.output[0].value.to_sat())));
     assert!(b.contains(&t.buyer.hns_claim.to_address));
     assert!(b.contains(&lock));
     assert!(b.contains("1 confirmation,"), "{b}");
     assert!(!b.contains("HNS HNS"), "{b}");
     let hlock = hns_htlc::lock_address(fx::NET, &t.terms.hns_params().unwrap()).unwrap();
-    let s = review::seller_rows(&t.seller, &t.terms, 1234, &hlock).to_string();
+    let s = review::seller_rows(&t.seller, &t.terms, 1234, &hlock)
+        .unwrap()
+        .to_string();
     assert!(s.contains("5000.000000 HNS"), "{s}");
+    // R16: the deadline on the Seller's side too, not only the refund times.
+    assert!(
+        s.contains(&review::time_text(t.terms.reveal_deadline)),
+        "{s}"
+    );
     assert!(s.contains("0.001234 HNS"), "{s}");
     assert!(s.contains(&fx::btc_address(&fx::seller_master(), 0, 0).to_string()));
     assert!(!s.contains("HNS HNS"), "{s}");
     assert_eq!(review::confirmations_text(6), "6 confirmations");
+}
+
+/// What the window shows is what the user trusts: a Commit whose signed
+/// transactions cannot be read is refused, never shown with a 0 or a blank
+/// (CODING_STANDARDS "Fail closed on what the user is asked to trust").
+#[test]
+fn a_commit_whose_transactions_cannot_be_read_is_refused_not_shown() {
+    use super::exchange_fixture as fx;
+    use crate::noncustodial::exchange::{btc_htlc, hns_htlc, review};
+    let refused = |e: crate::error::AppError| {
+        let m = e.to_string();
+        assert!(m.contains("nothing is signed"), "{m}");
+        assert!(
+            !m.contains('0'),
+            "no number stands in for the missing one: {m}"
+        );
+    };
+    let lock =
+        |t: &fx::Trade| btc_htlc::lock_address(fx::NET, &t.terms.btc_params().unwrap()).to_string();
+    let hlock =
+        |t: &fx::Trade| hns_htlc::lock_address(fx::NET, &t.terms.hns_params().unwrap()).unwrap();
+
+    let mut t = fx::trade();
+    t.buyer.funding.output.clear();
+    refused(review::buyer_rows(&t.buyer, &t.terms, &lock(&t)).unwrap_err());
+
+    let mut t = fx::trade();
+    t.buyer.btc_refunds.clear();
+    refused(review::buyer_rows(&t.buyer, &t.terms, &lock(&t)).unwrap_err());
+
+    let mut t = fx::trade();
+    t.buyer.hns_claim.to_value = t.buyer.hns_claim.lock_value + 1;
+    refused(review::buyer_rows(&t.buyer, &t.terms, &lock(&t)).unwrap_err());
+
+    let mut t = fx::trade();
+    t.seller.btc_claims.clear();
+    refused(review::seller_rows(&t.seller, &t.terms, 1, &hlock(&t)).unwrap_err());
+
+    let mut t = fx::trade();
+    t.seller.hns_refund.outputs.clear();
+    refused(review::seller_rows(&t.seller, &t.terms, 1, &hlock(&t)).unwrap_err());
+
+    let mut t = fx::trade();
+    t.seller.btc_claims[0].tx_hex = "zz".into();
+    refused(review::seller_rows(&t.seller, &t.terms, 1, &hlock(&t)).unwrap_err());
 }

@@ -1133,7 +1133,7 @@ async fn buyer_commit(
         app,
         review::BUYER_TITLE,
         review::BUYER_MESSAGE,
-        review::buyer_rows(&shown, &terms, &lock_addr),
+        review::buyer_rows(&shown, &terms, &lock_addr)?,
     )
     .await?;
     let c = with_signer(state, ctx, build)?;
@@ -1305,7 +1305,7 @@ async fn seller_commit(
         app,
         review::SELLER_TITLE,
         review::SELLER_MESSAGE,
-        review::seller_rows(&shown, &terms, funding_fee, &lock_addr),
+        review::seller_rows(&shown, &terms, funding_fee, &lock_addr)?,
     )
     .await?;
     let (c, funding_hex) = with_signer(state, ctx, build)?;
