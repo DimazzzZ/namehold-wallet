@@ -358,9 +358,14 @@ fn role_str(r: Role) -> &'static str {
 
 pub fn insert_trade(conn: &Connection, t: &Trade) -> Result<(), AppError> {
     conn.execute(
+        // The secret nonce is part of the row from the start: a taker's
+        // trade is stored by this insert alone (`commands::exchange::
+        // exchange_take`), and a Buyer without its nonce can never commit
+        // (QA 2026-11-09, Q4).
         "INSERT INTO exchange_trades (profile_id, trade_id, network, role, maker, offer_id, offer_json, trade_index,
-            relay_key_hex, counterparty_key, hns_amount, btc_sats, price_msat, request_json, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?15, ?14, ?14)",
+            relay_key_hex, counterparty_key, hns_amount, btc_sats, price_msat, request_json, secret_nonce_hex,
+            created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?15, ?16, ?14, ?14)",
         params![
             t.profile_id,
             t.trade_id,
@@ -377,6 +382,7 @@ pub fn insert_trade(conn: &Connection, t: &Trade) -> Result<(), AppError> {
             t.price_msat as i64,
             t.created_at as i64,
             t.request.as_ref().map(|r| serde_json::to_string(r).expect("requests serialize")),
+            t.secret_nonce.map(hex::encode),
         ],
     )
     .map_err(db)?;

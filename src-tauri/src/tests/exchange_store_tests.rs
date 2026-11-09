@@ -14,7 +14,8 @@ fn conn() -> Connection {
     c
 }
 
-fn trade(c: &Connection) -> Trade {
+/// A Buyer-taker's trade as `exchange_take` builds it, before any write.
+fn new_trade() -> Trade {
     let f = fx::trade();
     let k = relay_msg::new_relay_key();
     let offer = crate::noncustodial::exchange::relay_msg::Offer {
@@ -31,7 +32,7 @@ fn trade(c: &Connection) -> Trade {
     }
     .sign(&k)
     .unwrap();
-    let t = Trade {
+    Trade {
         profile_id: "p".into(),
         trade_id: "ab".repeat(16),
         network: "regtest".into(),
@@ -58,11 +59,27 @@ fn trade(c: &Connection) -> Trade {
         version: 0,
         created_at: fx::START,
         updated_at: fx::START,
-    };
+    }
+}
+
+fn trade(c: &Connection) -> Trade {
+    let mut t = new_trade();
     store::insert_trade(c, &t).unwrap();
-    let mut t = t;
     assert!(store::update_trade(c, &mut t, fx::START).unwrap());
     store::trade(c, "p", &t.trade_id).unwrap().unwrap()
+}
+
+/// `exchange_take` stores a taker's trade with `insert_trade` alone, and a
+/// Buyer's Commit needs the secret nonce chosen at the take: the insert must
+/// keep it (QA 2026-11-09, Q4: the nonce was lost and every taker-Buyer
+/// Commit was refused with "this trade has no secret nonce").
+#[test]
+fn the_insert_alone_keeps_a_buyers_secret_nonce() {
+    let c = conn();
+    let t = new_trade();
+    store::insert_trade(&c, &t).unwrap();
+    let stored = store::trade(&c, "p", &t.trade_id).unwrap().unwrap();
+    assert_eq!(stored.secret_nonce, Some(fx::NONCE));
 }
 
 #[test]
