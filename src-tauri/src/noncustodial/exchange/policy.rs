@@ -35,7 +35,7 @@ pub struct Policy {
     pub hns_confirmations_small: u32,
     pub hns_confirmations_large: u32,
     /// Bitcoin fee ladder: the next rung after this many seconds without
-    /// the previous one mined (3 blocks)…
+    /// the previous one mined (30 minutes, about 3 blocks)…
     pub ladder_escalate_after: u64,
     /// …and the top rung once fewer than this many seconds are left before
     /// the competing path opens.

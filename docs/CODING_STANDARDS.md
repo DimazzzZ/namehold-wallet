@@ -188,7 +188,7 @@ Before asking for review, check the diff for the findings that keep coming back:
 - Every `return Err` in a backend gate function has its disabled twin at each UI entry point (list, dialog, row action), with the same sentence, and the button is disabled rather than hidden (§Frontend).
 - Every field of a node reply on a trusted path (verdict, confirmation rows) is matched one by one; none has `unwrap_or` (§Rust layering).
 - Nothing in the UI compares a backend `reason` string; two cases it renders differently are two variants (§Rust layering).
-- A new step in `run_sync_steps` sends nothing when the caller is the daemon (§Rust layering).
+- A new step in `run_sync_steps` sends from the daemon nothing but transactions the user signed at a Commit, every one through `rpc::broadcast_gates` (§Rust layering).
 - Every terminal state a user must learn about (lost, refused, expired) has a test on the screen that tells them (§Frontend).
 - Every place an *Enforced:* line names holds the check, with a test there (§Copy).
 - A foreign file round-trips unchanged: interpreted fields are kept as written as well, and unknown fields are kept at every level (§Chain rules).
