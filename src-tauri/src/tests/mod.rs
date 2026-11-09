@@ -39,6 +39,7 @@ mod draft_status_tests;
 mod error_tests;
 mod exchange_btc_account_tests;
 mod exchange_btc_htlc_tests;
+mod exchange_btc_source_tests;
 mod exchange_btc_spv_tests;
 mod exchange_cmd_tests;
 mod exchange_engine_tests;

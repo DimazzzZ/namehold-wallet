@@ -287,7 +287,12 @@ impl BtcSource for Esplora {
             .get_json("/fee-estimates")
             .await?
             .ok_or_else(|| rpc_err(&self.base, "no fee estimates"))?;
-        let r = v["2"].as_f64().or_else(|| v["3"].as_f64()).unwrap_or(1.0);
+        // The presigned ladder is built from this rate and cannot be re-signed
+        // (spec §6), so a reply without one is an error, never 1 sat/vB.
+        let r = v["2"]
+            .as_f64()
+            .or_else(|| v["3"].as_f64())
+            .ok_or_else(|| rpc_err(&self.base, "fee estimates without a 2- or 3-block rate"))?;
         Ok(r.ceil().max(1.0) as u64)
     }
 
@@ -405,6 +410,25 @@ impl BtcSource for BitcoinCore {
             .unwrap_or_else(|| "bitcoind".into())
     }
 
+    /// Spec §3.6: without `-txindex` Core answers `getrawtransaction` for
+    /// the other party's transaction with -5, as if it did not exist, and
+    /// a lock would read as missing. `getindexinfo` (Core 0.21+) says
+    /// whether the index exists and has caught up; an older Core has no
+    /// such call and is refused with its error.
+    async fn ready(&self) -> Result<(), AppError> {
+        let v = self
+            .call("getindexinfo", serde_json::json!(["txindex"]))
+            .await?;
+        match v["txindex"]["synced"].as_bool() {
+            Some(true) => Ok(()),
+            Some(false) => Err(rpc_err(&self.url, "its -txindex is still building")),
+            None => Err(rpc_err(
+                &self.url,
+                "Bitcoin Core runs without -txindex, which the exchange needs",
+            )),
+        }
+    }
+
     async fn tip(&self) -> Result<(u64, u64), AppError> {
         let v = self
             .call("getblockchaininfo", serde_json::json!([]))
@@ -460,7 +484,12 @@ impl BtcSource for BitcoinCore {
         };
         let ids = list
             .iter()
-            .map(|v| parse_hash::<Txid>(&self.url, v.as_str().unwrap_or("")))
+            .map(|v| {
+                let s = v
+                    .as_str()
+                    .ok_or_else(|| rpc_err(&self.url, "a block's txid is not a string"))?;
+                parse_hash::<Txid>(&self.url, s)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         branch_for(&ids, txid)
             .ok_or_else(|| rpc_err(&self.url, "the transaction is not in that block"))
@@ -470,7 +499,10 @@ impl BtcSource for BitcoinCore {
         let h = self
             .call("getblockhash", serde_json::json!([height]))
             .await?;
-        let hash: BlockHash = parse_hash(&self.url, h.as_str().unwrap_or(""))?;
+        let h = h
+            .as_str()
+            .ok_or_else(|| rpc_err(&self.url, "getblockhash is not a string"))?;
+        let hash: BlockHash = parse_hash(&self.url, h)?;
         self.header(&hash).await
     }
 
@@ -481,7 +513,10 @@ impl BtcSource for BitcoinCore {
                 serde_json::json!([hash.to_string(), false]),
             )
             .await?;
-        parse_hex(&self.url, h.as_str().unwrap_or(""))
+        let h = h
+            .as_str()
+            .ok_or_else(|| rpc_err(&self.url, "getblockheader is not a string"))?;
+        parse_hex(&self.url, h)
     }
 
     async fn outspend(&self, o: &OutPoint) -> Result<Option<Outspend>, AppError> {
@@ -532,13 +567,14 @@ impl BtcSource for BitcoinCore {
     }
 
     async fn fee_rate(&self) -> Result<u64, AppError> {
-        match self.call("estimatesmartfee", serde_json::json!([2])).await {
-            Ok(v) => match v["feerate"].as_f64() {
-                // BTC per kvB → sat per vB.
-                Some(r) => Ok((r * 100_000.0).ceil().max(1.0) as u64),
-                None => Ok(1),
-            },
-            Err(_) => Ok(1),
+        // As for Esplora: no estimate is an error, never 1 sat/vB.
+        let v = self
+            .call("estimatesmartfee", serde_json::json!([2]))
+            .await?;
+        match v["feerate"].as_f64() {
+            // BTC per kvB → sat per vB.
+            Some(r) => Ok((r * 100_000.0).ceil().max(1.0) as u64),
+            None => Err(rpc_err(&self.url, "estimatesmartfee gave no rate")),
         }
     }
 
@@ -547,7 +583,12 @@ impl BtcSource for BitcoinCore {
             .call("sendrawtransaction", serde_json::json!([tx_hex]))
             .await
         {
-            Ok(v) => parse_hash(&self.url, v.as_str().unwrap_or("")),
+            Ok(v) => {
+                let s = v
+                    .as_str()
+                    .ok_or_else(|| rpc_err(&self.url, "sendrawtransaction is not a string"))?;
+                parse_hash(&self.url, s)
+            }
             Err(AppError::NodeRefused { message, .. }) if message.contains("already") => {
                 txid_of(tx_hex)
             }
