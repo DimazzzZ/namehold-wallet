@@ -991,8 +991,17 @@ fn sweep_expired_signer_drops_the_key_behind_a_poisoned_lock() {
 #[test]
 fn the_app_runs_the_expiry_sweep_on_a_timer() {
     let lib_rs = include_str!("../lib.rs");
+    // The timers start in `finish_setup`, which setup runs directly or after a
+    // startup migration.
     let run = &lib_rs[lib_rs.find("pub fn run()").expect("lib.rs has run()")..];
-    let code: Vec<&str> = run
+    assert!(
+        run.contains("finish_setup(app.handle(), conn, &db_path)"),
+        "setup runs finish_setup"
+    );
+    let finish = &lib_rs[lib_rs
+        .find("fn finish_setup(")
+        .expect("lib.rs has finish_setup()")..];
+    let code: Vec<&str> = finish
         .lines()
         .map(str::trim_start)
         .filter(|l| !l.starts_with("//"))
@@ -1000,7 +1009,7 @@ fn the_app_runs_the_expiry_sweep_on_a_timer() {
     let at = code
         .iter()
         .position(|l| l.contains("commands::secure_wallet::sweep_expired_signer("))
-        .expect("run() calls sweep_expired_signer");
+        .expect("finish_setup() calls sweep_expired_signer");
     assert!(
         code[at - 3..at].iter().any(|l| l.contains("loop {")),
         "the sweep runs in a loop"

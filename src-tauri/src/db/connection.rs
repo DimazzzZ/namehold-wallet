@@ -44,6 +44,17 @@ fn owner_only(path: &Path) -> std::io::Result<()> {
 /// deleted wallet's encrypted seed or a spent bid's nonce does not linger in
 /// the file's free pages.
 pub fn open(path: &Path) -> Result<Connection, rusqlite::Error> {
+    open_via(path, None)
+}
+
+/// [`open`] through the read-metering VFS, for the startup migration whose
+/// progress is shown ([`crate::db::read_meter`]).
+pub fn open_metered(path: &Path) -> Result<Connection, rusqlite::Error> {
+    crate::db::read_meter::register()?;
+    open_via(path, Some(crate::db::read_meter::VFS_NAME))
+}
+
+fn open_via(path: &Path, vfs: Option<&str>) -> Result<Connection, rusqlite::Error> {
     let io = |e: std::io::Error| {
         rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
@@ -70,7 +81,12 @@ pub fn open(path: &Path) -> Result<Connection, rusqlite::Error> {
     ] {
         owner_only(&p).map_err(io)?;
     }
-    let conn = Connection::open(path)?;
+    let conn = match vfs {
+        Some(vfs) => {
+            Connection::open_with_flags_and_vfs(path, rusqlite::OpenFlags::default(), vfs)?
+        }
+        None => Connection::open(path)?,
+    };
     conn.execute_batch(
         "
         PRAGMA journal_mode = WAL;

@@ -80,6 +80,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
+    run_with_progress(conn, |_, _, _| {})
+}
+
+fn ensure_version_table(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS schema_version (
@@ -87,28 +91,186 @@ pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
             applied_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         ",
-    )?;
+    )
+}
 
-    for (version, sql) in MIGRATIONS {
+/// The versions this build knows that the database has not applied yet, in
+/// the order they run. Empty for a database that is up to date.
+pub fn pending(conn: &Connection) -> Result<Vec<&'static str>, rusqlite::Error> {
+    ensure_version_table(conn)?;
+    let mut pending = Vec::new();
+    for (version, _) in MIGRATIONS {
         let exists: bool = conn.query_row(
             "SELECT COUNT(*) > 0 FROM schema_version WHERE version = ?1",
             [version],
             |row| row.get(0),
         )?;
         if !exists {
-            conn.execute_batch(sql)?;
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                [version],
-            )?;
+            pending.push(*version);
         }
     }
+    Ok(pending)
+}
+
+/// [`run`], calling `on_step(step, total, version)` before each pending
+/// migration (`step` counts from 1), so a caller can show progress.
+pub fn run_with_progress(
+    conn: &Connection,
+    mut on_step: impl FnMut(usize, usize, &str),
+) -> Result<(), rusqlite::Error> {
+    let pending = pending(conn)?;
+    let total = pending.len();
+    for (i, version) in pending.into_iter().enumerate() {
+        let Some((_, sql)) = MIGRATIONS.iter().find(|(v, _)| *v == version) else {
+            continue;
+        };
+        on_step(i + 1, total, version);
+        apply(conn, version, sql)?;
+    }
     Ok(())
+}
+
+/// Run one migration so that its changes and its `schema_version` row commit
+/// together. Committed apart, a process killed between the two left a
+/// migration applied but unrecorded; the next start ran it again, and a step
+/// that is not idempotent (042's `CREATE TABLE`, `ADD COLUMN`) then failed on
+/// every start.
+fn apply(conn: &Connection, version: &str, sql: &str) -> Result<(), rusqlite::Error> {
+    let result = conn.execute_batch(&with_version_row(version, sql));
+    if result.is_err() && !conn.is_autocommit() {
+        // A statement failed inside the migration's transaction: undo it, so
+        // the connection is usable and the step can run again from scratch.
+        let _ = conn.execute_batch("ROLLBACK");
+    }
+    result
+}
+
+/// `sql` with the row recording `version` inside its transaction. A migration
+/// that opens its own transaction (026 and 042 keep pragmas outside it) gets
+/// the row before its last `COMMIT`; any other is wrapped in one.
+fn with_version_row(version: &str, sql: &str) -> String {
+    debug_assert!(version.chars().all(|c| c.is_ascii_digit()));
+    let record = format!("INSERT INTO schema_version (version) VALUES ('{version}');\n");
+    let last_commit = sql
+        .match_indices('\n')
+        .map(|(i, _)| i + 1)
+        .chain(std::iter::once(0))
+        .filter(|&start| {
+            sql[start..]
+                .trim_start_matches([' ', '\t'])
+                .get(..7)
+                .is_some_and(|w| w.eq_ignore_ascii_case("COMMIT;"))
+        })
+        .max();
+    match last_commit {
+        Some(at) => format!("{}{record}{}", &sql[..at], &sql[at..]),
+        None => format!("BEGIN IMMEDIATE;\n{sql}\n{record}COMMIT;\n"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_migration_records_its_version_inside_its_own_transaction() {
+        for (version, sql) in MIGRATIONS {
+            let wrapped = with_version_row(version, sql);
+            let record = wrapped
+                .find(&format!("VALUES ('{version}')"))
+                .expect("the version row is in the batch");
+            let begin = wrapped
+                .to_ascii_uppercase()
+                .find("BEGIN")
+                .expect("a transaction");
+            let commit = wrapped.to_ascii_uppercase().rfind("COMMIT;").unwrap();
+            assert!(
+                begin < record && record < commit,
+                "{version}: the row sits inside BEGIN…COMMIT"
+            );
+        }
+        // A migration with pragmas outside its own transaction keeps them there.
+        let own = "PRAGMA foreign_keys = OFF;\nBEGIN;\nCREATE TABLE a (x);\nCOMMIT;\nPRAGMA foreign_keys = ON;\n";
+        assert_eq!(
+            with_version_row("099", own),
+            "PRAGMA foreign_keys = OFF;\nBEGIN;\nCREATE TABLE a (x);\nINSERT INTO schema_version (version) VALUES ('099');\nCOMMIT;\nPRAGMA foreign_keys = ON;\n"
+        );
+    }
+
+    #[test]
+    fn a_failing_migration_leaves_neither_its_changes_nor_its_row() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_version_table(&conn).unwrap();
+        for sql in [
+            "CREATE TABLE half (x);\nINSERT INTO missing VALUES (1);\n",
+            "BEGIN;\nCREATE TABLE half (x);\nINSERT INTO missing VALUES (1);\nCOMMIT;\n",
+        ] {
+            assert!(apply(&conn, "099", sql).is_err());
+            assert!(conn.is_autocommit(), "the failed step was rolled back");
+            let tables: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = 'half'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let rows: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM schema_version WHERE version = '099'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!((tables, rows), (0, 0), "{sql}");
+        }
+        // And a step that succeeds commits both.
+        apply(&conn, "099", "CREATE TABLE whole (x);\n").unwrap();
+        assert!(pending(&conn).unwrap().len() == MIGRATIONS.len());
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_version WHERE version = '099'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn pending_lists_what_is_left_and_progress_reports_each_step() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert_eq!(pending(&conn).unwrap().len(), MIGRATIONS.len());
+
+        // A database that stopped before the last two migrations.
+        let (applied, _) = MIGRATIONS.split_at(MIGRATIONS.len() - 2);
+        for (version, sql) in applied {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [version],
+            )
+            .unwrap();
+        }
+        let left = pending(&conn).unwrap();
+        assert_eq!(
+            left,
+            vec![
+                MIGRATIONS[MIGRATIONS.len() - 2].0,
+                MIGRATIONS[MIGRATIONS.len() - 1].0
+            ]
+        );
+
+        let mut steps = Vec::new();
+        run_with_progress(&conn, |step, total, version| {
+            steps.push((step, total, version.to_string()))
+        })
+        .unwrap();
+        assert_eq!(
+            steps,
+            vec![(1, 2, left[0].to_string()), (2, 2, left[1].to_string())]
+        );
+        assert!(pending(&conn).unwrap().is_empty());
+    }
 
     #[test]
     fn run_applies_all_migrations() {
