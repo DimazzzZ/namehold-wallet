@@ -297,7 +297,7 @@ impl ExtendedPubKey {
 /// checksum is verified and stripped).
 ///
 /// Implemented locally over `sha2` to avoid pulling in an extra base58 crate.
-fn base58check_decode(s: &str) -> Result<Vec<u8>, AppError> {
+pub(crate) fn base58check_decode(s: &str) -> Result<Vec<u8>, AppError> {
     let full = base58_decode(s)?;
     if full.len() < 4 {
         return Err(AppError::InvalidInput("base58check too short".to_string()));
