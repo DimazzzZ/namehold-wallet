@@ -247,6 +247,16 @@ pub enum Status {
     },
 }
 
+impl Status {
+    /// A trade that is over: nothing more is sent or watched for it.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Status::Completed | Status::Refunded { .. } | Status::Expired
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
     pub status: Status,
@@ -260,6 +270,25 @@ impl Step {
             actions: Vec::new(),
         }
     }
+}
+
+/// The Buyer's presigned HNS claim finished for `lock`: `None` when the
+/// claim, the secret or the lock's outpoint is not at hand, or the secret
+/// does not open this lock (`finish` refuses it).
+fn hns_claim_action(
+    h: &Holdings,
+    hp: &crate::noncustodial::exchange::script::HtlcParams,
+    lock: &HnsLockSeen,
+) -> Option<Action> {
+    let c = h.hns_claim.as_ref()?;
+    let x = h.secret?;
+    let op = outpoint_of(&lock.outpoint)?;
+    let n = h.terms.network().ok()?;
+    let tx = c.finish(n, hp, op, &x).ok()?;
+    Some(Action::SendHns {
+        kind: SpendKind::HnsClaim,
+        tx_hex: tx.to_hex(),
+    })
 }
 
 fn outpoint_of(l: &LockRef) -> Option<Outpoint> {
@@ -352,19 +381,11 @@ fn buyer_step(
             if s.confirmations >= 1 {
                 return Step::just(Status::Completed);
             }
-            let mut actions = Vec::new();
-            if let (Some(c), Some(x), Some(lock)) =
-                (&h.hns_claim, h.secret, hns.and_then(|v| v.lock.as_ref()))
-            {
-                if let (Some(op), Ok(n)) = (outpoint_of(&lock.outpoint), t.network()) {
-                    if let Ok(tx) = c.finish(n, &hp, op, &x) {
-                        actions.push(Action::SendHns {
-                            kind: SpendKind::HnsClaim,
-                            tx_hex: tx.to_hex(),
-                        });
-                    }
-                }
-            }
+            let actions = hns
+                .and_then(|v| v.lock.as_ref())
+                .and_then(|lock| hns_claim_action(h, &hp, lock))
+                .into_iter()
+                .collect();
             return Step {
                 status: Status::Revealing,
                 actions,
@@ -392,19 +413,11 @@ fn buyer_step(
             Some(_) => {
                 // The Seller claimed: the secret is public, so claiming the
                 // HNS lock now costs nothing, whatever the deadline.
-                let mut actions = Vec::new();
-                if let (Some(c), Some(x), Some(v)) = (&h.hns_claim, h.secret, hns) {
-                    if let Some(lock) = v.lock.as_ref().filter(|l| l.spend.is_none()) {
-                        if let (Some(op), Ok(n)) = (outpoint_of(&lock.outpoint), t.network()) {
-                            if let Ok(tx) = c.finish(n, &hp, op, &x) {
-                                actions.push(Action::SendHns {
-                                    kind: SpendKind::HnsClaim,
-                                    tx_hex: tx.to_hex(),
-                                });
-                            }
-                        }
-                    }
-                }
+                let actions = hns
+                    .and_then(|v| v.lock.as_ref().filter(|l| l.spend.is_none()))
+                    .and_then(|lock| hns_claim_action(h, &hp, lock))
+                    .into_iter()
+                    .collect();
                 return Step {
                     status: Status::Revealing,
                     actions,
@@ -425,21 +438,13 @@ fn buyer_step(
     // with the lock's script): the HNS is ours to take and the BTC is the
     // Seller's. Never refund; keep claiming while the lock is unspent.
     if hns.revealed.is_some() {
-        let mut actions = Vec::new();
-        if let (Some(c), Some(x), Some(lock)) = (
-            &h.hns_claim,
-            h.secret,
-            hns.lock.as_ref().filter(|l| l.spend.is_none()),
-        ) {
-            if let (Some(op), Ok(n)) = (outpoint_of(&lock.outpoint), t.network()) {
-                if let Ok(tx) = c.finish(n, &hp, op, &x) {
-                    actions.push(Action::SendHns {
-                        kind: SpendKind::HnsClaim,
-                        tx_hex: tx.to_hex(),
-                    });
-                }
-            }
-        }
+        let actions = hns
+            .lock
+            .as_ref()
+            .filter(|l| l.spend.is_none())
+            .and_then(|lock| hns_claim_action(h, &hp, lock))
+            .into_iter()
+            .collect();
         return Step {
             status: Status::Revealing,
             actions,
@@ -454,18 +459,13 @@ fn buyer_step(
     }
 
     // 3. Reveal when every condition holds.
-    if let (Some(c), Some(x)) = (&h.hns_claim, h.secret) {
+    if h.hns_claim.is_some() && h.secret.is_some() {
         if buyer_may_reveal(h, hns, btc, now, p) {
             let lock = hns.lock.as_ref().expect("checked by buyer_may_reveal");
-            let tx = outpoint_of(&lock.outpoint)
-                .and_then(|op| t.network().ok().and_then(|n| c.finish(n, &hp, op, &x).ok()));
-            if let Some(tx) = tx {
+            if let Some(claim) = hns_claim_action(h, &hp, lock) {
                 return Step {
                     status: Status::Revealing,
-                    actions: vec![Action::SendHns {
-                        kind: SpendKind::HnsClaim,
-                        tx_hex: tx.to_hex(),
-                    }],
+                    actions: vec![claim],
                 };
             }
         }
@@ -481,18 +481,15 @@ fn buyer_step(
     // We revealed but the claim is not on chain yet: keep sending it while
     // it may still be mined.
     if h.sent.hns_claim_at.is_some() {
-        if let (Some(c), Some(x), Some(lock)) = (&h.hns_claim, h.secret, &hns.lock) {
-            if let (Some(op), Ok(n)) = (outpoint_of(&lock.outpoint), t.network()) {
-                if let Ok(tx) = c.finish(n, &hp, op, &x) {
-                    return Step {
-                        status: Status::Revealing,
-                        actions: vec![Action::SendHns {
-                            kind: SpendKind::HnsClaim,
-                            tx_hex: tx.to_hex(),
-                        }],
-                    };
-                }
-            }
+        if let Some(claim) = hns
+            .lock
+            .as_ref()
+            .and_then(|lock| hns_claim_action(h, &hp, lock))
+        {
+            return Step {
+                status: Status::Revealing,
+                actions: vec![claim],
+            };
         }
         // Our claim is out but no lock is seen (a reorg?): wait, never
         // refund BTC while the secret may be public and the HNS claimable.

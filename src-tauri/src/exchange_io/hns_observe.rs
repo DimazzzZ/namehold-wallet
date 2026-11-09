@@ -47,7 +47,6 @@ fn confirmations(height: Option<i64>, tip: i64) -> u32 {
 }
 
 /// The HNS view of `terms` from the transactions at the lock's address.
-/// The HNS view of `terms` from the transactions at the lock's address.
 /// `own` is the Seller's own lock coin: when given, only that coin is the
 /// lock (spec 2026-11-07, review C1: anyone can pay the lock address, and a
 /// decoy coin mined earlier must not blind the Seller to the claim of its

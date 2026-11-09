@@ -141,10 +141,60 @@ fn mainnet_refuses_blocks_below_the_difficulty_floor() {
     let all = txs();
     let p = proof(&all, 0, 1);
     let e = btc_spv::verify(&p, Network::Main).unwrap_err().to_string();
-    assert!(
-        e.contains("above the network's maximum") || e.contains("floor"),
-        "{e}"
-    );
+    // A regtest header's target is above mainnet's maximum, refused before
+    // the floor is looked at; the floor itself is pinned on a real header
+    // below.
+    assert!(e.contains("above the network's maximum"), "{e}");
+}
+
+/// A real 2010 mainnet block (the pizza transaction's, 57043, and the next
+/// header, recorded from mempool.space) has valid proof of work and a target
+/// within mainnet's maximum, at a difficulty far below the floor: it is
+/// refused on mainnet by the floor alone, and accepted where the floor does
+/// not apply, with its real Merkle branch.
+#[test]
+fn the_mainnet_floor_refuses_a_real_header_below_it() {
+    use bitcoin::consensus::deserialize;
+    let tx: Transaction =
+        deserialize(&hex::decode(include_str!("fixtures/esplora/tx_hex.txt").trim()).unwrap())
+            .unwrap();
+    let header: Header = deserialize(
+        &hex::decode(include_str!("fixtures/esplora/block_header.txt").trim()).unwrap(),
+    )
+    .unwrap();
+    let next: Header = deserialize(
+        &hex::decode(include_str!("fixtures/esplora/block_header_57044.txt").trim()).unwrap(),
+    )
+    .unwrap();
+    let proof: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/esplora/tx_merkle_proof.json")).unwrap();
+    let merkle: Vec<TxMerkleNode> = proof["merkle"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            let t: bitcoin::Txid = v.as_str().unwrap().parse().unwrap();
+            TxMerkleNode::from_raw_hash(t.to_raw_hash())
+        })
+        .collect();
+    let p = InclusionProof {
+        tx,
+        header,
+        merkle,
+        pos: proof["pos"].as_u64().unwrap() as u32,
+        later: vec![next],
+    };
+    let params = bitcoin::params::Params::new(bitcoin::Network::Bitcoin);
+    assert!(p.header.target() <= params.max_attainable_target);
+    assert!(p.header.difficulty(&params) < btc_spv::MAINNET_MIN_DIFFICULTY);
+
+    let e = btc_spv::verify(&p, Network::Main).unwrap_err().to_string();
+    assert!(e.contains("floor"), "{e}");
+    assert!(!e.contains("maximum"), "{e}");
+
+    let v = btc_spv::verify(&p, Network::Testnet).unwrap();
+    assert_eq!(v.confirmations, 2);
+    assert_eq!(v.block_hash, p.header.block_hash());
 }
 
 #[test]

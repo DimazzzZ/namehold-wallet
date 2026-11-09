@@ -99,6 +99,24 @@ fn the_sync_step_runs_the_exchange_step() {
     assert!(sync.contains("crate::exchange_io::env::sync_step(db_path, profile_id)"));
 }
 
+/// R24: each Commit re-checks its deadline after the secure window and
+/// before the trade is stored and anything is sent. The command needs the
+/// window, so the order is read from the source.
+#[test]
+fn each_commit_rechecks_its_deadline_after_the_window_and_before_storing() {
+    let src = include_str!("../commands/exchange.rs");
+    for (name, deadline) in [
+        ("async fn buyer_commit(", "> terms.buyer_fund_deadline"),
+        ("async fn seller_commit(", "> terms.seller_fund_deadline"),
+    ] {
+        let body = &src[src.find(name).unwrap()..];
+        let window = body.find("confirm_rows(").unwrap();
+        let recheck = body[window..].find(deadline).unwrap() + window;
+        let store = body[recheck..].find("store::commit_trade(").unwrap() + recheck;
+        assert!(window < recheck && recheck < store, "{name}");
+    }
+}
+
 /// The step applies the same node rule as the commands before it reads or
 /// sends through a node (SECURITY.md "The HNS node must be local"), and
 /// every HNS send goes through `send_hns`, which runs the broadcast gates.

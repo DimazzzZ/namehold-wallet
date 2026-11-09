@@ -47,6 +47,7 @@ fn lock<'a>(
 }
 
 fn db_path(state: &State<'_, AppState>) -> Result<String, AppError> {
+    // An in-memory database (tests) has no path; the step then opens nothing.
     Ok(lock(state)?.path().unwrap_or("").to_owned())
 }
 
@@ -191,7 +192,12 @@ pub async fn exchange_update_settings(
     .await?;
     let conn = lock(&state)?;
     let n = ctx.network;
-    let put = |k: &str, v: &str| crate::db::queries::set_setting(&conn, &env::key(k, n), v);
+    // Written and logged like every other setting; the login is logged as ***.
+    let put = |k: &str, v: &str| -> Result<(), AppError> {
+        let key = env::key(k, n);
+        crate::db::queries::set_setting(&conn, &key, v)?;
+        crate::commands::settings::log_setting_change(&conn, &key, v)
+    };
     put(env::RELAY_KEY, &new.relay_url)?;
     put(env::WATCHTOWER_KEY, &new.watchtower_url)?;
     put(env::SOURCES_KEY, &new.btc_sources.join("\n"))?;
@@ -279,12 +285,7 @@ pub fn locked_in_trades(trades: &[Trade]) -> u64 {
         .iter()
         .filter(|t| t.role == Role::Buyer && !t.finished)
         .filter(|t| t.holdings.as_ref().is_some_and(|h| h.committed))
-        .filter(|t| {
-            !matches!(
-                t.status,
-                Some(Status::Completed) | Some(Status::Refunded { .. }) | Some(Status::Expired)
-            )
-        })
+        .filter(|t| !t.status.as_ref().is_some_and(Status::is_terminal))
         .map(|t| t.btc_sats)
         .sum()
 }
@@ -479,6 +480,8 @@ pub fn offer_row(o: &SignedOffer, own: bool, live: bool) -> OfferRow {
         price: price::format_sats_per_hns(f.price_msat_per_hns),
         min_hns: hns_text(f.min_hns),
         max_hns: hns_text(f.max_hns),
+        // An offer whose limit times its price overflows is one no trade can
+        // reach: shown as the extremes, and refused by `terms::check` at a take.
         min_sats: price::btc_for(f.min_hns, f.price_msat_per_hns).unwrap_or(0),
         max_sats: price::btc_for(f.max_hns, f.price_msat_per_hns).unwrap_or(u64::MAX),
         own,
@@ -672,33 +675,8 @@ pub async fn exchange_create_offer(
 }
 
 fn parse_hns(text: &str) -> Result<u64, AppError> {
-    let t = text.trim();
-    let (w, f) = t.split_once('.').unwrap_or((t, ""));
     let bad = || AppError::InvalidInput(format!("'{text}' is not an amount of HNS"));
-    if w.is_empty() && f.is_empty()
-        || !w.chars().all(|c| c.is_ascii_digit())
-        || !f.chars().all(|c| c.is_ascii_digit())
-        || f.len() > 6
-    {
-        return Err(bad());
-    }
-    let whole: u64 = if w.is_empty() {
-        0
-    } else {
-        w.parse().map_err(|_| bad())?
-    };
-    let mut frac: u64 = if f.is_empty() {
-        0
-    } else {
-        f.parse().map_err(|_| bad())?
-    };
-    for _ in f.len()..6 {
-        frac *= 10;
-    }
-    let v = whole
-        .checked_mul(1_000_000)
-        .and_then(|x| x.checked_add(frac))
-        .ok_or_else(bad)?;
+    let v = price::parse_fixed(text, 6, bad)?;
     if v == 0 || v > 2_040_000_000 * 1_000_000 {
         return Err(bad());
     }
@@ -803,6 +781,8 @@ pub fn trade_row(t: &Trade) -> TradeRow {
         },
         // Negotiating: the take ends after the Buyer's funding window.
         (None, _) => Status::AwaitingBuyerCommit {
+            // A stored network this build does not know has no policy: the
+            // deadline reads as the creation time, i.e. already passed.
             deadline: t.created_at
                 + Network::from_str_opt(&t.network)
                     .map(|n| env::policy(n).buyer_fund_window)

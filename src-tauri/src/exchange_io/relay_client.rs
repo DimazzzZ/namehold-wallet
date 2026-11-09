@@ -54,6 +54,7 @@ impl RelayClient {
             .await
             .map_err(|e| self.err(e))?;
         let status = r.status();
+        // An error page that is not JSON still names the status below.
         let v: serde_json::Value = r.json().await.unwrap_or(serde_json::Value::Null);
         if !status.is_success() {
             let why = v["error"].as_str().unwrap_or("refused").to_owned();

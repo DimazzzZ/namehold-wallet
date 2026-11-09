@@ -147,13 +147,6 @@ pub struct TickReport {
     pub errors: Vec<String>,
 }
 
-fn is_terminal(s: &Status) -> bool {
-    matches!(
-        s,
-        Status::Completed | Status::Refunded { .. } | Status::Expired
-    )
-}
-
 /// One tick for one profile. Best effort: an error on one offer, message or
 /// trade is reported and the rest go on.
 pub async fn tick(ctx: &Ctx<'_>) -> TickReport {
@@ -689,6 +682,8 @@ async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
                 {
                     new_events.push(Event::Revealed {
                         trade_id: t.trade_id.clone(),
+                        // A trade with no terms has no Revealed event to
+                        // time; 0 reads as "now" in the notification.
                         claim_by: t.terms.as_ref().map(|x| x.btc_refund_time).unwrap_or(0),
                     })
                 }
@@ -704,7 +699,7 @@ async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
                 _ => {}
             }
         }
-        if is_terminal(&step.status) {
+        if step.status.is_terminal() {
             let at = *t.terminal_at.get_or_insert(ctx.now);
             if at + FOLLOW_AFTER_END_SECS < ctx.now {
                 t.finished = true;

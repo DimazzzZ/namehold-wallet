@@ -95,6 +95,7 @@ pub struct Config {
 
 pub fn config(settings: &HashMap<String, String>, network: Network) -> Config {
     let get = |b: &str| {
+        // A setting never written is empty, and empty means the default.
         settings
             .get(&key(b, network))
             .map(|s| s.trim().to_owned())
@@ -114,6 +115,7 @@ pub fn config(settings: &HashMap<String, String>, network: Network) -> Config {
     let relay = get(RELAY_KEY);
     Config {
         relay_url: if relay.is_empty() {
+            // No public relay is known for every network: then none is set.
             relay_client::default_relay(network)
                 .unwrap_or("")
                 .to_owned()

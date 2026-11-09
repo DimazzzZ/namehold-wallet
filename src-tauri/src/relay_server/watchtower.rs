@@ -44,14 +44,6 @@ pub struct JobOutcome {
     pub errors: Vec<String>,
 }
 
-/// Whether a status ends the trade for this party.
-pub fn is_final(s: &Status) -> bool {
-    matches!(
-        s,
-        Status::Completed | Status::Refunded { .. } | Status::Expired
-    )
-}
-
 /// `Ok` when `node` reports itself on `network`.
 pub async fn node_on_network(node: &dyn NodeRpc, network: Network) -> Result<(), String> {
     let info = node
@@ -179,7 +171,7 @@ pub async fn tick(
                     sent_json: &sent_json,
                     // A step that decided nothing leaves the job as it was.
                     finished: match &out.status {
-                        Some(s) => is_final(s),
+                        Some(s) => s.is_terminal(),
                         None => row.finished_at.is_some(),
                     },
                     last_error: last_error.as_deref(),

@@ -68,7 +68,11 @@ pub async fn update_setting(
 
 /// Record a setting change in the audit log, with a sensitive value redacted
 /// so secrets are never persisted in plaintext outside the settings row.
-fn log_setting_change(conn: &rusqlite::Connection, key: &str, value: &str) -> Result<(), AppError> {
+pub(crate) fn log_setting_change(
+    conn: &rusqlite::Connection,
+    key: &str,
+    value: &str,
+) -> Result<(), AppError> {
     let logged_value = if security::is_sensitive_key(key) {
         "***"
     } else {
