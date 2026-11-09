@@ -99,6 +99,34 @@ fn the_sync_step_runs_the_exchange_step() {
     assert!(sync.contains("crate::exchange_io::env::sync_step(db_path, profile_id)"));
 }
 
+/// `draft_ctx::load_ctx` takes the DB mutex, so no command may call it while
+/// it holds a `lock(&state)` guard of its own: `exchange_update_settings` did
+/// and deadlocked the app after a confirmed save (QA Q1, 2026-11-09). Each
+/// `lock(&state)` guard that precedes a `load_ctx(` call in a command body
+/// must be closed (its block ended) before that call.
+#[test]
+fn no_command_calls_load_ctx_while_holding_the_db_lock() {
+    let src = include_str!("../commands/exchange.rs");
+    let body = &src[src.find("pub async fn exchange_update_settings").unwrap()..];
+    let body = &body[..body.find("\n}\n").unwrap()];
+    let guard = body
+        .find("let conn = lock(&state)?;")
+        .expect("the command locks the DB");
+    let load = body[guard..]
+        .find("draft_ctx::load_ctx(&state)")
+        .expect("then loads the ctx")
+        + guard;
+    // Between the guard and load_ctx a block must close: the guard lives in
+    // its own `{ … }` and is dropped before load_ctx runs.
+    let between = &body[guard..load];
+    let opens = between.matches('{').count();
+    let closes = between.matches('}').count();
+    assert!(
+        closes > opens,
+        "the DB guard is still held when load_ctx runs:\n{between}"
+    );
+}
+
 /// R24: each Commit re-checks its deadline after the secure window and
 /// before the trade is stored and anything is sent. The command needs the
 /// window, so the order is read from the source.

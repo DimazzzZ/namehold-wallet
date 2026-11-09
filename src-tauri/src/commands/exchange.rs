@@ -190,21 +190,27 @@ pub async fn exchange_update_settings(
         serde_json::json!({ "rows": rows }),
     )
     .await?;
-    let conn = lock(&state)?;
     let n = ctx.network;
-    // Written and logged like every other setting; the login is logged as ***.
-    let put = |k: &str, v: &str| -> Result<(), AppError> {
-        let key = env::key(k, n);
-        crate::db::queries::set_setting(&conn, &key, v)?;
-        crate::commands::settings::log_setting_change(&conn, &key, v)
-    };
-    put(env::RELAY_KEY, &new.relay_url)?;
-    put(env::WATCHTOWER_KEY, &new.watchtower_url)?;
-    put(env::SOURCES_KEY, &new.btc_sources.join("\n"))?;
-    if let Some(a) = &new.bitcoind_auth {
-        put(env::BITCOIND_AUTH_KEY, a)?;
+    {
+        // The DB mutex is released before `load_ctx`, which takes it again:
+        // holding it across that call deadlocked the whole app (QA Q1,
+        // 2026-11-09: every later command hung after a confirmed save).
+        let conn = lock(&state)?;
+        // Written and logged like every other setting; the login is logged as ***.
+        let put = |k: &str, v: &str| -> Result<(), AppError> {
+            let key = env::key(k, n);
+            crate::db::queries::set_setting(&conn, &key, v)?;
+            crate::commands::settings::log_setting_change(&conn, &key, v)
+        };
+        put(env::RELAY_KEY, &new.relay_url)?;
+        put(env::WATCHTOWER_KEY, &new.watchtower_url)?;
+        put(env::SOURCES_KEY, &new.btc_sources.join("\n"))?;
+        if let Some(a) = &new.bitcoind_auth {
+            put(env::BITCOIND_AUTH_KEY, a)?;
+        }
     }
     let ctx = draft_ctx::load_ctx(&state)?;
+    let conn = lock(&state)?;
     overview_from(&conn, &ctx)
 }
 
