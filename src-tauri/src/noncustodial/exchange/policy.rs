@@ -53,6 +53,9 @@ pub struct Policy {
     /// Refuse a Commit when the local clock and the chain's median time
     /// disagree by more than this (None: do not check, regtest).
     pub max_clock_drift: Option<u64>,
+    /// A BTC lock is proven only with at least this many Bitcoin sources
+    /// (spec §1, §3.6: "two independent sources"), every one agreeing.
+    pub min_btc_sources: usize,
 }
 
 const HOUR: u64 = 3600;
@@ -87,6 +90,7 @@ impl Policy {
                 hns_rate_multiplier: 20,
                 hns_min_rate: 20,
                 max_clock_drift: Some(3 * HOUR),
+                min_btc_sources: 2,
             },
             Network::Regtest | Network::Simnet => Policy {
                 buyer_fund_window: 10 * MINUTE,
@@ -110,6 +114,8 @@ impl Policy {
                 hns_rate_multiplier: 20,
                 hns_min_rate: 20,
                 max_clock_drift: None,
+                // Regtest has no public source: one local bitcoind.
+                min_btc_sources: 1,
             },
         }
     }

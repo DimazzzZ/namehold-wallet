@@ -4,6 +4,7 @@ use crate::commands::exchange::{
     refusal, settings_rows, NEEDS_LOCAL_NODE, NEEDS_NODE, NEEDS_RECOVERY_PHRASE, NEEDS_SENDING_NODE,
 };
 use crate::exchange_io::env;
+use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::ChainSource;
 
 #[test]
@@ -56,8 +57,9 @@ fn a_local_source_on_another_machine_is_refused_as_remote() {
 
 #[test]
 fn the_bitcoind_login_is_shown_only_as_set_changed_or_cleared() {
-    let old = env::validate("", "", &[], None).unwrap();
+    let old = env::validate(Network::Regtest, "", "", &[], None).unwrap();
     let new = env::validate(
+        Network::Regtest,
         "https://relay.example",
         "",
         &["bitcoind+http://127.0.0.1:18443".into()],
@@ -68,6 +70,7 @@ fn the_bitcoind_login_is_shown_only_as_set_changed_or_cleared() {
     assert!(rows.contains("set"));
     assert!(!rows.contains("secretpass"), "{rows}");
     let changed = env::validate(
+        Network::Regtest,
         "https://relay.example",
         "",
         &["bitcoind+http://127.0.0.1:18443".into()],
@@ -83,9 +86,17 @@ fn the_bitcoind_login_is_shown_only_as_set_changed_or_cleared() {
 
 #[test]
 fn settings_refuse_cleartext_to_another_host_and_logins_in_urls() {
-    assert!(env::validate("http://relay.example", "", &[], None).is_err());
-    assert!(env::validate("", "", &["http://mempool.example/api".into()], None).is_err());
+    assert!(env::validate(Network::Regtest, "http://relay.example", "", &[], None).is_err());
     assert!(env::validate(
+        Network::Regtest,
+        "",
+        "",
+        &["http://mempool.example/api".into()],
+        None
+    )
+    .is_err());
+    assert!(env::validate(
+        Network::Regtest,
         "",
         "",
         &["bitcoind+http://u:p@127.0.0.1:18443".into()],
@@ -93,13 +104,47 @@ fn settings_refuse_cleartext_to_another_host_and_logins_in_urls() {
     )
     .is_err());
     assert!(env::validate(
+        Network::Regtest,
         "http://127.0.0.1:8787",
         "",
         &["bitcoind+http://127.0.0.1:18443".into()],
         None
     )
     .is_ok());
-    assert!(env::validate("", "", &vec!["https://a.example".to_string(); 6], None).is_err());
+    assert!(env::validate(
+        Network::Regtest,
+        "",
+        "",
+        &vec!["https://a.example".to_string(); 6],
+        None
+    )
+    .is_err());
+}
+
+#[test]
+fn a_mainnet_lock_needs_two_sources_and_the_settings_say_so() {
+    use crate::exchange_io::btc_observe::enough_sources;
+    assert!(enough_sources(Network::Main, 1).is_err());
+    assert!(enough_sources(Network::Testnet, 1).is_err());
+    assert!(enough_sources(Network::Main, 2).is_ok());
+    assert!(enough_sources(Network::Regtest, 1).is_ok());
+    let one = vec!["https://a.example/api".to_string()];
+    let e = env::validate(Network::Main, "", "", &one, None)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("at least 2"), "{e}");
+    assert!(env::validate(Network::Regtest, "", "", &one, None).is_ok());
+    let two = vec![
+        "https://a.example/api".into(),
+        "https://b.example/api".into(),
+    ];
+    assert!(env::validate(Network::Main, "", "", &two, None).is_ok());
+    // An empty list is the defaults, which hold two.
+    assert!(env::validate(Network::Main, "", "", &[], None).is_ok());
+    assert_eq!(
+        crate::exchange_io::btc_source::default_sources(Network::Main).len(),
+        2
+    );
 }
 
 #[test]

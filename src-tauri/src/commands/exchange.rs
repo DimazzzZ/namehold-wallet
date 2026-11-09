@@ -170,6 +170,7 @@ pub async fn exchange_update_settings(
 ) -> Result<ExchangeOverview, AppError> {
     let ctx = draft_ctx::load_ctx(&state)?;
     let new = env::validate(
+        ctx.network,
         &relay_url,
         &watchtower_url,
         &btc_sources,

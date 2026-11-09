@@ -144,8 +144,11 @@ fn check_url(what: &str, v: &str) -> Result<(), AppError> {
     })
 }
 
-/// Validate what the user typed; returns it normalized (trimmed).
+/// Validate what the user typed; returns it normalized (trimmed). An empty
+/// source list means the network's defaults; a list that is given must
+/// hold the policy's number of sources (`btc_observe::enough_sources`).
 pub fn validate(
+    network: Network,
     relay: &str,
     watchtower: &str,
     sources: &[String],
@@ -168,6 +171,9 @@ pub fn validate(
         return Err(AppError::InvalidInput(format!(
             "at most {MAX_SOURCES} Bitcoin sources"
         )));
+    }
+    if !sources.is_empty() {
+        crate::exchange_io::btc_observe::enough_sources(network, sources.len())?;
     }
     for s in &sources {
         check_url("Bitcoin source", s.strip_prefix("bitcoind+").unwrap_or(s))?;

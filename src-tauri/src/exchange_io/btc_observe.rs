@@ -19,7 +19,9 @@ use crate::exchange_io::btc_source::{BtcSource, Outspend};
 use crate::noncustodial::exchange::btc_htlc;
 use crate::noncustodial::exchange::btc_spv::{self, InclusionProof};
 use crate::noncustodial::exchange::engine::{BtcLockSeen, BtcSeen, Holdings, SpendSeen};
+use crate::noncustodial::exchange::policy::Policy;
 use crate::noncustodial::exchange::script;
+use crate::noncustodial::network::Network;
 
 /// The txids of `h`'s own presigned spends of the BTC lock (the witness is
 /// not part of a txid, so a claim's txid is known before its secret).
@@ -71,9 +73,26 @@ async fn proven_confirmations(
     Ok((v.confirmations, Some(block)))
 }
 
+/// Spec §1 and §3.6: a lock is proven from at least the policy's number of
+/// sources (two on mainnet and testnet), every one agreeing. The one rule
+/// for the settings and for every observation.
+pub fn enough_sources(network: Network, configured: usize) -> Result<(), AppError> {
+    let need = Policy::for_network(network).min_btc_sources;
+    if configured < need {
+        return Err(AppError::InvalidInput(format!(
+            "the exchange needs at least {need} independent Bitcoin sources on {}; {configured} configured",
+            network.display_name()
+        )));
+    }
+    Ok(())
+}
+
 /// The view of `h`'s BTC lock. `Ok(BtcSeen { lock: None })` when no
 /// source knows the lock transaction yet.
 pub async fn observe(sources: &[Box<dyn BtcSource>], h: &Holdings) -> Result<BtcSeen, AppError> {
+    let t = &h.terms;
+    let network = t.network()?;
+    enough_sources(network, sources.len())?;
     let Some(first) = sources.first() else {
         return Err(AppError::InvalidInput(
             "no Bitcoin source is configured".into(),
@@ -82,8 +101,6 @@ pub async fn observe(sources: &[Box<dyn BtcSource>], h: &Holdings) -> Result<Btc
     for src in sources {
         src.ready().await?;
     }
-    let t = &h.terms;
-    let network = t.network()?;
     let bp = t.btc_params()?;
     let (tip, mtp) = first.tip().await?;
     let Some(lock_ref) = &h.btc_lock else {
