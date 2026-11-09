@@ -139,8 +139,20 @@ pub async fn tick(
             None => None,
         };
         let mut h = job.holdings(sent);
+        // The operator configured this node for the watchtower to send
+        // through, wherever it runs, so the remote opt-in the send gates read
+        // is given; their chain check repeats `node_on_network` above.
+        let own_node = std::collections::HashMap::from([(
+            crate::noncustodial::rpc::ALLOW_REMOTE_BROADCAST_KEY.to_owned(),
+            "true".to_owned(),
+        )]);
+        let hns_io = node.map(|n| runner::HnsIo {
+            node: n,
+            settings: &own_node,
+            network,
+        });
         let report = runner::run_step(
-            node,
+            hns_io.as_ref(),
             nio.sources,
             &mut h,
             now,

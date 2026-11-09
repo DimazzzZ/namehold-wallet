@@ -410,8 +410,13 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
     st.holdings = Some(sc.holdings.clone());
     st.hns_lock = Some((sc.hns_lock.txid.clone(), sc.hns_lock.vout));
     assert!(store::commit_trade(&conn, &mut st, now()).unwrap());
+    let hns_io = runner::HnsIo {
+        node: &node,
+        settings: &std::collections::HashMap::new(),
+        network: NET,
+    };
     assert!(
-        runner::send_hns(&node, &funding.to_hex()).await.unwrap(),
+        runner::send_hns(&hns_io, &funding.to_hex()).await.unwrap(),
         "hsd took the HNS lock"
     );
     node.generate_to_address(1, &miner()).await.unwrap();

@@ -22,42 +22,14 @@ use crate::noncustodial::exchange::relay_msg::{
 use crate::noncustodial::exchange::{btc_account, btc_htlc, commit, hns_htlc, keys, price, review};
 use crate::noncustodial::network::Network;
 
-use crate::noncustodial::rpc;
 use crate::noncustodial::session::{session_ttl_ms, SignerSession};
-use crate::providers::WriteCapability;
 use crate::AppState;
 
-/// R17: the sentences every entry point shows (`src/lib/exchangeText.ts`).
-pub const NEEDS_RECOVERY_PHRASE: &str =
-    "The exchange needs a wallet whose recovery phrase is on this computer: a Ledger or watch-only wallet cannot sign a trade.";
-pub const NEEDS_NODE: &str = "The exchange needs a node: an explorer cannot check a lock.";
-pub const NEEDS_LOCAL_NODE: &str =
-    "The exchange needs a node on this computer: a remote node could show a fake lock and learn your secret.";
-pub const NEEDS_SENDING_NODE: &str =
-    "The exchange needs Namehold's local node, or your own hsd on this computer, able to send.";
-
-/// Why the exchange is refused for this profile and node, or `None`.
-pub fn refusal(
-    profile_kind: &str,
-    source: rpc::ChainSource,
-    can_send: bool,
-) -> Option<&'static str> {
-    if profile_kind != "mnemonic_hot" {
-        return Some(NEEDS_RECOVERY_PHRASE);
-    }
-    if source == rpc::ChainSource::Explorer {
-        return Some(NEEDS_NODE);
-    }
-    // Review M3: the Buyer reveals on the word of the node it reads, so that
-    // node must be its own.
-    if source == rpc::ChainSource::RemoteNode {
-        return Some(NEEDS_LOCAL_NODE);
-    }
-    if !can_send {
-        return Some(NEEDS_SENDING_NODE);
-    }
-    None
-}
+/// R17: the rule and its sentences live in `exchange_io::env`, so the sync
+/// step applies the same one; re-exported for the tests and the overview.
+pub use crate::exchange_io::env::{
+    refusal, NEEDS_LOCAL_NODE, NEEDS_NODE, NEEDS_RECOVERY_PHRASE, NEEDS_SENDING_NODE,
+};
 
 /// The paired Bitcoin network as the contract spells it.
 pub fn btc_network_name(n: Network) -> &'static str {
@@ -96,19 +68,10 @@ fn with_signer<T>(
     f(session)
 }
 
-fn can_send(ctx: &Ctx) -> bool {
-    WriteCapability::evaluate(
-        true,
-        rpc::send_source(ctx.node.source(), ctx.node.node_url()),
-        rpc::remote_broadcast_allowed(&ctx.settings),
-    )
-    .broadcaster_available
-}
-
 /// The context of a command that may trade: the gates of R17 passed.
 fn trading_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
     let ctx = draft_ctx::load_ctx(state)?;
-    if let Some(r) = refusal(&ctx.profile_kind, ctx.node.source(), can_send(&ctx)) {
+    if let Some(r) = env::node_refusal(&ctx.profile_kind, &ctx.node, &ctx.settings) {
         return Err(AppError::InvalidInput(r.into()));
     }
     Ok(ctx)
@@ -138,10 +101,9 @@ pub struct ExchangeOverview {
 pub(crate) fn overview_from(
     conn: &rusqlite::Connection,
     ctx: &Ctx,
-    can_send: bool,
 ) -> Result<ExchangeOverview, AppError> {
     let cfg = env::config(&ctx.settings, ctx.network);
-    let r = refusal(&ctx.profile_kind, ctx.node.source(), can_send);
+    let r = env::node_refusal(&ctx.profile_kind, &ctx.node, &ctx.settings);
     Ok(ExchangeOverview {
         network: ctx.network.as_str().to_owned(),
         available: r.is_none(),
@@ -160,7 +122,7 @@ pub(crate) fn overview_from(
 pub async fn exchange_overview(state: State<'_, AppState>) -> Result<ExchangeOverview, AppError> {
     let ctx = draft_ctx::load_ctx(&state)?;
     let conn = lock(&state)?;
-    overview_from(&conn, &ctx, can_send(&ctx))
+    overview_from(&conn, &ctx)
 }
 
 /// Store the BTC account's and the swap branch's public keys (needs the
@@ -191,7 +153,7 @@ pub async fn exchange_enable(state: State<'_, AppState>) -> Result<ExchangeOverv
         },
         now(),
     )?;
-    overview_from(&conn, &ctx, true)
+    overview_from(&conn, &ctx)
 }
 
 // ---------------------------------------------------------------- settings
@@ -217,7 +179,7 @@ pub async fn exchange_update_settings(
     let rows = settings_rows(&old, &new);
     if rows.is_empty() {
         let conn = lock(&state)?;
-        return overview_from(&conn, &ctx, can_send(&ctx));
+        return overview_from(&conn, &ctx);
     }
     crate::commands::secure_confirm::confirm_rows(
         &app,
@@ -236,7 +198,7 @@ pub async fn exchange_update_settings(
         put(env::BITCOIND_AUTH_KEY, a)?;
     }
     let ctx = draft_ctx::load_ctx(&state)?;
-    overview_from(&conn, &ctx, can_send(&ctx))
+    overview_from(&conn, &ctx)
 }
 
 /// One row per changed setting; the bitcoind login only as set/changed/cleared.
@@ -1375,7 +1337,12 @@ async fn seller_commit(
             ));
         }
     }
-    match runner::send_hns(&ctx.node, &funding_hex).await {
+    let hns_io = runner::HnsIo {
+        node: &ctx.node,
+        settings: &ctx.settings,
+        network: ctx.network,
+    };
+    match runner::send_hns(&hns_io, &funding_hex).await {
         Ok(true) => {}
         Ok(false) => {
             t.last_error = Some(

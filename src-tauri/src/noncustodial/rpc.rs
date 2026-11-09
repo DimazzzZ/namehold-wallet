@@ -364,9 +364,12 @@ pub fn is_not_in_mempool(e: &AppError) -> bool {
 /// off). Only meaningful when the chain source is [`ChainSource::RemoteNode`];
 /// both the UI gate (`get_write_capability`) and the broadcast boundary
 /// (`broadcast_tx_draft`) consult this same rule.
+/// The setting that opts in to sending through a remote node.
+pub const ALLOW_REMOTE_BROADCAST_KEY: &str = "allow_remote_broadcast";
+
 pub fn remote_broadcast_allowed(settings: &HashMap<String, String>) -> bool {
     settings
-        .get("allow_remote_broadcast")
+        .get(ALLOW_REMOTE_BROADCAST_KEY)
         .map(|s| s.trim() == "true")
         .unwrap_or(false)
 }

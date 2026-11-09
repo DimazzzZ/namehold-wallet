@@ -99,6 +99,39 @@ fn the_sync_step_runs_the_exchange_step() {
     assert!(sync.contains("crate::exchange_io::env::sync_step(db_path, profile_id)"));
 }
 
+/// The step applies the same node rule as the commands before it reads or
+/// sends through a node (SECURITY.md "The HNS node must be local"), and
+/// every HNS send goes through `send_hns`, which runs the broadcast gates.
+#[test]
+fn the_sync_step_applies_the_node_rule_and_sends_only_through_the_gates() {
+    let env = include_str!("../exchange_io/env.rs");
+    let step = &env[env.find("pub async fn sync_step").unwrap()..];
+    assert!(step.contains("node_refusal(&kind, n, &settings)"), "{step}");
+    let runner = include_str!("../exchange_io/runner.rs");
+    let send = &runner[runner.find("pub async fn send_hns").unwrap()..];
+    let send = &send[..send.find("\n}\n").unwrap()];
+    assert!(send.contains("rpc::broadcast_gates("), "{send}");
+    for (file, src) in [
+        ("job.rs", include_str!("../exchange_io/job.rs")),
+        (
+            "watchtower.rs",
+            include_str!("../relay_server/watchtower.rs"),
+        ),
+        (
+            "commands/exchange.rs",
+            include_str!("../commands/exchange.rs"),
+        ),
+    ] {
+        for (n, line) in code_lines(src) {
+            assert!(
+                !line.contains("send_raw_transaction("),
+                "{file}:{}: an HNS send outside send_hns",
+                n + 1
+            );
+        }
+    }
+}
+
 #[test]
 fn a_watch_job_has_no_field_for_a_secret_or_a_claim_of_the_buyer() {
     let watch = include_str!("../noncustodial/exchange/watch.rs");

@@ -22,6 +22,59 @@ pub const BITCOIND_AUTH_KEY: &str = "exchange_bitcoind_rpc_auth";
 /// The most Bitcoin sources one network may list.
 pub const MAX_SOURCES: usize = 5;
 
+/// R17: the sentences every entry point shows (`src/lib/exchangeText.ts`).
+pub const NEEDS_RECOVERY_PHRASE: &str =
+    "The exchange needs a wallet whose recovery phrase is on this computer: a Ledger or watch-only wallet cannot sign a trade.";
+pub const NEEDS_NODE: &str = "The exchange needs a node: an explorer cannot check a lock.";
+pub const NEEDS_LOCAL_NODE: &str =
+    "The exchange needs a node on this computer: a remote node could show a fake lock and learn your secret.";
+pub const NEEDS_SENDING_NODE: &str =
+    "The exchange needs Namehold's local node, or your own hsd on this computer, able to send.";
+
+/// Why the exchange is refused for this profile and node, or `None`.
+/// `source` is the effective one (`rpc::send_source`): a "local" source
+/// whose URL is not this machine is a remote node.
+pub fn refusal(
+    profile_kind: &str,
+    source: crate::noncustodial::rpc::ChainSource,
+    can_send: bool,
+) -> Option<&'static str> {
+    use crate::noncustodial::rpc::ChainSource;
+    if profile_kind != "mnemonic_hot" {
+        return Some(NEEDS_RECOVERY_PHRASE);
+    }
+    if source == ChainSource::Explorer {
+        return Some(NEEDS_NODE);
+    }
+    // Review M3: the Buyer reveals on the word of the node it reads, so that
+    // node must be its own.
+    if source == ChainSource::RemoteNode {
+        return Some(NEEDS_LOCAL_NODE);
+    }
+    if !can_send {
+        return Some(NEEDS_SENDING_NODE);
+    }
+    None
+}
+
+/// [`refusal`] for a node and the settings: the one rule the commands and
+/// the sync step apply (SECURITY.md "The HNS node must be local").
+pub fn node_refusal(
+    profile_kind: &str,
+    node: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    settings: &HashMap<String, String>,
+) -> Option<&'static str> {
+    use crate::noncustodial::rpc;
+    let source = rpc::send_source(node.source(), node.node_url());
+    let can_send = crate::providers::WriteCapability::evaluate(
+        true,
+        source,
+        rpc::remote_broadcast_allowed(settings),
+    )
+    .broadcaster_available;
+    refusal(profile_kind, source, can_send)
+}
+
 pub fn key(base: &str, network: Network) -> String {
     format!("{base}.{}", network.as_str())
 }
@@ -202,7 +255,23 @@ pub async fn sync_step(db_path: &str, profile_id: &str) {
     };
     let relay = relay(&cfg).ok().flatten();
     let watch = watchtower(&cfg).ok().flatten();
-    let node = crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, profile_id).ok();
+    // The same gate as the commands (R17): a profile moved to a remote node
+    // after its Commit must not reveal on that node's word, so the step runs
+    // without an HNS node and the trade reads "can't check the HNS chain".
+    let kind = crate::db::queries::get_wallet_profile(&conn, profile_id)
+        .ok()
+        .flatten()
+        .map(|p| p.kind)
+        .unwrap_or_default();
+    let node = crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, profile_id)
+        .ok()
+        .filter(|n| match node_refusal(&kind, n, &settings) {
+            None => true,
+            Some(why) => {
+                eprintln!("exchange: {profile_id}: HNS not read or sent this step: {why}");
+                false
+            }
+        });
     let now = now_secs();
     let ctx = crate::exchange_io::job::Ctx {
         conn: &conn,

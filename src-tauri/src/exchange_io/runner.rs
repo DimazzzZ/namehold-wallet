@@ -6,14 +6,30 @@
 //! with the txid whatever its mempool does, so an HNS send is reported sent
 //! only once the node has the transaction (`taken_by_node_with_client`).
 //! A Bitcoin send goes to every source, and is sent once one accepts it.
+//!
+//! Every HNS send passes `rpc::broadcast_gates` first, like every other send
+//! of the wallet (CODING_STANDARDS §Rust layering): a read-only source, a
+//! remote node without the opt-in, or a node on another chain sends nothing.
+
+use std::collections::HashMap;
 
 use crate::error::AppError;
 use crate::exchange_io::btc_source::BtcSource;
 use crate::exchange_io::{btc_observe, hns_observe};
 use crate::noncustodial::exchange::engine::{self, Action, Holdings, SpendKind, Step};
 use crate::noncustodial::exchange::policy::Policy;
+use crate::noncustodial::network::Network;
 use crate::noncustodial::node_rpc::NodeRpc;
+use crate::noncustodial::rpc;
 use crate::noncustodial::tx_evidence::{taken_by_node_with_client, Taken};
+
+/// The HNS node a step reads and sends through, with what the send gates
+/// need: the settings (the remote-node opt-in) and the trade's network.
+pub struct HnsIo<'a> {
+    pub node: &'a dyn NodeRpc,
+    pub settings: &'a HashMap<String, String>,
+    pub network: Network,
+}
 
 /// What a step did, for the trade's record and the screen.
 #[derive(Debug, Default)]
@@ -25,8 +41,11 @@ pub struct StepReport {
     pub sent: Vec<SpendKind>,
 }
 
-/// Send one HNS transaction; `Ok(true)` when the node took it.
-pub async fn send_hns(node: &dyn NodeRpc, tx_hex: &str) -> Result<bool, AppError> {
+/// Send one HNS transaction; `Ok(true)` when the node took it. Refused by
+/// the gates before anything reaches the node.
+pub async fn send_hns(io: &HnsIo<'_>, tx_hex: &str) -> Result<bool, AppError> {
+    rpc::broadcast_gates(io.node, io.settings, Some(io.network.as_str())).await?;
+    let node = io.node;
     let raw = hex::decode(tx_hex).map_err(|_| AppError::InvalidInput("tx is not hex".into()))?;
     let txid = crate::noncustodial::tx::Transaction::decode(&raw)?.txid();
     // Already known (mempool or chain): nothing to send.
@@ -61,16 +80,16 @@ pub async fn send_btc(sources: &[Box<dyn BtcSource>], tx_hex: &str) -> Result<()
 /// Read, decide, send. `h.sent` is updated for every kind the chains took;
 /// the caller stores `h` and the report.
 pub async fn run_step(
-    node: Option<&dyn NodeRpc>,
+    hns_io: Option<&HnsIo<'_>>,
     sources: &[Box<dyn BtcSource>],
     h: &mut Holdings,
     now: u64,
     p: &Policy,
 ) -> StepReport {
     let mut report = StepReport::default();
-    let hns = match node {
-        Some(n) => match hns_observe::observe(
-            n,
+    let hns = match hns_io {
+        Some(io) => match hns_observe::observe(
+            io.node,
             &h.terms,
             h.hns_lock.as_ref(),
             h.role == crate::noncustodial::exchange::engine::Role::Seller,
@@ -96,14 +115,14 @@ pub async fn run_step(
     for a in &step.actions {
         match a {
             Action::SendHns { kind, tx_hex } => {
-                let Some(n) = node else { continue };
+                let Some(io) = hns_io else { continue };
                 // The secret may be public the moment the claim leaves: record
                 // the reveal before sending, so no later step refunds BTC on
                 // the belief that it never left.
                 if *kind == SpendKind::HnsClaim {
                     record(h, *kind, now);
                 }
-                match send_hns(n, tx_hex).await {
+                match send_hns(io, tx_hex).await {
                     Ok(true) => {
                         record(h, *kind, now);
                         report.sent.push(*kind);

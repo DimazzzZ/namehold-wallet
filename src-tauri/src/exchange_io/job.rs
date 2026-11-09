@@ -649,6 +649,13 @@ fn on_decline(ctx: &Ctx<'_>, m: &Message, reason: &str) -> Result<(), AppError> 
 
 async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
     let mut events = Vec::new();
+    // The send gates read the remote-node opt-in from the settings.
+    let settings = crate::db::queries::get_settings(ctx.conn)?;
+    let hns_io = ctx.node.map(|n| runner::HnsIo {
+        node: n,
+        settings: &settings,
+        network: ctx.network,
+    });
     for mut t in store::trades(ctx.conn, ctx.profile_id)? {
         if t.finished || t.network != ctx.network.as_str() {
             continue;
@@ -663,7 +670,8 @@ async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
             }
             continue;
         };
-        let rep = runner::run_step(ctx.node, ctx.sources, &mut h, ctx.now, &ctx.policy).await;
+        let rep =
+            runner::run_step(hns_io.as_ref(), ctx.sources, &mut h, ctx.now, &ctx.policy).await;
         let Some(step) = rep.step else { continue };
         let before = t.status.clone();
         let mut new_events = Vec::new();

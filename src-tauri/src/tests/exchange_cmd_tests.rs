@@ -31,6 +31,29 @@ fn every_refusal_has_its_own_sentence() {
     assert_eq!(refusal("mnemonic_hot", ChainSource::LocalNode, true), None);
 }
 
+/// A "local" source whose URL is another machine is a remote node to the
+/// gates (`rpc::send_source`), and so to the exchange: `node_refusal` judges
+/// the effective source, the commands and the sync step both ask it.
+#[test]
+fn a_local_source_on_another_machine_is_refused_as_remote() {
+    use super::mock_node_rpc::MockNodeRpc;
+    use crate::exchange_io::env::node_refusal;
+    let settings = std::collections::HashMap::new();
+    let mut far = MockNodeRpc::new().with_source(ChainSource::LocalNode);
+    far.node_url = "http://10.0.0.5:14037".into();
+    assert_eq!(
+        node_refusal("mnemonic_hot", &far, &settings),
+        Some(NEEDS_LOCAL_NODE)
+    );
+    let mut here = MockNodeRpc::new().with_source(ChainSource::LocalNode);
+    here.node_url = "http://127.0.0.1:14037".into();
+    assert_eq!(node_refusal("mnemonic_hot", &here, &settings), None);
+    assert_eq!(
+        node_refusal("watch_only", &here, &settings),
+        Some(NEEDS_RECOVERY_PHRASE)
+    );
+}
+
 #[test]
 fn the_bitcoind_login_is_shown_only_as_set_changed_or_cleared() {
     let old = env::validate("", "", &[], None).unwrap();
