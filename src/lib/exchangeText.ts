@@ -132,6 +132,8 @@ export const NO_OFFERS = "You have no offers. Make one to let others trade with 
 
 // --- The BTC account ---
 
+/** An amount of the BTC account the Bitcoin source did not give. */
+export const BTC_NOT_READ_TEXT = "Not read";
 export const BTC_NOT_ENABLED_TEXT =
   "Enable the exchange to get a Bitcoin account made from this wallet's recovery phrase.";
 export const WITHDRAW_NO_ADDRESS = "Enter a Bitcoin address";

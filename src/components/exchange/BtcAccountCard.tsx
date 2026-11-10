@@ -17,6 +17,7 @@ import {
 import { exchangeTimeText } from "../../lib/exchangeStatus";
 import {
   BTC_NOT_ENABLED_TEXT,
+  BTC_NOT_READ_TEXT,
   SECURE_WINDOW_WAIT,
   WITHDRAW_ABOVE_BALANCE,
   WITHDRAW_NO_ADDRESS,
@@ -24,7 +25,18 @@ import {
 import type { BtcWithdrawArgs } from "../../queries/exchange";
 import type { BtcBalance } from "../../types/exchange";
 
-function Amount({ label, sats, testId }: { label: string; sats: number; testId: string }) {
+/** `sats` null: the amount was not read (the source failed), which is not zero. */
+function Amount({ label, sats, testId }: { label: string; sats: number | null; testId: string }) {
+  if (sats === null) {
+    return (
+      <div className="flex items-baseline justify-between gap-3">
+        <dt className="text-gray-500">{label}</dt>
+        <dd className="text-right text-gray-500" data-testid={testId}>
+          {BTC_NOT_READ_TEXT}
+        </dd>
+      </div>
+    );
+  }
   return (
     <div className="flex items-baseline justify-between gap-3">
       <dt className="text-gray-500">{label}</dt>
@@ -80,7 +92,9 @@ export function BtcWithdrawDialog({
   const [form, setForm] = useState({ address: "", amount: "", everything: false });
   const [touched, setTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const check = checkWithdraw(form, balance?.confirmedSats ?? null);
+  // A balance the source did not give is unknown, not 0: no "more than your
+  // confirmed balance of 0 sats" on a failed read.
+  const check = checkWithdraw(form, balance && !balance.error ? balance.confirmedSats : null);
   const set = (patch: Partial<typeof form>) => {
     setForm((f) => ({ ...f, ...patch }));
     setError(null);
@@ -191,7 +205,9 @@ export function BtcAccountCard({
   return (
     <Card
       title="BTC account"
-      subtitle={checked ? `Checked ${checked}` : undefined}
+      subtitle={
+        checked ? `${balance?.error ? "Last check failed" : "Checked"} ${checked}` : undefined
+      }
       actions={
         <GatedButton
           size="sm"
@@ -218,8 +234,18 @@ export function BtcAccountCard({
         ) : balance ? (
           <>
             <dl className="space-y-2">
-              <Amount label="Confirmed" sats={balance.confirmedSats} testId="btc-confirmed" />
-              <Amount label="Unconfirmed" sats={balance.unconfirmedSats} testId="btc-unconfirmed" />
+              {/* The command sends 0 with an error when no source answered: that is
+                  "not read", never an empty account (QA 2026-11-09, Q2). */}
+              <Amount
+                label="Confirmed"
+                sats={balance.error ? null : balance.confirmedSats}
+                testId="btc-confirmed"
+              />
+              <Amount
+                label="Unconfirmed"
+                sats={balance.error ? null : balance.unconfirmedSats}
+                testId="btc-unconfirmed"
+              />
               <Amount
                 label="Locked in trades"
                 sats={balance.lockedInTradesSats}

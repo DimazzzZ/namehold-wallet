@@ -586,8 +586,8 @@ describe("Exchange page: My trades", () => {
 });
 
 describe("Exchange page: BTC account", () => {
-  it("shows the balances, the receive address and the source's error", async () => {
-    mock({ balance: makeBtcBalance({ error: "mempool.example did not answer" }) });
+  it("shows the balances and the receive address", async () => {
+    mock({ balance: makeBtcBalance() });
     renderPage();
     expect(await screen.findByTestId("btc-confirmed")).toHaveTextContent(
       "0.01250000 BTC1,250,000 sats",
@@ -598,9 +598,30 @@ describe("Exchange page: BTC account", () => {
       "bcrt1qexchangereceive0000000000000000000000",
     );
     expect(screen.getByTestId("btc-receive-copy")).toBeEnabled();
-    expect(screen.getByTestId("btc-source-error")).toHaveTextContent(
-      "mempool.example did not answer",
-    );
+    expect(screen.queryByTestId("btc-source-error")).toBeNull();
+    expect(screen.getByText(/^Checked /)).toBeInTheDocument();
+  });
+
+  // The command answers a failed source with 0, 0 and the error (QA Q2): the
+  // card must not show an empty account.
+  it("shows amounts the source did not give as not read, never as zero", async () => {
+    mock({
+      balance: makeBtcBalance({
+        confirmedSats: 0,
+        unconfirmedSats: 0,
+        error: "Bitcoin source http://127.0.0.1:18443/: error sending request",
+      }),
+    });
+    renderPage();
+    expect(await screen.findByTestId("btc-confirmed")).toHaveTextContent("Not read");
+    expect(screen.getByTestId("btc-confirmed")).not.toHaveTextContent("0 sats");
+    expect(screen.getByTestId("btc-unconfirmed")).toHaveTextContent("Not read");
+    // Locked in trades comes from the stored trades, not from the source.
+    expect(screen.getByTestId("btc-locked")).toHaveTextContent("300,000 sats");
+    expect(screen.getByTestId("btc-source-error")).toHaveTextContent("error sending request");
+    expect(screen.getByText(/^Last check failed /)).toBeInTheDocument();
+    expect(screen.queryByText(/^Checked /)).toBeNull();
+    expect(screen.getByTestId("btc-receive-address")).toHaveTextContent("bcrt1q");
   });
 
   it("shows a dash for a balance past 2^53 instead of a wrong number", async () => {
