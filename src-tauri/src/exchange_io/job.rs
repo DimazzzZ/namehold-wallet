@@ -203,6 +203,17 @@ async fn heartbeat(ctx: &Ctx<'_>, relay: &dyn Relay) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Whether a trade takes one of its offer's [`MAX_OPEN_PER_OFFER`] slots:
+/// it is still negotiating or awaiting the Buyer's Commit. A trade that
+/// ended frees its slot at once, not when it stops being followed
+/// ([`FOLLOW_AFTER_END_SECS`] later): three takes left to expire would
+/// otherwise close the offer to everyone for a day (QA 2026-11-10, Q5).
+pub fn holds_a_slot(t: &Trade) -> bool {
+    !t.finished
+        && !t.status.as_ref().is_some_and(Status::is_terminal)
+        && t.holdings.as_ref().is_none_or(|h| !h.committed)
+}
+
 /// Every relay key this profile reads: its live offers' and its open
 /// trades'.
 fn inbox_keys(ctx: &Ctx<'_>) -> Result<Vec<(String, Option<String>)>, AppError> {
@@ -325,12 +336,8 @@ async fn on_take(
         )
     };
     let open = store::trades(ctx.conn, ctx.profile_id)?
-        .into_iter()
-        .filter(|t| {
-            t.offer.offer.id() == o.id
-                && !t.finished
-                && t.holdings.as_ref().is_none_or(|h| !h.committed)
-        })
+        .iter()
+        .filter(|t| t.offer.offer.id() == o.id && holds_a_slot(t))
         .count();
     if open >= MAX_OPEN_PER_OFFER {
         relay

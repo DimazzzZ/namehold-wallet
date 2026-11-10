@@ -192,3 +192,24 @@ async fn a_committed_buyer_announces_its_btc_lock_again_while_the_seller_waits()
         "{sent:?}"
     );
 }
+
+/// An offer's three slots are for trades still negotiating or awaiting the
+/// Buyer's Commit. One that expired is followed for a day more, and must
+/// not hold its slot for that day (QA 2026-11-10, Q5).
+#[test]
+fn an_ended_trade_frees_its_offers_slot_at_once() {
+    use crate::exchange_io::job::holds_a_slot;
+    let mut t = new_trade();
+    assert!(holds_a_slot(&t), "awaiting the Buyer's Commit");
+    t.holdings = None;
+    assert!(holds_a_slot(&t), "negotiating");
+    t.status = Some(Status::Expired);
+    assert!(!t.finished);
+    assert!(!holds_a_slot(&t), "expired, still followed");
+    t.status = None;
+    t.holdings = Some(fx::trade().buyer());
+    assert!(!holds_a_slot(&t), "committed");
+    t.holdings = None;
+    t.finished = true;
+    assert!(!holds_a_slot(&t), "finished");
+}
