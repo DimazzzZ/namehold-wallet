@@ -69,7 +69,7 @@ Steps:
 1. As E17 steps 1–4 (the Buyer takes OS for `2.5` HNS: 25 000 sats; commits). Note `TERMS`, `BTC_LOCK`, `BTC_TX`.
 2. Quit the app. `pgrep -fl namehold-wallet` prints nothing (mode B: no `debug/namehold-wallet`); `pgrep -fl namehold-syncd` still prints the daemon.
 3. `bmine 1`. Wait 3 minutes.
-4. Start the app; make the Seller active; before pressing anything read its card. Unlock; `Confirm and sign` → `Confirm & Sign` (record `HNS_LOCK`, `SELLER_BTC`). After the toast, wait until its card reads "Registered with the watchtower" (press `Refresh`), then quit the app at once. Check as in step 2.
+4. Start the app (wait until the page has rendered: a window opened before the frontend answers stays white, restart it then); make the Seller active; before pressing anything read its card. Unlock; `Confirm and sign` → `Confirm & Sign` (record `HNS_LOCK`, `SELLER_BTC`). After the toast, wait until its card reads "Registered with the watchtower" (press `Refresh`), then quit the app at once. Check as in step 2.
 5. `mine 1` (HNS). Wait up to 3 minutes. `hns_at "$HNS_LOCK"`; `btc_spender $BTC_TX 0`. Check as in step 2 that the app is still not running.
 6. `mine 1`; `bmine 1`. Wait 2 minutes. Start the app; read both cards (switch profiles) before any `Refresh`.
 

@@ -7,7 +7,7 @@ requires:
   - procedures/exchange-time-travel.md
   - procedures/switch-profile.md
   - scenarios/exchange/trades.md (E17's steps and checks)
-last_verified: "not run yet (written against 0fa8629)"
+last_verified: "E26 (a)(b) ✅ (finding 22 seen), E27 (b) ✅ on 5c6c57a (2026-11-10); E26 (c), E27 (a)(c), E28–E34 not run yet"
 ---
 
 # Cancelling, crashes, outages and restarts
@@ -23,6 +23,7 @@ The order of a Commit (`commands/exchange.rs`, module docs): everything the part
 
 Steps:
 
+0. Optional: with the Buyer's signer locked, `Take` OS for `1` → `Take offer`; read the dialog and My trades (no trade may appear; record the dialog's line). Unlock.
 1. (a) The Buyer takes OS for `1`; once the card reads "Confirm to start the trade", press `Cancel`. Read the toast and the card. Switch to the Seller; within 3 minutes read its card for this trade.
 2. (b) The Buyer takes OS for `1` and presses `Cancel` at once, while the card still says "Agreeing on the terms with the other side's Namehold. Nothing is signed yet."
 3. (c) The Buyer takes OS for `2.5`, commits; `bmine 1`. The Seller: on "Confirm to lock your HNS" press `Cancel`. Read both cards over the next 3 minutes. Then let it run like [E20](refunds-and-safety.md#e20--the-seller-never-commits-the-buyers-btc-comes-back-never-earlier) from its step 3 (the Buyer's BTC comes back after its time).
@@ -31,8 +32,9 @@ Steps:
 
 Expected:
 
+- Step 0: no trade is created with the signer locked (unverified wording of the refusal).
 - (a) Toast "Trade cancelled". The card: "Trade expired", "The trade ended before either side locked any coins.", no `Cancel` and no `Confirm and sign`, and no "The other side declined…" line (the cancel was the user's own). The Seller's card: "Trade expired" with the red line "The other side declined: cancelled".
-- (b) The same as (a); nothing was signed. The expired card offers no `Cancel` (`canCancel` is false for an expired trade, even one whose terms were never agreed).
+- (b) The same as (a); nothing was signed, and the expired card no longer says "Agreeing on the terms with the other side's Namehold. Nothing is signed yet." (that line left under "Trade expired" is exchange QA finding 22, open: record it). The expired card offers no `Cancel` (`canCancel` is false for an expired trade, even one whose terms were never agreed).
 - (c) The Seller's card: "Trade expired", with no declined line. The Buyer's card ignores the decline after its Commit: it keeps "Waiting for the seller to confirm" (no declined line), and later goes "Waiting to take your BTC back" → "Your BTC is back" as E20.
 - (d) No `Cancel` on either card once that party has committed. The inspector call is refused with "Invalid input: you have locked coins in this trade: it ends on the chains, by a claim or a refund"; the card is unchanged.
 - Step 5: no transaction from (a) or (b); in (c) only the Buyer's BTC lock (and later its refund).

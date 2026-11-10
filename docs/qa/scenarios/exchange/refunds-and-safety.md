@@ -7,7 +7,7 @@ requires:
   - procedures/exchange-time-travel.md
   - procedures/switch-profile.md
   - scenarios/exchange/trades.md (E17's steps and checks)
-last_verified: "E20 ✅ by RPC on 5c6c57a (2026-11-10; card texts of steps 2–5 not read); others not run yet"
+last_verified: "E20 ✅ by RPC, E22 ✅, E23 ✅ (fee rung not judged, path M), E24 ✅ on 5c6c57a (2026-11-10; some card texts and toasts not read); others not run yet"
 ---
 
 # Refunds and safety rules
@@ -122,9 +122,9 @@ Steps:
 Expected:
 
 - Step 3: "Not registered with a watchtower"; `watch_job` answers `{"error":"no such watch job"}` (404).
-- Step 5: the Buyer's card "Trade complete" (the HNS is the Buyer's; the BTC is still in its lock, unclaimed); `gettxout` returns the BTC lock coin.
+- Step 5: the Buyer's card "Trade complete", "The HNS is yours, and the seller has the BTC." (record that second sentence: here the BTC is still in its lock, so it is early) (the HNS is the Buyer's; the BTC is still in its lock, unclaimed); `gettxout` returns the BTC lock coin.
 - Step 6: the refund path is open (the Bitcoin `mediantime` is past `btcRefundTime`) and yet nothing spends `BTC_TX:0`: no transaction in `btc_spender`, the coin still in `gettxout`, the card still "Trade complete", no `sent [BtcRefund]` for `<TERMS>-buyer` in the log, and the Buyer's watch job's status `completed`. A refund here is ❌ and a blocker (the Buyer would hold both coins).
-- Step 7: the Seller's claim, `X` the same as the HNS claim's, paying `SELLER_BTC`; its fee is the highest of the Seller's `less a Bitcoin fee of <low> to <high> sats` (past the refund time the ladder goes straight to its top rung, `fees::rung_now`); the card "Trade complete".
+- Step 7 (judge the fee only on path R: under mocktime the wall clock is still before the refund time and the claim goes out at the lowest rung, which is not a finding): the Seller's claim, `X` the same as the HNS claim's, paying `SELLER_BTC`; its fee is the highest of the Seller's `less a Bitcoin fee of <low> to <high> sats` (past the refund time the ladder goes straight to its top rung, `fees::rung_now`); the card "Trade complete".
 - Passes if, once the Buyer claimed, neither its app nor its watchtower ever spends the BTC lock, however late the Seller is.
 
 - **Blocks mined:** HNS 2, BTC 13 (1 + 11 + 1)
@@ -156,7 +156,7 @@ Expected:
 - Step 4: headline "The seller locked the wrong amount" (red); "The seller's HNS lock does not match the agreed amount or script, so Namehold will not claim it and never reveals the secret. Your BTC comes back to you automatically after <BTC can go back to the buyer from>."; `HNS lock` `Not yet`.
 - Step 5: nothing ever spends the 1 HNS coin; no transaction anywhere carries a 4-item witness for this lock.
 - Step 6: "Trade expired".
-- Step 7: "Taking your BTC back", the BTC refund described above, then "Your BTC is back". The 1 HNS coin is still unspent.
+- Step 7 (the refund may be replaced by one at a higher fee before it is mined, and the relay log repeats `sent [BtcRefund]` each minute until then: record every txid and fee): "Taking your BTC back", the BTC refund described above, then "Your BTC is back". The 1 HNS coin is still unspent.
 - Passes if the Buyer neither claims a lock of another amount nor reveals the secret, and gets its BTC back.
 
 - **Blocks mined:** HNS 1, BTC 13 (1 + 11 + 1)
