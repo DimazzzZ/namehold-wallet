@@ -4,7 +4,7 @@ priority: P1–P3
 blocks: HNS 0, BTC 2
 requires:
   - procedures/exchange-setup.md
-last_verified: "E8 ❌ (finding 18), E9 ✅ on 8d904e2 (2026-11-09); E36 seen as finding 19, not run as a case"
+last_verified: "E9 ✅ on 8d904e2 (2026-11-09); E8 step 4 and E38 ✅ on 8d09fb7 (2026-11-10); E36 seen as finding 19, not run as a case"
 ---
 
 # The BTC account
@@ -95,3 +95,27 @@ Expected:
 - **Blocks mined:** HNS 0, BTC 30 (the seeding)
 - **Evidence:** screenshot `E36-2-refused`; the `estimatesmartfee` replies before and after.
 - **Cleanup / end state:** the estimator seeded.
+
+## E38 — A Bitcoin source outage does not undo ended trades
+
+- **Priority:** P2
+- **Covers:** `exchange_io/job.rs` `settled_status` (a final status is kept through a step that could not read a chain), `commands/exchange.rs` `locked_in_trades`
+- **Regression of:** exchange QA finding 23 (with the source down, refunded trades read "can't check" and their BTC counted as locked in trades again)
+- **Preconditions:** the Buyer with at least one trade that ended by a BTC refund within the last day ([E20](refunds-and-safety.md#e20--the-seller-never-commits-the-buyers-btc-comes-back-never-earlier) or [E24](refunds-and-safety.md#e24--a-wrong-amount-hns-lock-the-buyer-never-reveals)) and one that completed; no trade open (the case stops bitcoind for a minute).
+
+Steps:
+
+1. My trades: read each ended card. Read the BTC account card. `sqlite3` the run's database: `select json_extract(status_json,'$.kind') from exchange_trades where role='buyer' and committed=1 order by created_at`.
+2. `bash scripts/btc-regtest.sh stop`. `Refresh`. Read the same cards, the BTC account card and the same query.
+3. `bash scripts/btc-regtest.sh start`. `Refresh`. Read all three again. `B estimatesmartfee 2` (seed the estimator again if it lost its rate).
+
+Expected:
+
+- Step 2: every ended card keeps its headline ("Your BTC is back", "Trade complete"); the query answers the same list as in step 1 (`refunded` stays `refunded`, never `cannotCheck` or `needsAttention`); `Locked in trades` is unchanged; the BTC account reads as [E8](#e8--receive-address-and-balance) step 4 (`Not read`, "Last check failed <time>", the red line). A card may show the source's error line under its text.
+- Step 3: the same list and amounts as in step 1; no second "Exchange: coins returned" banner for a trade that had already ended (the maintainer reads it; ◐ if not watched).
+- Passes if an outage of the Bitcoin source changes no ended trade.
+
+- **Blocks mined:** HNS 0, BTC 0
+- **Evidence:** the three query outputs; screenshots `E38-2-source-down`, `E38-3-source-back`.
+- **Cleanup / end state:** bitcoind running, its fee estimator answering.
+

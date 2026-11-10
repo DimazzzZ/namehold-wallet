@@ -32,7 +32,7 @@ Procedures: [mine-and-sync](procedures/mine-and-sync.md), [switch-profile](proce
 | [wallet/speed-up.md](scenarios/wallet/speed-up.md) | Speed up (child pays for parent) of an ordinary send: the form, the secure window, refusals, the linked rows | U1 U2 U3 | P1–P2 | 3 |
 | [names/batch-and-ownership.md](scenarios/names/batch-and-ownership.md) | batch actions on 200+ names (capabilities, a series of transactions, blockers named and dropped, the fee shown), a name in transfer, a lost auction, the lock banner | N1 … N7 | P1–P3 | ~36 setup + ~45 |
 | [exchange/gates-and-settings.md](scenarios/exchange/gates-and-settings.md) | who may trade (watch-only, Ledger, Explorer, no sending), enabling, no relay, the Exchange settings and their secure window, the bitcoind login's secrecy | E1 … E7 | P1–P3 | 0 |
-| [exchange/btc-account.md](scenarios/exchange/btc-account.md) | the BTC account: receive address, balance, withdrawal and its secure window, the refusal without a fee estimate | E8 E9 E36 | P1–P3 | 0 (BTC 2) |
+| [exchange/btc-account.md](scenarios/exchange/btc-account.md) | the BTC account: receive address, balance, withdrawal and its secure window, the refusal without a fee estimate, ended trades through a source outage | E8 E9 E36 E38 | P1–P3 | 0 (BTC 2) |
 | [exchange/offers-and-taking.md](scenarios/exchange/offers-and-taking.md) | sell and buy offers, the order book on the other profile, own offers, the Take dialog and its exact BTC, withdrawing, the per-offer limit and its slots, an offer nobody renews | E10 … E16, E37 | P1–P3 | 0 |
 | [exchange/trades.md](scenarios/exchange/trades.md) | the happy path: both Commits and their secure windows, the locks, the reveal and the claim without a click, with the app closed, with either party the maker | E17 E18 E19 | P1–P2 | 6 (BTC 6) |
 | [exchange/refunds-and-safety.md](scenarios/exchange/refunds-and-safety.md) | the Seller never commits, the Buyer offline before the reveal, the Seller offline after it (the watchtower claims), the honest-wallet rule, a wrong-amount lock, the reveal deadline, a decoy coin | E20 … E25, E35 | P1–P3 | ~54 (BTC ~80) |
@@ -64,7 +64,7 @@ The exchange cases need [exchange-setup](procedures/exchange-setup.md) (mode B i
 2. E10, E11, then E14 at once: every trade case starts with a take, so a Take dialog that refuses the offers blocks them all.
 3. P1 without waiting: E1, E3, E9, E12, E17 with E26(d) folded in (between its steps 4 and 5, and after 8), E18, E26(a)(b), E27(a).
 4. P1 that wait, started back to back so one wait serves them all: E20 with [E30](scenarios/exchange/recovery.md) folded in before its Commit, E24, E26(c); then E23 (from its step 4 the daemon is off and the Buyer stays active: start it once the others no longer need a Seller click); then E22 (about 10 minutes, daemon off, Buyer active). E21 last, alone (the app and the daemon stay off until both its refunds).
-5. P2: E37; E2, E5, E7, E11's step 2, E13, E15, E19, E27(b)(c), E28, E29, E30 if not folded, E34, E31.
+5. P2: E37; E38 once a refund case has run; E2, E5, E7, E11's step 2, E13, E15, E19, E27(b)(c), E28, E29, E30 if not folded, E34, E31.
 6. P3: E16; E35; E25 alone (no HNS block for 30 minutes); E32 over everything mined; E33 in the browser mock.
 
 With real time only, the waiting group takes about 2½ hours (the BTC refunds) and a full run 4–5 hours; with mocktime on both chains, well under 2 hours. About 60 HNS blocks and 110 Bitcoin blocks in all.
