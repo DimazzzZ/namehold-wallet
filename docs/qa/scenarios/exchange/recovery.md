@@ -18,7 +18,7 @@ The order of a Commit (`commands/exchange.rs`, module docs): everything the part
 
 - **Priority:** P1
 - **Covers:** spec §9 `exchange_cancel_trade`, `src/lib/exchangeStatus.ts` `canCancel`
-- **Regression of:** exchange QA finding 7 (the user's own cancel was shown as the other side's decline)
+- **Regression of:** exchange QA finding 7 (the user's own cancel was shown as the other side's decline), exchange QA finding 22 (a take cancelled while negotiating kept the negotiating line on its expired card)
 - **Preconditions:** OS live; the Buyer unlocked. Part (d) runs on any trade after a Commit (fold it into [E17](trades.md#e17--the-happy-path-a-buyer-takes-a-sell-offer) between its steps 4 and 5, and after its step 8); its inspector step needs mode B.
 
 Steps:
@@ -34,7 +34,7 @@ Expected:
 
 - Step 0: no trade is created with the signer locked (unverified wording of the refusal).
 - (a) Toast "Trade cancelled". The card: "Trade expired", "The trade ended before either side locked any coins.", no `Cancel` and no `Confirm and sign`, and no "The other side declined…" line (the cancel was the user's own). The Seller's card: "Trade expired" with the red line "The other side declined: cancelled".
-- (b) The same as (a); nothing was signed, and the expired card no longer says "Agreeing on the terms with the other side's Namehold. Nothing is signed yet." (that line left under "Trade expired" is exchange QA finding 22, open: record it). The expired card offers no `Cancel` (`canCancel` is false for an expired trade, even one whose terms were never agreed).
+- (b) The same as (a); nothing was signed, and the expired card no longer says "Agreeing on the terms with the other side's Namehold. Nothing is signed yet." (that line left under "Trade expired" is exchange QA finding 22 again). The expired card offers no `Cancel` (`canCancel` is false for an expired trade, even one whose terms were never agreed).
 - (c) The Seller's card: "Trade expired", with no declined line. The Buyer's card ignores the decline after its Commit: it keeps "Waiting for the seller to confirm" (no declined line), and later goes "Waiting to take your BTC back" → "Your BTC is back" as E20.
 - (d) No `Cancel` on either card once that party has committed. The inspector call is refused with "Invalid input: you have locked coins in this trade: it ends on the chains, by a claim or a refund"; the card is unchanged.
 - Step 5: no transaction from (a) or (b); in (c) only the Buyer's BTC lock (and later its refund).

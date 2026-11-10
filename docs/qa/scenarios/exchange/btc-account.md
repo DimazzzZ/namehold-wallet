@@ -15,6 +15,7 @@ Each enabled profile has a Bitcoin account made from its recovery phrase (`m/84'
 
 - **Priority:** P1
 - **Covers:** R15, spec §9 `exchange_btc_balance`
+- **Regression of:** exchange QA finding 18 (with the Bitcoin source down the card showed a zero balance and "Checked" at the failed attempt's time)
 - **Preconditions:** the Buyer, enabled, the regtest settings stored; no trade open (step 4 stops bitcoind).
 
 Steps:
@@ -30,7 +31,7 @@ Expected:
 - Step 1: `Receive address` starts `bcrt1q` and is 44 characters; `getaddressinfo` reads `"iswitness": true`, `"witness_version": 0` and a 40-hex `witness_program` (P2WPKH). `Locked in trades` `0.00000000 BTC` / `0 sats` with no trade committed.
 - Step 2: `Unconfirmed` stays `0 sats` and `Confirmed` is unchanged: a Bitcoin Core source lists only confirmed coins (`scantxoutset`; spec §6 "Known gaps"). An unconfirmed amount here means the code reads otherwise: record it.
 - Step 3: `Confirmed` higher by exactly `0.00200000 BTC` / `200,000 sats`; `Checked` shows the new time.
-- Step 4: with bitcoind stopped the card shows a red line under the amounts (record the exact text; it names the source without credentials); record whether the amounts then read 0 and whether `Checked` moved to the failed attempt's time (a source error shown as a zero balance is a finding: exchange QA finding 18, open; the last known amounts, or no amounts, are the expected picture). After the restart the amounts are back and the red line is gone.
+- Step 4: with bitcoind stopped the card shows a red line under the amounts (record the exact text; it names the source without credentials); `Confirmed` and `Unconfirmed` read `Not read` (never `0.00000000 BTC` / `0 sats`: a source error shown as an empty account is exchange QA finding 18 again), `Locked in trades` keeps its amount (it comes from the stored trades), and the card's subtitle reads "Last check failed <time>" instead of "Checked <time>". After the restart the amounts are back and the red line is gone.
 - Step 5: the derived address equals the card's address while no trade has taken a new one (each Buyer Commit and Seller Commit takes the next receive address for a refund or a claim). Without such a wallet: BLOCKED ✗.
 - Passes if the address is a regtest P2WPKH address of the account and the confirmed balance moves by exactly what was paid.
 
