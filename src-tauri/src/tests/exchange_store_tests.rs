@@ -213,3 +213,21 @@ fn an_ended_trade_frees_its_offers_slot_at_once() {
     t.finished = true;
     assert!(!holds_a_slot(&t), "finished");
 }
+
+/// The card's "Agreeing on the terms…" line follows `negotiating`: true while
+/// a take waits for the maker's terms, false once that trade has ended
+/// without them (QA 2026-11-10, Q6: a cancelled take still said it was
+/// negotiating under "Trade expired").
+#[test]
+fn a_trade_that_ended_without_terms_is_not_negotiating() {
+    use crate::commands::exchange::trade_row;
+    let mut t = new_trade();
+    t.terms = None;
+    t.holdings = None;
+    assert!(trade_row(&t).negotiating);
+    t.status = Some(Status::Expired);
+    assert!(!trade_row(&t).negotiating);
+    let mut agreed = new_trade();
+    agreed.status = None;
+    assert!(!trade_row(&agreed).negotiating, "terms are agreed");
+}

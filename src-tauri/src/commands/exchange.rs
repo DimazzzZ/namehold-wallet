@@ -804,8 +804,11 @@ pub fn trade_row(t: &Trade) -> TradeRow {
         hns_amount: hns_text(t.hns_amount),
         btc_sats: t.btc_sats,
         price: price::format_sats_per_hns(t.price_msat),
+        // A trade that ended without terms (cancelled or expired while the
+        // two sides were still agreeing) is no longer negotiating: its card
+        // must not say so under "Trade expired" (QA 2026-11-10, Q6).
+        negotiating: t.terms.is_none() && !status.is_terminal(),
         status,
-        negotiating: t.terms.is_none(),
         declined: t.declined.clone(),
         timeline: t.terms.as_ref().map(|x| Timeline {
             buyer_fund_deadline: x.buyer_fund_deadline,
