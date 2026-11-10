@@ -647,6 +647,19 @@ fn on_decline(ctx: &Ctx<'_>, m: &Message, reason: &str) -> Result<(), AppError> 
     store::update_trade(ctx.conn, &mut t, ctx.now).map(|_| ())
 }
 
+/// The status to store after a step. A trade that already ended keeps its
+/// final status when this step could not read a chain: "refunded" must not
+/// fall back to "can't check" for the length of a source outage, count its
+/// coins as locked again and announce the refund a second time once the
+/// source is back (QA 2026-11-10, Q7). A step that read every chain decides
+/// as before, so a reorg can still reopen a trade.
+pub fn settled_status(before: Option<&Status>, now: Status, read_failed: bool) -> Status {
+    match before {
+        Some(b) if read_failed && b.is_terminal() && !now.is_terminal() => b.clone(),
+        _ => now,
+    }
+}
+
 async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
     let mut events = Vec::new();
     // The send gates read the remote-node opt-in from the settings.
@@ -672,8 +685,9 @@ async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
         };
         let rep =
             runner::run_step(hns_io.as_ref(), ctx.sources, &mut h, ctx.now, &ctx.policy).await;
-        let Some(step) = rep.step else { continue };
+        let Some(mut step) = rep.step else { continue };
         let before = t.status.clone();
+        step.status = settled_status(before.as_ref(), step.status, !rep.errors.is_empty());
         let mut new_events = Vec::new();
         if before.as_ref() != Some(&step.status) {
             match (&step.status, t.role) {

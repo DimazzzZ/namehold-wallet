@@ -231,3 +231,39 @@ fn a_trade_that_ended_without_terms_is_not_negotiating() {
     agreed.status = None;
     assert!(!trade_row(&agreed).negotiating, "terms are agreed");
 }
+
+/// QA 2026-11-10, Q7: with the Bitcoin source down a refunded trade read
+/// "can't check" (and its coins as locked) until the source came back.
+#[test]
+fn an_ended_trade_keeps_its_status_through_a_failed_read() {
+    use crate::exchange_io::job::settled_status;
+    use crate::noncustodial::exchange::engine::Chain;
+    let refunded = Status::Refunded { chain: Chain::Btc };
+    let cannot = Status::CannotCheck { chain: Chain::Btc };
+    // A failed read never undoes an ending.
+    assert_eq!(
+        settled_status(Some(&refunded), cannot.clone(), true),
+        refunded
+    );
+    assert_eq!(
+        settled_status(Some(&Status::Completed), cannot.clone(), true),
+        Status::Completed
+    );
+    // A clean read decides: a reorg may reopen the trade.
+    assert_eq!(
+        settled_status(Some(&refunded), cannot.clone(), false),
+        cannot
+    );
+    // An open trade does report that it cannot check.
+    let open = Status::AwaitingBtcLock {
+        confirmations: 0,
+        needed: 1,
+    };
+    assert_eq!(settled_status(Some(&open), cannot.clone(), true), cannot);
+    assert_eq!(settled_status(None, cannot.clone(), true), cannot);
+    // One ending may replace another even on a failed read.
+    assert_eq!(
+        settled_status(Some(&Status::Expired), refunded.clone(), true),
+        refunded
+    );
+}
