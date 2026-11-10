@@ -651,8 +651,10 @@ fn on_decline(ctx: &Ctx<'_>, m: &Message, reason: &str) -> Result<(), AppError> 
 /// final status when this step could not read a chain: "refunded" must not
 /// fall back to "can't check" for the length of a source outage, count its
 /// coins as locked again and announce the refund a second time once the
-/// source is back (QA 2026-11-10, Q7). A step that read every chain decides
-/// as before, so a reorg can still reopen a trade.
+/// source is back (QA 2026-11-10, Q7). `read_failed` is the runner's: a chain
+/// was not read, so `now` rests on missing data; a failed send does not
+/// count. A step that read every chain decides as before, so a reorg can
+/// still reopen a trade, and only such a step ends the following of one.
 pub fn settled_status(before: Option<&Status>, now: Status, read_failed: bool) -> Status {
     match before {
         Some(b) if read_failed && b.is_terminal() && !now.is_terminal() => b.clone(),
@@ -687,7 +689,7 @@ async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
             runner::run_step(hns_io.as_ref(), ctx.sources, &mut h, ctx.now, &ctx.policy).await;
         let Some(mut step) = rep.step else { continue };
         let before = t.status.clone();
-        step.status = settled_status(before.as_ref(), step.status, !rep.errors.is_empty());
+        step.status = settled_status(before.as_ref(), step.status, rep.read_failed);
         let mut new_events = Vec::new();
         if before.as_ref() != Some(&step.status) {
             match (&step.status, t.role) {
@@ -722,7 +724,9 @@ async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
         }
         if step.status.is_terminal() {
             let at = *t.terminal_at.get_or_insert(ctx.now);
-            if at + FOLLOW_AFTER_END_SECS < ctx.now {
+            // Only a step that read both chains may stop following a trade:
+            // an ending kept through a failed read is not a fresh fact.
+            if !rep.read_failed && at + FOLLOW_AFTER_END_SECS < ctx.now {
                 t.finished = true;
             }
         } else {

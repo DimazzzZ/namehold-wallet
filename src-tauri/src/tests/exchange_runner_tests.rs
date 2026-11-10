@@ -107,3 +107,15 @@ async fn an_own_node_on_the_trades_chain_gets_exactly_the_presigned_hex() {
     assert!(!runner::send_hns(&io, &hex).await.unwrap());
     assert_eq!(*sent.lock().unwrap(), vec![hex]);
 }
+
+/// A step that could not read a chain says so (`read_failed`), apart from its
+/// error texts: `job::settled_status` keeps a final status only through such
+/// a step, and a failed send must not count as one (QA 2026-11-10, Q7).
+#[tokio::test]
+async fn a_step_without_a_node_or_a_source_reports_a_failed_read() {
+    let mut h = fx::trade().buyer();
+    let p = crate::noncustodial::exchange::policy::Policy::for_network(fx::NET);
+    let rep = runner::run_step(None, &[], &mut h, fx::START, &p).await;
+    assert!(rep.read_failed);
+    assert!(rep.sent.is_empty());
+}

@@ -37,6 +37,10 @@ pub struct StepReport {
     pub step: Option<Step>,
     /// Why a chain could not be read, or a send failed.
     pub errors: Vec<String>,
+    /// A chain was not read this step (its node or every source failed, or
+    /// no node may be used): the status then rests on missing data. A send
+    /// that failed does not set it.
+    pub read_failed: bool,
     /// Kinds sent and taken in this step.
     pub sent: Vec<SpendKind>,
 }
@@ -111,6 +115,7 @@ pub async fn run_step(
             None
         }
     };
+    report.read_failed = hns.is_none() || btc.is_none();
     let step = engine::step(h, hns.as_ref(), btc.as_ref(), now, p);
     for a in &step.actions {
         match a {
