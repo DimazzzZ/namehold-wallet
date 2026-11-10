@@ -7,7 +7,7 @@ requires:
   - procedures/exchange-time-travel.md
   - procedures/switch-profile.md
   - scenarios/exchange/trades.md (E17's steps and checks)
-last_verified: "E20 ◐ on 33edcff (2026-11-10: the refund and its amounts ✅, the never-early step not valid); others not run yet"
+last_verified: "E20 ✅ by RPC on 5c6c57a (2026-11-10; card texts of steps 2–5 not read); others not run yet"
 ---
 
 # Refunds and safety rules

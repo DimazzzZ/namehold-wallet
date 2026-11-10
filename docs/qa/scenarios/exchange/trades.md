@@ -6,7 +6,7 @@ requires:
   - procedures/exchange-setup.md
   - procedures/switch-profile.md
   - scenarios/exchange/offers-and-taking.md (OS, OB)
-last_verified: "E17 ✅ on 5c6c57a (2026-11-10, notifications not read); E18, E19 not run yet"
+last_verified: "E17 ✅ on 5c6c57a (2026-11-10, notifications not read); E18 ✅ on 5c6c57a (final cards read from the DB); E19 not run yet"
 ---
 
 # Trades that complete
