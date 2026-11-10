@@ -7,7 +7,7 @@ requires:
   - procedures/exchange-time-travel.md
   - procedures/switch-profile.md
   - scenarios/exchange/trades.md (E17's steps and checks)
-last_verified: "not run yet (written against 0fa8629)"
+last_verified: "E20 ◐ on 33edcff (2026-11-10: the refund and its amounts ✅, the never-early step not valid); others not run yet"
 ---
 
 # Refunds and safety rules
@@ -32,7 +32,7 @@ Steps:
 1. The Buyer takes OS for `2.5`, commits (record as above). `bmine 1`.
 2. The Seller's card reads "Confirm to lock your HNS". Do not confirm. Read the Buyer's card.
 3. Wait in real time until 2 minutes past `Seller locks HNS by`. `Refresh` on each profile; read both cards. `btc_spender $BTC_TX 0`.
-4. Never early. Path M: once `btcRefundTime − 600` is within 100 minutes of now, `bash scripts/btc-regtest.sh mocktime $((BTC_REFUND - 600))`, `bmine 11`, `bash scripts/btc-regtest.sh mocktime 0`. Path R: at about 10 minutes before `BTC can go back to the buyer from`, `bmine 11`. Then `mtp` (the Bitcoin `mediantime` is below `btcRefundTime`); press `Refresh` three times over 3 minutes; `btc_spender $BTC_TX 0`; `B gettxout $BTC_TX 0 true`.
+4. Never early. First prove the stand can act: the daemon's last line in `~/.namehold/syncd.log` and the relay's last line in `relay.log` are under 2 minutes old and `curl -s -m 5 "$RELAY/v1/offers?network=regtest"` answers (a wedged daemon and watchtower send nothing either, and prove nothing). Path M: once `btcRefundTime − 600` is within 100 minutes of now, `bash scripts/btc-regtest.sh mocktime $((BTC_REFUND - 600))`, `bmine 11`, `bash scripts/btc-regtest.sh mocktime 0`. Path R: at about 10 minutes before `BTC can go back to the buyer from`, `bmine 11`. Then `mtp` (the Bitcoin `mediantime` is below `btcRefundTime`); press `Refresh` three times over 3 minutes; `btc_spender $BTC_TX 0`; `B gettxout $BTC_TX 0 true`.
 5. [exchange-time-travel](../../procedures/exchange-time-travel.md) on `btc` to `btcRefundTime`. Within 3 minutes (`Refresh`): read the Buyer's card; `btc_spender $BTC_TX 0`; `grep "$TERMS" "$QA_DIR/relay/relay.log"`.
 6. `bmine 1`. `Refresh`; read the card and the BTC account.
 

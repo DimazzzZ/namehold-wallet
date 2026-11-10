@@ -6,7 +6,7 @@ requires:
   - procedures/exchange-setup.md
   - procedures/switch-profile.md
   - scenarios/exchange/offers-and-taking.md (OS, OB)
-last_verified: "not run yet (written against 0fa8629)"
+last_verified: "E17 ✅ on 5c6c57a (2026-11-10, notifications not read); E18, E19 not run yet"
 ---
 
 # Trades that complete
@@ -23,14 +23,14 @@ Notifications: with Settings › Notifications `Enable deadline notifications` o
 
 - **Priority:** P1
 - **Covers:** R1, R3, R7, R8, R9, R10, R12, R13, R16, R22, spec §3.2, §3.3
-- **Regression of:** exchange QA finding 1 (HNS amounts with their unit: the take was refused), exchange QA finding 2 (the unit twice and "1 confirmations" in the Commit rows), exchange QA finding 8 (the take's own time shown as its deadline while negotiating)
+- **Regression of:** exchange QA finding 20 (a Buyer who took an offer could never commit: `Confirm and sign` opened no window and a red toast read "this trade has no secret nonce"), exchange QA finding 1 (HNS amounts with their unit: the take was refused), exchange QA finding 2 (the unit twice and "1 confirmations" in the Commit rows), exchange QA finding 8 (the take's own time shown as its deadline while negotiating)
 - **Preconditions:** [exchange-setup](../../procedures/exchange-setup.md) done; OS live ([E10](offers-and-taking.md#e10--publish-a-sell-offer)); `mtp` shows both chains at or before now; the daemon running (`pgrep -fl namehold-syncd`); the Buyer with at least 0.002 BTC confirmed, the Seller with at least 10 HNS spendable; record both balances (BTC card `Confirmed` of each profile, Wallet `Spendable` of each after a Sync). No other trade open (so the mempools hold only this trade's transactions).
 
 Steps:
 
 1. The Buyer, signer unlocked: Order book → OS `Take` → `5` → `Take offer`. Read the toast and the new card at once.
 2. Within 3 minutes (press `Refresh`): read the card again, all of it.
-3. `Confirm and sign`. Read the secure window, every row; record `BTC lock` as `BTC_LOCK` and `Trade` as `TERMS`. `Confirm & Sign`.
+3. `Confirm and sign`. Read the secure window, every row (it shows "Scroll to the end of the details to continue." and only `Cancel` until the rows are scrolled to the end; read the addresses in the window you confirm: a window closed without a Commit has already taken its addresses, and the next one shows the following ones); record `BTC lock` as `BTC_LOCK` and `Trade` as `TERMS`. `Confirm & Sign`.
 4. Read the toast and the card. Find the lock transaction: `for t in $(B getrawmempool | tr -d '[]",'); do B getrawtransaction "$t" true | grep -q "$BTC_LOCK" && echo "$t"; done` → `BTC_TX`; `B getrawtransaction $BTC_TX true`; `B getmempoolentry $BTC_TX`. Read the BTC account card. Within a minute or two: the card's `Watchtower` line; `watch_job "$TERMS-buyer"`; `terms_times $TERMS`.
 5. Switch to the Seller (do not unlock yet). Read its card.
 6. `bmine 1`. Within 3 minutes read the Seller's card and the `My trades` tab's badge and description.
