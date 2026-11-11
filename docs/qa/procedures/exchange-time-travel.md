@@ -28,6 +28,7 @@ An HNS refund comes about 60 minutes after the trade starts and a BTC refund abo
 
 - **Bitcoin**: the run's own bitcoind (`.regtest/bitcoin`, used only by these cases) may be given a mocktime.
 - **HNS**: `setmocktime` on the shared hsd is forbidden by [rules.md](../rules.md#the-regtest-chain) ("a forward clock offset changes the chain for every later run"). Use path M on HNS **only** when the maintainer has agreed to it for this run, and write that in the report. Without that agreement, use path R for HNS.
+- **HNS time locks count in 512-second units** (`hns_htlc::time_lock_secs`): an HNS refund opens at the next multiple of 512 s at or after `hnsRefundTime`, up to 8.5 minutes later than the card's "HNS can go back to the seller from". Take the HNS chain's median time at least 600 s past `hnsRefundTime` (path M's `T + 1200` does), or the refund rightly stays unsent.
 - **The limit**: never set a mocktime more than 100 minutes ahead of the real clock. Both nodes refuse a block more than 2 hours ahead of their own clock (`time-too-new`); once the mocktime is reset, the next blocks are stamped just after the MTP, so a larger jump leaves a chain on which no block can be mined until real time catches up. When the target is further than that, first wait in real time (path R's step 1) until it is within 100 minutes.
 
 Steps:

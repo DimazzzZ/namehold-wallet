@@ -5,7 +5,7 @@ blocks: HNS 0, BTC 0
 requires:
   - procedures/exchange-setup.md
   - procedures/switch-profile.md
-last_verified: "E4 ◐, E6 ✅ on 8d904e2 (2026-11-09); E5 ✅ on f542de6 (2026-11-10); E7 step 4 ✅; E1, E2, E3 not run yet"
+last_verified: "E4 ◐, E6 ✅ on 8d904e2 (2026-11-09); E5 ✅ on f542de6 (2026-11-10); on 0f6ce83 (2026-11-11): E1 ✅ (no Ledger), E2 ✅, E3 ✅ (no SPV step), E7 ◐ (the inspector step blocked)"
 ---
 
 # Gates and settings
@@ -30,6 +30,7 @@ So the exchange profiles connect with Chain source `Local full node (this device
 
 - **Priority:** P1
 - **Covers:** R17
+- **Regression of:** exchange QA finding 25 (the page read "Couldn't check the exchange", "Invalid input: active profile is watch-only" and its order book never loaded)
 - **Preconditions:** [exchange-setup](../../procedures/exchange-setup.md) done (the relay set, so the order book loads); at least one offer on the relay (OS of [E10](offers-and-taking.md#e10--publish-a-sell-offer) or OB of [E11](offers-and-taking.md#e11--publish-a-buy-offer)), else the Take part is — not run. A watch-only regtest profile `QA Exchange Watch` made from the Buyer's account xpub (Wallet › `Receive` › Advanced, then Add wallet → watch-only, [environment](../../environment.md#profiles) step 4); create it once and keep it.
 
 Steps:
@@ -92,6 +93,7 @@ Steps:
 
 Expected:
 
+- After each `Save settings` leave the Exchange page for 30 s before reading it: opened straight from Settings it can still show the state from before the change (exchange QA finding 26, open; the backend refuses the actions meanwhile). The Connections secure window is `Change connection settings`, its row `Chain source` "<old> → <new>", its button `Save settings`.
 - Steps 1 and 2: the amber banner "The exchange needs a node on this computer: a remote node could show a fake lock and learn your secret." (a remote node is refused whatever its sending setting); every trading button disabled with it (as E2).
 - Step 3: "The exchange needs Namehold's local node, or your own hsd on this computer, able to send." (SPV cannot send).
 - Step 4: no banner; buttons enabled.
