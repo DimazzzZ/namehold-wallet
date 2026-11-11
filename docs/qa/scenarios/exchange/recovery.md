@@ -7,7 +7,7 @@ requires:
   - procedures/exchange-time-travel.md
   - procedures/switch-profile.md
   - scenarios/exchange/trades.md (E17's steps and checks)
-last_verified: "on f542de6 (2026-11-11): E26 ✅ (the inspector call of (d) blocked), E27 ✅, E30 ✅, E31 ✅, E33 ✅ (headless), E28 ◐, E29 ◐ (finding 24), E32 ◐, E34 ◐ (toast not caught)"
+last_verified: "on f542de6 (2026-11-11): E26 ✅ (the inspector call of (d) blocked), E27 ✅, E30 ✅, E31 ✅, E33 ✅ (headless), E28 ◐, E29 ◐ (finding 24; its fix ✅ on 3acbf91: 70 s), E32 ◐, E34 ◐ (toast not caught)"
 ---
 
 # Cancelling, crashes, outages and restarts

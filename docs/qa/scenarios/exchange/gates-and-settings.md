@@ -5,7 +5,7 @@ blocks: HNS 0, BTC 0
 requires:
   - procedures/exchange-setup.md
   - procedures/switch-profile.md
-last_verified: "E4 ◐, E6 ✅ on 8d904e2 (2026-11-09); E5 ✅ on f542de6 (2026-11-10); on 0f6ce83 (2026-11-11): E1 ✅ (no Ledger), E2 ✅, E3 ✅ (no SPV step), E7 ◐ (the inspector step blocked)"
+last_verified: "E4 ◐, E6 ✅ on 8d904e2 (2026-11-09); E5 ✅ on f542de6 (2026-11-10); on 0f6ce83 (2026-11-11): E1 ✅ (no Ledger), E2 ✅, E3 ✅ (no SPV step; the gate refresh ✅ on 3acbf91), E7 ◐ (the inspector step blocked; the refused-login text ✅ on 3acbf91)"
 ---
 
 # Gates and settings

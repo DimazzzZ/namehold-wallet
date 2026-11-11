@@ -4,7 +4,7 @@ priority: P1–P3
 blocks: HNS 0, BTC 2
 requires:
   - procedures/exchange-setup.md
-last_verified: "E9 ✅ on 8d904e2 (2026-11-09); E8 step 4 and E38 ✅ on 8d09fb7 (2026-11-10); E36 rewritten for the fallback rate of fd8792d, not run yet"
+last_verified: "E9 ✅ on 8d904e2 (2026-11-09); E8 step 4 and E38 ✅ on 8d09fb7 (2026-11-10); E36 ✅ on 3acbf91 (2026-11-11, the estimator emptied by setting `regtest/fees/` aside)"
 ---
 
 # The BTC account
@@ -76,7 +76,7 @@ Expected:
 - **Priority:** P2
 - **Covers:** R27 (no estimate from any source: twice the highest relay minimum, shown as such; neither: nothing signed), `exchange_io/btc_source.rs` `fee_rate`, `floor_rate`, `commands/exchange.rs` `pick_btc_rate`
 - **Regression of:** exchange QA finding 19 (on a Bitcoin Core without fee history every withdrawal and every Commit was refused and the user was given nothing to do)
-- **Preconditions:** the Buyer with a confirmed BTC balance, unlocked; the only Bitcoin source a Bitcoin Core whose `B estimatesmartfee 2` answers no `feerate` (a fresh regtest chain, before [exchange-setup](../../procedures/exchange-setup.md) step 2 seeds the estimator: fold this case in there).
+- **Preconditions:** the Buyer with a confirmed BTC balance, unlocked; the only Bitcoin source a Bitcoin Core whose `B estimatesmartfee 2` answers no `feerate` (a fresh regtest chain, before [exchange-setup](../../procedures/exchange-setup.md) step 2 seeds the estimator: fold this case in there; on a seeded chain, stop bitcoind, move its `regtest/fees/` folder aside, start it, and put the folder back after the case).
 
 Steps:
 
