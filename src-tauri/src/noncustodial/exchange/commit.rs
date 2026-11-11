@@ -82,7 +82,9 @@ pub fn buyer_commit(i: &BuyerCommitInput<'_>) -> Result<BuyerCommit, AppError> {
     };
     let rate = i.btc_rate.max(i.policy.btc_min_rate);
     let f = btc_account::fund(i.btc_coins, vec![lock_out], i.btc_change_to, rate)?;
-    let funding = btc_account::sign_funding(&f, i.master, network, i.account)?;
+    // The BTC account's keys, not `i.account`: that is the profile's HNS
+    // account, which numbers the swap keys above.
+    let funding = btc_account::sign_funding(&f, i.master, network, btc_account::ACCOUNT)?;
     let lock = OutPoint {
         txid: funding.compute_txid(),
         vout: 0,

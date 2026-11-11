@@ -26,6 +26,12 @@ use crate::noncustodial::network::Network;
 pub const BRANCH_RECEIVE: u32 = 0;
 pub const BRANCH_CHANGE: u32 = 1;
 
+/// The account of the phrase that is the wallet's BTC account: always the
+/// first one (`m/84'/coin'/0'`), whatever the profile's HNS account index
+/// is, so any Bitcoin wallet restores it from the phrase. The stored public
+/// key, the addresses and every signature of the account use this number.
+pub const ACCOUNT: u32 = 0;
+
 /// How many unused addresses past the last used one are scanned (BIP 44's
 /// gap limit).
 pub const GAP_LIMIT: u32 = 20;

@@ -250,3 +250,31 @@ fn a_commit_refuses_the_wrong_nonce() {
     .unwrap_err();
     assert!(err.to_string().contains("hash"), "{err}");
 }
+
+/// The BTC account is account 0 of the phrase whatever the profile's HNS
+/// account index is (`exchange_enable` stores that account's public key and
+/// the coins are at its addresses), so the Buyer's funding is signed with
+/// its keys, not with the keys of a BTC account numbered like the profile.
+#[test]
+fn the_buyers_funding_is_signed_by_the_btc_account_whatever_the_profiles_account() {
+    let bm = fx::buyer_master();
+    let terms = fx::terms_of_buyer_account(START, 1);
+    let coin = fx::btc_coin(1_000_000);
+    let c = commit::buyer_commit(&commit::BuyerCommitInput {
+        master: &bm,
+        account: 1,
+        trade_index: 0,
+        secret_nonce: &fx::NONCE,
+        terms: &terms,
+        policy: &fx::policy(),
+        btc_coins: std::slice::from_ref(&coin.0),
+        btc_change_to: &fx::btc_address(&bm, 1, 0),
+        btc_refund_to: &fx::btc_address(&bm, 0, 1),
+        btc_rate: 2,
+        hns_rate: 1,
+        hns_to: &fx::hns_address(&bm, 0),
+    })
+    .unwrap();
+    bitcoin::consensus::validation::verify_transaction(&c.funding, |_| Some(coin.1.clone()))
+        .expect("the funding spends the BTC account's coin");
+}

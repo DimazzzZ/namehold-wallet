@@ -67,7 +67,13 @@ pub struct Trade {
 
 /// The terms both wallets agree on, trade index 0 on each side.
 pub fn terms_at(start: u64) -> Terms {
-    let b = keys::trade_keys(&buyer_master(), NET, 0, 0).unwrap();
+    terms_of_buyer_account(start, 0)
+}
+
+/// The same terms with the Buyer's swap keys from HNS account `account` of
+/// its phrase (the profile's account index).
+pub fn terms_of_buyer_account(start: u64, account: u32) -> Terms {
+    let b = keys::trade_keys(&buyer_master(), NET, account, 0).unwrap();
     let s = keys::trade_keys(&seller_master(), NET, 0, 0).unwrap();
     let br = relay_msg::new_relay_key();
     let sr = relay_msg::new_relay_key();

@@ -179,7 +179,7 @@ pub async fn exchange_enable(state: State<'_, AppState>) -> Result<ExchangeOverv
     let (btc_xpub, swap_xpub) = with_signer(&state, &ctx, |s| {
         let m = s.master()?;
         Ok((
-            btc_account::account_xpub(m, ctx.network, 0)?,
+            btc_account::account_xpub(m, ctx.network, btc_account::ACCOUNT)?,
             keys::branch_xpub(m, ctx.network, ctx.account)?,
         ))
     })?;
@@ -558,7 +558,7 @@ pub async fn exchange_btc_withdraw(
     )
     .await?;
     let tx = with_signer(&state, &ctx, |s| {
-        btc_account::sign_funding(&f, s.master()?, ctx.network, 0)
+        btc_account::sign_funding(&f, s.master()?, ctx.network, btc_account::ACCOUNT)
     })?;
     let hex_tx = btc_htlc::encode_tx(&tx);
     runner::send_btc(&srcs, &hex_tx).await?;
