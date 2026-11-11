@@ -31,6 +31,9 @@
   - It is a beta: a banner at the top of the page asks you to trade small amounts first and to report every problem as a GitHub issue, with a button that opens a new one.
   - The relay and watchtower server is `namehold-relay` (docs/RELAY.md). Trades are limited to 0.1 BTC each on mainnet.
 
+### Security
+- The bundled SQLite is updated (`rusqlite` 0.41, `libsqlite3-sys` 0.39.1) for RUSTSEC-2026-0459 (CVE-2026-119375 in SQLite), and `rustix` to 1.1.6 for RUSTSEC-2026-0486 (its xattr functions could mark unwritten bytes as initialized; reached only through the updater's archive handling).
+
 ## [0.7.1] - 2026-11-06
 
 > **Highlights:** the database no longer grows to 9 GB with a local node (with a large database, the first start after updating can take about a minute before the window appears); wallets can be renamed; LearnHNS Market listings can be renewed; and a mainnet wallet without a passphrase now says so.
