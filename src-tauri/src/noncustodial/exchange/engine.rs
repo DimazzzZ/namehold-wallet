@@ -115,7 +115,8 @@ pub struct HnsSeen {
     pub mtp: u64,
     /// A coin with exactly the lock's script and value.
     pub lock: Option<HnsLockSeen>,
-    /// A payment to the lock's address of another value, or with a covenant.
+    /// A payment to the lock's address of another value, with a covenant, or
+    /// made by a coinbase transaction.
     pub mismatched_payment: bool,
     /// A secret revealed by a claim of any coin with the lock's script,
     /// checked against `H`.

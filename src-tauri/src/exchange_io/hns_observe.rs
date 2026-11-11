@@ -46,6 +46,14 @@ fn confirmations(height: Option<i64>, tip: i64) -> u32 {
     }
 }
 
+/// A coinbase transaction: its first input spends nothing (hsd
+/// `TX.isCoinbase`).
+fn is_coinbase(tx: &Transaction) -> bool {
+    tx.inputs
+        .first()
+        .is_some_and(|i| i.prevout.hash == [0u8; 32] && i.prevout.index == u32::MAX)
+}
+
 /// The HNS view of `terms` from the transactions at the lock's address.
 /// `own` is the Seller's own lock coin: when given, only that coin is the
 /// lock (spec 2026-11-07, review C1: anyone can pay the lock address, and a
@@ -56,6 +64,13 @@ fn confirmations(height: Option<i64>, tip: i64) -> u32 {
 /// `strict`: only `own` is the lock (the Seller's view). Otherwise `own` is
 /// only preferred (the Buyer's view of the Seller's announced coin), and the
 /// earliest confirmed coin is taken when it is not found.
+///
+/// An output of a coinbase transaction is never the lock, in either view:
+/// hsd refuses to spend it until it matures (100 blocks on mainnet, longer
+/// than the HNS refund time) and still sends the refused claim to its peers
+/// (`FullNode.sendTX`, "Attempting to broadcast anyway"), secret included.
+/// The Seller could then take the BTC with the secret and refund the HNS
+/// the moment the coin matures. It counts as a mismatched payment.
 pub fn seen_from(
     terms: &Terms,
     txs: &[NodeTx],
@@ -71,11 +86,12 @@ pub fn seen_from(
     let mut candidates: Vec<(i64, String, u32, u32)> = Vec::new();
     for nt in txs {
         let txid = nt.tx.txid();
+        let mined = is_coinbase(&nt.tx);
         for (vout, out) in nt.tx.outputs.iter().enumerate() {
             if out.address.version != 0 || out.address.hash != program {
                 continue;
             }
-            if hns_htlc::is_lock_output(out, &hp, terms.hns_amount) {
+            if !mined && hns_htlc::is_lock_output(out, &hp, terms.hns_amount) {
                 candidates.push((
                     nt.height.unwrap_or(i64::MAX),
                     txid.clone(),

@@ -396,4 +396,71 @@ mod observer {
         assert!(v.lock.is_none());
         assert!(v.revealed.is_none());
     }
+
+    /// A coinbase transaction (its first input spends nothing, hsd
+    /// `TX.isCoinbase`) paying exactly the lock.
+    fn mine_lock(t: &crate::noncustodial::exchange::terms::Terms) -> Transaction {
+        let mut tx = Transaction::new();
+        tx.inputs.push(Input::new(Outpoint {
+            hash: [0; 32],
+            index: u32::MAX,
+        }));
+        tx.outputs.push(hns_htlc::lock_output(
+            &t.hns_params().unwrap(),
+            t.hns_amount,
+        ));
+        tx
+    }
+
+    /// hsd refuses to spend a coinbase output until it matures, and sends the
+    /// refused claim, whose witness holds the secret, to its peers all the
+    /// same. A lock made by a miner is therefore never the lock, whoever
+    /// looks and however deep it is.
+    #[test]
+    fn a_coinbase_output_is_never_the_lock() {
+        let f = fx::trade();
+        let t = &f.terms;
+        let mined = mine_lock(t);
+        let announced = LockRef {
+            txid: mined.txid(),
+            vout: 0,
+        };
+        let txs = vec![NodeTx {
+            tx: mined,
+            height: Some(10),
+        }];
+        for (own, strict) in [
+            (None, false),
+            (Some(&announced), false),
+            (Some(&announced), true),
+        ] {
+            for tip in [15, 500] {
+                let v = seen_from(t, &txs, tip, 0, own, strict).unwrap();
+                assert!(v.lock.is_none(), "own {own:?} strict {strict} tip {tip}");
+                assert!(
+                    v.mismatched_payment,
+                    "the Buyer is told why it will not claim"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_coinbase_output_does_not_hide_the_real_lock() {
+        let f = fx::trade();
+        let t = &f.terms;
+        let real = pay_lock(t, 2);
+        let txs = vec![
+            NodeTx {
+                tx: mine_lock(t),
+                height: Some(10),
+            },
+            NodeTx {
+                tx: real.clone(),
+                height: Some(12),
+            },
+        ];
+        let v = seen_from(t, &txs, 13, 0, None, false).unwrap();
+        assert_eq!(v.lock.unwrap().outpoint.txid, real.txid());
+    }
 }

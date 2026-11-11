@@ -277,6 +277,66 @@ async fn live_exchange_hns_refund_is_refused_before_its_time_and_mined_after() {
     assert_eq!(s.confirmations, 1);
 }
 
+/// A lock made by a miner. What only a node shows: hsd lists the coinbase
+/// transaction at the lock's address like any other, its output has exactly
+/// the lock's script and value, and hsd refuses the claim of it (a premature
+/// spend of a coinbase; on mainnet for 100 blocks, and `sendrawtransaction`
+/// still sends such a claim to the node's peers). The observer must not call
+/// it the lock.
+#[tokio::test]
+async fn live_exchange_a_coinbase_output_is_not_the_lock() {
+    let Some(node) = it_client() else {
+        eprintln!("skip: HNS_IT_NODE_URL not set");
+        return;
+    };
+    let secret: [u8; 32] = Sha256::digest(key("secret 4").secret_bytes()).into();
+    let claim_key = key("buyer claim 4");
+    let mtp = tip_mtp(&node).await;
+    let p = HtlcParams {
+        hash: Sha256::digest(secret).into(),
+        claim_pubkey: pubkey(&claim_key),
+        refund_pubkey: pubkey(&key("seller refund 4")),
+        refund_lock_time: hns_htlc::encode_time_lock(mtp + 86_400).unwrap(),
+    };
+    // The Seller mines the lock: one block whose reward pays the lock's address.
+    let lock_addr = hns_htlc::lock_address(NET, &p).unwrap();
+    mine(&node, 1, &lock_addr).await;
+    let coins = node.get_coins_by_address(&lock_addr).await.unwrap();
+    assert_eq!(coins.len(), 1, "the block reward is the only coin there");
+    let value = coins[0].value as u64;
+
+    // One confirmation is all regtest terms ask for, yet it is no lock.
+    let seen = observe_params(&node, &terms_for(&p, value)).await;
+    assert!(
+        seen.lock.is_none(),
+        "a coinbase output was taken as the lock"
+    );
+    assert!(seen.mismatched_payment);
+    assert!(seen.revealed.is_none());
+
+    // And hsd refuses the claim of it: the coin is not mature.
+    let claim =
+        hns_htlc::sign_claim(NET, &p, value, &claim_key, &addr(&key("payout 4")), 20_000).unwrap();
+    let mut h = [0u8; 32];
+    hex::decode_to_slice(&coins[0].txid, &mut h).unwrap();
+    let tx = claim
+        .finish(
+            NET,
+            &p,
+            Outpoint {
+                hash: h,
+                index: coins[0].vout,
+            },
+            &secret,
+        )
+        .unwrap();
+    assert_eq!(
+        send(&node, &tx).await,
+        Taken::No,
+        "hsd took a claim of an immature coinbase output"
+    );
+}
+
 /// Terms around bare lock parameters, for the observer (only the network,
 /// the HNS amount and the HNS lock's parameters are read).
 fn terms_for(p: &HtlcParams, value: u64) -> crate::noncustodial::exchange::terms::Terms {
