@@ -241,6 +241,15 @@ describe("tradeStatusText", () => {
     ).toContain("A Handshake transaction");
   });
 
+  // The Buyer's trade completes when its HNS claim confirms; the Seller may
+  // not have taken the BTC yet, so the sentence must not say it has (QA E23).
+  it("a completed Buyer is told where the BTC goes, not that the seller has it", () => {
+    const buyer = tradeStatusText(makeTrade({ role: "buyer", status: { kind: "completed" } }));
+    expect(buyer.sentence).toBe("The HNS is yours, and the BTC goes to the seller.");
+    const seller = tradeStatusText(makeTrade({ role: "seller", status: { kind: "completed" } }));
+    expect(seller.sentence).toBe("The BTC is yours, and the buyer has the HNS.");
+  });
+
   it("describes a status this build does not know instead of throwing", () => {
     const status = { kind: "somethingNew" } as unknown as TradeStatus;
     expect(tradeStatusText(makeTrade({ status })).headline).toBe("Unknown status");

@@ -231,7 +231,7 @@ pub fn seller_rows(
             "If the buyer does not take the HNS",
             format!(
                 "Your HNS comes back to {refund_to} after {}, less a fee of {}",
-                time_text(terms.hns_refund_time),
+                time_text(terms.hns_refund_opens()),
                 doos_to_hns_string(refund_fee)
             ),
         ),

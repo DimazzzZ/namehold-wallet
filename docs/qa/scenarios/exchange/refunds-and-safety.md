@@ -122,7 +122,7 @@ Steps:
 Expected:
 
 - Step 3: "Not registered with a watchtower"; `watch_job` answers `{"error":"no such watch job"}` (404).
-- Step 5: the Buyer's card "Trade complete", "The HNS is yours, and the seller has the BTC." (record that second sentence: here the BTC is still in its lock, so it is early) (the HNS is the Buyer's; the BTC is still in its lock, unclaimed); `gettxout` returns the BTC lock coin.
+- Step 5: the Buyer's card "Trade complete", "The HNS is yours, and the BTC goes to the seller." (the HNS is the Buyer's; the BTC is still in its lock, unclaimed); `gettxout` returns the BTC lock coin.
 - Step 6: the refund path is open (the Bitcoin `mediantime` is past `btcRefundTime`) and yet nothing spends `BTC_TX:0`: no transaction in `btc_spender`, the coin still in `gettxout`, the card still "Trade complete", no `sent [BtcRefund]` for `<TERMS>-buyer` in the log, and the Buyer's watch job's status `completed`. A refund here is ❌ and a blocker (the Buyer would hold both coins).
 - Step 7 (judge the fee only on path R: under mocktime the wall clock is still before the refund time and the claim goes out at the lowest rung, which is not a finding): the Seller's claim, `X` the same as the HNS claim's, paying `SELLER_BTC`; its fee is the highest of the Seller's `less a Bitcoin fee of <low> to <high> sats` (past the refund time the ladder goes straight to its top rung, `fees::rung_now`); the card "Trade complete".
 - Passes if, once the Buyer claimed, neither its app nor its watchtower ever spends the BTC lock, however late the Seller is.

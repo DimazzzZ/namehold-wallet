@@ -489,7 +489,7 @@ fn seller_waits_for_the_reveal() {
     assert_eq!(
         s.status,
         Status::AwaitingReveal {
-            refund_opens_at: t.terms.hns_refund_time
+            refund_opens_at: t.terms.hns_refund_opens()
         }
     );
     assert!(s.actions.is_empty());
@@ -545,7 +545,7 @@ fn seller_refunds_hns_only_once_the_hns_median_time_is_past() {
         s.status,
         Status::AwaitingRefund {
             chain: Chain::Hns,
-            opens_at: t.terms.hns_refund_time
+            opens_at: t.terms.hns_refund_opens()
         }
     );
     let s = run(
@@ -1087,4 +1087,27 @@ fn a_seller_whose_own_coin_stayed_unspent_after_a_decoy_claim_takes_it_back_afte
     );
     assert_eq!(s.status, Status::Completed);
     assert!(s.actions.is_empty());
+}
+
+/// An hsd time lock counts in 512-second units, rounded up: the time a card
+/// shows for the HNS refund is the boundary the lock opens at, never the
+/// nominal time before it (QA 2026-11-11: the refund stayed unsent, rightly,
+/// for 333 s after the time the card had promised).
+#[test]
+fn the_hns_refund_time_shown_is_when_the_lock_opens() {
+    use crate::noncustodial::exchange::hns_htlc;
+    let t = fx::trade();
+    let nominal = t.terms.hns_refund_time;
+    let opens = t.terms.hns_refund_opens();
+    assert!(
+        opens >= nominal && opens < nominal + 512,
+        "{nominal} {opens}"
+    );
+    assert_eq!(opens % 512, 0);
+    let lock = t.terms.hns_params().unwrap().refund_lock_time;
+    assert_eq!(hns_htlc::time_lock_secs(lock), Some(opens));
+    // hsd asks `lock time < median time`, strictly.
+    assert!(!hns_htlc::time_lock_open(lock, opens));
+    assert!(hns_htlc::time_lock_open(lock, opens + 1));
+    assert!(!hns_htlc::time_lock_open(lock, nominal + 1) || opens == nominal);
 }

@@ -929,7 +929,8 @@ pub fn trade_row(t: &Trade) -> TradeRow {
             buyer_fund_deadline: x.buyer_fund_deadline,
             seller_fund_deadline: x.seller_fund_deadline,
             reveal_deadline: x.reveal_deadline,
-            hns_refund_time: x.hns_refund_time,
+            // What the card shows: when the lock really opens.
+            hns_refund_time: x.hns_refund_opens(),
             btc_refund_time: x.btc_refund_time,
         }),
         hns_lock: t.hns_lock.as_ref().map(|(txid, vout)| LockOut {

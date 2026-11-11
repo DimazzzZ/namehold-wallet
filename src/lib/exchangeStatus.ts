@@ -260,7 +260,7 @@ export function tradeStatusText(trade: Pick<TradeRow, "status" | "role" | "timel
         headline: "Trade complete",
         sentence:
           role === "buyer"
-            ? "The HNS is yours, and the seller has the BTC."
+            ? "The HNS is yours, and the BTC goes to the seller."
             : "The BTC is yours, and the buyer has the HNS.",
         tone: "success",
       };

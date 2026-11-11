@@ -829,10 +829,10 @@ fn seller_step(
     if now >= t.reveal_deadline {
         return Step::just(Status::AwaitingRefund {
             chain: Chain::Hns,
-            opens_at: t.hns_refund_time,
+            opens_at: t.hns_refund_opens(),
         });
     }
     Step::just(Status::AwaitingReveal {
-        refund_opens_at: t.hns_refund_time,
+        refund_opens_at: t.hns_refund_opens(),
     })
 }

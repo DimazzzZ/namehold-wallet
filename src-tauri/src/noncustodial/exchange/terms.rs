@@ -131,6 +131,18 @@ impl Terms {
         hex32(&self.hash, "the hash")
     }
 
+    /// When the HNS refund really opens: an hsd time lock counts in units of
+    /// 512 seconds, rounded up, so the lock opens at the first such boundary
+    /// at or after `hns_refund_time`, up to 511 seconds later. This is the
+    /// time to show a person; the protocol's margins keep using the nominal
+    /// one (QA 2026-11-11: a card promised the HNS back 333 s early).
+    pub fn hns_refund_opens(&self) -> u64 {
+        hns_htlc::encode_time_lock(self.hns_refund_time)
+            .ok()
+            .and_then(hns_htlc::time_lock_secs)
+            .unwrap_or(self.hns_refund_time)
+    }
+
     /// The HNS lock: the Buyer claims, the Seller refunds.
     pub fn hns_params(&self) -> Result<HtlcParams, AppError> {
         Ok(HtlcParams {
