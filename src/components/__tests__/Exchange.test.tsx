@@ -12,6 +12,11 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn().mockResolvedValue(undefined),
   readText: vi.fn().mockResolvedValue(""),
 }));
+const openExternalMock = vi.fn();
+vi.mock("../../lib/openExternal", async (orig) => ({
+  ...(await orig<typeof import("../../lib/openExternal")>()),
+  openExternal: (url: string) => openExternalMock(url),
+}));
 
 import ExchangePage from "../exchange/ExchangePage";
 import { useUiStore } from "../../stores/ui";
@@ -111,7 +116,38 @@ const refusalOf = (testId: string) => screen.getByTestId(testId).getAttribute("d
 
 beforeEach(() => {
   invokeMock.mockReset();
+  openExternalMock.mockReset();
   useUiStore.setState({ toastQueue: [] });
+});
+
+describe("Exchange page: beta notice", () => {
+  // Shown whatever the gate says: before the overview answers, when the
+  // exchange is off, and when it is refused here.
+  for (const [what, overview] of [
+    ["enabled", makeOverview()],
+    ["not enabled", makeOverview({ enabled: false })],
+    ["refused", makeOverview({ available: false, refusal: "No node.", enabled: true })],
+  ] as const) {
+    it(`asks for small trades and for every problem as a GitHub issue (${what})`, async () => {
+      mock({ overview });
+      renderPage();
+      const banner = screen.getByTestId("exchange-beta-banner");
+      expect(banner).toHaveTextContent("The exchange is in beta.");
+      expect(banner).toHaveTextContent("Trade small amounts first");
+      expect(banner).toHaveTextContent("report every problem, even a small one, as a GitHub issue");
+      await screen.findAllByTestId("offer-row");
+    });
+  }
+
+  it("opens a new GitHub issue from the notice", async () => {
+    mock();
+    renderPage();
+    fireEvent.click(screen.getByTestId("exchange-report-problem"));
+    expect(openExternalMock).toHaveBeenCalledWith(
+      "https://github.com/DimazzzZ/namehold-wallet/issues/new",
+    );
+    await screen.findAllByTestId("offer-row");
+  });
 });
 
 describe("Exchange page: header and gate (R17)", () => {

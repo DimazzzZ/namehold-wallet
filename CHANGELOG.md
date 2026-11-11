@@ -27,7 +27,8 @@
   - Bitcoin is checked by proof of work, and every configured source must agree.
   - An optional watchtower claims for you while your computer is off.
   - When the exchange cannot be used with a wallet, every button says why.
-  - Exchange sits after Market in the sidebar, so the keys for Activity and Settings are now 5 and 6.
+  - Exchange sits after Market in the sidebar, marked New, so the keys for Activity and Settings are now 5 and 6.
+  - It is a beta: a banner at the top of the page asks you to trade small amounts first and to report every problem as a GitHub issue, with a button that opens a new one.
   - The relay and watchtower server is `namehold-relay` (docs/RELAY.md). Trades are limited to 0.1 BTC each on mainnet.
 
 ## [0.7.1] - 2026-11-06

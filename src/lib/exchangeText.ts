@@ -28,6 +28,12 @@ export const ENABLE_TEXT =
   "Enabling it stores the public keys of a Bitcoin account made from this wallet's recovery phrase (any BIP 84 wallet restores it from the same phrase) and of the keys your trades use. It needs the wallet unlocked and makes no transaction.";
 export const ENABLED_TOAST = "Exchange enabled";
 
+/** The beta notice at the top of the page, shown whatever the gate says. */
+export const BETA_LEAD = "The exchange is in beta.";
+export const BETA_TEXT =
+  "A mistake in it can cost you coins. Trade small amounts first, keep this computer online until each trade has ended, and report every problem, even a small one, as a GitHub issue.";
+export const REPORT_PROBLEM = "Report a problem…";
+
 /**
  * Why nothing on the page may act, or null when it may: the backend's own
  * sentence when the exchange is unavailable here. The Enable button asks this.

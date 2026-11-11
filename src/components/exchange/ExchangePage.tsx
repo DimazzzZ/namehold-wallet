@@ -6,7 +6,7 @@ import { Alert } from "../ui/Alert";
 import { Icon } from "../ui/Icon";
 import { Settings as SettingsIcon } from "lucide-react";
 import { GatedButton } from "./GatedButton";
-import { EnableExchangeBanner, ExchangeGateBanner } from "./ExchangeBanners";
+import { EnableExchangeBanner, ExchangeBetaBanner, ExchangeGateBanner } from "./ExchangeBanners";
 import { OrderBook } from "./OrderBook";
 import { MyOffers } from "./MyOffers";
 import { MyTrades } from "./MyTrades";
@@ -172,6 +172,7 @@ export default function ExchangePage() {
         }
       />
       <div className="space-y-4">
+        <ExchangeBetaBanner />
         {overviewQ.isError && (
           <Alert tone="error" title="Couldn't check the exchange">
             <span data-testid="exchange-overview-error">{mapError(overviewQ.error)}</span>

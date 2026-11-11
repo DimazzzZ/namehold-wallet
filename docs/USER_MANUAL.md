@@ -93,7 +93,7 @@ The sidebar has six top-level sections:
 | **Wallet** | Balance, send, receive, and what needs you. Default page. |
 | **Names** | Names you own, bid on or watch, and finding new ones. |
 | **Market** (marked New) | Buy and sell names through Shakedex. |
-| **Exchange** | Trade HNS for BTC with other people, as atomic swaps (see [section 10c](#10c-exchange-hns--btc)). |
+| **Exchange** (marked New, beta) | Trade HNS for BTC with other people, as atomic swaps (see [section 10c](#10c-exchange-hns--btc)). |
 | **Activity** | Every transaction and name action: To finish, Waiting for a block, and History. |
 | **Settings** | Connections, Node & tray, Notifications, Backup & import, Updates and Advanced. |
 
@@ -513,7 +513,7 @@ The "Ready to finalize" reminders of a Shakedex purchase, listing or cancel (see
 
 ## 10c. Exchange: HNS ⇄ BTC
 
-> ⚠️ **Beta.** Trades are limited to 50 000 sats to 0.1 BTC each on mainnet. Try a small trade first.
+> ⚠️ **Beta.** A mistake in the exchange can cost you coins. Trades are limited to 50 000 sats to 0.1 BTC each on mainnet; try a small trade first, and keep the computer online until each trade has ended. Report every problem, even a small one, as an issue on [GitHub](https://github.com/DimazzzZ/namehold-wallet/issues): the page's beta banner has a **Report a problem…** button that opens a new one.
 
 The Exchange page (sidebar, hotkey `4`) is an order book where people who want to sell HNS for BTC and people who want to buy HNS with BTC meet. Each trade is an **atomic swap**: both sides get paid, or both get their own coins back. Nobody holds your coins in between. That includes the relay that carries the offers, the watchtower and the project.
 

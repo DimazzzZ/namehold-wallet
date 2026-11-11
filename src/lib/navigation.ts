@@ -44,6 +44,7 @@ export const PRIMARY_ROUTES: PrimaryRoute[] = [
     label: "Exchange",
     icon: ArrowLeftRight,
     description: "Trade HNS for BTC with other people, as atomic swaps",
+    badge: "New",
   },
   {
     key: "activity",

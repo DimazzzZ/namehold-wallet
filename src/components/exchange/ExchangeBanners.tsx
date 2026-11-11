@@ -1,5 +1,39 @@
 import { GatedButton } from "./GatedButton";
-import { ENABLE_LEAD, ENABLE_TEXT } from "../../lib/exchangeText";
+import { Button } from "../ui/Button";
+import {
+  BETA_LEAD,
+  BETA_TEXT,
+  ENABLE_LEAD,
+  ENABLE_TEXT,
+  REPORT_PROBLEM,
+} from "../../lib/exchangeText";
+import { GITHUB_REPO_URL, openExternal } from "../../lib/openExternal";
+
+/** Where a problem with the exchange is reported. */
+export const NEW_ISSUE_URL = `${GITHUB_REPO_URL}/issues/new`;
+
+/** The exchange is beta: trade small, and report every problem. */
+export function ExchangeBetaBanner() {
+  return (
+    <div
+      data-testid="exchange-beta-banner"
+      className="flex flex-wrap items-center gap-4 rounded-md border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-[13px] leading-normal text-amber-900"
+    >
+      <p className="min-w-0 flex-1 [text-wrap:pretty]">
+        <strong className="font-semibold">{BETA_LEAD}</strong> {BETA_TEXT}
+      </p>
+      <Button
+        size="sm"
+        variant="secondary"
+        className="shrink-0"
+        data-testid="exchange-report-problem"
+        onClick={() => void openExternal(NEW_ISSUE_URL)}
+      >
+        {REPORT_PROBLEM}
+      </Button>
+    </div>
+  );
+}
 
 /** R17: the backend's refusal, verbatim. */
 export function ExchangeGateBanner({ refusal }: { refusal: string }) {

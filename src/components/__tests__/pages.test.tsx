@@ -47,14 +47,15 @@ describe("Page Components - Smoke Tests", () => {
     expect(container).toBeTruthy();
   });
 
-  it("Layout lists the six sections in order, Market marked New", () => {
+  it("Layout lists the six sections in order, Market and Exchange marked New", () => {
     renderWithProviders(<Layout />);
     const labels = Array.from(document.querySelectorAll("nav a")).map((a) =>
       a.textContent?.replace("New", "").trim(),
     );
     expect(labels).toEqual(["Wallet", "Names", "Market", "Exchange", "Activity", "Settings"]);
     expect(document.querySelector('[data-testid="nav-badge-market"]')).toHaveTextContent("New");
-    expect(document.querySelectorAll('[data-testid^="nav-badge-"]')).toHaveLength(1);
+    expect(document.querySelector('[data-testid="nav-badge-exchange"]')).toHaveTextContent("New");
+    expect(document.querySelectorAll('[data-testid^="nav-badge-"]')).toHaveLength(2);
   });
 
   it("Onboarding renders", () => {
