@@ -64,7 +64,7 @@ The exchange cases need [exchange-setup](procedures/exchange-setup.md) (mode B i
 2. E10, E11, then E14 at once: every trade case starts with a take, so a Take dialog that refuses the offers blocks them all.
 3. P1 without waiting: E1, E3, E9, E12, E17 with E26(d) folded in (between its steps 4 and 5, and after 8), E18, E26(a)(b), E27(a).
 4. P1 that wait, started back to back so one wait serves them all: E20 with [E30](scenarios/exchange/recovery.md) folded in before its Commit, E24, E26(c); then E23 (from its step 4 the daemon is off and the Buyer stays active: start it once the others no longer need a Seller click); then E22 (about 10 minutes, daemon off, Buyer active). E21 last, alone (the app and the daemon stay off until both its refunds).
-5. P2: E37; E38 once a refund case has run; E2, E5, E7, E11's step 2, E13, E15, E19, E27(b)(c), E28, E29, E30 if not folded, E34, E31.
+5. P2: E37; E38 once a refund case has run; E2, E5, E7, E11's step 2, E13, E15, E19, E27(b)(c), E28, E29, E30 if not folded, E34, E31; E39 after every trade case (it empties the Buyer's BTC account).
 6. P3: E16; E35; E25 alone (no HNS block for 30 minutes); E32 over everything mined; E33 in the browser mock.
 
 With real time only, the waiting group takes about 2½ hours (the BTC refunds) and a full run 4–5 hours; with mocktime on both chains, well under 2 hours. About 60 HNS blocks and 110 Bitcoin blocks in all.

@@ -1,7 +1,7 @@
 ---
 area: HNS ⇄ BTC exchange — the BTC account (BIP 84 from the profile's phrase): receive address, balance, withdrawal
 priority: P1–P3
-blocks: HNS 0, BTC 2
+blocks: HNS 0, BTC 3
 requires:
   - procedures/exchange-setup.md
 last_verified: "E9 ✅ on 8d904e2 (2026-11-09); E8 step 4 and E38 ✅ on 8d09fb7 (2026-11-10); E36 ✅ on 3acbf91 (2026-11-11, the estimator emptied by setting `regtest/fees/` aside)"
@@ -120,3 +120,27 @@ Expected:
 - **Evidence:** the three query outputs; screenshots `E38-2-source-down`, `E38-3-source-back`.
 - **Cleanup / end state:** bitcoind running, its fee estimator answering.
 
+## E39 — Send everything spends every coin and leaves no change
+
+- **Priority:** P2
+- **Covers:** spec §9 `exchange_btc_withdraw` with `amount_sats: null`, `exchange/btc_account.rs` `fund_all`
+- **Regression of:** `Send everything` was refused with "not enough confirmed BTC" whenever the account held two or more confirmed coins (its fee was sized for one input), and with one coin it left a small change output behind.
+- **Preconditions:** the Buyer with at least two confirmed coins in its BTC account (two deposits to its receive address, or one deposit and the change of E9); the signer unlocked. Run it after the trade cases: it empties the account.
+
+Steps:
+
+1. Note `Confirmed` on the `BTC account` card.
+2. `Withdraw…` → address `$DEST`, tick `Send everything` → `Withdraw`. Read the secure window.
+3. `Confirm & Sign`. For the txid of the toast: `B getrawtransaction <txid> true`, `B getmempoolentry <txid>`.
+4. `bmine 1`; `Refresh`.
+
+Expected:
+
+- Step 2: the amount field is disabled; secure window `Send BTC` with `To` = `$DEST`, `Amount` and `Network fee` that add up to exactly the `Confirmed` of step 1, and `Change back to this wallet` of 0 sats.
+- Step 3: the transaction has one input per confirmed coin of the account and exactly one output, of the `Amount` row, to `$DEST`; `getmempoolentry` `fees.base` equals the `Network fee` row.
+- Step 4: `Confirmed` is 0 sats.
+- Passes if the whole confirmed balance leaves in one transaction that is exactly what the window showed.
+
+- **Blocks mined:** HNS 0, BTC 1
+- **Evidence:** screenshot `E39-2-secure-window`; the RPC outputs of step 3.
+- **Cleanup / end state:** the Buyer's BTC account is empty; fund it again before another trade case.

@@ -141,3 +141,74 @@ fn change_below_dust_goes_to_the_fee() {
     assert_eq!(f.fee, 200);
     assert_eq!(f.tx.output.len(), 1);
 }
+
+// ------------------------------------------------------- sending everything
+
+/// Every confirmed coin goes into one output of their sum less the fee, and
+/// the fee is sized for that transaction: 11 vbytes of overhead, 31 for the
+/// one P2WPKH output and 68 for each input.
+#[test]
+fn sending_everything_spends_every_confirmed_coin_into_one_output() {
+    let net = Network::Regtest;
+    let xpub = btc_account::account_xpub(&master(), net, 0).unwrap();
+    let (c1, o1) = coin(net, 0, 3, 40_000, 1, Some(100));
+    let (c2, o2) = coin(net, 1, 0, 70_000, 2, Some(101));
+    let (c3, o3) = coin(net, 0, 4, 5_000, 3, Some(102));
+    let (unconfirmed, _) = coin(net, 0, 5, 9_000, 4, None);
+    let to = btc_account::address_at(&xpub, net, 0, 9).unwrap();
+    let f =
+        btc_account::fund_all(&[c1.clone(), unconfirmed, c2.clone(), c3.clone()], &to, 3).unwrap();
+    assert_eq!(f.coins.len(), 3);
+    assert_eq!(f.change, 0);
+    assert_eq!(f.fee, 3 * (11 + 31 + 3 * 68));
+    assert_eq!(f.tx.output.len(), 1);
+    assert_eq!(f.tx.output[0].script_pubkey, to.script_pubkey());
+    assert_eq!(f.tx.output[0].value.to_sat(), 115_000 - f.fee);
+
+    let tx = btc_account::sign_funding(&f, &master(), net, 0).unwrap();
+    let spent = |o: &bitcoin::OutPoint| {
+        [(&c1, &o1), (&c2, &o2), (&c3, &o3)]
+            .iter()
+            .find(|(c, _)| c.txid == o.txid.to_string() && c.vout == o.vout)
+            .map(|(_, out)| (*out).clone())
+    };
+    verify_transaction(&tx, spent).unwrap();
+    assert!(
+        f.fee >= 3 * tx.vsize() as u64,
+        "fee {} vsize {}",
+        f.fee,
+        tx.vsize()
+    );
+}
+
+/// One coin leaves no change behind either, at any rate.
+#[test]
+fn sending_everything_from_one_coin_leaves_nothing() {
+    let net = Network::Regtest;
+    let xpub = btc_account::account_xpub(&master(), net, 0).unwrap();
+    let (c, _) = coin(net, 0, 0, 100_000, 1, Some(5));
+    let to = btc_account::address_at(&xpub, net, 0, 9).unwrap();
+    let f = btc_account::fund_all(&[c], &to, 10).unwrap();
+    assert_eq!(f.tx.output.len(), 1);
+    assert_eq!(f.fee, 10 * (11 + 31 + 68));
+    assert_eq!(f.tx.output[0].value.to_sat(), 100_000 - 1_100);
+    assert_eq!(f.change, 0);
+}
+
+#[test]
+fn sending_everything_is_refused_when_nothing_would_arrive() {
+    let net = Network::Regtest;
+    let xpub = btc_account::account_xpub(&master(), net, 0).unwrap();
+    let to = btc_account::address_at(&xpub, net, 0, 9).unwrap();
+    // The fee is 330 sats: 170 would arrive, below the 294 sats of dust.
+    let (small, _) = coin(net, 0, 0, 500, 1, Some(5));
+    // Nothing confirmed at all.
+    let (unconfirmed, _) = coin(net, 0, 1, 1_000_000, 2, None);
+    for coins in [vec![small], vec![unconfirmed], vec![]] {
+        let err = btc_account::fund_all(&coins, &to, 3).unwrap_err();
+        assert!(
+            err.to_string().contains("not enough confirmed BTC"),
+            "{err}"
+        );
+    }
+}

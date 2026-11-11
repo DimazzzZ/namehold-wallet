@@ -498,48 +498,26 @@ pub async fn exchange_btc_withdraw(
     let coins = btc_wallet::coins(srcs[0].as_ref(), &acct, ctx.network).await?;
     let picked = btc_rate(&srcs).await?;
     let rate = picked.sat_per_vb;
-    let change = {
-        let conn = lock(&state)?;
-        let i = store::take_btc_index(&conn, &ctx.profile_id, 1)?;
-        btc_account::address_at(&acct.btc_xpub, ctx.network, 1, i)?
-    };
     let confirmed: Vec<_> = coins.into_iter().filter(|c| c.height.is_some()).collect();
-    let total: u64 = confirmed.iter().map(|c| c.value).sum();
     let f = match amount_sats {
-        Some(a) => btc_account::fund(
-            &confirmed,
-            vec![bitcoin::TxOut {
-                value: bitcoin::Amount::from_sat(a),
-                script_pubkey: to.script_pubkey(),
-            }],
-            &change,
-            rate,
-        )?,
-        None => {
-            // Everything: one output of the total less the fee.
-            let probe = btc_account::fund(
-                &confirmed,
-                vec![bitcoin::TxOut {
-                    value: bitcoin::Amount::from_sat(0),
-                    script_pubkey: to.script_pubkey(),
-                }],
-                &to,
-                rate,
-            )?;
-            let fee = probe.fee + 31 * rate; // the change output folded into the one output
-            let out = total.checked_sub(fee).filter(|v| *v > 546).ok_or_else(|| {
-                AppError::InvalidInput("not enough confirmed BTC to pay the fee".into())
-            })?;
+        Some(a) => {
+            let change = {
+                let conn = lock(&state)?;
+                let i = store::take_btc_index(&conn, &ctx.profile_id, 1)?;
+                btc_account::address_at(&acct.btc_xpub, ctx.network, 1, i)?
+            };
             btc_account::fund(
                 &confirmed,
                 vec![bitcoin::TxOut {
-                    value: bitcoin::Amount::from_sat(out),
+                    value: bitcoin::Amount::from_sat(a),
                     script_pubkey: to.script_pubkey(),
                 }],
                 &change,
                 rate,
             )?
         }
+        // Everything: every confirmed coin into one output, with no change.
+        None => btc_account::fund_all(&confirmed, &to, rate)?,
     };
     let sending = f.tx.output[0].value.to_sat();
     crate::commands::secure_confirm::confirm_rows(

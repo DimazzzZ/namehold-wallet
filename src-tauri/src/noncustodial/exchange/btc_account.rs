@@ -192,25 +192,7 @@ pub fn fund(
                 script_pubkey: change_spk.clone(),
             });
         }
-        let tx = Transaction {
-            version: Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: taken
-                .iter()
-                .map(|c| {
-                    Ok(TxIn {
-                        previous_output: OutPoint {
-                            txid: crate::noncustodial::exchange::btc_htlc::parse_txid(&c.txid)?,
-                            vout: c.vout,
-                        },
-                        script_sig: ScriptBuf::new(),
-                        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                        witness: Witness::new(),
-                    })
-                })
-                .collect::<Result<_, AppError>>()?,
-            output: out,
-        };
+        let tx = spend_of(&taken, out)?;
         return Ok(Funding {
             tx,
             coins: taken,
@@ -222,6 +204,72 @@ pub fn fund(
         "not enough confirmed BTC: need {} sats plus the fee, have {} sats",
         want, have
     )))
+}
+
+/// The unsigned transaction spending `coins` into `outputs`.
+fn spend_of(coins: &[BtcCoin], outputs: Vec<TxOut>) -> Result<Transaction, AppError> {
+    Ok(Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: coins
+            .iter()
+            .map(|c| {
+                Ok(TxIn {
+                    previous_output: OutPoint {
+                        txid: crate::noncustodial::exchange::btc_htlc::parse_txid(&c.txid)?,
+                        vout: c.vout,
+                    },
+                    script_sig: ScriptBuf::new(),
+                    sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                    witness: Witness::new(),
+                })
+            })
+            .collect::<Result<_, AppError>>()?,
+        output: outputs,
+    })
+}
+
+/// Send everything: every confirmed coin of `coins` into one output to
+/// `to`, of their sum less the fee at `rate` sat/vbyte. The fee is sized for
+/// this transaction (all the inputs, the one output), so nothing is left
+/// behind as change. Refused when what would arrive is dust.
+pub fn fund_all(coins: &[BtcCoin], to: &Address, rate: u64) -> Result<Funding, AppError> {
+    let taken: Vec<BtcCoin> = coins
+        .iter()
+        .filter(|c| c.height.is_some())
+        .cloned()
+        .collect();
+    let have = taken
+        .iter()
+        .try_fold(0u64, |a, c| a.checked_add(c.value))
+        .ok_or_else(|| AppError::InvalidInput("amount overflows".into()))?;
+    let spk = to.script_pubkey();
+    let vbytes =
+        TX_OVERHEAD_VBYTES + output_vbytes(&spk) + P2WPKH_INPUT_VBYTES * taken.len() as u64;
+    let fee = vbytes
+        .checked_mul(rate)
+        .ok_or_else(|| AppError::InvalidInput("the fee overflows".into()))?;
+    let arrives = have
+        .checked_sub(fee)
+        .filter(|v| *v >= spk.minimal_non_dust().to_sat())
+        .ok_or_else(|| {
+            AppError::InvalidInput(format!(
+                "not enough confirmed BTC to pay the fee: have {have} sats, the fee is {fee} sats"
+            ))
+        })?;
+    let tx = spend_of(
+        &taken,
+        vec![TxOut {
+            value: Amount::from_sat(arrives),
+            script_pubkey: spk,
+        }],
+    )?;
+    Ok(Funding {
+        tx,
+        coins: taken,
+        fee,
+        change: 0,
+    })
 }
 
 /// Sign every input of `f` with the account's keys (BIP 143, SIGHASH_ALL).
