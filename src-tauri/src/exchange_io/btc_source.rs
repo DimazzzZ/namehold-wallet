@@ -94,7 +94,7 @@ impl Esplora {
         check_transport(&url)?;
         Ok(Esplora {
             base: base.trim_end_matches('/').to_owned(),
-            http: crate::http::client_builder()
+            http: crate::http::chain_source_client_builder(base)
                 .timeout(std::time::Duration::from_secs(20))
                 .build()
                 .map_err(|e| AppError::Other(format!("http client: {e}")))?,
@@ -391,7 +391,9 @@ impl BitcoinCore {
             url: url.to_string(),
             user,
             pass,
-            http: crate::http::client_builder()
+            // No redirect, and a loopback node is reached past any proxy,
+            // so the login goes only to the host the settings name.
+            http: crate::http::chain_source_client_builder(url.as_str())
                 .timeout(std::time::Duration::from_secs(60))
                 .build()
                 .map_err(|e| AppError::Other(format!("http client: {e}")))?,
@@ -417,6 +419,12 @@ impl BitcoinCore {
             return Err(rpc_err(
                 &self.url,
                 "the RPC login was refused: check the bitcoind login in Exchange settings",
+            ));
+        }
+        if r.status().is_redirection() {
+            return Err(rpc_err(
+                &self.url,
+                format!("HTTP {}: a redirect is not followed", r.status()),
             ));
         }
         let v: serde_json::Value = r.json().await.map_err(|e| rpc_err(&self.url, e))?;

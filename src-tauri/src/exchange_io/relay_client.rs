@@ -30,7 +30,9 @@ impl RelayClient {
         })?;
         Ok(RelayClient {
             base: base.trim_end_matches('/').to_owned(),
-            http: crate::http::client_builder()
+            // No redirect is followed, as for a chain source: the relay is
+            // not trusted to send the wallet to another host.
+            http: crate::http::chain_source_client_builder(base)
                 .timeout(std::time::Duration::from_secs(20))
                 .build()
                 .map_err(|e| AppError::Other(format!("http client: {e}")))?,
