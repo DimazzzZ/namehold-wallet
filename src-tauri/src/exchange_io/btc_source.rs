@@ -363,6 +363,29 @@ impl BitcoinCore {
         let pass = url.password().unwrap_or("").to_owned();
         let _ = url.set_username("");
         let _ = url.set_password(None);
+        Self::at(url, user, pass)
+    }
+
+    /// `spec` is `bitcoind+http://host:port` (or `+https`) with no login in
+    /// it, and the login is given apart, as typed. A login is never pasted
+    /// into the URL: the parser reads `@`, `/`, `?` and `#` in it as the
+    /// URL's own, so `a:b@evil.example/x` would make the host `evil.example`.
+    pub fn with_login(spec: &str, user: &str, pass: &str) -> Result<BitcoinCore, AppError> {
+        let rest = spec
+            .strip_prefix("bitcoind+")
+            .ok_or_else(|| AppError::InvalidInput("not a bitcoind source".into()))?;
+        let url = url::Url::parse(rest)
+            .map_err(|e| AppError::InvalidInput(format!("a bitcoind source is not a URL: {e}")))?;
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(AppError::InvalidInput(
+                "a bitcoind source with a separate login must not carry one in its URL".into(),
+            ));
+        }
+        Self::at(url, user.to_owned(), pass.to_owned())
+    }
+
+    /// The client for `url`, which carries no login.
+    fn at(url: url::Url, user: String, pass: String) -> Result<BitcoinCore, AppError> {
         check_transport(&url)?;
         Ok(BitcoinCore {
             url: url.to_string(),

@@ -376,3 +376,60 @@ async fn a_refused_login_is_named_and_is_not_a_node_rpc_error() {
     assert!(!e.contains("Node RPC error"), "{e}");
     assert!(!e.contains("user") && !e.contains("pass"), "{e}");
 }
+
+// ------------------------------------------------- the login from settings
+
+fn settings_with(source: String, login: &str) -> crate::exchange_io::env::Config {
+    crate::exchange_io::env::Config {
+        relay_url: String::new(),
+        watchtower_url: String::new(),
+        btc_sources: vec![source],
+        bitcoind_auth: Some(login.to_owned()),
+    }
+}
+
+/// The login is the user's text, never a part of the URL: whatever it holds,
+/// the source is the host the settings name, which is the host the secure
+/// window showed. (Pasted into the URL, `a:b@evil.example/x` made the host
+/// `evil.example` behind a row that read "bitcoind login: changed".)
+#[test]
+fn a_bitcoind_login_cannot_move_the_source_to_another_host() {
+    for login in [
+        "a:b@evil.example/x",
+        "a:b@evil.example:8332/",
+        "a:b@evil.example?",
+        "a:b@evil.example#",
+        "a@evil.example:b",
+    ] {
+        let cfg = settings_with("bitcoind+https://node.example:8332".into(), login);
+        let sources = crate::exchange_io::env::sources(&cfg).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].label(), "bitcoind@node.example", "{login}");
+    }
+}
+
+/// A password is any text after the first colon. One with the characters a
+/// URL gives a meaning to logs in at the configured node as typed.
+#[tokio::test]
+async fn a_bitcoind_password_with_url_characters_logs_in_as_typed() {
+    use base64::Engine;
+    let login = "user:p@ss/w#rd?=:x%41";
+    let mut server = mockito::Server::new_async().await;
+    let asked = server
+        .mock("POST", "/")
+        .match_header(
+            "authorization",
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(login)
+            )
+            .as_str(),
+        )
+        .match_body(Matcher::Regex("\"method\":\"getindexinfo\"".into()))
+        .with_body(r#"{"result":{"txindex":{"synced":true}},"error":null,"id":"namehold"}"#)
+        .create();
+    let cfg = settings_with(format!("bitcoind+{}", server.url()), login);
+    let sources = crate::exchange_io::env::sources(&cfg).unwrap();
+    sources[0].ready().await.unwrap();
+    asked.assert();
+}

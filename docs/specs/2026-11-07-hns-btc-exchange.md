@@ -215,7 +215,7 @@ All act on the active profile. Structs are camelCase (`src/types/exchange.ts` mi
 | `exchange_commit` | `trade_id` | `TradeRow` | yes: the Commit (§3.2) |
 | `exchange_cancel_trade` | `trade_id` | `TradeRow` | — (only before this party's Commit) |
 | `exchange_refresh` | — | `TradeRow[]` | — (runs one engine step for every trade now) |
-| `exchange_update_settings` | `relay_url: string`, `watchtower_url: string`, `btc_sources: string[]`, `bitcoind_auth: string \| null` (null = keep) | `ExchangeOverview` | yes: one old → new row per change; the auth is shown as set/changed/cleared, never its value |
+| `exchange_update_settings` | `relay_url: string`, `watchtower_url: string`, `btc_sources: string[]`, `bitcoind_auth: string \| null` (null = keep) | `ExchangeOverview` | yes: one old → new row per change; the auth is shown as set/changed/cleared, never its value, and is never written into a source's URL, so the rows name the hosts in use |
 
 ```ts
 type ExchangeOverview = {

@@ -200,19 +200,20 @@ pub fn validate(
     })
 }
 
-/// The sources of `cfg`, the bitcoind login put into a `bitcoind+` URL.
+/// The sources of `cfg`. A `bitcoind+` source gets the bitcoind login, given
+/// next to its URL and never written into it: the URL stays the one the
+/// settings hold and the secure window showed, whatever the login contains.
+/// The user name ends at the first colon; the rest is the password as typed.
 pub fn sources(cfg: &Config) -> Result<Vec<Box<dyn BtcSource>>, AppError> {
     cfg.btc_sources
         .iter()
-        .map(|spec| {
-            let spec = match (spec.strip_prefix("bitcoind+"), &cfg.bitcoind_auth) {
-                (Some(rest), Some(auth)) => {
-                    let (scheme, host) = rest.split_once("://").unwrap_or(("http", rest));
-                    format!("bitcoind+{scheme}://{auth}@{host}")
-                }
-                _ => spec.clone(),
-            };
-            btc_source::source_from_spec(&spec)
+        .map(|spec| match &cfg.bitcoind_auth {
+            Some(auth) if spec.starts_with("bitcoind+") => {
+                let (user, pass) = auth.split_once(':').unwrap_or((auth, ""));
+                let core = btc_source::BitcoinCore::with_login(spec, user, pass)?;
+                Ok(Box::new(core) as Box<dyn BtcSource>)
+            }
+            _ => btc_source::source_from_spec(spec),
         })
         .collect()
 }
