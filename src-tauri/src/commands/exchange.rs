@@ -99,21 +99,66 @@ pub struct ExchangeOverview {
     pub bitcoind_auth_set: bool,
 }
 
+/// What the page needs to know about a profile before any key is involved:
+/// who it is, its network, the settings and its node. Unlike
+/// [`draft_ctx::load_ctx`] it also loads for a watch-only or Ledger profile,
+/// so the page can say why such a profile cannot trade (R17) and still show
+/// the order book, instead of failing with "active profile is watch-only"
+/// (QA 2026-11-11, Q9).
+pub(crate) struct View {
+    pub profile_id: String,
+    pub profile_kind: String,
+    pub network: Network,
+    pub settings: std::collections::HashMap<String, String>,
+    pub node: crate::noncustodial::rpc::NodeRpcClient,
+}
+
+impl View {
+    pub(crate) fn of(ctx: &Ctx) -> Self {
+        View {
+            profile_id: ctx.profile_id.clone(),
+            profile_kind: ctx.profile_kind.clone(),
+            network: ctx.network,
+            settings: ctx.settings.clone(),
+            node: ctx.node.clone(),
+        }
+    }
+
+    /// The active profile's view, whatever its kind.
+    pub(crate) fn load(conn: &rusqlite::Connection) -> Result<Self, AppError> {
+        let profile = draft_ctx::active_profile(conn)?;
+        Ok(View {
+            network: crate::noncustodial::derivation::network_from_profile(&profile.network)?,
+            settings: crate::db::queries::get_settings(conn)?,
+            node: crate::noncustodial::rpc::NodeRpcClient::for_profile(conn, &profile.id)?,
+            profile_id: profile.id,
+            profile_kind: profile.kind,
+        })
+    }
+}
+
 pub(crate) fn overview_from(
     conn: &rusqlite::Connection,
     ctx: &Ctx,
 ) -> Result<ExchangeOverview, AppError> {
-    let cfg = env::config(&ctx.settings, ctx.network);
-    let r = env::node_refusal(&ctx.profile_kind, &ctx.node, &ctx.settings);
+    overview_of(conn, &View::of(ctx))
+}
+
+pub(crate) fn overview_of(
+    conn: &rusqlite::Connection,
+    v: &View,
+) -> Result<ExchangeOverview, AppError> {
+    let cfg = env::config(&v.settings, v.network);
+    let r = env::node_refusal(&v.profile_kind, &v.node, &v.settings);
     Ok(ExchangeOverview {
-        network: ctx.network.as_str().to_owned(),
+        network: v.network.as_str().to_owned(),
         available: r.is_none(),
         refusal: r.map(str::to_owned),
-        enabled: store::account(conn, &ctx.profile_id)?.is_some(),
+        enabled: store::account(conn, &v.profile_id)?.is_some(),
         relay_url: cfg.relay_url,
         watchtower_url: Some(cfg.watchtower_url).filter(|w| !w.is_empty()),
         btc_sources: cfg.btc_sources,
-        btc_network: btc_network_name(ctx.network).to_owned(),
+        btc_network: btc_network_name(v.network).to_owned(),
         bitcoind_auth_set: cfg.bitcoind_auth.is_some(),
     })
 }
@@ -121,9 +166,8 @@ pub(crate) fn overview_from(
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[tauri::command]
 pub async fn exchange_overview(state: State<'_, AppState>) -> Result<ExchangeOverview, AppError> {
-    let ctx = draft_ctx::load_ctx(&state)?;
     let conn = lock(&state)?;
-    overview_from(&conn, &ctx)
+    overview_of(&conn, &View::load(&conn)?)
 }
 
 /// Store the BTC account's and the swap branch's public keys (needs the
@@ -508,13 +552,15 @@ pub struct MarketOffers {
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[tauri::command]
 pub async fn exchange_list_offers(state: State<'_, AppState>) -> Result<MarketOffers, AppError> {
-    let ctx = draft_ctx::load_ctx(&state)?;
-    let own: Vec<String> = {
+    // Browsing needs no key: a watch-only profile reads the order book too.
+    let (ctx, own): (View, Vec<String>) = {
         let conn = lock(&state)?;
-        store::offers(&conn, &ctx.profile_id)?
+        let v = View::load(&conn)?;
+        let own = store::offers(&conn, &v.profile_id)?
             .into_iter()
             .map(|o| o.id)
-            .collect()
+            .collect();
+        (v, own)
     };
     let cfg = env::config(&ctx.settings, ctx.network);
     let t = now();

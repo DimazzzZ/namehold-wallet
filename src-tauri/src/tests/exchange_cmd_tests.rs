@@ -302,3 +302,35 @@ fn a_commit_whose_transactions_cannot_be_read_is_refused_not_shown() {
     t.seller.btc_claims[0].tx_hex = "zz".into();
     refused(review::seller_rows(&t.seller, &t.terms, 1, &hlock(&t)).unwrap_err());
 }
+
+/// R17 on the page (QA 2026-11-11, Q9): a watch-only profile gets the
+/// overview with its refusal, never the generic "active profile is
+/// watch-only" error of the signing context, so the page can show the amber
+/// banner and still read the order book.
+#[test]
+fn a_watch_only_profile_gets_an_overview_that_says_why_it_cannot_trade() {
+    use crate::commands::exchange::{overview_of, View};
+    use crate::db::queries::{insert_wallet_profile, set_active_profile};
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::db::migrations::run(&conn).unwrap();
+    insert_wallet_profile(
+        &conn,
+        "watch",
+        "Watch",
+        "watch_only_xpub",
+        "regtest",
+        "xpubFAKE",
+        0,
+        true,
+    )
+    .unwrap();
+    set_active_profile(&conn, "watch").unwrap();
+    let view = View::load(&conn).expect("a watch-only profile has a view");
+    assert_eq!(view.profile_kind, "watch_only_xpub");
+    assert_eq!(view.network, Network::Regtest);
+    let o = overview_of(&conn, &view).unwrap();
+    assert!(!o.available);
+    assert!(!o.enabled);
+    assert_eq!(o.refusal.as_deref(), Some(NEEDS_RECOVERY_PHRASE));
+    assert_eq!(o.network, "regtest");
+}
