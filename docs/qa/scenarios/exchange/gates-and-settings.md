@@ -5,7 +5,7 @@ blocks: HNS 0, BTC 0
 requires:
   - procedures/exchange-setup.md
   - procedures/switch-profile.md
-last_verified: "E4 ◐, E6 ✅ on 8d904e2 (2026-11-09); E1, E2, E3, E5, E7 not run yet"
+last_verified: "E4 ◐, E6 ✅ on 8d904e2 (2026-11-09); E5 ✅ on f542de6 (2026-11-10); E7 step 4 ✅; E1, E2, E3 not run yet"
 ---
 
 # Gates and settings

@@ -5,7 +5,7 @@ blocks: HNS 0, BTC 0
 requires:
   - procedures/exchange-setup.md
   - procedures/switch-profile.md
-last_verified: "E10, E11, E12, E14 ✅ on 8d904e2 (2026-11-09); E13, E15, E16, E37 not run yet"
+last_verified: "E10, E11, E12, E14 ✅ on 8d904e2 (2026-11-09); E15, E16, E37 ✅, E13 ◐ on f542de6 (2026-11-11)"
 ---
 
 # Offers and taking
@@ -207,8 +207,8 @@ Steps:
 
 Expected:
 
-- Step 2: the relay's list no longer holds OS and OX (not renewed for 180 s); the Buyer's `Sell HNS` card reads "Nobody is selling HNS right now." if no other sell offer is live. The relay log has no `POST /v1/offers` for them since step 1.
-- Step 3: record what My offers shows for OS and OX while the relay does not list them (`Live`, or another state: unverified wording; an offer shown `Live` that no taker can see is worth a finding).
+- Step 2: the relay's list no longer holds OS and OX (not renewed for 180 s; record whether the active profile's own offer stayed: the app renewed it about every 2 minutes in one run and not at all in another); the Buyer's `Sell HNS` card reads "Nobody is selling HNS right now." if no other sell offer is live. The relay log has no `POST /v1/offers` for them since step 1.
+- Step 3: My offers shows them `Paused` while the relay does not list them (an offer shown `Live` that no taker can see is worth a finding).
 - Step 4: both are listed again with the same offer ids (a renewal re-posts the same signed offer), and takeable.
 - Passes if an offer disappears when its maker stops renewing it and returns when the maker is back.
 

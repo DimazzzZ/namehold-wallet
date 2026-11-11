@@ -7,7 +7,7 @@ requires:
   - procedures/exchange-time-travel.md
   - procedures/switch-profile.md
   - scenarios/exchange/trades.md (E17's steps and checks)
-last_verified: "E26 (a)(b) ✅ (finding 22 seen), E27 (b) ✅ on 5c6c57a (2026-11-10); E26 (c), E27 (a)(c), E28–E34 not run yet"
+last_verified: "on f542de6 (2026-11-11): E26 ✅ (the inspector call of (d) blocked), E27 ✅, E30 ✅, E31 ✅, E33 ✅ (headless), E28 ◐, E29 ◐ (finding 24), E32 ◐, E34 ◐ (toast not caught)"
 ---
 
 # Cancelling, crashes, outages and restarts
@@ -97,7 +97,7 @@ Expected:
 
 - **Priority:** P2
 - **Covers:** spec §3.3 step 3 (`btc_locked` announced), §3.4 ("the relay lies": it can only waste time); the watchtower registration retried
-- **Regression of:** exchange QA finding 4 (the BTC lock was announced only once, so a relay outage at the Buyer's Commit lost the trade)
+- **Regression of:** exchange QA finding 4 (the BTC lock was announced only once, so a relay outage at the Buyer's Commit lost the trade); see also exchange QA finding 24 (open: the next announcement can come later than one period)
 - **Preconditions:** as E17.
 
 The Seller learns the Buyer's BTC lock only from the Buyer's announcement (it cannot look the lock up on Bitcoin without its txid). A committed party announces its lock again about every 5 minutes while the other side waits for it (`exchange_io/job.rs::reannounce`: on a step that falls in the first minute of each 300-second period).
@@ -111,7 +111,7 @@ Steps:
 Expected:
 
 - Step 1: "Locking your BTC"; the lock in bitcoind's mempool; `Watchtower` "Registering with the watchtower failed".
-- Step 2: the Buyer's line becomes "Registered with the watchtower" once the relay is back (failed registrations are retried each step). Within about 6 minutes of the relay's return (the next 5-minute announcement, then a step of the Seller), and before `Seller locks HNS by`, the Seller's card reads "Confirm to lock your HNS". Before that it reads "Waiting for the buyer to confirm"; if `Buyer locks BTC by` passes first it may read "Trade expired" until the announcement arrives: record what it showed and when. A Seller never asked to commit before its deadline is ❌.
+- Step 2: the Buyer's line becomes "Registered with the watchtower" once the relay is back (failed registrations are retried each step). Within about 6 minutes of the relay's return (the next 5-minute announcement, then a step of the Seller; record the times of the Buyer's `POST /v1/messages` lines in the relay log: 8 min 39 s was seen once, finding 24), and before `Seller locks HNS by`, the Seller's card reads "Confirm to lock your HNS". Before that it reads "Waiting for the buyer to confirm"; if `Buyer locks BTC by` passes first it may read "Trade expired" until the announcement arrives: record what it showed and when. A Seller never asked to commit before its deadline is ❌.
 - Step 3: the trade completes as E17.
 - Passes if a relay outage at the Buyer's Commit only delays the trade.
 
@@ -204,7 +204,7 @@ Steps:
 
 1. Open `/exchange`. `Enable exchange`. Open `Settings`; `Cancel`.
 2. `Make an offer…` (`Sell HNS`, `250`, `1`, `100`) → `Publish offer`; read My offers.
-3. Take an offer of the mock's order book for `10`; then press `Confirm and sign` or `Refresh` until the card reads "Trade complete", reading the headline at each step.
+3. Take the first sell offer of the mock's order book for `100` (its limits are 100 to 2,500 HNS; `10` reads "This offer takes at least 100 HNS"); then press `Confirm and sign` or `Refresh` until the card reads "Trade complete", reading the headline at each step.
 
 Expected:
 
@@ -225,7 +225,7 @@ Expected:
 
 Steps:
 
-1. The Buyer takes OS for `1`; on "Confirm to start the trade" press `Confirm and sign` and leave the secure window open. Wait in real time until 1 minute past `Buyer locks BTC by` (at most 10 minutes after the start). `Confirm & Sign`. Read the toast and the card; `B getrawmempool`.
+1. The Buyer takes OS for `1`; on "Confirm to start the trade" press `Confirm and sign` and leave the secure window open (nobody may move it to another display or close it: log its presence every 30 s). Wait in real time until 1 minute past `Buyer locks BTC by` (at most 10 minutes after the start). `Confirm & Sign`. Read the toast and the card; `B getrawmempool`.
 2. Optional: the same on the Seller's side: a trade at "Confirm to lock your HNS", its window left open until 1 minute past `Seller locks HNS by`, then `Confirm & Sign`; `H getrawmempool`.
 
 Expected:

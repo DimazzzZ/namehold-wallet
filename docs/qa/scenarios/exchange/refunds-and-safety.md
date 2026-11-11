@@ -7,7 +7,7 @@ requires:
   - procedures/exchange-time-travel.md
   - procedures/switch-profile.md
   - scenarios/exchange/trades.md (E17's steps and checks)
-last_verified: "E20 ✅ by RPC, E22 ✅, E23 ✅ (fee rung not judged, path M), E24 ✅ on 5c6c57a (2026-11-10; some card texts and toasts not read); others not run yet"
+last_verified: "E20 ✅ by RPC, E22 ✅, E23 ✅ (fee rung not judged, path M), E24 ✅ on 5c6c57a (2026-11-10; some card texts and toasts not read); E21 ✅ by RPC (2026-11-10), E35 ✅ on f542de6 (2026-11-11); others not run yet"
 ---
 
 # Refunds and safety rules
