@@ -172,7 +172,9 @@ async fn a_committed_buyer_announces_its_btc_lock_again_while_the_seller_waits()
     });
     assert!(store::commit_trade(&c, &mut t, 1).unwrap());
     let relay = FakeRelay::default();
-    let now = fx::START + 300 * 7; // the first minute of a period
+    // Not the first minute of a 300-second period: the first announcement
+    // of a process does not wait for one (QA Q8).
+    let now = fx::START + 300 * 7 + 150;
     let ctx = Ctx {
         conn: &c,
         profile_id: "p",
@@ -266,4 +268,21 @@ fn an_ended_trade_keeps_its_status_through_a_failed_read() {
         settled_status(Some(&Status::Expired), refunded.clone(), true),
         refunded
     );
+}
+
+/// QA 2026-11-11, Q8: the announcement no longer depends on a step landing
+/// in one minute of each period.
+#[test]
+fn a_lock_is_announced_at_once_and_then_once_a_period() {
+    use crate::exchange_io::job::{announce_due, REANNOUNCE_EVERY_SECS};
+    assert!(announce_due(None, 12_345), "never announced: now");
+    let at = 10_000;
+    assert!(!announce_due(Some(at), at));
+    assert!(!announce_due(Some(at), at + 70), "the next step");
+    assert!(!announce_due(Some(at), at + REANNOUNCE_EVERY_SECS - 1));
+    assert!(announce_due(Some(at), at + REANNOUNCE_EVERY_SECS));
+    assert!(announce_due(Some(at), at + REANNOUNCE_EVERY_SECS + 130));
+    // A clock that went back never blocks the announcement for ever.
+    assert!(!announce_due(Some(at), at - 50));
+    assert!(announce_due(Some(u64::MAX), u64::MAX));
 }

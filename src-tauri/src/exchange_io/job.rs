@@ -773,9 +773,6 @@ pub const REANNOUNCE_EVERY_SECS: u64 = 300;
 /// finding: a relay down at the Commit lost the only announcement, and the
 /// Seller cannot find the Buyer's BTC lock without it).
 async fn reannounce(ctx: &Ctx<'_>, relay: &dyn Relay) -> Result<(), AppError> {
-    if ctx.now % REANNOUNCE_EVERY_SECS >= 60 {
-        return Ok(()); // about once per period, on the tick that falls in its first minute
-    }
     for t in store::trades(ctx.conn, ctx.profile_id)? {
         let (Some(h), Some(terms)) = (&t.holdings, &t.terms) else {
             continue;
@@ -820,6 +817,11 @@ async fn reannounce(ctx: &Ctx<'_>, relay: &dyn Relay) -> Result<(), AppError> {
                 )
             }
         };
+        let key = (ctx.profile_id.to_owned(), t.trade_id.clone());
+        let last = announced().lock().ok().and_then(|m| m.get(&key).copied());
+        if !announce_due(last, ctx.now) {
+            continue;
+        }
         let e = reply(
             ctx,
             &t.relay_key,
@@ -828,7 +830,30 @@ async fn reannounce(ctx: &Ctx<'_>, relay: &dyn Relay) -> Result<(), AppError> {
             &t.trade_id,
             body,
         )?;
+        // Recorded only once the relay took it: an announcement that failed
+        // is tried again on the next step, not a period later.
         relay.send(&e).await?;
+        if let Ok(mut m) = announced().lock() {
+            m.insert(key, ctx.now);
+        }
     }
     Ok(())
+}
+
+/// When this process last announced each trade's lock. In memory only: a
+/// restart announces again at once, which is what a restart should do.
+fn announced() -> &'static std::sync::Mutex<std::collections::HashMap<(String, String), u64>> {
+    static LAST: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<(String, String), u64>>,
+    > = std::sync::OnceLock::new();
+    LAST.get_or_init(Default::default)
+}
+
+/// Whether a lock is announced on this step: never yet by this process, or
+/// a period ago. It used to be "on a step that falls in the first minute of
+/// a period", which a step every 70 to 130 seconds can miss: after a relay
+/// outage the next announcement came 8 min 39 s later, out of the Seller's
+/// 20 minutes (QA 2026-11-11, Q8).
+pub fn announce_due(last: Option<u64>, now: u64) -> bool {
+    last.is_none_or(|t| now >= t.saturating_add(REANNOUNCE_EVERY_SECS))
 }
