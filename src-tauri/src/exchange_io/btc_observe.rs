@@ -66,7 +66,7 @@ async fn proven_confirmations(
         network,
     )?;
     if v.txid != txid || v.block_hash != block {
-        return Err(AppError::Rpc(
+        return Err(AppError::Other(
             "a Bitcoin source's proof is for something else".into(),
         ));
     }
@@ -118,7 +118,7 @@ pub async fn observe(sources: &[Box<dyn BtcSource>], h: &Holdings) -> Result<Btc
     for src in sources {
         if let Some(tx) = src.raw_tx(&txid).await? {
             if tx.compute_txid() != txid {
-                return Err(AppError::Rpc(
+                return Err(AppError::Other(
                     "a Bitcoin source returned another transaction".into(),
                 ));
             }

@@ -73,8 +73,11 @@ pub trait BtcSource: Send + Sync {
     async fn broadcast(&self, tx_hex: &str) -> Result<Txid, AppError>;
 }
 
+/// An error of a Bitcoin source. Not `AppError::Rpc`: that one reads "Node
+/// RPC error", which names the Handshake node for a failure that is not its
+/// (QA 2026-11-09, Q2).
 fn rpc_err(src: &str, m: impl std::fmt::Display) -> AppError {
-    AppError::Rpc(format!("Bitcoin source {src}: {m}"))
+    AppError::Other(format!("Bitcoin source {src}: {m}"))
 }
 
 // ------------------------------------------------------------------ Esplora
@@ -385,6 +388,14 @@ impl BitcoinCore {
             .send()
             .await
             .map_err(|e| rpc_err(&self.url, e))?;
+        // Bitcoin Core answers a wrong or missing login with 401 and an empty
+        // body, which would otherwise read "error decoding response body".
+        if matches!(r.status().as_u16(), 401 | 403) {
+            return Err(rpc_err(
+                &self.url,
+                "the RPC login was refused: check the bitcoind login in Exchange settings",
+            ));
+        }
         let v: serde_json::Value = r.json().await.map_err(|e| rpc_err(&self.url, e))?;
         if !v["error"].is_null() {
             return Err(AppError::NodeRefused {

@@ -361,3 +361,18 @@ async fn core_reads_a_transaction_its_block_and_a_spent_output() {
     );
     assert!(core(&server).raw_tx(&txid()).await.unwrap().is_none());
 }
+
+/// Bitcoin Core's answer to a wrong login is 401 with an empty body (seen
+/// live on 2026-11-11 as "error decoding response body"): the error says the
+/// login was refused, names the source without its credentials, and is not
+/// labelled as the Handshake node's.
+#[tokio::test]
+async fn a_refused_login_is_named_and_is_not_a_node_rpc_error() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server.mock("POST", "/").with_status(401).create();
+    let e = core(&server).fee_rate().await.unwrap_err().to_string();
+    assert!(e.contains("the RPC login was refused"), "{e}");
+    assert!(e.starts_with("Bitcoin source "), "{e}");
+    assert!(!e.contains("Node RPC error"), "{e}");
+    assert!(!e.contains("user") && !e.contains("pass"), "{e}");
+}
