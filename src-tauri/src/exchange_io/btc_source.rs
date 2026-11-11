@@ -59,6 +59,16 @@ pub trait BtcSource: Send + Sync {
     async fn utxos(&self, address: &Address) -> Result<Vec<SourceUtxo>, AppError>;
     /// A rate to be mined within about two blocks, sat/vbyte, rounded up.
     async fn fee_rate(&self) -> Result<u64, AppError>;
+    /// The lowest rate this source's node relays and keeps in its mempool,
+    /// sat/vbyte, rounded up: not an estimate of anything, only the floor a
+    /// transaction needs to travel. Used when no source has an estimate (a
+    /// node that has just synced or restarted, QA 2026-11-09 Q3). A source
+    /// that cannot say answers with an error.
+    async fn floor_rate(&self) -> Result<u64, AppError> {
+        Err(AppError::Other(
+            "this source gives no minimum fee rate".into(),
+        ))
+    }
     /// Send a transaction; `Ok` when the source accepted it or already has it.
     async fn broadcast(&self, tx_hex: &str) -> Result<Txid, AppError>;
 }
@@ -575,6 +585,19 @@ impl BtcSource for BitcoinCore {
             // BTC per kvB → sat per vB.
             Some(r) => Ok((r * 100_000.0).ceil().max(1.0) as u64),
             None => Err(rpc_err(&self.url, "estimatesmartfee gave no rate")),
+        }
+    }
+
+    async fn floor_rate(&self) -> Result<u64, AppError> {
+        let v = self.call("getmempoolinfo", serde_json::json!([])).await?;
+        // Both are BTC per kvB; a transaction below either is not relayed.
+        let floor = ["mempoolminfee", "minrelaytxfee"]
+            .iter()
+            .filter_map(|k| v[*k].as_f64())
+            .fold(None, |m: Option<f64>, r| Some(m.map_or(r, |x| x.max(r))));
+        match floor {
+            Some(r) if r > 0.0 => Ok((r * 100_000.0).ceil().max(1.0) as u64),
+            _ => Err(rpc_err(&self.url, "getmempoolinfo gave no minimum fee")),
         }
     }
 

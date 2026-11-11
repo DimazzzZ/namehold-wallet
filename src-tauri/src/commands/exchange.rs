@@ -386,25 +386,90 @@ pub async fn exchange_btc_balance(state: State<'_, AppState>) -> Result<BtcBalan
 /// The median of the sources' fastest rates. The presigned ladder is built
 /// from it and cannot be re-signed (spec §6), so no estimate at all refuses
 /// the Commit rather than signing at a guessed rate.
-async fn btc_rate(srcs: &[Box<dyn BtcSource>]) -> Result<u64, AppError> {
-    let mut rates = Vec::new();
+/// The Bitcoin fee rate of a send, and whether it is an estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BtcRate {
+    pub sat_per_vb: u64,
+    /// No source had an estimate: the rate is the nodes' relay minimum times
+    /// [`FLOOR_RATE_FACTOR`], and the secure window says so.
+    pub fallback: bool,
+}
+
+/// How far above the relay minimum a fallback rate is set.
+pub const FLOOR_RATE_FACTOR: u64 = 2;
+
+/// The median of the sources' estimates, or, when none has one, a rate from
+/// their relay minimum (spec R27; QA 2026-11-09 Q3: a Bitcoin Core without
+/// fee history could send nothing and gave the user nothing to do).
+pub fn pick_btc_rate(
+    estimates: &[u64],
+    floors: &[u64],
+    errors: &[String],
+) -> Result<BtcRate, AppError> {
+    let mut rates = estimates.to_vec();
+    rates.sort();
+    // Capped: one lying source cannot make the ladder absurd, and the cap is
+    // shown in the fees.
+    if let Some(median) = rates.get(rates.len() / 2).copied() {
+        return Ok(BtcRate {
+            sat_per_vb: median.clamp(1, 500),
+            fallback: false,
+        });
+    }
+    // The highest floor: a transaction every node of ours will relay.
+    match floors.iter().copied().max() {
+        Some(floor) => Ok(BtcRate {
+            sat_per_vb: floor.saturating_mul(FLOOR_RATE_FACTOR).clamp(1, 500),
+            fallback: true,
+        }),
+        None => Err(AppError::InvalidInput(format!(
+            "no Bitcoin source gave a fee estimate or a minimum fee, so nothing was signed: {}",
+            errors.join("; ")
+        ))),
+    }
+}
+
+async fn btc_rate(srcs: &[Box<dyn BtcSource>]) -> Result<BtcRate, AppError> {
+    let mut estimates = Vec::new();
     let mut errors = Vec::new();
     for s in srcs {
         match s.fee_rate().await {
-            Ok(r) => rates.push(r),
+            Ok(r) => estimates.push(r),
             Err(e) => errors.push(e.to_string()),
         }
     }
-    rates.sort();
-    let Some(median) = rates.get(rates.len() / 2).copied() else {
-        return Err(AppError::InvalidInput(format!(
-            "no Bitcoin source gave a fee estimate, so nothing was signed: {}",
-            errors.join("; ")
-        )));
-    };
-    // Capped: one lying source cannot make the ladder absurd, and the cap is
-    // shown in the fees.
-    Ok(median.clamp(1, 500))
+    let mut floors = Vec::new();
+    if estimates.is_empty() {
+        for s in srcs {
+            match s.floor_rate().await {
+                Ok(r) => floors.push(r),
+                Err(e) => errors.push(e.to_string()),
+            }
+        }
+    }
+    pick_btc_rate(&estimates, &floors, &errors)
+}
+
+/// The secure window's rows with the fee rate's row added when the rate is
+/// not an estimate, so the user confirms knowing it may confirm slowly.
+fn with_rate_note(mut rows: serde_json::Value, rate: BtcRate) -> serde_json::Value {
+    if rate.fallback {
+        if let Some(list) = rows.get_mut("rows").and_then(|r| r.as_array_mut()) {
+            list.push(serde_json::json!({
+                "label": "Bitcoin fee rate",
+                "value": btc_rate_note(rate),
+            }));
+        }
+    }
+    rows
+}
+
+pub fn btc_rate_note(rate: BtcRate) -> String {
+    format!(
+        "{} sat/vB: your Bitcoin node has no fee estimate yet, so this is {} times its minimum. \
+         It may confirm slowly while blocks are full",
+        rate.sat_per_vb, FLOOR_RATE_FACTOR
+    )
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -431,7 +496,8 @@ pub async fn exchange_btc_withdraw(
     };
     let srcs = built_sources(&ctx)?;
     let coins = btc_wallet::coins(srcs[0].as_ref(), &acct, ctx.network).await?;
-    let rate = btc_rate(&srcs).await?;
+    let picked = btc_rate(&srcs).await?;
+    let rate = picked.sat_per_vb;
     let change = {
         let conn = lock(&state)?;
         let i = store::take_btc_index(&conn, &ctx.profile_id, 1)?;
@@ -480,12 +546,15 @@ pub async fn exchange_btc_withdraw(
         &app,
         "Send BTC",
         "From this wallet's BTC account.",
-        serde_json::json!({ "rows": [
-            { "label": "To", "value": to.to_string() },
-            { "label": "Amount", "value": review::sats_text(sending) },
-            { "label": "Network fee", "value": review::sats_text(f.fee) },
-            { "label": "Change back to this wallet", "value": review::sats_text(f.change) },
-        ]}),
+        with_rate_note(
+            serde_json::json!({ "rows": [
+                { "label": "To", "value": to.to_string() },
+                { "label": "Amount", "value": review::sats_text(sending) },
+                { "label": "Network fee", "value": review::sats_text(f.fee) },
+                { "label": "Change back to this wallet", "value": review::sats_text(f.change) },
+            ]}),
+            picked,
+        ),
     )
     .await?;
     let tx = with_signer(&state, &ctx, |s| {
@@ -1133,7 +1202,8 @@ async fn buyer_commit(
         ));
     }
     let coins = btc_wallet::coins(srcs[0].as_ref(), acct, ctx.network).await?;
-    let rate = btc_rate(srcs).await?;
+    let picked = btc_rate(srcs).await?;
+    let rate = picked.sat_per_vb;
     let hns_rate = draft_ctx::fee_rate(ctx, None)?;
     let (hns_to, change_to, refund_to) = {
         let conn = lock(state)?;
@@ -1176,7 +1246,7 @@ async fn buyer_commit(
         app,
         review::BUYER_TITLE,
         review::BUYER_MESSAGE,
-        review::buyer_rows(&shown, &terms, &lock_addr)?,
+        with_rate_note(review::buyer_rows(&shown, &terms, &lock_addr)?, picked),
     )
     .await?;
     let c = with_signer(state, ctx, build)?;
@@ -1309,7 +1379,8 @@ async fn seller_commit(
     let in_total: u64 = plan.inputs.iter().map(|i| i.value).sum();
     let out_total: u64 = plan.outputs.iter().map(|o| o.value).sum();
     let funding_fee = in_total - out_total;
-    let btc_rate_now = btc_rate(srcs).await?;
+    let picked = btc_rate(srcs).await?;
+    let btc_rate_now = picked.sat_per_vb;
     let refund_to = {
         let conn = lock(state)?;
         crate::noncustodial::derivation::reserve_receive_address(&conn, &ctx.profile_id)?.address
@@ -1348,7 +1419,10 @@ async fn seller_commit(
         app,
         review::SELLER_TITLE,
         review::SELLER_MESSAGE,
-        review::seller_rows(&shown, &terms, funding_fee, &lock_addr)?,
+        with_rate_note(
+            review::seller_rows(&shown, &terms, funding_fee, &lock_addr)?,
+            picked,
+        ),
     )
     .await?;
     let (c, funding_hex) = with_signer(state, ctx, build)?;

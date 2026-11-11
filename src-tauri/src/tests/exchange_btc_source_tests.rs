@@ -278,6 +278,44 @@ async fn core_fee_estimate_converts_btc_per_kvb_and_refuses_no_estimate() {
     assert!(e.contains("no rate"), "{e}");
 }
 
+/// The replies are Bitcoin Core v32.1's on a regtest chain without fee
+/// history (recorded 2026-11-09 and 2026-11-11): `estimatesmartfee` has no
+/// rate, `getmempoolinfo` has the relay floor. The floor is what a fallback
+/// rate is built on (QA Q3).
+#[tokio::test]
+async fn core_without_an_estimate_still_gives_its_relay_floor() {
+    let mut server = mockito::Server::new_async().await;
+    let _fee = rpc(
+        &mut server,
+        "estimatesmartfee",
+        r#"{"errors":["Insufficient data or no feerate found"],"blocks":0}"#,
+    );
+    let _info = rpc(
+        &mut server,
+        "getmempoolinfo",
+        r#"{"loaded":true,"size":0,"bytes":0,"usage":0,"total_fee":0.00000000,"maxmempool":300000000,"mempoolminfee":0.00000100,"minrelaytxfee":0.00000100,"incrementalrelayfee":0.00000100,"unbroadcastcount":0,"permitbaremultisig":true,"maxdatacarriersize":100000,"limitclustercount":64,"limitclustersize":101000,"optimal":true}"#,
+    );
+    let src = core(&server);
+    assert!(src.fee_rate().await.is_err());
+    assert_eq!(src.floor_rate().await.unwrap(), 1);
+
+    // A node under load raises its mempool minimum above the relay minimum:
+    // the higher one is the floor, rounded up.
+    let mut server = mockito::Server::new_async().await;
+    let _info = rpc(
+        &mut server,
+        "getmempoolinfo",
+        r#"{"loaded":true,"mempoolminfee":0.00003421,"minrelaytxfee":0.00000100}"#,
+    );
+    assert_eq!(core(&server).floor_rate().await.unwrap(), 4);
+
+    // A reply without either field is an error, never a guessed 1 sat/vB.
+    let mut server = mockito::Server::new_async().await;
+    let _info = rpc(&mut server, "getmempoolinfo", r#"{"loaded":true}"#);
+    let e = core(&server).floor_rate().await.unwrap_err().to_string();
+    assert!(e.contains("no minimum fee"), "{e}");
+}
+
 #[tokio::test]
 async fn core_reads_a_transaction_its_block_and_a_spent_output() {
     let mut server = mockito::Server::new_async().await;

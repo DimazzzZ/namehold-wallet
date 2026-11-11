@@ -334,3 +334,38 @@ fn a_watch_only_profile_gets_an_overview_that_says_why_it_cannot_trade() {
     assert_eq!(o.refusal.as_deref(), Some(NEEDS_RECOVERY_PHRASE));
     assert_eq!(o.network, "regtest");
 }
+
+/// Spec R27 (QA Q3): an estimate wins; with none, the rate is the highest
+/// relay floor times the factor and is marked a fallback; with neither,
+/// nothing is signed.
+#[test]
+fn the_bitcoin_fee_rate_falls_back_to_the_relay_floor_and_says_so() {
+    use crate::commands::exchange::{btc_rate_note, pick_btc_rate, BtcRate, FLOOR_RATE_FACTOR};
+    // The median of the estimates, capped; the floors are not consulted.
+    assert_eq!(
+        pick_btc_rate(&[3, 9, 5], &[1], &[]).unwrap(),
+        BtcRate {
+            sat_per_vb: 5,
+            fallback: false
+        }
+    );
+    assert_eq!(pick_btc_rate(&[9000], &[], &[]).unwrap().sat_per_vb, 500);
+    // No estimate: the highest floor, times the factor, marked.
+    let r = pick_btc_rate(&[], &[1, 4], &["a".into()]).unwrap();
+    assert_eq!(
+        r,
+        BtcRate {
+            sat_per_vb: 4 * FLOOR_RATE_FACTOR,
+            fallback: true
+        }
+    );
+    let note = btc_rate_note(r);
+    assert!(note.starts_with("8 sat/vB"), "{note}");
+    assert!(note.contains("no fee estimate"), "{note}");
+    // Neither: refused, with every source's reason.
+    let e = pick_btc_rate(&[], &[], &["s1: down".into(), "s2: no rate".into()])
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("nothing was signed"), "{e}");
+    assert!(e.contains("s1: down; s2: no rate"), "{e}");
+}
