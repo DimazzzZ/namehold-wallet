@@ -81,7 +81,7 @@ Expected:
 
 - **Priority:** P1
 - **Covers:** R17 (a remote node, review M3: the Buyer reveals on its node's word, so the node must be its own)
-- **Regression of:** exchange QA finding 15 (the SPV refusal recommended a remote node, which is refused)
+- **Regression of:** exchange QA finding 15 (the SPV refusal recommended a remote node, which is refused), exchange QA finding 26 (the page kept the old gate for about half a minute after a Connections change)
 - **Preconditions:** the Buyer, exchange enabled, connected as `Local full node (this device runs hsd)`; no trade between its two Commits. Note the Connections settings first.
 
 Steps:
@@ -93,7 +93,7 @@ Steps:
 
 Expected:
 
-- After each `Save settings` leave the Exchange page for 30 s before reading it: opened straight from Settings it can still show the state from before the change (exchange QA finding 26, open; the backend refuses the actions meanwhile). The Connections secure window is `Change connection settings`, its row `Chain source` "<old> → <new>", its button `Save settings`.
+- Read the Exchange page right after each `Save settings`: it must show the new gate at once (the old state lingering for about 30 s is exchange QA finding 26 again). The Connections secure window is `Change connection settings`, its row `Chain source` "<old> → <new>", its button `Save settings`.
 - Steps 1 and 2: the amber banner "The exchange needs a node on this computer: a remote node could show a fake lock and learn your secret." (a remote node is refused whatever its sending setting); every trading button disabled with it (as E2).
 - Step 3: "The exchange needs Namehold's local node, or your own hsd on this computer, able to send." (SPV cannot send).
 - Step 4: no banner; buttons enabled.
@@ -200,7 +200,7 @@ Steps:
 Expected:
 
 - Step 2: the keys `exchange_relay_url.regtest`, `exchange_watchtower_url.regtest`, `exchange_btc_sources.regtest` are there with the values set; `exchange_bitcoind_rpc_auth.regtest` is absent, so the second expression gives `undefined`, and in its place the marker `__has_exchange_bitcoind_rpc_auth.regtest` reads `"true"`. A value under any key holding the login is ❌: record the key's name, never the value.
-- Step 3: the card's red line names the source without any credentials (no `wrong`, no `regtest` in it; record the exact text). After restoring, no red line.
+- Step 3: the card's red line reads "Bitcoin source http://127.0.0.1:18443/: the RPC login was refused: check the bitcoind login in Exchange settings": no credentials (no `wrong`, no `regtest`), and no "Node RPC error:" prefix. After restoring, no red line.
 - Step 4: both counts 0.
 - Passes if the login appears in no window, no renderer answer and no log.
 

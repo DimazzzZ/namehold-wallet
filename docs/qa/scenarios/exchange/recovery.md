@@ -97,10 +97,10 @@ Expected:
 
 - **Priority:** P2
 - **Covers:** spec §3.3 step 3 (`btc_locked` announced), §3.4 ("the relay lies": it can only waste time); the watchtower registration retried
-- **Regression of:** exchange QA finding 4 (the BTC lock was announced only once, so a relay outage at the Buyer's Commit lost the trade); see also exchange QA finding 24 (open: the next announcement can come later than one period)
+- **Regression of:** exchange QA finding 4 (the BTC lock was announced only once, so a relay outage at the Buyer's Commit lost the trade); exchange QA finding 24 (the next announcement came 8 min 39 s after the relay was back, because it was sent only on a step landing in one minute of each period)
 - **Preconditions:** as E17.
 
-The Seller learns the Buyer's BTC lock only from the Buyer's announcement (it cannot look the lock up on Bitcoin without its txid). A committed party announces its lock again about every 5 minutes while the other side waits for it (`exchange_io/job.rs::reannounce`: on a step that falls in the first minute of each 300-second period).
+The Seller learns the Buyer's BTC lock only from the Buyer's announcement (it cannot look the lock up on Bitcoin without its txid). A committed party announces its lock again while the other side waits for it (`exchange_io/job.rs::reannounce`, `announce_due`): each process on its first step, then every 300 seconds, and an announcement the relay did not take is tried again on the next step.
 
 Steps:
 
@@ -111,7 +111,7 @@ Steps:
 Expected:
 
 - Step 1: "Locking your BTC"; the lock in bitcoind's mempool; `Watchtower` "Registering with the watchtower failed".
-- Step 2: the Buyer's line becomes "Registered with the watchtower" once the relay is back (failed registrations are retried each step). Within about 6 minutes of the relay's return (the next 5-minute announcement, then a step of the Seller; record the times of the Buyer's `POST /v1/messages` lines in the relay log: 8 min 39 s was seen once, finding 24), and before `Seller locks HNS by`, the Seller's card reads "Confirm to lock your HNS". Before that it reads "Waiting for the buyer to confirm"; if `Buyer locks BTC by` passes first it may read "Trade expired" until the announcement arrives: record what it showed and when. A Seller never asked to commit before its deadline is ❌.
+- Step 2: the Buyer's line becomes "Registered with the watchtower" once the relay is back (failed registrations are retried each step). Within about 3 minutes of the relay's return (a failed announcement is tried again on the Buyer's next step, then a step of the Seller; record the times of the Buyer's `POST /v1/messages` lines in the relay log: more than 5 minutes is finding 24 again), and before `Seller locks HNS by`, the Seller's card reads "Confirm to lock your HNS". Before that it reads "Waiting for the buyer to confirm"; if `Buyer locks BTC by` passes first it may read "Trade expired" until the announcement arrives: record what it showed and when. A Seller never asked to commit before its deadline is ❌.
 - Step 3: the trade completes as E17.
 - Passes if a relay outage at the Buyer's Commit only delays the trade.
 

@@ -4,7 +4,7 @@ priority: P1–P3
 blocks: HNS 0, BTC 2
 requires:
   - procedures/exchange-setup.md
-last_verified: "E9 ✅ on 8d904e2 (2026-11-09); E8 step 4 and E38 ✅ on 8d09fb7 (2026-11-10); E36 seen as finding 19, not run as a case"
+last_verified: "E9 ✅ on 8d904e2 (2026-11-09); E8 step 4 and E38 ✅ on 8d09fb7 (2026-11-10); E36 rewritten for the fallback rate of fd8792d, not run yet"
 ---
 
 # The BTC account
@@ -31,7 +31,7 @@ Expected:
 - Step 1: `Receive address` starts `bcrt1q` and is 44 characters; `getaddressinfo` reads `"iswitness": true`, `"witness_version": 0` and a 40-hex `witness_program` (P2WPKH). `Locked in trades` `0.00000000 BTC` / `0 sats` with no trade committed.
 - Step 2: `Unconfirmed` stays `0 sats` and `Confirmed` is unchanged: a Bitcoin Core source lists only confirmed coins (`scantxoutset`; spec §6 "Known gaps"). An unconfirmed amount here means the code reads otherwise: record it.
 - Step 3: `Confirmed` higher by exactly `0.00200000 BTC` / `200,000 sats`; `Checked` shows the new time.
-- Step 4: with bitcoind stopped the card shows a red line under the amounts (record the exact text; it names the source without credentials); `Confirmed` and `Unconfirmed` read `Not read` (never `0.00000000 BTC` / `0 sats`: a source error shown as an empty account is exchange QA finding 18 again), `Locked in trades` keeps its amount (it comes from the stored trades), and the card's subtitle reads "Last check failed <time>" instead of "Checked <time>". After the restart the amounts are back and the red line is gone.
+- Step 4: with bitcoind stopped the card shows a red line under the amounts (it starts `Bitcoin source http://127.0.0.1:18443/:`, names no credentials and has no "Node RPC error:" prefix; record the rest); `Confirmed` and `Unconfirmed` read `Not read` (never `0.00000000 BTC` / `0 sats`: a source error shown as an empty account is exchange QA finding 18 again), `Locked in trades` keeps its amount (it comes from the stored trades), and the card's subtitle reads "Last check failed <time>" instead of "Checked <time>". After the restart the amounts are back and the red line is gone.
 - Step 5: the derived address equals the card's address while no trade has taken a new one (each Buyer Commit and Seller Commit takes the next receive address for a refund or a claim). Without such a wallet: BLOCKED ✗.
 - Passes if the address is a regtest P2WPKH address of the account and the confirmed balance moves by exactly what was paid.
 
@@ -71,30 +71,31 @@ Expected:
 - **Evidence:** screenshots `E9-2-refusals`, `E9-3-secure-window`, `E9-4-toast`; the RPC outputs of step 5.
 - **Cleanup / end state:** the Buyer 0.001 BTC plus a fee poorer; signer unlocked.
 
-## E36 — No fee estimate: a BTC send is refused before signing
+## E36 — No fee estimate: the send uses the node's relay minimum and says so
 
 - **Priority:** P2
-- **Covers:** R27 (a Commit is refused when no source gives a fee estimate), `exchange_io/btc_source.rs` `fee_rate`
-- **Regression of:** exchange QA finding 19 (open: on a Bitcoin Core without fee history nothing can be sent and the user is given nothing to do)
+- **Covers:** R27 (no estimate from any source: twice the highest relay minimum, shown as such; neither: nothing signed), `exchange_io/btc_source.rs` `fee_rate`, `floor_rate`, `commands/exchange.rs` `pick_btc_rate`
+- **Regression of:** exchange QA finding 19 (on a Bitcoin Core without fee history every withdrawal and every Commit was refused and the user was given nothing to do)
 - **Preconditions:** the Buyer with a confirmed BTC balance, unlocked; the only Bitcoin source a Bitcoin Core whose `B estimatesmartfee 2` answers no `feerate` (a fresh regtest chain, before [exchange-setup](../../procedures/exchange-setup.md) step 2 seeds the estimator: fold this case in there).
 
 Steps:
 
-1. `B estimatesmartfee 2`; record the reply.
-2. `Withdraw…` → a regtest address (`BW getnewaddress`), `100000` → `Withdraw`.
-3. `B getrawmempool`.
-4. Seed the estimator (exchange-setup step 2); `Withdraw` again in the same dialog.
+1. `B estimatesmartfee 2`; `B getmempoolinfo`; record `mempoolminfee` and `minrelaytxfee`.
+2. `Withdraw…` → a regtest address (`BW getnewaddress`), `100000` → `Withdraw`. Read the secure window; `Confirm & Sign`.
+3. `B getrawmempool`; `B getmempoolentry <txid>`.
+4. Seed the estimator (exchange-setup step 2); withdraw `100000` again; read the secure window; `Cancel`.
 
 Expected:
 
-- Step 2: no secure window; the dialog shows in red "Invalid input: no Bitcoin source gave a fee estimate, so nothing was signed: Node RPC error: Bitcoin source http://127.0.0.1:18443/: estimatesmartfee gave no rate" (no credentials in it). Record the text: the prefix `Node RPC error:` naming the HNS node for a Bitcoin source is part of finding 18.
-- Step 3: nothing new in the mempool.
-- Step 4: the secure window `Send BTC` opens with a `Network fee` row ([E9](#e9--withdraw-btc) step 3).
-- Passes if nothing is signed without a fee estimate and the refusal says so. While finding 19 is open the verdict is ✅ for the refusal and the finding stays listed: a fallback (the node's minimum relay fee, or a rate the user enters) would change this case.
+- Step 1: no `feerate` (`"errors": ["Insufficient data or no fee rate found"]`); both minimums `0.00000100` on a default regtest node (1 sat/vB).
+- Step 2: the secure window `Send BTC` with the rows of [E9](#e9--withdraw-btc) step 3 and one more, `Bitcoin fee rate`: "2 sat/vB: your Bitcoin node has no fee estimate yet, so this is 2 times its minimum. It may confirm slowly while blocks are full". `Network fee` is the transaction's size times 2 sat/vB (a one-input, two-output send: 282 sats).
+- Step 3: the transaction is in the mempool; `fees.base` equals the `Network fee` row.
+- Step 4: with an estimate the window has no `Bitcoin fee rate` row.
+- Passes if a node without fee history can still send, at a rate it relays, and the window says the rate is not an estimate.
 
 - **Blocks mined:** HNS 0, BTC 30 (the seeding)
-- **Evidence:** screenshot `E36-2-refused`; the `estimatesmartfee` replies before and after.
-- **Cleanup / end state:** the estimator seeded.
+- **Evidence:** screenshots `E36-2-fallback-window`, `E36-4-estimate-window`; the RPC replies.
+- **Cleanup / end state:** the estimator seeded; the Buyer 100 000 sats plus a fee poorer.
 
 ## E38 — A Bitcoin source outage does not undo ended trades
 
