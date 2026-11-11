@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
@@ -79,6 +80,21 @@ describe("Settings — Chain source (connection mode)", () => {
     );
     expect(plainKeys()).not.toContain("chain_source");
     expect(plainKeys()).not.toContain("node_mode");
+  });
+
+  // QA 2026-11-11, Q10: the Exchange page kept the gate of the old chain
+  // source for about half a minute after the save.
+  it("a saved chain source makes the Exchange page read its gate again", async () => {
+    const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    loadSettings({ chain_source: "local_node", node_mode: "full" });
+    renderSettings();
+    fireEvent.change(await screen.findByTestId("chain-source-select"), {
+      target: { value: "remote_node" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^save/i }));
+    await waitFor(() => expect(protectedChanges()).not.toBeNull());
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["exchange"] }));
+    invalidate.mockRestore();
   });
 
   it("selecting SPV sends chain_source=local_node AND node_mode=spv to be confirmed, and hides the remote opt-in", async () => {

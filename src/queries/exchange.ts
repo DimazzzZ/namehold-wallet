@@ -25,7 +25,9 @@ import type {
 export const EXCHANGE_POLL_MS = 15_000;
 
 /** Every exchange read of one profile sits under this key. */
-export const exchangeKey = (profileId: string | null) => ["exchange", profileId] as const;
+/** The first part of every exchange query key: invalidate it to reread the page for every profile. */
+export const EXCHANGE_QUERY_ROOT = "exchange";
+export const exchangeKey = (profileId: string | null) => [EXCHANGE_QUERY_ROOT, profileId] as const;
 
 function useProfileId(): string | null {
   return useActiveProfile().data?.id ?? null;
