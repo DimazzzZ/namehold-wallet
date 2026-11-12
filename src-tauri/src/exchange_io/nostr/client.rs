@@ -30,10 +30,12 @@ use crate::exchange_io::nostr::event::Event;
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(15);
-/// Largest frame a relay may send us; exchange events are a few kilobytes.
-const MAX_FRAME_BYTES: usize = 1 << 20;
-/// Most events kept from one relay for one read.
-const MAX_EVENTS_PER_RELAY: usize = 1000;
+/// Largest frame a relay may send us: exchange events are a few kilobytes,
+/// and a relay's own event limit is usually 64 KiB.
+const MAX_FRAME_BYTES: usize = 128 << 10;
+/// Most bytes one relay may make us read for one query; past it the rest of
+/// its answer is not read.
+const MAX_BYTES_PER_RELAY: usize = 4 << 20;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -171,11 +173,11 @@ impl NostrClient {
             return Err(AppError::InvalidInput("no Nostr relay is set".into()));
         }
         let sub = crate::noncustodial::exchange::relay_msg::random_hex16();
-        let frame = json!(["REQ", sub, filter]).to_string();
+        let frame = json!(["REQ", sub, &filter]).to_string();
         let answers = futures_util::future::join_all(
             self.relays
                 .iter()
-                .map(|url| self.query_one(url, &frame, &sub)),
+                .map(|url| self.query_one(url, &frame, &sub, &filter)),
         )
         .await;
         let mut seen = HashSet::new();
@@ -187,7 +189,7 @@ impl NostrClient {
                 Ok(list) => {
                     answered += 1;
                     for e in list {
-                        if e.verify() && seen.insert(e.id.clone()) {
+                        if seen.insert(e.id.clone()) {
                             events.push(e);
                         }
                     }
@@ -204,7 +206,13 @@ impl NostrClient {
         Ok(events)
     }
 
-    async fn query_one(&self, url: &str, frame: &str, sub: &str) -> Result<Vec<Event>, String> {
+    async fn query_one(
+        &self,
+        url: &str,
+        frame: &str,
+        sub: &str,
+        filter: &Value,
+    ) -> Result<Vec<Event>, String> {
         let mut socket = self.open(url).await?;
         socket
             .send(Message::Text(frame.to_owned().into()))
@@ -212,10 +220,16 @@ impl NostrClient {
             .map_err(|e| e.to_string())?;
         let result = tokio::time::timeout(self.answer, async {
             let mut events = Vec::new();
+            let mut bytes = 0usize;
             while let Some(msg) = socket.next().await {
                 let Ok(Message::Text(text)) = msg else {
                     continue;
                 };
+                bytes += text.len();
+                if bytes > MAX_BYTES_PER_RELAY {
+                    // Enough from this relay: keep what it sent so far.
+                    return Ok(events);
+                }
                 let Ok(v) = serde_json::from_str::<Value>(text.as_str()) else {
                     continue;
                 };
@@ -224,8 +238,10 @@ impl NostrClient {
                 }
                 match v[0].as_str() {
                     Some("EVENT") => {
-                        if events.len() < MAX_EVENTS_PER_RELAY {
-                            if let Ok(e) = serde_json::from_value::<Event>(v[2].clone()) {
+                        // Only a valid event that was asked for: a relay may
+                        // send anything.
+                        if let Ok(e) = serde_json::from_value::<Event>(v[2].clone()) {
+                            if matches_filter(filter, &e) && e.verify() {
                                 events.push(e);
                             }
                         }
@@ -247,4 +263,33 @@ impl NostrClient {
         let _ = socket.close(None).await;
         result
     }
+}
+
+/// Whether `e` is one `filter` asks for (NIP-01), for the fields this client
+/// uses: `ids`, `kinds`, `authors`, `since`, `until`, `limit` and one-letter
+/// tag filters (`#n`). Any other field, or one of another shape, matches
+/// nothing.
+pub fn matches_filter(filter: &Value, e: &Event) -> bool {
+    let Some(f) = filter.as_object() else {
+        return false;
+    };
+    let any_str = |list: &Value, s: &str| {
+        list.as_array()
+            .is_some_and(|xs| xs.iter().any(|x| x.as_str() == Some(s)))
+    };
+    f.iter().all(|(key, wanted)| match key.as_str() {
+        "limit" => true,
+        "since" => wanted.as_u64().is_some_and(|t| e.created_at >= t),
+        "until" => wanted.as_u64().is_some_and(|t| e.created_at <= t),
+        "kinds" => wanted
+            .as_array()
+            .is_some_and(|ks| ks.iter().any(|k| k.as_u64() == Some(u64::from(e.kind)))),
+        "ids" => any_str(wanted, &e.id),
+        "authors" => any_str(wanted, &e.pubkey),
+        k if k.len() == 2 && k.starts_with('#') => e.tags.iter().any(|t| {
+            t.first().map(String::as_str) == Some(&k[1..])
+                && t.get(1).is_some_and(|v| any_str(wanted, v))
+        }),
+        _ => false,
+    })
 }

@@ -375,6 +375,65 @@ mod client {
         assert_eq!(got, vec![e1, e2]);
     }
 
+    /// A relay may answer with events nobody asked for; they are dropped.
+    #[tokio::test]
+    async fn query_drops_events_outside_the_filter() {
+        let a = FakeRelay::start(Mode::Accept).await;
+        let key = relay_msg::new_relay_key();
+        let tagged = |kind: u32, n: &str, at: u64| {
+            event::sign(&key, at, kind, vec![vec!["n".into(), n.into()]], "x".into())
+        };
+        let wanted = tagged(7491, "main", 1_800_000_100);
+        a.put(wanted.clone());
+        for e in [
+            tagged(1, "main", 1_800_000_100),       // another kind
+            tagged(7491, "regtest", 1_800_000_100), // another tag value
+            tagged(7491, "main", 1_700_000_000),    // before `since`
+            event::sign(
+                &relay_msg::new_relay_key(),
+                1_800_000_100,
+                7491,
+                vec![vec!["n".into(), "main".into()]],
+                "x".into(),
+            ), // another author
+        ] {
+            a.add_extra(serde_json::to_value(&e).unwrap());
+        }
+        let got = client(&[&a.url])
+            .query(json!({"kinds": [7491], "#n": ["main"], "since": 1_800_000_000, "authors": [wanted.pubkey]}))
+            .await
+            .unwrap();
+        assert_eq!(got, vec![wanted]);
+    }
+
+    /// What one relay can make us hold for one read is bounded in bytes.
+    #[tokio::test]
+    async fn query_bounds_what_one_relay_can_send() {
+        let a = FakeRelay::start(Mode::Accept).await;
+        let key = relay_msg::new_relay_key();
+        let big = "y".repeat(60_000);
+        for i in 0..200u64 {
+            a.add_extra(
+                serde_json::to_value(event::sign(
+                    &key,
+                    1_800_000_000 + i,
+                    7491,
+                    vec![],
+                    big.clone(),
+                ))
+                .unwrap(),
+            );
+        }
+        let got = client(&[&a.url])
+            .query(json!({"kinds": [7491]}))
+            .await
+            .unwrap();
+        let bytes: usize = got.iter().map(|e| e.content.len()).sum();
+        assert!(!got.is_empty());
+        assert!(bytes <= 4 << 20, "{bytes} bytes kept");
+        assert!(got.len() < 200, "{} events kept", got.len());
+    }
+
     #[tokio::test]
     async fn quorum_query_needs_one_answering_relay() {
         let (a, silent, dead) = (
