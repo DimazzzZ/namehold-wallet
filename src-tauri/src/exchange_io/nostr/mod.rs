@@ -3,3 +3,4 @@
 //! exchange to work.
 
 pub mod event;
+pub mod nip44;

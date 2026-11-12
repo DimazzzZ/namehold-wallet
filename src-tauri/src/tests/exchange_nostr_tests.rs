@@ -114,3 +114,144 @@ fn event_tag_values_are_read_by_name() {
     assert_eq!(e.tag("expiration"), Some("99"));
     assert_eq!(e.tag("p"), None);
 }
+
+// ------------------------------------------------------------------- R2
+
+mod nip44 {
+    use crate::exchange_io::nostr::nip44;
+    use secp256k1::SecretKey;
+    use serde_json::Value;
+    use sha2::{Digest, Sha256};
+
+    const VECTORS: &str = include_str!("fixtures/nostr/nip44.vectors.json");
+
+    fn v2() -> Value {
+        serde_json::from_str::<Value>(VECTORS).unwrap()["v2"].clone()
+    }
+    fn b32(v: &Value) -> [u8; 32] {
+        hex::decode(v.as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap()
+    }
+    fn sec(v: &Value) -> Option<SecretKey> {
+        SecretKey::from_byte_array(b32(v)).ok()
+    }
+
+    #[test]
+    fn nip44_conversation_key_matches_every_vector() {
+        let v = v2();
+        for c in v["valid"]["get_conversation_key"].as_array().unwrap() {
+            let got = nip44::conversation_key(&sec(&c["sec1"]).unwrap(), &b32(&c["pub2"])).unwrap();
+            assert_eq!(hex::encode(got), c["conversation_key"].as_str().unwrap());
+        }
+    }
+
+    #[test]
+    fn nip44_refuses_every_invalid_conversation_key() {
+        let v = v2();
+        for c in v["invalid"]["get_conversation_key"].as_array().unwrap() {
+            let refused = match sec(&c["sec1"]) {
+                None => true,
+                Some(s) => nip44::conversation_key(&s, &b32(&c["pub2"])).is_err(),
+            };
+            assert!(refused, "accepted: {}", c["note"]);
+        }
+    }
+
+    #[test]
+    fn nip44_message_keys_match_every_vector() {
+        let v = v2();
+        let mk = &v["valid"]["get_message_keys"];
+        let ck = b32(&mk["conversation_key"]);
+        for k in mk["keys"].as_array().unwrap() {
+            let (chacha_key, chacha_nonce, hmac_key) = nip44::message_keys(&ck, &b32(&k["nonce"]));
+            assert_eq!(hex::encode(chacha_key), k["chacha_key"].as_str().unwrap());
+            assert_eq!(
+                hex::encode(chacha_nonce),
+                k["chacha_nonce"].as_str().unwrap()
+            );
+            assert_eq!(hex::encode(hmac_key), k["hmac_key"].as_str().unwrap());
+        }
+    }
+
+    #[test]
+    fn nip44_padded_length_matches_every_vector() {
+        let v = v2();
+        for p in v["valid"]["calc_padded_len"].as_array().unwrap() {
+            let (len, padded) = (p[0].as_u64().unwrap(), p[1].as_u64().unwrap());
+            assert_eq!(nip44::padded_len(len as usize) as u64, padded, "len {len}");
+        }
+    }
+
+    #[test]
+    fn nip44_encrypts_and_decrypts_every_vector_both_ways() {
+        let v = v2();
+        for c in v["valid"]["encrypt_decrypt"].as_array().unwrap() {
+            let (s1, s2) = (sec(&c["sec1"]).unwrap(), sec(&c["sec2"]).unwrap());
+            let secp = secp256k1::Secp256k1::new();
+            let x = |s: &SecretKey| s.x_only_public_key(&secp).0.serialize();
+            let ck = nip44::conversation_key(&s1, &x(&s2)).unwrap();
+            assert_eq!(hex::encode(ck), c["conversation_key"].as_str().unwrap());
+            // The recipient derives the same key from its side.
+            assert_eq!(nip44::conversation_key(&s2, &x(&s1)).unwrap(), ck);
+            let plaintext = c["plaintext"].as_str().unwrap();
+            let payload = nip44::encrypt_with_nonce(plaintext, &ck, &b32(&c["nonce"])).unwrap();
+            assert_eq!(payload, c["payload"].as_str().unwrap());
+            assert_eq!(nip44::decrypt(&payload, &ck).unwrap(), plaintext);
+        }
+    }
+
+    #[test]
+    fn nip44_long_messages_match_their_checksums() {
+        let v = v2();
+        for c in v["valid"]["encrypt_decrypt_long_msg"].as_array().unwrap() {
+            let plaintext = c["pattern"]
+                .as_str()
+                .unwrap()
+                .repeat(c["repeat"].as_u64().unwrap() as usize);
+            assert_eq!(
+                hex::encode(Sha256::digest(plaintext.as_bytes())),
+                c["plaintext_sha256"].as_str().unwrap()
+            );
+            let ck = b32(&c["conversation_key"]);
+            let payload = nip44::encrypt_with_nonce(&plaintext, &ck, &b32(&c["nonce"])).unwrap();
+            assert_eq!(
+                hex::encode(Sha256::digest(payload.as_bytes())),
+                c["payload_sha256"].as_str().unwrap()
+            );
+            assert_eq!(nip44::decrypt(&payload, &ck).unwrap(), plaintext);
+        }
+    }
+
+    #[test]
+    fn nip44_refuses_every_invalid_payload_and_length() {
+        let v = v2();
+        for c in v["invalid"]["decrypt"].as_array().unwrap() {
+            let got = nip44::decrypt(c["payload"].as_str().unwrap(), &b32(&c["conversation_key"]));
+            assert!(got.is_err(), "decrypted: {}", c["note"]);
+        }
+        // The vectors' lengths, which this code also keeps to: 1..=65535
+        // bytes, no extended prefix.
+        let ck = [7u8; 32];
+        for n in v["invalid"]["encrypt_msg_lengths"].as_array().unwrap() {
+            let n = n.as_u64().unwrap() as usize;
+            assert!(
+                nip44::encrypt_with_nonce(&"a".repeat(n), &ck, &[1u8; 32]).is_err(),
+                "encrypted {n} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn nip44_random_nonce_round_trips_and_never_repeats() {
+        let ck = [9u8; 32];
+        let a = nip44::encrypt("hello", &ck).unwrap();
+        let b = nip44::encrypt("hello", &ck).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(nip44::decrypt(&a, &ck).unwrap(), "hello");
+        assert_eq!(nip44::decrypt(&b, &ck).unwrap(), "hello");
+        // Another conversation cannot read it.
+        assert!(nip44::decrypt(&a, &[8u8; 32]).is_err());
+    }
+}

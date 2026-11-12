@@ -749,6 +749,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
+name = "chacha20"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3613f74bd2eac03dad61bd53dbe620703d4371614fe0bc3b9f04dd36fe4e818"
+dependencies = [
+ "cfg-if",
+ "cipher",
+ "cpufeatures",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2850,12 +2861,14 @@ dependencies = [
  "bip39",
  "bitcoin",
  "blake2",
+ "chacha20",
  "chrono",
  "csv",
  "ctrlc",
  "dirs 6.0.0",
  "hex",
  "hidapi",
+ "hkdf",
  "hmac",
  "keyring",
  "libc",
