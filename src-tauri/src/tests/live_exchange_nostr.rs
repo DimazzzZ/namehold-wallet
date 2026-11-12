@@ -20,14 +20,8 @@ use crate::exchange_io::nostr::client::NostrClient;
 use crate::exchange_io::nostr::{event, nip44};
 use crate::noncustodial::exchange::relay_msg;
 
-const RELAYS: [&str; 6] = [
-    "wss://relay.damus.io",
-    "wss://nos.lol",
-    "wss://relay.primal.net",
-    "wss://nostr.oxtr.dev",
-    "wss://offchain.pub",
-    "wss://nostr.mom",
-];
+/// The defaults of `env::DEFAULT_NOSTR_RELAYS`.
+const RELAYS: [&str; 6] = crate::exchange_io::env::DEFAULT_NOSTR_RELAYS;
 const OFFER_KIND: u32 = 37491;
 const MESSAGE_KIND: u32 = 7491;
 
@@ -170,9 +164,16 @@ async fn live_exchange_nostr_default_relays_take_and_serve_our_kinds() {
         eprintln!("skip: HNS_IT_NOSTR not set");
         return;
     }
-    let reports = futures_util::future::join_all(RELAYS.iter().map(|u| check(u))).await;
+    // `HNS_IT_NOSTR_RELAYS=wss://a,wss://b` checks other relays instead.
+    let relays: Vec<String> = match std::env::var("HNS_IT_NOSTR_RELAYS") {
+        Ok(list) if !list.trim().is_empty() => {
+            list.split(',').map(|s| s.trim().to_owned()).collect()
+        }
+        _ => RELAYS.iter().map(|s| s.to_string()).collect(),
+    };
+    let reports = futures_util::future::join_all(relays.iter().map(|u| check(u))).await;
     let mut usable = 0;
-    for (url, r) in RELAYS.iter().zip(&reports) {
+    for (url, r) in relays.iter().zip(&reports) {
         eprintln!(
             "{url}: offer taken {} served {} | replaced {} | deleted {} | message taken {} served {} | burst {}/20 | {}",
             r.offer_taken, r.offer_served, r.replaced, r.deleted, r.message_taken, r.message_served, r.burst_taken,

@@ -59,12 +59,13 @@ export function exchangeActionRefusal(
 
 // --- The relay and the settings ---
 
-/** No relay URL is stored: the order book cannot be read, and no offer can be taken, made or withdrawn. */
-export const NO_RELAY = "No relay is set. Set one in Exchange settings to see and publish offers.";
+/** Neither Nostr relays nor a relay are set (only on regtest and simnet, which have no default relays): the order book cannot be read, and no offer can be taken, made or withdrawn. */
+export const NO_RELAY =
+  "No meeting point is set. Name Nostr relays or a relay in Exchange settings to see and publish offers.";
 
-/** The relay is configured. */
+/** Offers and messages have somewhere to go: Nostr relays or a relay. */
 export function hasRelay(overview: ExchangeOverview | null | undefined): boolean {
-  return (overview?.relayUrl ?? "").trim() !== "";
+  return overview != null && overview.meetingPoint !== "none";
 }
 
 /** Why an offer action (take, make, withdraw) may not run, or null: the gate, else no relay. */
@@ -79,6 +80,11 @@ export const URL_INVALID = "Enter a URL that starts with http:// or https://";
 export const SOURCE_INVALID = (line: string) =>
   `"${line}" is not a Bitcoin source: use an Esplora URL (https://…) or bitcoind+http://host:port`;
 export const SOURCES_EMPTY = "Enter at least one Bitcoin source";
+export const NOSTR_HINT =
+  "Offers and trade messages go through these public Nostr relays, which other people run; messages are encrypted to the other side. Leave empty to use the defaults.";
+export const NOSTR_INVALID = (line: string) => `"${line}" is not a Nostr relay: use wss://host`;
+export const RELAY_HINT =
+  "Only if you trust someone who runs namehold-relay: when set, it is used instead of the Nostr relays.";
 export const AUTH_INVALID = "Enter the RPC login as user:password";
 export const AUTH_SET = "A user:password is set. Leave the field empty to keep it.";
 export const AUTH_CLEARED = "The stored user:password is removed when you save.";

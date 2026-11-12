@@ -455,3 +455,341 @@ mod client {
         assert!(err.contains("no Nostr relay answered"), "{err}");
     }
 }
+
+// -------------------------------------------------------------- R3–R7, R12
+
+mod transport {
+    use super::super::exchange_fake_nostr::{FakeRelay, Mode};
+    use super::super::exchange_fixture::START;
+    use crate::exchange_io::meeting::MeetingPoint;
+    use crate::exchange_io::nostr::client::NostrClient;
+    use crate::exchange_io::nostr::event;
+    use crate::exchange_io::nostr::transport::{NostrMeetingPoint, MESSAGE_KIND, OFFER_KIND};
+    use crate::noncustodial::exchange::relay_msg::{
+        self, Body, Envelope, Message, Offer, Side, SignedOffer,
+    };
+    use secp256k1::SecretKey;
+
+    fn at_start() -> u64 {
+        START
+    }
+    fn a_minute_later() -> u64 {
+        START + 60
+    }
+    fn an_hour_later() -> u64 {
+        START + 3600
+    }
+
+    fn point(urls: &[&str], clock: fn() -> u64) -> NostrMeetingPoint {
+        NostrMeetingPoint::with_clock(
+            NostrClient::new(urls.iter().map(|u| u.to_string()).collect()),
+            clock,
+        )
+    }
+
+    fn offer(maker: &SecretKey, network: &str) -> SignedOffer {
+        Offer {
+            version: 1,
+            network: network.into(),
+            side: Side::Sell,
+            price_msat_per_hns: 20_000,
+            min_hns: 1_000_000,
+            max_hns: 10_000_000_000,
+            maker_relay_pubkey: relay_msg::relay_pubkey_hex(maker),
+            created_at: START,
+            expires_at: START + 7 * 86_400,
+            nonce: relay_msg::random_hex16(),
+        }
+        .sign(maker)
+        .unwrap()
+    }
+
+    fn envelope(from: &SecretKey, to: &SecretKey, reason: &str) -> Envelope {
+        Message {
+            version: 1,
+            network: "regtest".into(),
+            offer_id: "ab".repeat(32),
+            trade_id: "cd".repeat(16),
+            from: relay_msg::relay_pubkey_hex(from),
+            to: relay_msg::relay_pubkey_hex(to),
+            sent_at: START,
+            body: Body::Decline {
+                reason: reason.into(),
+            },
+        }
+        .sign(from)
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn offer_is_an_addressable_event_of_its_maker_and_is_listed() {
+        let r = FakeRelay::start(Mode::Accept).await;
+        let k = relay_msg::new_relay_key();
+        let o = offer(&k, "regtest");
+        point(&[&r.url], at_start)
+            .publish_offer(&o, &k)
+            .await
+            .unwrap();
+        let stored = r.events();
+        assert_eq!(stored.len(), 1);
+        let e = &stored[0];
+        assert_eq!(e.kind, OFFER_KIND);
+        assert_eq!(e.tag("d"), Some(o.offer.id().as_str()));
+        assert_eq!(e.tag("n"), Some("regtest"));
+        assert_eq!(
+            e.tag("expiration"),
+            Some((START + 300).to_string().as_str())
+        );
+        assert_eq!(
+            Some(e.pubkey.clone()),
+            event::x_only_of(&o.offer.maker_relay_pubkey)
+        );
+        assert_eq!(SignedOffer::parse(&e.content).unwrap(), o);
+        let (list, dropped) = point(&[&r.url], at_start)
+            .offers("regtest", START)
+            .await
+            .unwrap();
+        assert_eq!((list, dropped), (vec![o], 0));
+    }
+
+    #[tokio::test]
+    async fn offer_heartbeat_replaces_it_and_it_is_listed_once() {
+        let r = FakeRelay::start(Mode::Accept).await;
+        let k = relay_msg::new_relay_key();
+        let o = offer(&k, "regtest");
+        point(&[&r.url], at_start)
+            .publish_offer(&o, &k)
+            .await
+            .unwrap();
+        point(&[&r.url], a_minute_later)
+            .publish_offer(&o, &k)
+            .await
+            .unwrap();
+        assert_eq!(r.events().len(), 1, "the relay kept one version");
+        let (list, _) = point(&[&r.url], a_minute_later)
+            .offers("regtest", START + 60)
+            .await
+            .unwrap();
+        assert_eq!(list, vec![o]);
+        // Not renewed for the live window: no longer listed.
+        let (list, _) = point(&[&r.url], an_hour_later)
+            .offers("regtest", START + 3600)
+            .await
+            .unwrap();
+        assert!(list.is_empty());
+    }
+
+    /// Someone who copies a maker's signed offer into an event of their own
+    /// cannot list it, renew it or hide it.
+    #[tokio::test]
+    async fn listing_takes_an_offer_only_from_its_maker() {
+        let r = FakeRelay::start(Mode::Accept).await;
+        let (k, other) = (relay_msg::new_relay_key(), relay_msg::new_relay_key());
+        let o = offer(&k, "regtest");
+        let copy = event::sign(
+            &other,
+            START,
+            OFFER_KIND,
+            vec![
+                vec!["d".into(), o.offer.id()],
+                vec!["n".into(), "regtest".into()],
+            ],
+            serde_json::to_string(&o).unwrap(),
+        );
+        r.put(copy);
+        let (list, dropped) = point(&[&r.url], at_start)
+            .offers("regtest", START)
+            .await
+            .unwrap();
+        assert!(list.is_empty());
+        assert_eq!(dropped, 1);
+        assert!(
+            point(&[&r.url], at_start)
+                .publish_offer(&o, &other)
+                .await
+                .is_err(),
+            "a key that did not sign the offer does not publish it"
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_drops_a_wrong_address_network_or_shape() {
+        let r = FakeRelay::start(Mode::Accept).await;
+        let k = relay_msg::new_relay_key();
+        let wrap = |o: &SignedOffer, d: String, n: &str| {
+            event::sign(
+                &k,
+                START,
+                OFFER_KIND,
+                vec![vec!["d".into(), d], vec!["n".into(), n.into()]],
+                serde_json::to_string(o).unwrap(),
+            )
+        };
+        let o = offer(&k, "regtest");
+        r.put(wrap(&o, "00".repeat(32), "regtest")); // d is not its id
+        let main = offer(&k, "main");
+        r.put(wrap(&main, main.offer.id(), "regtest")); // another network inside
+        let mut expired = offer(&k, "regtest");
+        expired.offer.expires_at = START - 1;
+        r.put(wrap(&expired, expired.offer.id(), "regtest")); // signature now broken too
+        let (list, dropped) = point(&[&r.url], at_start)
+            .offers("regtest", START)
+            .await
+            .unwrap();
+        assert!(list.is_empty());
+        assert_eq!(dropped, 3);
+    }
+
+    #[tokio::test]
+    async fn withdrawal_hides_the_offer_and_asks_relays_to_delete_it() {
+        let r = FakeRelay::start(Mode::Accept).await;
+        let k = relay_msg::new_relay_key();
+        let o = offer(&k, "regtest");
+        point(&[&r.url], at_start)
+            .publish_offer(&o, &k)
+            .await
+            .unwrap();
+        let sig = relay_msg::sign_withdraw(&k, &o.offer.id());
+        point(&[&r.url], a_minute_later)
+            .withdraw_offer(&o, &sig, &k)
+            .await
+            .unwrap();
+        let (list, dropped) = point(&[&r.url], a_minute_later)
+            .offers("regtest", START + 60)
+            .await
+            .unwrap();
+        assert!(list.is_empty());
+        assert_eq!(dropped, 0, "a withdrawal is not a bad offer");
+        let deletion = r
+            .received()
+            .into_iter()
+            .find(|e| e.kind == 5)
+            .expect("a kind-5 deletion");
+        assert_eq!(
+            deletion.tag("a").map(str::to_owned),
+            Some(format!("{OFFER_KIND}:{}:{}", deletion.pubkey, o.offer.id()))
+        );
+    }
+
+    /// Some relays ignore NIP-09 (the live check found two): one that keeps
+    /// both the offer and its withdrawal still lists nothing.
+    #[tokio::test]
+    async fn withdrawal_hides_the_offer_on_a_relay_that_ignores_deletions() {
+        let (r, ignoring) = (
+            FakeRelay::start(Mode::Accept).await,
+            FakeRelay::start(Mode::Accept).await,
+        );
+        let k = relay_msg::new_relay_key();
+        let o = offer(&k, "regtest");
+        point(&[&r.url], at_start)
+            .publish_offer(&o, &k)
+            .await
+            .unwrap();
+        let sig = relay_msg::sign_withdraw(&k, &o.offer.id());
+        point(&[&r.url], a_minute_later)
+            .withdraw_offer(&o, &sig, &k)
+            .await
+            .unwrap();
+        for e in r.received().into_iter().filter(|e| e.kind == OFFER_KIND) {
+            ignoring.put(e);
+        }
+        let (list, dropped) = point(&[&ignoring.url], a_minute_later)
+            .offers("regtest", START + 60)
+            .await
+            .unwrap();
+        assert!(list.is_empty());
+        assert_eq!(dropped, 0, "a withdrawal is not a bad offer");
+    }
+
+    #[tokio::test]
+    async fn message_is_encrypted_to_its_recipient_and_only_it_reads_it() {
+        let r = FakeRelay::start(Mode::Accept).await;
+        let (a, b, c) = (
+            relay_msg::new_relay_key(),
+            relay_msg::new_relay_key(),
+            relay_msg::new_relay_key(),
+        );
+        let env = envelope(&a, &b, "a reason only b may read");
+        point(&[&r.url], at_start).send(&env, &a).await.unwrap();
+        let stored = r.events();
+        assert_eq!(stored.len(), 1);
+        let e = &stored[0];
+        assert_eq!(e.kind, MESSAGE_KIND);
+        assert_eq!(
+            Some(e.tag("p").unwrap().to_owned()),
+            event::x_only_of(&env.message.to)
+        );
+        assert!(!e.content.contains("a reason only b may read"));
+        assert!(!e.content.contains("regtest"));
+        let (got, cursor) = point(&[&r.url], at_start)
+            .inbox(&b, "regtest", None)
+            .await
+            .unwrap();
+        assert_eq!(got, vec![env.clone()]);
+        assert_eq!(cursor.as_deref(), Some(format!("nostr:{START}").as_str()));
+        let (got, _) = point(&[&r.url], at_start)
+            .inbox(&c, "regtest", None)
+            .await
+            .unwrap();
+        assert!(got.is_empty(), "a third key reads nothing");
+        assert!(
+            point(&[&r.url], at_start).send(&env, &c).await.is_err(),
+            "only the sender's key sends its message"
+        );
+    }
+
+    /// A message re-sent by someone else, even encrypted correctly to its
+    /// addressee, is not the sender's.
+    #[tokio::test]
+    async fn inbox_drops_a_message_under_another_author() {
+        let r = FakeRelay::start(Mode::Accept).await;
+        let (a, b, mallory) = (
+            relay_msg::new_relay_key(),
+            relay_msg::new_relay_key(),
+            relay_msg::new_relay_key(),
+        );
+        let env = envelope(&a, &b, "x");
+        let b_x: [u8; 32] = hex::decode(event::x_only_of(&env.message.to).unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let ck = crate::exchange_io::nostr::nip44::conversation_key(&mallory, &b_x).unwrap();
+        r.put(event::sign(
+            &mallory,
+            START,
+            MESSAGE_KIND,
+            vec![vec!["p".into(), hex::encode(b_x)]],
+            crate::exchange_io::nostr::nip44::encrypt(&serde_json::to_string(&env).unwrap(), &ck)
+                .unwrap(),
+        ));
+        let (got, _) = point(&[&r.url], at_start)
+            .inbox(&b, "regtest", None)
+            .await
+            .unwrap();
+        assert!(got.is_empty());
+    }
+
+    #[tokio::test]
+    async fn inbox_reads_from_before_its_cursor_and_never_moves_it_back() {
+        let r = FakeRelay::start(Mode::Accept).await;
+        let b = relay_msg::new_relay_key();
+        let c = format!("nostr:{}", START + 5000);
+        let (_, next) = point(&[&r.url], at_start)
+            .inbox(&b, "regtest", Some(&c))
+            .await
+            .unwrap();
+        assert_eq!(
+            next.as_deref(),
+            Some(c.as_str()),
+            "nothing read: the cursor stays"
+        );
+        assert_eq!(r.filters()[0]["since"], START + 5000 - 900);
+        // Another meeting point's cursor is not ours: read the whole week.
+        let (_, next) = point(&[&r.url], at_start)
+            .inbox(&b, "regtest", Some("1234"))
+            .await
+            .unwrap();
+        assert_eq!(r.filters()[1]["since"], START - 7 * 86_400);
+        assert_eq!(next.as_deref(), Some("1234"));
+    }
+}

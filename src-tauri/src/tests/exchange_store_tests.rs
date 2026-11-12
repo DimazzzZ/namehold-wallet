@@ -145,7 +145,8 @@ async fn a_committed_buyer_announces_its_btc_lock_again_while_the_seller_waits()
     // QA finding: one announcement at the Commit was all the Seller would
     // ever get; a relay down at that moment lost the trade.
     use super::exchange_fake_btc::FakeRelay;
-    use crate::exchange_io::job::{tick, Ctx, Relay};
+    use crate::exchange_io::job::{tick, Ctx};
+    use crate::exchange_io::meeting::MeetingPoint;
     use crate::noncustodial::exchange::relay_msg::Body;
     let c = conn();
     let m = fx::buyer_master();
@@ -182,7 +183,7 @@ async fn a_committed_buyer_announces_its_btc_lock_again_while_the_seller_waits()
         policy: fx::policy(),
         node: None,
         sources: &[],
-        relay: Some(&relay as &dyn Relay),
+        relay: Some(&relay as &dyn MeetingPoint),
         watchtower: None,
         now,
     };

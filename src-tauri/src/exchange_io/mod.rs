@@ -7,6 +7,7 @@ pub mod btc_wallet;
 pub mod env;
 pub mod hns_observe;
 pub mod job;
+pub mod meeting;
 pub mod nostr;
 pub mod relay_client;
 pub mod runner;

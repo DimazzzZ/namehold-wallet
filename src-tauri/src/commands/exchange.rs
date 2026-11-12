@@ -97,6 +97,13 @@ pub struct ExchangeOverview {
     pub btc_sources: Vec<String>,
     pub btc_network: String,
     pub bitcoind_auth_set: bool,
+    /// The Nostr relays as set (empty: the defaults below).
+    pub nostr_relays: Vec<String>,
+    /// The network's default Nostr relays.
+    pub default_nostr_relays: Vec<String>,
+    /// Where offers and messages go: `"relay"` (the custom relay),
+    /// `"nostr"`, or `"none"` (neither is set).
+    pub meeting_point: String,
 }
 
 /// What the page needs to know about a profile before any key is involved:
@@ -155,6 +162,9 @@ pub(crate) fn overview_of(
         available: r.is_none(),
         refusal: r.map(str::to_owned),
         enabled: store::account(conn, &v.profile_id)?.is_some(),
+        meeting_point: env::meeting_point(&cfg, v.network).as_str().to_owned(),
+        default_nostr_relays: env::default_nostr_relays(v.network),
+        nostr_relays: cfg.nostr_relays.clone(),
         relay_url: cfg.relay_url,
         watchtower_url: Some(cfg.watchtower_url).filter(|w| !w.is_empty()),
         btc_sources: cfg.btc_sources,
@@ -212,14 +222,18 @@ pub async fn exchange_update_settings(
     watchtower_url: String,
     btc_sources: Vec<String>,
     bitcoind_auth: Option<String>,
+    nostr_relays: Vec<String>,
 ) -> Result<ExchangeOverview, AppError> {
     let ctx = draft_ctx::load_ctx(&state)?;
-    let new = env::validate(
-        ctx.network,
-        &relay_url,
-        &watchtower_url,
-        &btc_sources,
-        bitcoind_auth.as_deref(),
+    let new = env::with_nostr(
+        env::validate(
+            ctx.network,
+            &relay_url,
+            &watchtower_url,
+            &btc_sources,
+            bitcoind_auth.as_deref(),
+        )?,
+        &nostr_relays,
     )?;
     let old = env::config(&ctx.settings, ctx.network);
     let rows = settings_rows(&old, &new);
@@ -230,7 +244,7 @@ pub async fn exchange_update_settings(
     crate::commands::secure_confirm::confirm_rows(
         &app,
         "Change exchange settings",
-        "Bitcoin sources are not trusted: Namehold checks every lock by proof of work and needs every source to agree. The relay and the watchtower hold no key and no secret.",
+        "Bitcoin sources are not trusted: Namehold checks every lock by proof of work and needs every source to agree. The Nostr relays, the relay and the watchtower hold no key and no secret.",
         serde_json::json!({ "rows": rows }),
     )
     .await?;
@@ -249,6 +263,7 @@ pub async fn exchange_update_settings(
         put(env::RELAY_KEY, &new.relay_url)?;
         put(env::WATCHTOWER_KEY, &new.watchtower_url)?;
         put(env::SOURCES_KEY, &new.btc_sources.join("\n"))?;
+        put(env::NOSTR_KEY, &new.nostr_relays.join("\n"))?;
         if let Some(a) = &new.bitcoind_auth {
             put(env::BITCOIND_AUTH_KEY, a)?;
         }
@@ -283,6 +298,19 @@ pub fn settings_rows(old: &env::Config, new: &env::Config) -> Vec<serde_json::Va
                 shown(&old.watchtower_url),
                 shown(&new.watchtower_url)
             ),
+        ));
+    }
+    if old.nostr_relays != new.nostr_relays {
+        let list = |l: &[String]| {
+            if l.is_empty() {
+                "the defaults".to_owned()
+            } else {
+                l.join(", ")
+            }
+        };
+        rows.push(row(
+            "Nostr relays",
+            format!("{} → {}", list(&old.nostr_relays), list(&new.nostr_relays)),
         ));
     }
     if old.btc_sources != new.btc_sources {
@@ -611,13 +639,11 @@ pub async fn exchange_list_offers(state: State<'_, AppState>) -> Result<MarketOf
     };
     let cfg = env::config(&ctx.settings, ctx.network);
     let t = now();
-    let Some(relay) = env::relay(&cfg)? else {
+    let Some(relay) = env::relay(&cfg, ctx.network)? else {
         return Ok(MarketOffers {
             offers: Vec::new(),
             fetched_at: t,
-            error: Some(
-                "No relay is set. Set one in Exchange settings to see and publish offers.".into(),
-            ),
+            error: Some(env::NO_MEETING_POINT.into()),
         });
     };
     match relay.offers(ctx.network.as_str(), t).await {
@@ -678,11 +704,8 @@ pub async fn exchange_create_offer(
         )));
     }
     let cfg = env::config(&ctx.settings, ctx.network);
-    let relay = env::relay(&cfg)?.ok_or_else(|| {
-        AppError::InvalidInput(
-            "No relay is set. Set one in Exchange settings to see and publish offers.".into(),
-        )
-    })?;
+    let relay = env::relay(&cfg, ctx.network)?
+        .ok_or_else(|| AppError::InvalidInput(env::NO_MEETING_POINT.into()))?;
     {
         let conn = lock(&state)?;
         account_of(&conn, &ctx)?;
@@ -757,7 +780,7 @@ pub async fn exchange_create_offer(
         store::insert_offer(&conn, &ctx.profile_id, &own, t)?;
     }
     let err = relay
-        .publish_offer(&signed)
+        .publish_offer(&signed, &own.relay_key)
         .await
         .err()
         .map(|e| e.to_string());
@@ -803,11 +826,15 @@ pub async fn exchange_withdraw_offer(
         store::withdraw_offer(&conn, &ctx.profile_id, &offer_id)?;
     }
     let cfg = env::config(&ctx.settings, ctx.network);
-    if let Some(relay) = env::relay(&cfg)? {
+    if let Some(relay) = env::relay(&cfg, ctx.network)? {
         // Best effort: an offer that is not renewed leaves the relay within
         // three minutes anyway.
         let _ = relay
-            .withdraw_offer(&o.id, &relay_msg::sign_withdraw(&o.relay_key, &o.id))
+            .withdraw_offer(
+                &o.signed,
+                &relay_msg::sign_withdraw(&o.relay_key, &o.id),
+                &o.relay_key,
+            )
             .await;
     }
     Ok(())
@@ -952,11 +979,8 @@ pub async fn exchange_take_offer(
     let ctx = trading_ctx(&state)?;
     let amount = parse_hns(&hns_amount)?;
     let cfg = env::config(&ctx.settings, ctx.network);
-    let relay = env::relay(&cfg)?.ok_or_else(|| {
-        AppError::InvalidInput(
-            "No relay is set. Set one in Exchange settings to see and publish offers.".into(),
-        )
-    })?;
+    let relay = env::relay(&cfg, ctx.network)?
+        .ok_or_else(|| AppError::InvalidInput(env::NO_MEETING_POINT.into()))?;
     let t = now();
     let (list, _) = relay.offers(ctx.network.as_str(), t).await?;
     let Some(offer) = list.into_iter().find(|o| o.offer.id() == offer_id) else {
@@ -1057,7 +1081,7 @@ pub async fn exchange_take_offer(
         body: Body::Take(req),
     }
     .sign(&key)?;
-    relay.send(&msg).await?;
+    relay.send(&msg, &key).await?;
     Ok(trade_row(&trade))
 }
 
@@ -1080,7 +1104,7 @@ pub async fn exchange_cancel_trade(
         ));
     }
     let cfg = env::config(&ctx.settings, ctx.network);
-    if let (Some(relay), Some(to)) = (env::relay(&cfg)?, t.counterparty_key.clone()) {
+    if let (Some(relay), Some(to)) = (env::relay(&cfg, ctx.network)?, t.counterparty_key.clone()) {
         let m = Message {
             version: relay_msg::MSG_VERSION,
             network: ctx.network.as_str().to_owned(),
@@ -1094,7 +1118,7 @@ pub async fn exchange_cancel_trade(
             },
         }
         .sign(&t.relay_key)?;
-        let _ = relay.send(&m).await;
+        let _ = relay.send(&m, &t.relay_key).await;
     }
     // Our own cancel is not the other side's decline.
     t.status = Some(Status::Expired);
@@ -1285,7 +1309,7 @@ async fn announce(
     body: Body,
 ) {
     let cfg = env::config(&ctx.settings, ctx.network);
-    let Ok(Some(relay)) = env::relay(&cfg) else {
+    let Ok(Some(relay)) = env::relay(&cfg, ctx.network) else {
         return;
     };
     let to = match t.role {
@@ -1304,7 +1328,7 @@ async fn announce(
     };
     if let Ok(e) = msg.sign(&t.relay_key) {
         // Best effort: the counterparty's step finds the lock on chain too.
-        let _ = relay.send(&e).await;
+        let _ = relay.send(&e, &t.relay_key).await;
     }
 }
 

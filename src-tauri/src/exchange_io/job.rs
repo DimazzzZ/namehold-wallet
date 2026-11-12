@@ -14,12 +14,11 @@
 //! It holds no signing key: `tests::exchange_layering_tests` fails if this
 //! file names one.
 
-use async_trait::async_trait;
 use rusqlite::Connection;
 
 use crate::error::AppError;
 use crate::exchange_io::btc_source::BtcSource;
-use crate::exchange_io::relay_client::RelayClient;
+use crate::exchange_io::meeting::{MeetingPoint, Watchtower};
 use crate::exchange_io::runner;
 use crate::exchange_io::store::{self, Trade};
 use crate::noncustodial::exchange::engine::{Holdings, Role, SentLog, Status};
@@ -32,42 +31,6 @@ use crate::noncustodial::exchange::terms::{OfferView, Terms, TermsDraft};
 use crate::noncustodial::exchange::watch::WatchJob;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::node_rpc::NodeRpc;
-
-/// The relay as the job uses it; `RelayClient` in production, a fake in
-/// tests.
-#[async_trait]
-pub trait Relay: Send + Sync {
-    async fn publish_offer(&self, o: &SignedOffer) -> Result<(), AppError>;
-    async fn send(&self, e: &Envelope) -> Result<(), AppError>;
-    async fn inbox(
-        &self,
-        to: &str,
-        network: &str,
-        cursor: Option<&str>,
-    ) -> Result<(Vec<Envelope>, Option<String>), AppError>;
-    async fn watch(&self, job: &WatchJob) -> Result<String, AppError>;
-}
-
-#[async_trait]
-impl Relay for RelayClient {
-    async fn publish_offer(&self, o: &SignedOffer) -> Result<(), AppError> {
-        RelayClient::publish_offer(self, o).await
-    }
-    async fn send(&self, e: &Envelope) -> Result<(), AppError> {
-        RelayClient::send(self, e).await
-    }
-    async fn inbox(
-        &self,
-        to: &str,
-        network: &str,
-        cursor: Option<&str>,
-    ) -> Result<(Vec<Envelope>, Option<String>), AppError> {
-        RelayClient::inbox(self, to, network, cursor).await
-    }
-    async fn watch(&self, job: &WatchJob) -> Result<String, AppError> {
-        RelayClient::watch(self, job).await
-    }
-}
 
 /// How long a live offer may go without a heartbeat before it is renewed.
 pub const HEARTBEAT_SECS: u64 = 60;
@@ -84,8 +47,8 @@ pub struct Ctx<'a> {
     pub policy: Policy,
     pub node: Option<&'a dyn NodeRpc>,
     pub sources: &'a [Box<dyn BtcSource>],
-    pub relay: Option<&'a dyn Relay>,
-    pub watchtower: Option<&'a dyn Relay>,
+    pub relay: Option<&'a dyn MeetingPoint>,
+    pub watchtower: Option<&'a dyn Watchtower>,
     pub now: u64,
 }
 
@@ -179,7 +142,7 @@ pub async fn tick(ctx: &Ctx<'_>) -> TickReport {
     report
 }
 
-async fn heartbeat(ctx: &Ctx<'_>, relay: &dyn Relay) -> Result<(), AppError> {
+async fn heartbeat(ctx: &Ctx<'_>, relay: &dyn MeetingPoint) -> Result<(), AppError> {
     for o in store::offers(ctx.conn, ctx.profile_id)? {
         if !o.live || o.network != ctx.network.as_str() {
             continue;
@@ -194,7 +157,7 @@ async fn heartbeat(ctx: &Ctx<'_>, relay: &dyn Relay) -> Result<(), AppError> {
             continue;
         }
         let err = relay
-            .publish_offer(&o.signed)
+            .publish_offer(&o.signed, &o.relay_key)
             .await
             .err()
             .map(|e| e.to_string());
@@ -216,35 +179,33 @@ pub fn holds_a_slot(t: &Trade) -> bool {
 
 /// Every relay key this profile reads: its live offers' and its open
 /// trades'.
-fn inbox_keys(ctx: &Ctx<'_>) -> Result<Vec<(String, Option<String>)>, AppError> {
+fn inbox_keys(ctx: &Ctx<'_>) -> Result<Vec<secp256k1::SecretKey>, AppError> {
     let mut keys = Vec::new();
     for o in store::offers(ctx.conn, ctx.profile_id)? {
         if o.live {
-            keys.push((
-                relay_msg::relay_pubkey_hex(&o.relay_key),
-                Some(o.id.clone()),
-            ));
+            keys.push(o.relay_key);
         }
     }
     for t in store::trades(ctx.conn, ctx.profile_id)? {
         if !t.finished && !t.maker {
-            keys.push((relay_msg::relay_pubkey_hex(&t.relay_key), None));
+            keys.push(t.relay_key);
         }
     }
-    keys.sort();
+    keys.sort_by_key(relay_msg::relay_pubkey_hex);
     keys.dedup();
     Ok(keys)
 }
 
 async fn read_inboxes(
     ctx: &Ctx<'_>,
-    relay: &dyn Relay,
+    relay: &dyn MeetingPoint,
     account: &store::Account,
 ) -> Result<(), AppError> {
-    for (key, _) in inbox_keys(ctx)? {
+    for secret in inbox_keys(ctx)? {
+        let key = relay_msg::relay_pubkey_hex(&secret);
         let cursor = store::inbox_cursor(ctx.conn, &key)?;
         let (msgs, next) = relay
-            .inbox(&key, ctx.network.as_str(), cursor.as_deref())
+            .inbox(&secret, ctx.network.as_str(), cursor.as_deref())
             .await?;
         for m in msgs {
             if let Err(e) = handle(ctx, relay, account, &m).await {
@@ -289,7 +250,7 @@ fn reply(
 
 async fn handle(
     ctx: &Ctx<'_>,
-    relay: &dyn Relay,
+    relay: &dyn MeetingPoint,
     account: &store::Account,
     e: &Envelope,
 ) -> Result<(), AppError> {
@@ -306,7 +267,7 @@ async fn handle(
 /// A take of one of our offers: answer with our public half of the terms.
 async fn on_take(
     ctx: &Ctx<'_>,
-    relay: &dyn Relay,
+    relay: &dyn MeetingPoint,
     account: &store::Account,
     m: &Message,
     req: &TakeRequest,
@@ -341,9 +302,10 @@ async fn on_take(
         .count();
     if open >= MAX_OPEN_PER_OFFER {
         relay
-            .send(&decline(
-                "the maker has too many trades open on this offer",
-            )?)
+            .send(
+                &decline("the maker has too many trades open on this offer")?,
+                &o.relay_key,
+            )
             .await?;
         return Ok(());
     }
@@ -365,7 +327,7 @@ async fn on_take(
         Role::Seller => {
             let Some(h) = req.hash.as_deref() else {
                 relay
-                    .send(&decline("a buyer's take carries the hash")?)
+                    .send(&decline("a buyer's take carries the hash")?, &o.relay_key)
                     .await?;
                 return Ok(());
             };
@@ -381,7 +343,7 @@ async fn on_take(
         Role::Buyer => {
             if req.hash.is_some() {
                 relay
-                    .send(&decline("a seller's take carries no hash")?)
+                    .send(&decline("a seller's take carries no hash")?, &o.relay_key)
                     .await?;
                 return Ok(());
             }
@@ -389,9 +351,12 @@ async fn on_take(
                 Some((i, h, n)) => (i, h, Some(n)),
                 None => {
                     relay
-                        .send(&decline(
-                            "the maker has no trade left on this offer; it must renew it",
-                        )?)
+                        .send(
+                            &decline(
+                                "the maker has no trade left on this offer; it must renew it",
+                            )?,
+                            &o.relay_key,
+                        )
                         .await?;
                     return Ok(());
                 }
@@ -437,7 +402,7 @@ async fn on_take(
         ..offer_view(&o.signed)
     };
     if let Err(e) = terms.check(&ctx.policy, &view, ctx.now) {
-        relay.send(&decline(&e.to_string())?).await?;
+        relay.send(&decline(&e.to_string())?, &o.relay_key).await?;
         return Ok(());
     }
     let mut t = Trade {
@@ -480,7 +445,7 @@ async fn on_take(
             terms: Box::new(terms),
         },
     )?;
-    relay.send(&accept).await
+    relay.send(&accept, &o.relay_key).await
 }
 
 pub fn uncommitted(role: Role, terms: &Terms) -> Holdings {
@@ -744,7 +709,7 @@ async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
     Ok(events)
 }
 
-async fn register_watch_jobs(ctx: &Ctx<'_>, w: &dyn Relay) -> Result<(), AppError> {
+async fn register_watch_jobs(ctx: &Ctx<'_>, w: &dyn Watchtower) -> Result<(), AppError> {
     for mut t in store::trades(ctx.conn, ctx.profile_id)? {
         if t.finished || t.watchtower == "registered" {
             continue;
@@ -772,7 +737,7 @@ pub const REANNOUNCE_EVERY_SECS: u64 = 300;
 /// Announce our lock again while the counterparty still waits for it (QA
 /// finding: a relay down at the Commit lost the only announcement, and the
 /// Seller cannot find the Buyer's BTC lock without it).
-async fn reannounce(ctx: &Ctx<'_>, relay: &dyn Relay) -> Result<(), AppError> {
+async fn reannounce(ctx: &Ctx<'_>, relay: &dyn MeetingPoint) -> Result<(), AppError> {
     for t in store::trades(ctx.conn, ctx.profile_id)? {
         let (Some(h), Some(terms)) = (&t.holdings, &t.terms) else {
             continue;
@@ -832,7 +797,7 @@ async fn reannounce(ctx: &Ctx<'_>, relay: &dyn Relay) -> Result<(), AppError> {
         )?;
         // Recorded only once the relay took it: an announcement that failed
         // is tried again on the next step, not a period later.
-        relay.send(&e).await?;
+        relay.send(&e, &t.relay_key).await?;
         if let Ok(mut m) = announced().lock() {
             m.insert(key, ctx.now);
         }
