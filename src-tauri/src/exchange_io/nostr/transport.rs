@@ -219,12 +219,10 @@ impl MeetingPoint for NostrMeetingPoint {
         let now = (self.clock)();
         let me = relay_msg::relay_pubkey_hex(key);
         let me_x = hex::encode(x_only(key));
-        let last = cursor
-            .and_then(|c| c.strip_prefix(NOSTR_CURSOR_PREFIX))
-            .and_then(|c| c.parse::<u64>().ok());
+        let (last, seen) = parse_cursor(cursor);
         let since = match last {
-            Some(t) => t.saturating_sub(INBOX_SLACK_SECS),
-            None => now.saturating_sub(MESSAGE_SECS),
+            Some(t) if t > 0 => t.saturating_sub(INBOX_SLACK_SECS),
+            _ => now.saturating_sub(MESSAGE_SECS),
         };
         let mut events = self
             .client
@@ -233,26 +231,56 @@ impl MeetingPoint for NostrMeetingPoint {
         events.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
         let mut msgs = Vec::new();
         let mut newest = last.unwrap_or(0);
-        for e in &events {
+        for e in events.iter().filter(|e| !seen.contains(e.id.as_str())) {
+            let Some(env) = open_message(e, key, &me, network) else {
+                continue;
+            };
+            // Only a message handed over moves the cursor: anyone can
+            // address junk to us, dated as they like.
             newest = newest.max(e.created_at.min(now));
-            let Some(author) = x_only_bytes(&e.pubkey) else {
-                continue;
-            };
-            let Ok(ck) = nip44::conversation_key(key, &author) else {
-                continue;
-            };
-            let Ok(plain) = nip44::decrypt(&e.content, &ck) else {
-                continue;
-            };
-            let Ok(env) = Envelope::parse_for(&plain, &me, network) else {
-                continue;
-            };
-            if event::x_only_of(&env.message.from).as_deref() != Some(e.pubkey.as_str()) {
-                continue; // a message re-sent under another author
-            }
             msgs.push(env);
         }
-        let next = (newest > 0).then(|| format!("{NOSTR_CURSOR_PREFIX}{newest}"));
-        Ok((msgs, next.or_else(|| cursor.map(str::to_owned))))
+        // Every event of the window the next read covers, handled or not,
+        // is remembered, so it is not handed over or opened again.
+        let window = newest.saturating_sub(INBOX_SLACK_SECS);
+        let mut keep: Vec<&Event> = events.iter().filter(|e| e.created_at >= window).collect();
+        keep.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        keep.truncate(MAX_SEEN_IDS);
+        let ids: Vec<&str> = keep.iter().map(|e| e.id.as_str()).collect();
+        if newest == 0 && ids.is_empty() {
+            return Ok((msgs, cursor.map(str::to_owned)));
+        }
+        let next = if ids.is_empty() {
+            format!("{NOSTR_CURSOR_PREFIX}{newest}")
+        } else {
+            format!("{NOSTR_CURSOR_PREFIX}{newest}:{}", ids.join(","))
+        };
+        Ok((msgs, Some(next)))
     }
+}
+
+/// Most event ids a cursor remembers (the window's events, newest first).
+const MAX_SEEN_IDS: usize = 500;
+
+/// `nostr:<time>[:<id>,<id>…]` → the time and the ids already handled; any
+/// other cursor (a `namehold-relay`'s) is no cursor here.
+fn parse_cursor(cursor: Option<&str>) -> (Option<u64>, std::collections::HashSet<&str>) {
+    let Some(rest) = cursor.and_then(|c| c.strip_prefix(NOSTR_CURSOR_PREFIX)) else {
+        return (None, Default::default());
+    };
+    let (time, ids) = rest.split_once(':').unwrap_or((rest, ""));
+    (
+        time.parse().ok(),
+        ids.split(',').filter(|i| !i.is_empty()).collect(),
+    )
+}
+
+/// The message in `e` if it is one to `me` on `network`, from the event's
+/// own author.
+fn open_message(e: &Event, key: &SecretKey, me: &str, network: &str) -> Option<Envelope> {
+    let ck = nip44::conversation_key(key, &x_only_bytes(&e.pubkey)?).ok()?;
+    let plain = nip44::decrypt(&e.content, &ck).ok()?;
+    let env = Envelope::parse_for(&plain, me, network).ok()?;
+    // A message re-sent under another author is not its sender's.
+    (event::x_only_of(&env.message.from).as_deref() == Some(e.pubkey.as_str())).then_some(env)
 }

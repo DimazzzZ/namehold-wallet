@@ -726,7 +726,11 @@ mod transport {
             .await
             .unwrap();
         assert_eq!(got, vec![env.clone()]);
-        assert_eq!(cursor.as_deref(), Some(format!("nostr:{START}").as_str()));
+        assert_eq!(
+            cursor.as_deref(),
+            Some(format!("nostr:{START}:{}", stored[0].id).as_str()),
+            "the time of the message and the id handled"
+        );
         let (got, _) = point(&[&r.url], at_start)
             .inbox(&c, "regtest", None)
             .await
@@ -767,6 +771,67 @@ mod transport {
             .await
             .unwrap();
         assert!(got.is_empty());
+    }
+
+    /// The inbox reads back over its slack, so the same events come again;
+    /// each is handed to the job once, across restarts too (the ids handled
+    /// travel in the stored cursor). A take read twice would otherwise be
+    /// handled twice.
+    #[tokio::test]
+    async fn inbox_hands_each_message_over_once() {
+        let r = FakeRelay::start(Mode::Accept).await;
+        let (a, b) = (relay_msg::new_relay_key(), relay_msg::new_relay_key());
+        let env = envelope(&a, &b, "once");
+        point(&[&r.url], at_start).send(&env, &a).await.unwrap();
+        let (first, cursor) = point(&[&r.url], at_start)
+            .inbox(&b, "regtest", None)
+            .await
+            .unwrap();
+        assert_eq!(first, vec![env.clone()]);
+        // A minute later, a new process with only the stored cursor.
+        let (again, cursor2) = point(&[&r.url], a_minute_later)
+            .inbox(&b, "regtest", cursor.as_deref())
+            .await
+            .unwrap();
+        assert!(again.is_empty(), "handed over twice");
+        let env2 = envelope(&a, &b, "second");
+        point(&[&r.url], a_minute_later)
+            .send(&env2, &a)
+            .await
+            .unwrap();
+        let (next, _) = point(&[&r.url], a_minute_later)
+            .inbox(&b, "regtest", cursor2.as_deref())
+            .await
+            .unwrap();
+        assert_eq!(next, vec![env2]);
+    }
+
+    /// Events that are not a valid message to us (anyone can address one by
+    /// `p`) do not move the cursor: a burst of them dated "now" must not
+    /// push a late real message out of the window read.
+    #[tokio::test]
+    async fn inbox_cursor_moves_only_with_messages_it_hands_over() {
+        let r = FakeRelay::start(Mode::Accept).await;
+        let (b, junk) = (relay_msg::new_relay_key(), relay_msg::new_relay_key());
+        let b_x = event::x_only_of(&relay_msg::relay_pubkey_hex(&b)).unwrap();
+        r.put(event::sign(
+            &junk,
+            START + 3000,
+            MESSAGE_KIND,
+            vec![vec!["p".into(), b_x]],
+            "not a NIP-44 payload".into(),
+        ));
+        let c = format!("nostr:{START}");
+        let (got, next) = point(&[&r.url], an_hour_later)
+            .inbox(&b, "regtest", Some(&c))
+            .await
+            .unwrap();
+        assert!(got.is_empty());
+        let next = next.unwrap();
+        assert!(
+            next.starts_with(&format!("nostr:{START}")),
+            "the cursor moved: {next}"
+        );
     }
 
     #[tokio::test]
