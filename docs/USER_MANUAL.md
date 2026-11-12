@@ -515,14 +515,14 @@ The "Ready to finalize" reminders of a Shakedex purchase, listing or cancel (see
 
 > ⚠️ **Beta.** A mistake in the exchange can cost you coins. Trades are limited to 50 000 sats to 0.1 BTC each on mainnet; try a small trade first, and keep the computer online until each trade has ended. Report every problem, even a small one, as an issue on [GitHub](https://github.com/DimazzzZ/namehold-wallet/issues): the page's beta banner has a **Report a problem…** button that opens a new one.
 
-The Exchange page (sidebar, hotkey `4`) is an order book where people who want to sell HNS for BTC and people who want to buy HNS with BTC meet. Each trade is an **atomic swap**: both sides get paid, or both get their own coins back. Nobody holds your coins in between. That includes the relay that carries the offers, the watchtower and the project.
+The Exchange page (sidebar, hotkey `4`) is an order book where people who want to sell HNS for BTC and people who want to buy HNS with BTC meet. Each trade is an **atomic swap**: both sides get paid, or both get their own coins back. Nobody holds your coins in between. That includes the Nostr relays that carry the offers and messages, any watchtower, and the project, which runs no server for the exchange.
 
 **What you need:**
 
 - A wallet whose recovery phrase is on this computer. A Ledger or watch-only wallet cannot sign a trade.
 - A node on this computer (Namehold's own local node, or your hsd with `--index-address --index-tx`). A remote node or an explorer cannot be trusted with a trade.
 - **Enable exchange.** This creates a Bitcoin account from the same recovery phrase (BIP 84: any Bitcoin wallet such as Sparrow or Electrum restores it from the same phrase).
-- **Exchange settings:** a relay URL, an optional watchtower URL, and Bitcoin sources. Two public servers are the default on mainnet, and mainnet and testnet need at least two; a local Bitcoin Core with `-txindex` can be one of them, as `bitcoind+http://127.0.0.1:8332` with its login. Namehold does not trust the Bitcoin sources: it checks every lock by proof of work and needs every source to agree.
+- **Exchange settings:** where offers and trade messages go, an optional watchtower URL, and Bitcoin sources. Offers and messages go through public **Nostr relays** that other people run; six are set by default on mainnet and testnet, and you can list your own (`wss://…`, one per line). Trade messages are encrypted to the other side, but who talks to whom and when is public, and each relay sees your IP address. **Your own relay** is optional: if someone you trust runs `namehold-relay`, enter its URL and it is used instead of Nostr. For Bitcoin, two public servers are the default on mainnet, and mainnet and testnet need at least two; a local Bitcoin Core with `-txindex` can be one of them, as `bitcoind+http://127.0.0.1:8332` with its login. Namehold does not trust the Bitcoin sources: it checks every lock by proof of work and needs every source to agree.
 
 **How a trade goes:**
 
@@ -541,7 +541,7 @@ The Exchange page (sidebar, hotkey `4`) is an order book where people who want t
 
 - Each trade someone starts on it needs your confirmation in the app, so it waits until you open Namehold.
 - An offer stays listed only while your Namehold renews it.
-- **Withdraw offer** removes it from the relay.
+- **Withdraw offer** replaces it with a withdrawal on the relays and asks them to delete it; it disappears from every order book within three minutes.
 
 **The BTC account card:**
 
@@ -549,7 +549,7 @@ The Exchange page (sidebar, hotkey `4`) is an order book where people who want t
 - Gives a receive address.
 - **Withdraw BTC** sends BTC to any Bitcoin address, after the secure window.
 
-Spec: [docs/specs/2026-11-07-hns-btc-exchange.md](specs/2026-11-07-hns-btc-exchange.md). Running a relay or watchtower: [docs/RELAY.md](RELAY.md).
+Specs: [docs/specs/2026-11-07-hns-btc-exchange.md](specs/2026-11-07-hns-btc-exchange.md) and [docs/specs/2026-11-12-exchange-nostr-transport.md](specs/2026-11-12-exchange-nostr-transport.md). Running your own relay or watchtower: [docs/RELAY.md](RELAY.md).
 
 ---
 

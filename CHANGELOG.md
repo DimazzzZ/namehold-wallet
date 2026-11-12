@@ -29,7 +29,7 @@
   - When the exchange cannot be used with a wallet, every button says why.
   - Exchange sits after Market in the sidebar, marked New, so the keys for Activity and Settings are now 5 and 6.
   - It is a beta: a banner at the top of the page asks you to trade small amounts first and to report every problem as a GitHub issue, with a button that opens a new one.
-  - The relay and watchtower server is `namehold-relay` (docs/RELAY.md). Trades are limited to 0.1 BTC each on mainnet.
+  - Offers and trade messages go through public Nostr relays, so the exchange works without anyone running a server for it; trade messages are encrypted to the other side. Exchange settings list the relays (six by default on mainnet and testnet). If someone you trust runs `namehold-relay` (docs/RELAY.md), you can use it instead, and it can also be your watchtower. Trades are limited to 0.1 BTC each on mainnet.
 
 ### Security
 - The bundled SQLite is updated (`rusqlite` 0.41, `libsqlite3-sys` 0.39.1) for RUSTSEC-2026-0459 (CVE-2026-119375 in SQLite), and `rustix` to 1.1.6 for RUSTSEC-2026-0486 (its xattr functions could mark unwritten bytes as initialized; reached only through the updater's archive handling).
