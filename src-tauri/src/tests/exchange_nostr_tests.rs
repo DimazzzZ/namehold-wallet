@@ -343,6 +343,11 @@ mod client {
             .unwrap_err()
             .to_string();
         assert!(err.contains("1 of 3"), "{err}");
+        // Named in words the page's error mapping leaves alone: "Connection
+        // refused" would turn the whole message into a generic one.
+        assert!(err.contains("refused the connection"), "{err}");
+        assert!(!err.to_lowercase().contains("connection refused"), "{err}");
+        assert!(err.contains(&dead), "{err}");
         // Each relay is asked at the same time, so the answer timeout is
         // paid once.
         assert!(

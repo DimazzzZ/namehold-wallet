@@ -96,7 +96,7 @@ impl NostrClient {
         .await
         {
             Err(_) => Err("no connection in time".into()),
-            Ok(Err(e)) => Err(e.to_string()),
+            Ok(Err(e)) => Err(describe(&e.to_string())),
             Ok(Ok((socket, _))) => Ok(socket),
         }
     }
@@ -292,4 +292,15 @@ pub fn matches_filter(filter: &Value, e: &Event) -> bool {
         }),
         _ => false,
     })
+}
+
+/// A connection error in words of its own: the page's error mapping turns a
+/// message containing "connection refused" into a generic sentence, which
+/// would hide how many relays took an event and which did not.
+fn describe(error: &str) -> String {
+    if error.to_lowercase().contains("connection refused") {
+        "refused the connection (is it running?)".into()
+    } else {
+        error.to_owned()
+    }
 }
