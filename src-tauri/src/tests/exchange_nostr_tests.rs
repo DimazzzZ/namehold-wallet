@@ -434,6 +434,35 @@ mod client {
         assert!(got.len() < 200, "{} events kept", got.len());
     }
 
+    /// A relay that drops the connection mid-answer: the call ends with that
+    /// relay counted as failed. It used to read the dead socket in a loop
+    /// that never yielded, so not even the answer timeout could end it, and
+    /// a thread spun at full CPU for good.
+    #[test]
+    fn a_dropped_connection_ends_the_call() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let out = rt.block_on(async {
+                let (drop, ok) = (
+                    FakeRelay::start(Mode::Drop).await,
+                    FakeRelay::start(Mode::Accept).await,
+                );
+                let c = client(&[&drop.url, &ok.url]);
+                let published = c.publish(&ev("x")).await.map_err(|e| e.to_string());
+                let read = c.query(json!({"kinds": [7491]})).await.map(|l| l.len());
+                (published, read.is_ok())
+            });
+            let _ = tx.send(out);
+        });
+        let (published, read) = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the call never ended");
+        let err = published.unwrap_err();
+        assert!(err.contains("1 of 2"), "{err}");
+        assert!(read, "the other relay still answers the read");
+    }
+
     #[tokio::test]
     async fn quorum_query_needs_one_answering_relay() {
         let (a, silent, dead) = (
@@ -804,6 +833,46 @@ mod transport {
             .await
             .unwrap();
         assert_eq!(next, vec![env2]);
+    }
+
+    /// Junk addressed to us, however much and however dated, cannot push the
+    /// id of a message handed over out of the cursor (which would hand it
+    /// over again on a later read).
+    #[tokio::test]
+    async fn inbox_keeps_the_ids_it_handed_over_whatever_junk_arrives() {
+        let r = FakeRelay::start(Mode::Accept).await;
+        let (a, b, junk) = (
+            relay_msg::new_relay_key(),
+            relay_msg::new_relay_key(),
+            relay_msg::new_relay_key(),
+        );
+        let env = envelope(&a, &b, "real");
+        point(&[&r.url], at_start).send(&env, &a).await.unwrap();
+        let (first, c1) = point(&[&r.url], at_start)
+            .inbox(&b, "regtest", None)
+            .await
+            .unwrap();
+        assert_eq!(first, vec![env]);
+        let b_x = event::x_only_of(&relay_msg::relay_pubkey_hex(&b)).unwrap();
+        for i in 0..600u64 {
+            r.put(event::sign(
+                &junk,
+                START + 800, // ahead of every clock below
+                MESSAGE_KIND,
+                vec![vec!["p".into(), b_x.clone()]],
+                format!("junk {i}"),
+            ));
+        }
+        let (second, c2) = point(&[&r.url], a_minute_later)
+            .inbox(&b, "regtest", c1.as_deref())
+            .await
+            .unwrap();
+        assert!(second.is_empty());
+        let (third, _) = point(&[&r.url], a_minute_later)
+            .inbox(&b, "regtest", c2.as_deref())
+            .await
+            .unwrap();
+        assert!(third.is_empty(), "handed over again after the junk");
     }
 
     /// Events that are not a valid message to us (anyone can address one by

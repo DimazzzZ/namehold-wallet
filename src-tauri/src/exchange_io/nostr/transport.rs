@@ -230,6 +230,7 @@ impl MeetingPoint for NostrMeetingPoint {
             .await?;
         events.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
         let mut msgs = Vec::new();
+        let mut handed = std::collections::HashSet::new();
         let mut newest = last.unwrap_or(0);
         for e in events.iter().filter(|e| !seen.contains(e.id.as_str())) {
             let Some(env) = open_message(e, key, &me, network) else {
@@ -238,13 +239,19 @@ impl MeetingPoint for NostrMeetingPoint {
             // Only a message handed over moves the cursor: anyone can
             // address junk to us, dated as they like.
             newest = newest.max(e.created_at.min(now));
+            handed.insert(e.id.as_str());
             msgs.push(env);
         }
-        // Every event of the window the next read covers, handled or not,
-        // is remembered, so it is not handed over or opened again.
+        // The cursor remembers the messages handed over, this time or
+        // before, that the next read still covers; never junk, so no amount
+        // of it can push them out. Ranked by time no later than now.
         let window = newest.saturating_sub(INBOX_SLACK_SECS);
-        let mut keep: Vec<&Event> = events.iter().filter(|e| e.created_at >= window).collect();
-        keep.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        let mut keep: Vec<&Event> = events
+            .iter()
+            .filter(|e| handed.contains(e.id.as_str()) || seen.contains(e.id.as_str()))
+            .filter(|e| e.created_at.min(now) >= window)
+            .collect();
+        keep.sort_by_key(|e| (std::cmp::Reverse(e.created_at.min(now)), e.id.clone()));
         keep.truncate(MAX_SEEN_IDS);
         let ids: Vec<&str> = keep.iter().map(|e| e.id.as_str()).collect();
         if newest == 0 && ids.is_empty() {
@@ -259,7 +266,7 @@ impl MeetingPoint for NostrMeetingPoint {
     }
 }
 
-/// Most event ids a cursor remembers (the window's events, newest first).
+/// Most ids of handed-over messages a cursor remembers, newest first.
 const MAX_SEEN_IDS: usize = 500;
 
 /// `nostr:<time>[:<id>,<id>…]` → the time and the ids already handled; any
