@@ -118,19 +118,28 @@ export interface ExchangeSettingsArgs {
   btcSources: string[];
   /** null = keep the stored one, "" = clear it. */
   bitcoindAuth: string | null;
+  /** [] = the network's default Nostr relays. */
+  nostrRelays: string[];
 }
 
-/** Store the relay, watchtower and Bitcoin sources (the secure window confirms it). */
+/** Store the Nostr relays, relay, watchtower and Bitcoin sources (the secure window confirms it). */
 export function useUpdateExchangeSettings() {
   const qc = useQueryClient();
   const profileId = useProfileId();
   return useMutation({
-    mutationFn: ({ relayUrl, watchtowerUrl, btcSources, bitcoindAuth }: ExchangeSettingsArgs) =>
+    mutationFn: ({
+      relayUrl,
+      watchtowerUrl,
+      btcSources,
+      bitcoindAuth,
+      nostrRelays,
+    }: ExchangeSettingsArgs) =>
       invoke<ExchangeOverview>("exchange_update_settings", {
         relayUrl,
         watchtowerUrl,
         btcSources,
         bitcoindAuth,
+        nostrRelays,
       }),
     onSuccess: (overview) => {
       qc.setQueryData([...exchangeKey(profileId), "overview"], overview);

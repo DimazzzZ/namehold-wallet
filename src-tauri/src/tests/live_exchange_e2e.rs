@@ -21,7 +21,8 @@ use sha2::{Digest, Sha256};
 use super::exchange_fake_btc::{FakeBtc, FakeRelay};
 use super::exchange_fixture as fx;
 use crate::exchange_io::btc_source::BtcSource;
-use crate::exchange_io::job::{self, Ctx, Relay};
+use crate::exchange_io::job::{self, Ctx};
+use crate::exchange_io::meeting::{MeetingPoint, Watchtower};
 use crate::exchange_io::store::{self, Trade};
 use crate::exchange_io::{btc_wallet, runner};
 use crate::noncustodial::address;
@@ -88,8 +89,8 @@ async fn tick(
         policy: Policy::for_network(NET),
         node: Some(node as &dyn NodeRpc),
         sources: srcs,
-        relay: Some(relay as &dyn Relay),
-        watchtower: Some(watch as &dyn Relay),
+        relay: Some(relay as &dyn MeetingPoint),
+        watchtower: Some(watch as &dyn Watchtower),
         now: now(),
     };
     let r = job::tick(&ctx).await;
@@ -243,6 +244,7 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
             }
             .sign(&taker_key)
             .unwrap(),
+            &taker_key,
         )
         .await
         .unwrap();
@@ -318,6 +320,7 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
             }
             .sign(&taker_key)
             .unwrap(),
+            &taker_key,
         )
         .await
         .unwrap();

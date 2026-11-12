@@ -77,6 +77,13 @@ secp256k1 = { version = "0.31", features = ["rand", "global-context"] }
 bip39 = { version = "2", features = ["zeroize"] }
 # Hashing primitives used across HD derivation, address encoding, and sighash.
 hmac = "0.12"
+# NIP-44 v2 (exchange messages over Nostr): HKDF-SHA256 and ChaCha20.
+hkdf = "0.12"
+chacha20 = "0.9"
+# The Nostr relays' WebSocket, over our own rustls (ring) config.
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake", "__rustls-tls"] }
+rustls-platform-verifier = "0.7"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 sha2 = "0.10"
 sha3 = "0.10"
 ripemd = "0.1"

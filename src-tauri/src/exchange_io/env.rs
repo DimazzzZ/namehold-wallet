@@ -10,6 +10,9 @@ use std::collections::HashMap;
 
 use crate::error::AppError;
 use crate::exchange_io::btc_source::{self, BtcSource};
+use crate::exchange_io::meeting::MeetingPoint;
+use crate::exchange_io::nostr::client::NostrClient;
+use crate::exchange_io::nostr::transport::NostrMeetingPoint;
 use crate::exchange_io::relay_client::{self, RelayClient};
 use crate::noncustodial::exchange::policy::Policy;
 use crate::noncustodial::network::Network;
@@ -18,6 +21,34 @@ pub const RELAY_KEY: &str = "exchange_relay_url";
 pub const WATCHTOWER_KEY: &str = "exchange_watchtower_url";
 pub const SOURCES_KEY: &str = "exchange_btc_sources";
 pub const BITCOIND_AUTH_KEY: &str = "exchange_bitcoind_rpc_auth";
+pub const NOSTR_KEY: &str = "exchange_nostr_relays";
+/// Neither Nostr relays nor a relay are set (`src/lib/exchangeText.ts`).
+pub const NO_MEETING_POINT: &str =
+    "No meeting point is set. Name Nostr relays or a relay in Exchange settings to see and publish offers.";
+/// The most Nostr relays one network may list.
+pub const MAX_NOSTR_RELAYS: usize = 10;
+
+/// The Nostr relays a network uses when the settings name none (spec
+/// 2026-11-12 R10): relays the live check of 2026-11-12 found taking and
+/// serving the exchange's events. None on regtest and simnet: a test names
+/// its own.
+pub fn default_nostr_relays(network: Network) -> Vec<String> {
+    match network {
+        Network::Main | Network::Testnet => {
+            DEFAULT_NOSTR_RELAYS.iter().map(|s| s.to_string()).collect()
+        }
+        Network::Regtest | Network::Simnet => Vec::new(),
+    }
+}
+
+pub const DEFAULT_NOSTR_RELAYS: [&str; 6] = [
+    "wss://relay.primal.net",
+    "wss://offchain.pub",
+    "wss://nostr.bitcoiner.social",
+    "wss://relay.nostr.net",
+    "wss://nostr.oxtr.dev",
+    "wss://relay.mostro.network",
+];
 
 /// The most Bitcoin sources one network may list.
 pub const MAX_SOURCES: usize = 5;
@@ -91,6 +122,20 @@ pub struct Config {
     pub watchtower_url: String,
     pub btc_sources: Vec<String>,
     pub bitcoind_auth: Option<String>,
+    /// As the settings hold it: empty means the network's defaults
+    /// ([`Config::nostr`]).
+    pub nostr_relays: Vec<String>,
+}
+
+impl Config {
+    /// The Nostr relays in use: the ones set, or the network's defaults.
+    pub fn nostr(&self, network: Network) -> Vec<String> {
+        if self.nostr_relays.is_empty() {
+            default_nostr_relays(network)
+        } else {
+            self.nostr_relays.clone()
+        }
+    }
 }
 
 pub fn config(settings: &HashMap<String, String>, network: Network) -> Config {
@@ -125,6 +170,12 @@ pub fn config(settings: &HashMap<String, String>, network: Network) -> Config {
         watchtower_url: get(WATCHTOWER_KEY),
         btc_sources,
         bitcoind_auth: Some(get(BITCOIND_AUTH_KEY)).filter(|s| !s.is_empty()),
+        nostr_relays: get(NOSTR_KEY)
+            .split(['\n', ','])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect(),
     }
 }
 
@@ -197,7 +248,46 @@ pub fn validate(
         watchtower_url: watchtower.to_owned(),
         btc_sources: sources,
         bitcoind_auth: auth,
+        nostr_relays: Vec::new(),
     })
+}
+
+/// A Nostr relay URL (R9): `wss://`, or `ws://` to this machine; plain
+/// ASCII; no user name or password, so the secure window names the host.
+fn check_nostr_url(v: &str) -> Result<(), AppError> {
+    let bad = |why: &str| AppError::InvalidInput(format!("the Nostr relay {v} {why}"));
+    if !v.chars().all(|c| c.is_ascii_graphic()) {
+        return Err(bad("must be plain ASCII with no spaces"));
+    }
+    let u = url::Url::parse(v).map_err(|_| bad("is not a URL"))?;
+    if !u.username().is_empty() || u.password().is_some() {
+        return Err(bad("must not carry a user name or password"));
+    }
+    match u.scheme() {
+        "wss" => Ok(()),
+        "ws" if crate::http::is_loopback_url(&u) => Ok(()),
+        _ => Err(bad("must be wss://, or ws:// to this machine")),
+    }
+}
+
+/// `cfg` with the Nostr relays the user typed, checked (an empty list
+/// means the network's defaults).
+pub fn with_nostr(mut cfg: Config, relays: &[String]) -> Result<Config, AppError> {
+    let relays: Vec<String> = relays
+        .iter()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if relays.len() > MAX_NOSTR_RELAYS {
+        return Err(AppError::InvalidInput(format!(
+            "at most {MAX_NOSTR_RELAYS} Nostr relays"
+        )));
+    }
+    for r in &relays {
+        check_nostr_url(r)?;
+    }
+    cfg.nostr_relays = relays;
+    Ok(cfg)
 }
 
 /// The sources of `cfg`. A `bitcoind+` source gets the bitcoind login, given
@@ -218,11 +308,57 @@ pub fn sources(cfg: &Config) -> Result<Vec<Box<dyn BtcSource>>, AppError> {
         .collect()
 }
 
-pub fn relay(cfg: &Config) -> Result<Option<RelayClient>, AppError> {
-    if cfg.relay_url.is_empty() {
-        return Ok(None);
+/// Where offers and messages go (R11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Meeting {
+    /// The custom `namehold-relay` the user set.
+    Relay,
+    /// The Nostr relays (set, or the network's defaults).
+    Nostr,
+    /// Neither (regtest or simnet with nothing named).
+    None,
+}
+
+impl Meeting {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Meeting::Relay => "relay",
+            Meeting::Nostr => "nostr",
+            Meeting::None => "none",
+        }
     }
-    RelayClient::new(&cfg.relay_url).map(Some)
+}
+
+/// The custom relay when one is set, otherwise the Nostr relays.
+pub fn meeting_point(cfg: &Config, network: Network) -> Meeting {
+    if !cfg.relay_url.is_empty() {
+        Meeting::Relay
+    } else if !cfg.nostr(network).is_empty() {
+        Meeting::Nostr
+    } else {
+        Meeting::None
+    }
+}
+
+/// Where offers and messages go, in words for the secure window: the
+/// custom relay's URL, or the Nostr relays.
+pub fn meeting_point_text(cfg: &Config, network: Network) -> String {
+    match meeting_point(cfg, network) {
+        Meeting::Relay => cfg.relay_url.clone(),
+        Meeting::Nostr => format!("Nostr relays {}", cfg.nostr(network).join(", ")),
+        Meeting::None => "none".into(),
+    }
+}
+
+/// The client of [`meeting_point`]; `None` when there is none.
+pub fn relay(cfg: &Config, network: Network) -> Result<Option<Box<dyn MeetingPoint>>, AppError> {
+    Ok(match meeting_point(cfg, network) {
+        Meeting::Relay => Some(Box::new(RelayClient::new(&cfg.relay_url)?)),
+        Meeting::Nostr => Some(Box::new(NostrMeetingPoint::new(NostrClient::new(
+            cfg.nostr(network),
+        )))),
+        Meeting::None => None,
+    })
 }
 
 pub fn watchtower(cfg: &Config) -> Result<Option<RelayClient>, AppError> {
@@ -262,7 +398,7 @@ pub async fn sync_step(db_path: &str, profile_id: &str) {
             Vec::new()
         }
     };
-    let relay = relay(&cfg).ok().flatten();
+    let relay = relay(&cfg, network).ok().flatten();
     let watch = watchtower(&cfg).ok().flatten();
     // The same gate as the commands (R17): a profile moved to a remote node
     // after its Commit must not reveal on that node's word, so the step runs
@@ -291,12 +427,10 @@ pub async fn sync_step(db_path: &str, profile_id: &str) {
             .as_ref()
             .map(|n| n as &dyn crate::noncustodial::node_rpc::NodeRpc),
         sources: &srcs,
-        relay: relay
-            .as_ref()
-            .map(|r| r as &dyn crate::exchange_io::job::Relay),
+        relay: relay.as_deref(),
         watchtower: watch
             .as_ref()
-            .map(|r| r as &dyn crate::exchange_io::job::Relay),
+            .map(|r| r as &dyn crate::exchange_io::meeting::Watchtower),
         now,
     };
     let report = crate::exchange_io::job::tick(&ctx).await;

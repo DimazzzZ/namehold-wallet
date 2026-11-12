@@ -145,7 +145,8 @@ async fn a_committed_buyer_announces_its_btc_lock_again_while_the_seller_waits()
     // QA finding: one announcement at the Commit was all the Seller would
     // ever get; a relay down at that moment lost the trade.
     use super::exchange_fake_btc::FakeRelay;
-    use crate::exchange_io::job::{tick, Ctx, Relay};
+    use crate::exchange_io::job::{tick, Ctx};
+    use crate::exchange_io::meeting::MeetingPoint;
     use crate::noncustodial::exchange::relay_msg::Body;
     let c = conn();
     let m = fx::buyer_master();
@@ -182,7 +183,7 @@ async fn a_committed_buyer_announces_its_btc_lock_again_while_the_seller_waits()
         policy: fx::policy(),
         node: None,
         sources: &[],
-        relay: Some(&relay as &dyn Relay),
+        relay: Some(&relay as &dyn MeetingPoint),
         watchtower: None,
         now,
     };
@@ -193,6 +194,91 @@ async fn a_committed_buyer_announces_its_btc_lock_again_while_the_seller_waits()
             .any(|e| matches!(e.message.body, Body::BtcLocked(_))),
         "{sent:?}"
     );
+}
+
+/// The same step over Nostr (spec 2026-11-12): the announcement is an event
+/// of the trade's relay key, addressed to the Seller's key and readable only
+/// by the two of them.
+#[tokio::test]
+async fn a_committed_buyer_announces_its_btc_lock_over_nostr_to_the_seller_only() {
+    use super::exchange_fake_nostr::{FakeRelay, Mode};
+    use crate::exchange_io::job::{tick, Ctx};
+    use crate::exchange_io::meeting::MeetingPoint;
+    use crate::exchange_io::nostr::client::NostrClient;
+    use crate::exchange_io::nostr::transport::{NostrMeetingPoint, MESSAGE_KIND};
+    use crate::exchange_io::nostr::{event, nip44};
+    use crate::noncustodial::exchange::relay_msg::{self, Body, Envelope};
+    let c = conn();
+    let m = fx::buyer_master();
+    store::insert_account(
+        &c,
+        &store::Account {
+            profile_id: "p".into(),
+            network: "regtest".into(),
+            btc_xpub: crate::noncustodial::exchange::btc_account::account_xpub(&m, fx::NET, 0)
+                .unwrap(),
+            swap_xpub: crate::noncustodial::exchange::keys::branch_xpub(&m, fx::NET, 0).unwrap(),
+            account: 0,
+            next_trade_index: 0,
+            next_btc_receive: 0,
+            next_btc_change: 0,
+        },
+        fx::START,
+    )
+    .unwrap();
+    // Its own trade id: the job remembers announcements per (profile,
+    // trade) for the whole process, and the test above announces "ab…".
+    let mut t = new_trade();
+    t.trade_id = "ce".repeat(16);
+    store::insert_trade(&c, &t).unwrap();
+    assert!(store::update_trade(&c, &mut t, fx::START).unwrap());
+    let mut t = store::trade(&c, "p", &t.trade_id).unwrap().unwrap();
+    t.holdings = Some(fx::trade().buyer());
+    t.status = Some(Status::AwaitingSellerCommit {
+        deadline: fx::START + 1200,
+    });
+    assert!(store::commit_trade(&c, &mut t, 1).unwrap());
+    let nostr = FakeRelay::start(Mode::Accept).await;
+    fn clock() -> u64 {
+        fx::START + 300 * 7 + 150
+    }
+    let point = NostrMeetingPoint::with_clock(NostrClient::new(vec![nostr.url.clone()]), clock);
+    let ctx = Ctx {
+        conn: &c,
+        profile_id: "p",
+        network: fx::NET,
+        policy: fx::policy(),
+        node: None,
+        sources: &[],
+        relay: Some(&point as &dyn MeetingPoint),
+        watchtower: None,
+        now: clock(),
+    };
+    tick(&ctx).await;
+    let sent: Vec<_> = nostr
+        .events()
+        .into_iter()
+        .filter(|e| e.kind == MESSAGE_KIND)
+        .collect();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    let e = &sent[0];
+    let seller = t.terms.as_ref().unwrap().seller_relay_pubkey.clone();
+    let seller_x = event::x_only_of(&seller).unwrap();
+    assert_eq!(e.tag("p"), Some(seller_x.as_str()));
+    assert_eq!(
+        Some(e.pubkey.clone()),
+        event::x_only_of(&relay_msg::relay_pubkey_hex(&t.relay_key))
+    );
+    // NIP-44's key is shared: the Buyer's side opens what the Seller will.
+    let ck = nip44::conversation_key(
+        &t.relay_key,
+        &hex::decode(&seller_x).unwrap().try_into().unwrap(),
+    )
+    .unwrap();
+    let env: Envelope = serde_json::from_str(&nip44::decrypt(&e.content, &ck).unwrap()).unwrap();
+    assert!(env.verify());
+    assert_eq!(env.message.to, seller);
+    assert!(matches!(env.message.body, Body::BtcLocked(_)));
 }
 
 /// An offer's three slots are for trades still negotiating or awaiting the
