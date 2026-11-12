@@ -66,6 +66,7 @@ mod ledger_hid_transport_tests;
 mod ledger_plan_guard_tests;
 mod live_exchange_e2e;
 mod live_exchange_it;
+mod live_exchange_nostr;
 mod live_node_it;
 mod local_node_tests;
 mod migration_tests;
