@@ -44,6 +44,7 @@ mod exchange_btc_spv_tests;
 mod exchange_cmd_tests;
 mod exchange_engine_tests;
 pub(crate) mod exchange_fake_btc;
+mod exchange_fake_nostr;
 pub(crate) mod exchange_fixture;
 mod exchange_hns_htlc_tests;
 mod exchange_hsd_vectors_tests;
