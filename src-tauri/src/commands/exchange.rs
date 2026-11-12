@@ -723,7 +723,7 @@ pub async fn exchange_create_offer(
             { "label": "Price", "value": format!("{} sats per HNS", price::format_sats_per_hns(msat)) },
             { "label": "Each trade", "value": format!("{} to {} ({} to {} sats)",
                 crate::noncustodial::types::doos_to_hns_string(min), crate::noncustodial::types::doos_to_hns_string(max), lo, hi) },
-            { "label": "Relay", "value": cfg.relay_url.clone() },
+            { "label": "Published on", "value": env::meeting_point_text(&cfg, ctx.network) },
         ]}),
     )
     .await?;

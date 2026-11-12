@@ -454,6 +454,34 @@ mod nostr_settings {
         );
     }
 
+    /// The publication window names where the offer goes; over Nostr the
+    /// custom relay is empty and must not be what it shows.
+    #[test]
+    fn the_meeting_point_is_named_for_the_secure_window() {
+        let regtest = env::config(&HashMap::new(), Network::Regtest);
+        assert_eq!(env::meeting_point_text(&regtest, Network::Regtest), "none");
+        let nostr = env::with_nostr(
+            regtest.clone(),
+            &[
+                "ws://127.0.0.1:7777".to_owned(),
+                "ws://127.0.0.1:7778".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            env::meeting_point_text(&nostr, Network::Regtest),
+            "Nostr relays ws://127.0.0.1:7777, ws://127.0.0.1:7778"
+        );
+        let mut custom = nostr;
+        custom.relay_url = "http://127.0.0.1:8787".into();
+        assert_eq!(
+            env::meeting_point_text(&custom, Network::Regtest),
+            "http://127.0.0.1:8787"
+        );
+        let main = env::config(&HashMap::new(), Network::Main);
+        assert!(env::meeting_point_text(&main, Network::Main).starts_with("Nostr relays wss://"));
+    }
+
     #[test]
     fn a_nostr_change_is_a_row_of_the_secure_window() {
         let old = base();

@@ -340,6 +340,16 @@ pub fn meeting_point(cfg: &Config, network: Network) -> Meeting {
     }
 }
 
+/// Where offers and messages go, in words for the secure window: the
+/// custom relay's URL, or the Nostr relays.
+pub fn meeting_point_text(cfg: &Config, network: Network) -> String {
+    match meeting_point(cfg, network) {
+        Meeting::Relay => cfg.relay_url.clone(),
+        Meeting::Nostr => format!("Nostr relays {}", cfg.nostr(network).join(", ")),
+        Meeting::None => "none".into(),
+    }
+}
+
 /// The client of [`meeting_point`]; `None` when there is none.
 pub fn relay(cfg: &Config, network: Network) -> Result<Option<Box<dyn MeetingPoint>>, AppError> {
     Ok(match meeting_point(cfg, network) {
