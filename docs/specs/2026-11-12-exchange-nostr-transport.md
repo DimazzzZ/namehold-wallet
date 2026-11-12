@@ -52,3 +52,4 @@ The exchange needs a place where offers are listed and where the two parties of 
 - Code: `src-tauri/src/exchange_io/nostr/`, `exchange_io/env.rs`, `exchange_io/job.rs`, `commands/exchange.rs`.
 - Tests: `src-tauri/src/tests/exchange_nostr_tests.rs`; live: `live_exchange_nostr` (gated by `HNS_IT_NOSTR=1`, publishes short-lived test events to the default relays).
 - Docs: `docs/RELAY.md`, `docs/USER_MANUAL.md` §10c, `SECURITY.md` (exchange), CHANGELOG.
+- QA: `docs/qa/scenarios/exchange/nostr.md` (E40–E47) on local relays from `scripts/nostr-relay.sh` (`docs/qa/procedures/nostr-relay.md`), read with `scripts/nostr-req.mjs`.

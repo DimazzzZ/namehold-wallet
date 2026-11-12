@@ -1,7 +1,7 @@
 ---
 area: HNS ⇄ BTC exchange — a whole trade that completes: the two Commits and their secure windows, the locks on both chains, the reveal and the claim without a click, with the app open or closed, with either party as the maker
 priority: P1–P2
-blocks: HNS 8, BTC 8
+blocks: HNS 6, BTC 6
 requires:
   - procedures/exchange-setup.md
   - procedures/switch-profile.md
@@ -107,26 +107,3 @@ Expected:
 - **Blocks mined:** HNS 2, BTC 2
 - **Evidence:** screenshots `E19-2-buyer-maker`, `E19-complete`; chain outputs as E17.
 - **Cleanup / end state:** the trade complete; OB live.
-
-## E40 — The happy path over Nostr
-
-- **Priority:** P1
-- **Covers:** spec 2026-11-12 (R3–R7, R11): offers and trade messages through a Nostr relay instead of `namehold-relay`
-- **Preconditions:** a local Nostr relay on this machine, e.g. `docker run --rm -p 7777:7777 ghcr.io/hoytech/strfry` (any NIP-01 relay that keeps kinds 37491 and 7491); on both profiles, Exchange › `Settings`: `Nostr relays, one per line` = `ws://127.0.0.1:7777`, `Your own relay (optional)` empty; the rest as in setup. The `namehold-relay` of setup may keep running: nothing should reach it.
-
-Steps:
-
-1. The Seller publishes a sell offer (as E10). On the Buyer, `Refresh` the order book.
-2. Run E17's steps 2 onwards on this offer.
-3. During the trade, read the Nostr relay: `docker logs` of the relay, or a `REQ` for kinds `[37491, 7491]` with any NIP-01 client.
-
-Expected:
-
-- Step 1: the offer shows in the Buyer's order book within 15 s of its publication; the `namehold-relay` log shows no `POST /v1/offers` for it.
-- Step 2: as E17's expectations.
-- Step 3: one kind-37491 event per offer address (renewed about every minute), kind-7491 events whose `content` is base64 (never readable JSON) with a `p` tag; nothing in the `namehold-relay` log for this trade.
-- Passes if a trade completes with the custom relay empty and the messages encrypted on the Nostr relay.
-
-- **Blocks mined:** HNS 2, BTC 2
-- **Evidence:** screenshots `E40-1-order-book`, `E40-complete`; the relay's events of step 3.
-- **Cleanup / end state:** the trade complete; Nostr relays emptied again on both profiles (back to setup).
