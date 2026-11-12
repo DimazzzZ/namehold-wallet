@@ -19,6 +19,8 @@ pub enum Mode {
     Accept,
     Refuse,
     Silent,
+    /// Drop the TCP connection on the first frame, with no close handshake.
+    Drop,
 }
 
 #[derive(Default)]
@@ -56,6 +58,9 @@ impl FakeRelay {
                         return;
                     };
                     while let Some(Ok(msg)) = ws.next().await {
+                        if st.lock().unwrap().mode == Some(Mode::Drop) {
+                            return; // the socket is dropped unclosed
+                        }
                         let Message::Text(text) = msg else { continue };
                         let Ok(frame) = serde_json::from_str::<Value>(&text) else {
                             continue;
@@ -113,7 +118,7 @@ fn handle(st: &Arc<Mutex<State>>, frame: &Value) -> Vec<Value> {
             };
             s.received.push(e.clone());
             match mode {
-                Mode::Silent => vec![],
+                Mode::Silent | Mode::Drop => vec![],
                 Mode::Refuse => vec![json!(["OK", e.id, false, "blocked: a test relay"])],
                 Mode::Accept => {
                     if !e.verify() {

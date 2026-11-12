@@ -226,7 +226,13 @@ async fn a_committed_buyer_announces_its_btc_lock_over_nostr_to_the_seller_only(
         fx::START,
     )
     .unwrap();
-    let mut t = trade(&c);
+    // Its own trade id: the job remembers announcements per (profile,
+    // trade) for the whole process, and the test above announces "ab…".
+    let mut t = new_trade();
+    t.trade_id = "ce".repeat(16);
+    store::insert_trade(&c, &t).unwrap();
+    assert!(store::update_trade(&c, &mut t, fx::START).unwrap());
+    let mut t = store::trade(&c, "p", &t.trade_id).unwrap().unwrap();
     t.holdings = Some(fx::trade().buyer());
     t.status = Some(Status::AwaitingSellerCommit {
         deadline: fx::START + 1200,
