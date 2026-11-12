@@ -50,6 +50,7 @@ mod exchange_hsd_vectors_tests;
 mod exchange_hsd_verify_tests;
 mod exchange_keys_tests;
 mod exchange_layering_tests;
+mod exchange_nostr_tests;
 mod exchange_relay_msg_tests;
 mod exchange_runner_tests;
 mod exchange_store_tests;
