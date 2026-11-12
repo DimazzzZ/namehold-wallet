@@ -24,6 +24,7 @@ non-custodially, with your keys encrypted on your own machine.
     - [Buying names on the Market](#buying-names-on-the-market)
     - [Selling names through Shakedex](#selling-names-through-shakedex)
     - [Watching names](#10b-watching-names)
+    - [Exchange: HNS ⇄ BTC](#10c-exchange-hns--btc)
 11. [Node control](#11-node-control)
 12. [Import from Namebase](#12-import-from-namebase)
 13. [System Tray](#13-system-tray)
@@ -85,17 +86,18 @@ Out of the box, **Sync in background** is enabled (Settings › Node & tray). Th
 
 ## 3. Sidebar and header
 
-The sidebar has five top-level sections:
+The sidebar has six top-level sections:
 
 | Section | Purpose |
 |---------|---------|
 | **Wallet** | Balance, send, receive, and what needs you. Default page. |
 | **Names** | Names you own, bid on or watch, and finding new ones. |
 | **Market** (marked New) | Buy and sell names through Shakedex. |
+| **Exchange** (marked New, beta) | Trade HNS for BTC with other people, as atomic swaps (see [section 10c](#10c-exchange-hns--btc)). |
 | **Activity** | Every transaction and name action: To finish, Waiting for a block, and History. |
 | **Settings** | Connections, Node & tray, Notifications, Backup & import, Updates and Advanced. |
 
-The digit keys `1`–`5` open the sections in this order. Above them, the wallet card switches wallets (Add wallet, Manage wallets…), with the lock button beside it.
+The digit keys `1`–`6` open the sections in this order. Above them, the wallet card switches wallets (Add wallet, Manage wallets…), with the lock button beside it.
 
 At the top right, the readiness pill says which state the wallet is in, for example "Ready to send", "Locked · unlock to send" or "Can't send · node offline" (see [section 6](#6-write-capability)). Click it for Lock or Unlock, the node's Start, Stop and Re-sync, where reads come from, Sync now and the last sync. It is a status, not a toggle; there is no "Write Mode" switch. On testnet or regtest a coloured band at the top names the network.
 
@@ -506,6 +508,48 @@ With deadline notifications on (Settings › Notifications), the app reminds you
 ### Finalize reminders in the background
 
 The "Ready to finalize" reminders of a Shakedex purchase, listing or cancel (see Market › My listings) follow the deadline notifications setting in **Settings › Notifications**. While background sync is enabled and the daemon runs, the daemon checks for them after each background sync cycle (about a minute apart) and sends them itself, also with the app closed; the app then sends none of them, so you get each reminder once. If the daemon stops, or has not finished a cycle for about three minutes, the app sends them again. With background sync off, the app sends them while it is open, every ~10 minutes and at launch. The reveal and renewal reminders are sent by the app only. After a reboot the daemon starts again when the app is opened (or launched at login).
+
+---
+
+## 10c. Exchange: HNS ⇄ BTC
+
+> ⚠️ **Beta.** A mistake in the exchange can cost you coins. Trades are limited to 50 000 sats to 0.1 BTC each on mainnet; try a small trade first, and keep the computer online until each trade has ended. Report every problem, even a small one, as an issue on [GitHub](https://github.com/DimazzzZ/namehold-wallet/issues): the page's beta banner has a **Report a problem…** button that opens a new one.
+
+The Exchange page (sidebar, hotkey `4`) is an order book where people who want to sell HNS for BTC and people who want to buy HNS with BTC meet. Each trade is an **atomic swap**: both sides get paid, or both get their own coins back. Nobody holds your coins in between. That includes the relay that carries the offers, the watchtower and the project.
+
+**What you need:**
+
+- A wallet whose recovery phrase is on this computer. A Ledger or watch-only wallet cannot sign a trade.
+- A node on this computer (Namehold's own local node, or your hsd with `--index-address --index-tx`). A remote node or an explorer cannot be trusted with a trade.
+- **Enable exchange.** This creates a Bitcoin account from the same recovery phrase (BIP 84: any Bitcoin wallet such as Sparrow or Electrum restores it from the same phrase).
+- **Exchange settings:** a relay URL, an optional watchtower URL, and Bitcoin sources. Two public servers are the default on mainnet, and mainnet and testnet need at least two; a local Bitcoin Core with `-txindex` can be one of them, as `bitcoind+http://127.0.0.1:8332` with its login. Namehold does not trust the Bitcoin sources: it checks every lock by proof of work and needs every source to agree.
+
+**How a trade goes:**
+
+1. Take an offer in the order book, or make your own with **Make an offer**. Publishing signs nothing and locks nothing.
+2. **The buyer confirms.** One confirmation in the secure window signs every transaction of the buyer's side at once: the BTC into a lock, its refund, and the claim of the HNS. The BTC is locked.
+3. **The seller confirms** once that BTC lock has its confirmations, before the seller's deadline the trade card shows. That one confirmation signs everything of the seller's side: the HNS into a lock, its refund, and the claim of the BTC.
+4. **The rest happens on its own.** Once the HNS lock is confirmed, the buyer's Namehold claims the HNS. That publishes a secret, and with it the seller's Namehold (or its watchtower) claims the BTC. The background sync does all of this with the app closed. It sends only the transactions you signed when you confirmed, and it signs nothing itself.
+
+**If something goes wrong:**
+
+- **The seller never locks the HNS.** Your BTC comes back automatically after the BTC refund time on the trade card (on mainnet about a day after the start).
+- **The buyer never claims the HNS.** Your HNS comes back automatically after the HNS refund time (about 12 hours after the start on mainnet).
+- **You are the seller and the buyer has claimed.** Your BTC must be claimed before the BTC refund time. Keep the background sync on until the trade completes, and set a watchtower: it claims for you if your computer is off. Neither can redirect your coins: every transaction it holds pays you.
+
+**Making an offer:**
+
+- Each trade someone starts on it needs your confirmation in the app, so it waits until you open Namehold.
+- An offer stays listed only while your Namehold renews it.
+- **Withdraw offer** removes it from the relay.
+
+**The BTC account card:**
+
+- Shows confirmed and unconfirmed BTC, and what is locked in trades.
+- Gives a receive address.
+- **Withdraw BTC** sends BTC to any Bitcoin address, after the secure window.
+
+Spec: [docs/specs/2026-11-07-hns-btc-exchange.md](specs/2026-11-07-hns-btc-exchange.md). Running a relay or watchtower: [docs/RELAY.md](RELAY.md).
 
 ---
 

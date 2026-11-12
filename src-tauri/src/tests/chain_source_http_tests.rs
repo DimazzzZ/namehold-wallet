@@ -295,3 +295,122 @@ fn only_this_machine_counts_as_loopback() {
         assert_eq!(crate::http::is_loopback_url(&parsed), want, "{url}");
     }
 }
+
+// ------------------------------------------------- the exchange's servers
+//
+// The relay, the watchtower and the Bitcoin sources are not trusted to send
+// the wallet elsewhere either: the settings, and the secure window before
+// them, name the hosts it talks to.
+
+mod exchange {
+    use crate::exchange_io::btc_source::{BitcoinCore, BtcSource, Esplora};
+    use crate::exchange_io::relay_client::RelayClient;
+    use mockito::{Matcher, Server};
+
+    /// A relay's 3xx to a read is not followed, even to a reply in the
+    /// relay's own shape.
+    #[tokio::test]
+    async fn the_relay_client_does_not_follow_a_redirect_on_a_read() {
+        let mut target = Server::new_async().await;
+        let not_called = target
+            .mock("GET", Matcher::Any)
+            .with_body(r#"{"offers":[],"messages":[]}"#)
+            .expect(0)
+            .create_async()
+            .await;
+        let mut relay = Server::new_async().await;
+        relay
+            .mock("GET", Matcher::Any)
+            .with_status(302)
+            .with_header("location", &format!("{}/v1/offers", target.url()))
+            .create_async()
+            .await;
+
+        let client = RelayClient::new(&relay.url()).unwrap();
+        client
+            .offers("regtest", 0)
+            .await
+            .expect_err("a redirect is not an answer");
+        client
+            .inbox("02aa", "regtest", None)
+            .await
+            .expect_err("a redirect is not an answer");
+        not_called.assert_async().await;
+    }
+
+    /// Nor to a send: a 307 would repeat the body at the target.
+    #[tokio::test]
+    async fn the_relay_client_does_not_follow_a_redirect_on_a_send() {
+        let mut target = Server::new_async().await;
+        let not_called = target
+            .mock("POST", Matcher::Any)
+            .with_body("{}")
+            .expect(0)
+            .create_async()
+            .await;
+        let mut relay = Server::new_async().await;
+        relay
+            .mock("POST", Matcher::Any)
+            .with_status(307)
+            .with_header("location", &format!("{}/", target.url()))
+            .create_async()
+            .await;
+
+        RelayClient::new(&relay.url())
+            .unwrap()
+            .withdraw_offer("00", "00")
+            .await
+            .expect_err("a redirect is not an answer");
+        not_called.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn the_esplora_client_does_not_follow_a_redirect() {
+        let mut target = Server::new_async().await;
+        let not_called = target
+            .mock("GET", Matcher::Any)
+            .with_body("00")
+            .expect(0)
+            .create_async()
+            .await;
+        let mut source = Server::new_async().await;
+        source
+            .mock("GET", Matcher::Any)
+            .with_status(302)
+            .with_header("location", &format!("{}/blocks/tip/hash", target.url()))
+            .create_async()
+            .await;
+
+        Esplora::new(&source.url())
+            .unwrap()
+            .tip()
+            .await
+            .expect_err("a redirect is not an answer");
+        not_called.assert_async().await;
+    }
+
+    /// A 307 on the same host would carry the RPC login along with the call.
+    #[tokio::test]
+    async fn the_bitcoind_client_does_not_follow_a_redirect() {
+        let mut source = Server::new_async().await;
+        let not_called = source
+            .mock("POST", "/elsewhere")
+            .with_body(r#"{"result":{"txindex":{"synced":true}},"error":null,"id":"namehold"}"#)
+            .expect(0)
+            .create_async()
+            .await;
+        source
+            .mock("POST", "/")
+            .with_status(307)
+            .with_header("location", "/elsewhere")
+            .create_async()
+            .await;
+
+        BitcoinCore::with_login(&format!("bitcoind+{}", source.url()), "user", "pass")
+            .unwrap()
+            .ready()
+            .await
+            .expect_err("a redirect is not an answer");
+        not_called.assert_async().await;
+    }
+}

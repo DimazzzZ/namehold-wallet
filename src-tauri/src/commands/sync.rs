@@ -669,6 +669,15 @@ pub async fn run_sync_steps(
         // as the two around it: no key, no signature, no send.
         crate::shakedex_jobs::advance_reverse_auctions_step(db_path, profile_id, &lock).await;
         crate::shakedex_jobs::keep_listed_step(db_path, profile_id, &lock).await;
+        if lost("the exchange") {
+            return;
+        }
+        // The HNS ⇄ BTC exchange (spec 2026-11-07 R13): renews offers,
+        // answers takes with public keys, and sends only transactions the
+        // user signed at a trade's Commit (a reveal, a claim, a refund), so
+        // the daemon runs it as the app does. It holds no key: SECURITY.md,
+        // "The daemon never signs; it sends only what you signed".
+        crate::exchange_io::env::sync_step(db_path, profile_id).await;
     }
 }
 

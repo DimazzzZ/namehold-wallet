@@ -18,12 +18,23 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<serde_json::Valu
     // Redact sensitive values: the renderer never needs the raw secret (it's
     // only consumed by backend commands). Emit a "__has_<key>": "true" marker
     // so the UI can still show "configured" without seeing the value.
-    for &key in security::SENSITIVE_SETTING_KEYS {
-        if settings.remove(key).is_some_and(|v| !v.is_empty()) {
+    redact(&mut settings);
+    Ok(serde_json::to_value(&settings)?)
+}
+
+/// Remove every sensitive value (`security::is_sensitive_key`, which also
+/// covers the exchange's per-network bitcoind login) and mark it present.
+pub(crate) fn redact(settings: &mut std::collections::HashMap<String, String>) {
+    let keys: Vec<String> = settings
+        .keys()
+        .filter(|k| security::is_sensitive_key(k))
+        .cloned()
+        .collect();
+    for key in keys {
+        if settings.remove(&key).is_some_and(|v| !v.is_empty()) {
             settings.insert(format!("__has_{key}"), "true".to_string());
         }
     }
-    Ok(serde_json::to_value(&settings)?)
 }
 
 /// Write one setting the renderer may change ([`security::RENDERER_SETTING_KEYS`]).
@@ -57,7 +68,11 @@ pub async fn update_setting(
 
 /// Record a setting change in the audit log, with a sensitive value redacted
 /// so secrets are never persisted in plaintext outside the settings row.
-fn log_setting_change(conn: &rusqlite::Connection, key: &str, value: &str) -> Result<(), AppError> {
+pub(crate) fn log_setting_change(
+    conn: &rusqlite::Connection,
+    key: &str,
+    value: &str,
+) -> Result<(), AppError> {
     let logged_value = if security::is_sensitive_key(key) {
         "***"
     } else {

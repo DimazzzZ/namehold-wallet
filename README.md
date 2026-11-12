@@ -138,7 +138,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
 - When enabled, hsd stays running after you close the app so the daemon can
   query it; the next app launch adopts the running node (no duplicate spawned).
 - Crash recovery: if the daemon dies, the app respawns it on startup.
-- The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market (on mainnet, for listings you chose to publish), and sends the Shakedex "Ready to finalize" reminders, so they arrive with the app closed.
+- The background daemon never signs; it publishes listings already signed to LearnHNS Market (on mainnet, for listings you chose to publish), sends only the exchange transactions you signed at a trade's Commit, and sends the Shakedex "Ready to finalize" reminders, so they arrive with the app closed.
 
 ### Connections: local node, remote node, SPV
 
@@ -164,7 +164,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
 - **Command palette** (⌘K / Ctrl+K) — fuzzy-searchable list of navigation targets
   and view actions on the current page. Type to filter, ↑/↓ to move, Enter to run.
 - **Cheatsheet** (Shift+?) — overlay documenting all bindings for the current page.
-- **Sections** — `1` Wallet, `2` Names, `3` Market, `4` Activity, `5` Settings.
+- **Sections** — `1` Wallet, `2` Names, `3` Market, `4` Exchange, `5` Activity, `6` Settings.
 - **Per-page shortcuts** — common flows without the mouse:
   - **Wallet** (`/`): `s` send, `r` sync, `u` lock or unlock, `q` open Receive
   - **Names** (`/names`): `/` find a name, `b` batch bid, `j`/`k` + Enter to walk the list and open a name

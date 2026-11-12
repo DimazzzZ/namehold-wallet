@@ -42,7 +42,8 @@ pub(crate) fn is_loopback_url(url: &url::Url) -> bool {
 }
 
 /// The builder of a client for a chain source at `url` (the node, the
-/// explorer), neither of which is trusted to send it elsewhere:
+/// explorer, and the exchange's relay, watchtower and Bitcoin sources), none
+/// of which is trusted to send it elsewhere:
 ///
 /// - No redirect is followed. Neither hsd nor the explorer has a reason to
 ///   send one; a 3xx comes back as an answer the caller refuses.

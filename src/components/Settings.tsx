@@ -1,4 +1,5 @@
 import { useSearchParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { Download, FolderOpen, TriangleAlert } from "lucide-react";
 import { Icon } from "./ui/Icon";
 import { PageHeader } from "./ui/PageHeader";
@@ -52,6 +53,7 @@ import {
   disable as disableAutostart,
   isEnabled as isAutostartEnabled,
 } from "@tauri-apps/plugin-autostart";
+import { EXCHANGE_QUERY_ROOT } from "../queries/exchange";
 
 /**
  * Validate the explorer base URL field (Task 11 / S1). Empty is allowed —
@@ -81,6 +83,7 @@ export function validateExplorerUrl(raw: string): string | null {
  */
 export function Settings() {
   const { settings, loaded, saveAll, update } = useSettingsStore();
+  const queryClient = useQueryClient();
   const showToast = useUiStore((s) => s.showToast);
   const { data: profile } = useActiveProfile();
   const saveBidBackup = useSaveBidBackup();
@@ -324,6 +327,10 @@ export function Settings() {
       if (!(await saveAll(toSave))) return;
       setForm(normalized);
       setDirty(false);
+      // The Exchange page's gate depends on the chain source and the sending
+      // opt-in saved here: without this it kept the old state for a while
+      // (QA 2026-11-11, Q10).
+      void queryClient.invalidateQueries({ queryKey: [EXCHANGE_QUERY_ROOT] });
       showToast("Settings saved", "success");
     } catch (e) {
       showToast(`Failed to save: ${e}`, "error");

@@ -12,3 +12,6 @@ pnpm-lock.yaml
 # Prose: reflowing Markdown is a separate call from formatting code
 *.md
 src-tauri/tests/vectors/shakedex/*.json
+
+# Replies recorded from a real Esplora server, kept byte for byte as served.
+src-tauri/src/tests/fixtures/esplora/

@@ -7,6 +7,7 @@ import { AboutPage } from "./components/AboutPage";
 import { WalletView } from "./components/WalletView";
 import { ActivityView } from "./components/ActivityView";
 import MarketPage from "./components/market/MarketPage";
+import ExchangePage from "./components/exchange/ExchangePage";
 import { NamesView } from "./components/NamesView";
 import { NameRoute } from "./components/NamePage";
 import { Settings } from "./components/Settings";
@@ -57,6 +58,7 @@ function AppRoutes() {
         <Route path="/names" element={<NamesView />} />
         <Route path="/names/:name" element={<NameRoute />} />
         <Route path="/market" element={<MarketPage />} />
+        <Route path="/exchange" element={<ExchangePage />} />
         <Route path="/activity" element={<ActivityView />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/about" element={<AboutPage />} />

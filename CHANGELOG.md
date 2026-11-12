@@ -20,6 +20,20 @@
 - **The window opens while the database is updated.** An update's database changes ran before the window was created, so after updating to 0.7.1 with a large database Namehold showed no window, or a frozen one, for minutes and macOS reported it as not responding. The window now opens at once and shows the update's progress (step, share of the file read, time elapsed); the app appears when it finishes. If the update fails, the window says why and offers Try again.
 - **An update stopped halfway no longer blocks the next start.** Each database change was recorded as applied in a separate step after it, so a Namehold quit between the two ran the change again on the next start, and a change that cannot run twice then failed on every start. A change and its record now commit together.
 
+### Added
+- **An Exchange for trading HNS and BTC with other people (beta).** The new Exchange page has an order book of offers to sell and to buy HNS, your own offers and trades, and a Bitcoin account made from your recovery phrase (BIP 84, so any Bitcoin wallet restores it).
+  - Each trade is an atomic swap: both sides get paid, or both get their own coins back. Nobody holds your coins in between, not even the relay or the watchtower.
+  - You confirm once in the secure window, and that one confirmation signs every transaction of your side. After it, the background sync reveals, claims and refunds on its own. It sends only what you signed.
+  - Bitcoin is checked by proof of work, and every configured source must agree.
+  - An optional watchtower claims for you while your computer is off.
+  - When the exchange cannot be used with a wallet, every button says why.
+  - Exchange sits after Market in the sidebar, marked New, so the keys for Activity and Settings are now 5 and 6.
+  - It is a beta: a banner at the top of the page asks you to trade small amounts first and to report every problem as a GitHub issue, with a button that opens a new one.
+  - The relay and watchtower server is `namehold-relay` (docs/RELAY.md). Trades are limited to 0.1 BTC each on mainnet.
+
+### Security
+- The bundled SQLite is updated (`rusqlite` 0.41, `libsqlite3-sys` 0.39.1) for RUSTSEC-2026-0459 (CVE-2026-119375 in SQLite), and `rustix` to 1.1.6 for RUSTSEC-2026-0486 (its xattr functions could mark unwritten bytes as initialized; reached only through the updater's archive handling).
+
 ## [0.7.1] - 2026-11-06
 
 > **Highlights:** the database no longer grows to 9 GB with a local node (with a large database, the first start after updating can take about a minute before the window appears); wallets can be renamed; LearnHNS Market listings can be renewed; and a mainnet wallet without a passphrase now says so.

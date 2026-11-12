@@ -86,7 +86,7 @@ pub const PROTECTED_SETTING_KEYS: &[&str] = &[
 
 /// Returns `true` if `key` is a sensitive setting that must be redacted.
 pub fn is_sensitive_key(key: &str) -> bool {
-    SENSITIVE_SETTING_KEYS.contains(&key)
+    SENSITIVE_SETTING_KEYS.contains(&key) || crate::exchange_io::env::is_sensitive(key)
 }
 
 /// Returns `true` if the renderer may write `key` with `update_setting`.
@@ -208,8 +208,8 @@ mod tests {
         assert_eq!((now.rlim_cur, now.rlim_max), (0, 0));
     }
 
-    /// The app and the daemon both start hardened: the call comes first in each
-    /// entry point, before anything holds a secret.
+    /// The app, the daemon and the relay server start hardened: the call
+    /// comes first in each entry point, before anything holds a secret.
     #[test]
     fn the_app_and_the_daemon_harden_first_thing() {
         for (at, source, entry, call) in [
@@ -222,6 +222,12 @@ mod tests {
             (
                 "namehold-syncd.rs",
                 include_str!("bin/namehold-syncd.rs"),
+                "fn main() {",
+                "namehold_wallet_lib::harden_process();",
+            ),
+            (
+                "namehold-relay.rs",
+                include_str!("bin/namehold-relay.rs"),
                 "fn main() {",
                 "namehold_wallet_lib::harden_process();",
             ),

@@ -1,6 +1,6 @@
 # QA environment
 
-How to stand up what the scenarios assume: a build of the branch under test, the regtest node with its hsd wallet, the Shakedex CLI seller, funded regtest profiles and a per-run set of test names. The rules in [rules.md](rules.md) apply throughout. The node script and its live tests are described in [REGTEST_TESTING.md](../REGTEST_TESTING.md); this file only adds what a GUI run needs.
+How to stand up what the scenarios assume: a build of the branch under test, the regtest node with its hsd wallet, the Shakedex CLI seller, funded regtest profiles, a per-run set of test names and, for the HNS ⇄ BTC exchange, a Bitcoin Core regtest node and a local relay. The rules in [rules.md](rules.md) apply throughout. The node script and its live tests are described in [REGTEST_TESTING.md](../REGTEST_TESTING.md); this file only adds what a GUI run needs.
 
 ## Variables
 
@@ -66,7 +66,7 @@ info() { scripts/regtest.sh rpc getnameinfo "$1" | python3 -c 'import json,sys; 
 
 ## Profiles
 
-Three regtest profiles of one recovery phrase, in these roles (the names are examples; use whatever the machine has, and say which in the report):
+Three regtest profiles of one recovery phrase, in these roles (the exchange adds a Buyer and a Seller of two other phrases: [The exchange](#the-exchange-bitcoin-core-and-the-relay)) (the names are examples; use whatever the machine has, and say which in the report):
 
 | Role | Example name | What it is |
 |---|---|---|
@@ -121,6 +121,18 @@ for n in $APP_NAMES; do W sendfinalize $n >/dev/null; done; mine 1
 Then **Sync** in the seller profile: all six app names appear on the Names page, and `info <n>` shows `transfer 0` with the owner at the app's address. If they do not, that is a finding (owned-name discovery); fall back to the in-app auction ([REGTEST_TESTING.md](../REGTEST_TESTING.md) §6, about 25 blocks for all names at once). When a case will use X5, add `qxe$TAG` to `CLI_NAMES` and to the two-bid loop (`for n in qxb$TAG qxc$TAG qxd$TAG qxe$TAG`) before running the block above. Then list X1 (`fixed`, PRICE 5), X2 (`auction` 10 → 5), X3 (`fixed`, PRICE 5) and, only when used, X5 (`fixed`, PRICE 5) and, only for B13, X4 with [cli-list-a-name](procedures/cli-list-a-name.md), 13 blocks each. Setup total: about 36 + 39 (+13) blocks, plus the funding blocks.
 
 A chain reset leaves the app profiles holding rows and drafts about names that no longer exist on chain; rows that a Sync does not clear are leftovers of the reset, noted once in the report, not findings.
+
+## The exchange: Bitcoin Core and the relay
+
+The HNS ⇄ BTC exchange cases ([scenarios/exchange/](scenarios/exchange/), spec [2026-11-07-hns-btc-exchange](../specs/2026-11-07-hns-btc-exchange.md)) need, beside the hsd node above:
+
+- **Bitcoin Core 25 or newer**, `bitcoind` and `bitcoin-cli` on `PATH`, driven by `scripts/btc-regtest.sh` (`start`, `stop`, `mine [n]`, `fund <addr> <btc>`, `mocktime <unix>`, `cli <args…>`, `source`). Its data dir is the repo-local, git-ignored `.regtest/bitcoin`; RPC on `127.0.0.1:18443` with the login `namehold:regtest`; `-txindex`; a node wallet `qa`; the first `start` mines 101 blocks so the wallet can pay. The app's Bitcoin source line is `bitcoind+http://127.0.0.1:18443` (`scripts/btc-regtest.sh source`), with the bitcoind login entered separately in Exchange settings. This chain belongs to the exchange cases only: its blocks do not count against the mining budget, and `reset` between runs is allowed once every trade of the run has ended.
+- **`namehold-relay`**, the relay and watchtower ([RELAY.md](../RELAY.md)), built from the branch under test with `cargo build --release --features relay-server --bin namehold-relay` in `src-tauri`, run with a regtest configuration on `127.0.0.1:8787` whose watchtower uses the hsd node above and the bitcoind source. Its database, configuration and log live in `$QA_DIR/relay/` and are the run's own files.
+- **Mode B** (isolated dev build) with the daemon built beside it (`cargo build --bin namehold-syncd`): several cases quit or kill the app, stop the daemon and use the webview inspector.
+- `python3`, `curl` and `sqlite3` for the chain and relay checks.
+- Two regtest recovery-phrase profiles of **different** phrases, Buyer and Seller, connected to the regtest node as `Local full node (this device runs hsd)` with the URL `http://127.0.0.1:14037` and key `test` (the exchange refuses a remote node); a watch-only profile of the Buyer for the gate case.
+
+[exchange-setup](procedures/exchange-setup.md) stands all of it up, funds the Buyer's BTC account and the Seller's HNS, and defines the shell helpers the cases use. [exchange-time-travel](procedures/exchange-time-travel.md) says how a refund time is reached; `setmocktime` on hsd stays forbidden without the maintainer's agreement ([rules](rules.md#the-regtest-chain)).
 
 ## A second node without a transaction index
 

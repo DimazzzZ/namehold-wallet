@@ -88,7 +88,7 @@ describe("HOTKEY_BINDINGS table", () => {
   });
 
   it("every binding uses an allowed scope", () => {
-    const allowed = new Set(["/", "/names", "/market", "/activity", "/settings", "*"]);
+    const allowed = new Set(["/", "/names", "/market", "/exchange", "/activity", "/settings", "*"]);
     for (const b of HOTKEY_BINDINGS) {
       const scopes = Array.isArray(b.scope) ? b.scope : [b.scope];
       for (const s of scopes) {
@@ -107,13 +107,13 @@ describe("HOTKEY_BINDINGS table", () => {
     }
   });
 
-  it("nav bindings use exactly keys '1' through '5' (drift guard)", () => {
+  it("nav bindings use exactly keys '1' through '6' (drift guard)", () => {
     const navBindings = HOTKEY_BINDINGS.filter((b) => b.category === "nav");
-    const expectedKeys = ["1", "2", "3", "4", "5"];
+    const expectedKeys = ["1", "2", "3", "4", "5", "6"];
     expect(navBindings.map((b) => b.keys)).toEqual(expectedKeys);
-    // Also confirms the hook's hard-coded useHotkeys("1"..."5") calls in
+    // Also confirms the hook's hard-coded useHotkeys("1"..."6") calls in
     // useAppHotkeys.ts remain consistent with PRIMARY_ROUTES.length.
-    expect(PRIMARY_ROUTES.length).toBe(5);
+    expect(PRIMARY_ROUTES.length).toBe(6);
   });
 });
 
@@ -130,10 +130,16 @@ describe("useAppHotkeys — behavior via real keydown events", () => {
     expect(screen.getByTestId("route").textContent).toBe("/market");
   });
 
-  it("pressing 6 or 7 does nothing", () => {
+  it("pressing 4 goes to /exchange", () => {
+    renderHarness("/");
+    dispatchKey("4", "Digit4");
+    expect(screen.getByTestId("route").textContent).toBe("/exchange");
+  });
+
+  it("pressing 7 or 8 does nothing", () => {
     renderHarness("/activity");
-    dispatchKey("6", "Digit6");
     dispatchKey("7", "Digit7");
+    dispatchKey("8", "Digit8");
     expect(screen.getByTestId("route").textContent).toBe("/activity");
   });
 

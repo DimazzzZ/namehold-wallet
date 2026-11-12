@@ -13,6 +13,7 @@ pub mod commands;
 pub mod daemon;
 pub mod db;
 pub mod error;
+pub mod exchange_io;
 mod hsd;
 mod http;
 pub mod market;
@@ -21,6 +22,7 @@ mod namebase;
 pub mod noncustodial;
 mod protected_settings;
 mod providers;
+pub mod relay_server;
 mod security;
 pub mod shakedex_jobs;
 #[cfg(test)]
@@ -770,6 +772,20 @@ pub fn run() {
             commands::names::build_batch_redeem_draft,
             commands::names::build_batch_finalize_draft,
             commands::names::build_batch_transfer_draft,
+            commands::exchange::exchange_overview,
+            commands::exchange::exchange_enable,
+            commands::exchange::exchange_update_settings,
+            commands::exchange::exchange_btc_balance,
+            commands::exchange::exchange_btc_withdraw,
+            commands::exchange::exchange_list_offers,
+            commands::exchange::exchange_create_offer,
+            commands::exchange::exchange_withdraw_offer,
+            commands::exchange::exchange_my_offers,
+            commands::exchange::exchange_list_trades,
+            commands::exchange::exchange_take_offer,
+            commands::exchange::exchange_cancel_trade,
+            commands::exchange::exchange_refresh,
+            commands::exchange::exchange_commit,
             commands::shakedex::shakedex_list_market,
             commands::shakedex::shakedex_import_listing,
             commands::shakedex::shakedex_preview_purchase,
