@@ -18,8 +18,8 @@ These cases run on regtest against local relays started by [nostr-relay](../../p
 Shell helpers: `NQ` from [nostr-relay](../../procedures/nostr-relay.md#steps), `RELAY` and the rest from [exchange-setup](../../procedures/exchange-setup.md#variables-and-helpers), and:
 
 ```bash
-DB="$QA_DIR/qa-home/.namehold/portfolio.db"   # the run's own app database (mode B)
-maker_x() { sqlite3 "$DB" "select signed_json from exchange_offers where id = '$1'" | python3 -c 'import json,sys; print(json.load(sys.stdin)["offer"]["makerRelayPubkey"][2:])'; }
+DB="$QA_DIR/qa-home/.namehold/portfolio.db"   # the run's own app database (mode B); read it with -readonly, never immutable=1 (that misses the WAL)
+maker_x() { sqlite3 -readonly "$DB" "select signed_json from exchange_offers where id = '$1'" | python3 -c 'import json,sys; print(json.load(sys.stdin)["offer"]["makerRelayPubkey"][2:])'; }
 ```
 
 ## E41 — Nostr relays in Exchange settings
@@ -94,7 +94,7 @@ Steps:
 1. On the Buyer: Order book → `Take` on ON → `1` HNS → take it (as [E14](offers-and-taking.md#e14--the-take-dialog-amount-checks-and-the-exact-btc)). Wait until the card reads "Confirm to start the trade" (`Refresh`).
 2. On `:7777`: `NQ '{"kinds":[7491],"#p":["'"$(maker_x <ON id>)"'"]}'`. Note the event's author: the taker's key, `T`.
 3. `NQ '{"kinds":[7491],"authors":["'"$(maker_x <ON id>)"'"]}'`: the maker's reply.
-4. Search every 7491 content for readable text: `NQ '{"kinds":[7491]}' | grep -c -E 'regtest|terms|hns'`.
+4. Search every 7491 content (the last field of each line; the tags hold `regtest` themselves) for readable text: `NQ '{"kinds":[7491]}' ws://127.0.0.1:7777 --full | grep '^7491' | awk '{print $NF}' | grep -c -i -E 'regtest|terms|hns|\{'`.
 5. `Cancel` the trade on the Buyer.
 
 Expected:
@@ -152,9 +152,9 @@ Expected:
 
 - Step 1: "Offer published"; `Live` (two relays of three took it).
 - Step 2: no toast; in red under the dialog a sentence containing "the offer is saved but the relay refused it: Nostr: 1 of 3 relays took the event (2 needed)", then "ws://127.0.0.1:7778: refused the connection (is it running?)" and the same for `:7779`. Never the generic "Couldn't reach the configured endpoint".
-- Step 3: both offers in My offers: the first `Live`, the second `Paused` (hover: "Not renewed on the relay right now, so others do not see it").
-- Step 4: both `Live`; `:7778` now holds both offers (the heartbeat republished them on all three).
-- Passes if one relay down changes nothing, two down are named in the refusal, and the offers come back on their own.
+- Step 3: both offers in My offers, the second `Paused` (hover: "Not renewed on the relay right now, so others do not see it"). The first turns `Paused` too at its next heartbeat (within about two minutes of step 1): a renewal also needs two relays, and only one is up. In the run's database both rows carry `last_error` "Nostr: 1 of 3 relays took the event (2 needed): …".
+- Step 4: both `Live`, `last_error` empty and `last_published_at` within the last three minutes; `:7778` holds both offers (`NQ '{"kinds":[37491],"#d":["<id 1>","<id 2>"]}' ws://127.0.0.1:7778`: 2 events).
+- Passes if one relay down changes nothing, two down are named in the refusal and pause every offer, and the offers come back on their own.
 
 - **Blocks mined:** HNS 0, BTC 0
 - **Evidence:** screenshots `E45-2-refused`, `E45-3-paused`, `E45-4-live`.

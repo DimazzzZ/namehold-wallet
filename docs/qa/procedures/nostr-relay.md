@@ -26,7 +26,7 @@ Local Nostr relays for the exchange cases that run over Nostr ([scenarios/exchan
 
 ## Telling whose event it is
 
-- An **offer id** is the `d` tag of its event; the app shows it as `data-offer-id` on order-book rows, and the run's own database has it: `sqlite3 "$QA_DIR/qa-home/.namehold/portfolio.db" "select id, side, state, last_published_at, last_error from exchange_offers"`.
+- An **offer id** is the `d` tag of its event; the app shows it as `data-offer-id` on order-book rows, and the run's own database has it (read it with `-readonly`; an `immutable=1` read misses the WAL and shows stale rows): `sqlite3 -readonly "$QA_DIR/qa-home/.namehold/portfolio.db" "select id, side, state, last_published_at, last_error from exchange_offers"`.
 - An offer's **maker key** is `makerRelayPubkey` inside `signed_json` of that table (66 hex). The event's author, and the `p` tag of a message to that maker, is the same key **without its first two hex characters** (the x coordinate, 64 hex).
 - Never copy `relay_key_hex` (a secret key) into a report.
 
