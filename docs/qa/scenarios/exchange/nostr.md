@@ -6,7 +6,7 @@ requires:
   - procedures/exchange-setup.md
   - procedures/nostr-relay.md
   - procedures/switch-profile.md
-last_verified: "not run yet (written 2026-11-12; the stand of procedures/nostr-relay.md was checked that day)"
+last_verified: "E40 ✅, E41 ✅, E42 ✅, E44 ✅, E45 ✅, E46 ✅ on 76721eb8 (2026-11-13; E40 toasts and notifications not read); E43 ◐ (toasts not captured); E47 not run"
 ---
 
 # The exchange over Nostr
