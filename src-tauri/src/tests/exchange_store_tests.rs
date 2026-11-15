@@ -697,3 +697,49 @@ async fn terms_read_in_a_tick_ask_for_the_commit_in_the_same_tick() {
         got.status
     );
 }
+
+/// QA 2026-11-15: the background sync rewrote every open trade at every
+/// step, so a Commit window open across a step (60 s in the daemon, and the
+/// app's own sync) was refused with "changed while the window was open". A
+/// step that changes nothing writes nothing; the Commit read before it still
+/// stores.
+#[tokio::test]
+async fn a_step_that_changes_nothing_does_not_refuse_a_commit_read_before_it() {
+    use crate::exchange_io::job::{tick, Ctx};
+    let c = conn();
+    buyer_account(&c);
+    let mut t = trade(&c);
+    t.status = Some(Status::AwaitingBuyerCommit {
+        deadline: fx::START + 600,
+    });
+    assert!(store::update_trade(&c, &mut t, fx::START).unwrap());
+    let ctx = Ctx {
+        conn: &c,
+        profile_id: "p",
+        network: fx::NET,
+        policy: fx::policy(),
+        node: None,
+        sources: &[],
+        relay: None,
+        watchtower: None,
+        now: fx::START + 30,
+    };
+    // One step settles whatever the step itself reports; the next ones read
+    // the same chains and change nothing.
+    tick(&ctx).await;
+    let window = store::trade(&c, "p", &t.trade_id).unwrap().unwrap();
+    for now in [fx::START + 90, fx::START + 150] {
+        tick(&Ctx {
+            now,
+            policy: fx::policy(),
+            ..ctx
+        })
+        .await;
+    }
+    let mut commit = window.clone();
+    commit.holdings = Some(fx::trade().buyer());
+    assert!(
+        store::commit_trade(&c, &mut commit, fx::START + 160).unwrap(),
+        "the Commit was refused after steps that changed nothing"
+    );
+}

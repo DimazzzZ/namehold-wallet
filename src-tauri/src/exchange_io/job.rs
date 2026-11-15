@@ -691,6 +691,7 @@ async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
             }
             continue;
         };
+        let stored = t.clone();
         let rep =
             runner::run_step(hns_io.as_ref(), ctx.sources, &mut h, ctx.now, &ctx.policy).await;
         let Some(mut step) = rep.step else { continue };
@@ -741,6 +742,17 @@ async fn step_trades(ctx: &Ctx<'_>) -> Result<Vec<Event>, AppError> {
         t.last_error = (!rep.errors.is_empty()).then(|| rep.errors.join("; "));
         t.status = Some(step.status);
         t.holdings = Some(h);
+        // A step that changes nothing writes nothing: every write moves the
+        // trade's version, and a Commit window open across such a write
+        // would be refused for a change that never happened (QA 2026-11-15).
+        if t.status == stored.status
+            && t.holdings == stored.holdings
+            && t.last_error == stored.last_error
+            && t.terminal_at == stored.terminal_at
+            && t.finished == stored.finished
+        {
+            continue;
+        }
         // Only the writer whose step was stored tells the person, so the app
         // and the daemon do not both notify.
         if store::update_trade(ctx.conn, &mut t, ctx.now)? {
