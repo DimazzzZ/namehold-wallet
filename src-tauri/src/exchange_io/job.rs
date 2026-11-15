@@ -34,6 +34,12 @@ use crate::noncustodial::node_rpc::NodeRpc;
 
 /// How long a live offer may go without a heartbeat before it is renewed.
 pub const HEARTBEAT_SECS: u64 = 60;
+
+/// The most one tick spends on the meeting point (inboxes, announcements,
+/// the heartbeat): the call under way finishes, the rest waits for the next
+/// tick, so a slow relay holds back neither another profile's step nor the
+/// next sync.
+pub const MEETING_BUDGET_SECS: u64 = 90;
 /// At most this many trades of one offer may be negotiating or awaiting the
 /// Buyer's Commit at once.
 pub const MAX_OPEN_PER_OFFER: usize = 3;
@@ -117,20 +123,23 @@ pub async fn tick(ctx: &Ctx<'_>) -> TickReport {
     let Ok(Some(account)) = store::account(ctx.conn, ctx.profile_id) else {
         return report; // the exchange is not enabled for this profile
     };
+    // The chains first: a claim or a refund never waits on the meeting
+    // point, which may be a public relay that holds the connection.
+    step(ctx, &mut report).await;
     if let Some(relay) = ctx.relay {
-        if let Err(e) = heartbeat(ctx, relay).await {
+        let until =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(MEETING_BUDGET_SECS);
+        match read_inboxes(ctx, relay, &account, until).await {
+            // What arrived (terms, a lock's announcement) moves its trade
+            // in this tick, not the next.
+            Ok(handed) if handed > 0 => step(ctx, &mut report).await,
+            Ok(_) => {}
+            Err(e) => report.errors.push(e.to_string()),
+        }
+        if let Err(e) = reannounce(ctx, relay, until).await {
             report.errors.push(e.to_string());
         }
-        if let Err(e) = read_inboxes(ctx, relay, &account).await {
-            report.errors.push(e.to_string());
-        }
-    }
-    match step_trades(ctx).await {
-        Ok(ev) => report.events.extend(ev),
-        Err(e) => report.errors.push(e.to_string()),
-    }
-    if let Some(relay) = ctx.relay {
-        if let Err(e) = reannounce(ctx, relay).await {
+        if let Err(e) = heartbeat(ctx, relay, until).await {
             report.errors.push(e.to_string());
         }
     }
@@ -142,7 +151,23 @@ pub async fn tick(ctx: &Ctx<'_>) -> TickReport {
     report
 }
 
-async fn heartbeat(ctx: &Ctx<'_>, relay: &dyn MeetingPoint) -> Result<(), AppError> {
+async fn step(ctx: &Ctx<'_>, report: &mut TickReport) {
+    match step_trades(ctx).await {
+        Ok(ev) => report.events.extend(ev),
+        Err(e) => report.errors.push(e.to_string()),
+    }
+}
+
+/// Whether the tick's time on the meeting point is spent.
+fn spent(until: tokio::time::Instant) -> bool {
+    tokio::time::Instant::now() >= until
+}
+
+async fn heartbeat(
+    ctx: &Ctx<'_>,
+    relay: &dyn MeetingPoint,
+    until: tokio::time::Instant,
+) -> Result<(), AppError> {
     for o in store::offers(ctx.conn, ctx.profile_id)? {
         if !o.live || o.network != ctx.network.as_str() {
             continue;
@@ -155,6 +180,9 @@ async fn heartbeat(ctx: &Ctx<'_>, relay: &dyn MeetingPoint) -> Result<(), AppErr
             .is_some_and(|t| t + HEARTBEAT_SECS > ctx.now)
         {
             continue;
+        }
+        if spent(until) {
+            break;
         }
         let err = relay
             .publish_offer(&o.signed, &o.relay_key)
@@ -196,17 +224,30 @@ fn inbox_keys(ctx: &Ctx<'_>) -> Result<Vec<secp256k1::SecretKey>, AppError> {
     Ok(keys)
 }
 
+/// Reads the inboxes in turn, from where the order stands this minute, until
+/// the tick's budget is spent; returns how many messages were handed over.
 async fn read_inboxes(
     ctx: &Ctx<'_>,
     relay: &dyn MeetingPoint,
     account: &store::Account,
-) -> Result<(), AppError> {
-    for secret in inbox_keys(ctx)? {
+    until: tokio::time::Instant,
+) -> Result<usize, AppError> {
+    let mut keys = inbox_keys(ctx)?;
+    if !keys.is_empty() {
+        let turn = (ctx.now / 60) as usize % keys.len();
+        keys.rotate_left(turn);
+    }
+    let mut handed = 0;
+    for secret in keys {
+        if spent(until) {
+            break;
+        }
         let key = relay_msg::relay_pubkey_hex(&secret);
         let cursor = store::inbox_cursor(ctx.conn, &key)?;
         let (msgs, next) = relay
             .inbox(&secret, ctx.network.as_str(), cursor.as_deref())
             .await?;
+        handed += msgs.len();
         for m in msgs {
             if let Err(e) = handle(ctx, relay, account, &m).await {
                 eprintln!("exchange: message {} dropped: {e}", m.message.trade_id);
@@ -214,7 +255,7 @@ async fn read_inboxes(
         }
         store::set_inbox_cursor(ctx.conn, ctx.profile_id, &key, next.as_deref())?;
     }
-    Ok(())
+    Ok(handed)
 }
 
 fn offer_view(o: &SignedOffer) -> OfferView<'_> {
@@ -737,7 +778,11 @@ pub const REANNOUNCE_EVERY_SECS: u64 = 300;
 /// Announce our lock again while the counterparty still waits for it (QA
 /// finding: a relay down at the Commit lost the only announcement, and the
 /// Seller cannot find the Buyer's BTC lock without it).
-async fn reannounce(ctx: &Ctx<'_>, relay: &dyn MeetingPoint) -> Result<(), AppError> {
+async fn reannounce(
+    ctx: &Ctx<'_>,
+    relay: &dyn MeetingPoint,
+    until: tokio::time::Instant,
+) -> Result<(), AppError> {
     for t in store::trades(ctx.conn, ctx.profile_id)? {
         let (Some(h), Some(terms)) = (&t.holdings, &t.terms) else {
             continue;
@@ -786,6 +831,9 @@ async fn reannounce(ctx: &Ctx<'_>, relay: &dyn MeetingPoint) -> Result<(), AppEr
         let last = announced().lock().ok().and_then(|m| m.get(&key).copied());
         if !announce_due(last, ctx.now) {
             continue;
+        }
+        if spent(until) {
+            break;
         }
         let e = reply(
             ctx,

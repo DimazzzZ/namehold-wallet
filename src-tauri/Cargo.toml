@@ -153,6 +153,9 @@ serial_test = "3"
 # crate's bundled Core 26 sources): every Bitcoin claim and refund the
 # exchange signs is run through it in the tests (spec R5).
 bitcoin = { version = "0.32", default-features = false, features = ["std", "bitcoinconsensus"] }
+# Virtual time (`start_paused`): the exchange job's tests wait out relay
+# timeouts without waiting for real.
+tokio = { version = "1", features = ["test-util"] }
 
 [features]
 # Dev-only: enables an in-process Ledger device simulator (see

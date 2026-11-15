@@ -372,3 +372,328 @@ fn a_lock_is_announced_at_once_and_then_once_a_period() {
     assert!(!announce_due(Some(at), at - 50));
     assert!(announce_due(Some(u64::MAX), u64::MAX));
 }
+
+/// A meeting point whose every call takes `delay` and then succeeds with
+/// nothing new, as six relays of which one never answers (the client waits
+/// for each relay's timeout); it counts the calls and the inbox keys asked
+/// for, in order. With `delay: None` a call never ends.
+struct SlowPoint {
+    delay: Option<std::time::Duration>,
+    calls: std::sync::Mutex<usize>,
+    inboxes: std::sync::Mutex<Vec<String>>,
+}
+
+impl SlowPoint {
+    fn new(delay: Option<std::time::Duration>) -> SlowPoint {
+        SlowPoint {
+            delay,
+            calls: std::sync::Mutex::new(0),
+            inboxes: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+    async fn wait(&self) -> Result<(), crate::error::AppError> {
+        *self.calls.lock().unwrap() += 1;
+        match self.delay {
+            Some(d) => tokio::time::sleep(d).await,
+            None => std::future::pending::<()>().await,
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::exchange_io::meeting::MeetingPoint for SlowPoint {
+    async fn publish_offer(
+        &self,
+        _o: &relay_msg::SignedOffer,
+        _key: &secp256k1::SecretKey,
+    ) -> Result<(), crate::error::AppError> {
+        self.wait().await
+    }
+    async fn withdraw_offer(
+        &self,
+        _o: &relay_msg::SignedOffer,
+        _signature: &str,
+        _key: &secp256k1::SecretKey,
+    ) -> Result<(), crate::error::AppError> {
+        self.wait().await
+    }
+    async fn offers(
+        &self,
+        _network: &str,
+        _now: u64,
+    ) -> Result<(Vec<relay_msg::SignedOffer>, usize), crate::error::AppError> {
+        self.wait().await.map(|_| (Vec::new(), 0))
+    }
+    async fn send(
+        &self,
+        _e: &relay_msg::Envelope,
+        _key: &secp256k1::SecretKey,
+    ) -> Result<(), crate::error::AppError> {
+        self.wait().await
+    }
+    async fn inbox(
+        &self,
+        key: &secp256k1::SecretKey,
+        _network: &str,
+        _cursor: Option<&str>,
+    ) -> Result<(Vec<relay_msg::Envelope>, Option<String>), crate::error::AppError> {
+        self.inboxes
+            .lock()
+            .unwrap()
+            .push(relay_msg::relay_pubkey_hex(key));
+        self.wait().await.map(|_| (Vec::new(), None))
+    }
+}
+
+fn buyer_account(c: &Connection) {
+    let m = fx::buyer_master();
+    store::insert_account(
+        c,
+        &store::Account {
+            profile_id: "p".into(),
+            network: "regtest".into(),
+            btc_xpub: crate::noncustodial::exchange::btc_account::account_xpub(&m, fx::NET, 0)
+                .unwrap(),
+            swap_xpub: crate::noncustodial::exchange::keys::branch_xpub(&m, fx::NET, 0).unwrap(),
+            account: 0,
+            next_trade_index: 0,
+            next_btc_receive: 0,
+            next_btc_change: 0,
+        },
+        fx::START,
+    )
+    .unwrap();
+}
+
+/// A trade still agreeing its terms (no holdings), with its own id and key,
+/// taken at `at`.
+fn negotiating(c: &Connection, n: u8, at: u64) -> String {
+    let mut t = new_trade();
+    t.trade_id = format!("{n:02x}").repeat(16);
+    t.created_at = at;
+    t.holdings = None;
+    t.terms = None;
+    store::insert_trade(c, &t).unwrap();
+    t.trade_id
+}
+
+/// Claims and refunds must not wait on the meeting point: a Nostr relay
+/// that holds every connection would otherwise hold every trade's step,
+/// up to the deadline a claim must meet.
+#[tokio::test(start_paused = true)]
+async fn the_trades_step_runs_before_the_meeting_point_is_asked_anything() {
+    use crate::exchange_io::job::{tick, Ctx};
+    use crate::exchange_io::meeting::MeetingPoint;
+    let c = conn();
+    buyer_account(&c);
+    let late = negotiating(&c, 0xd1, fx::START);
+    // Another trade still inside its window keeps an inbox to read.
+    negotiating(&c, 0xd2, fx::START + fx::policy().buyer_fund_window);
+    let point = SlowPoint::new(None);
+    let ctx = Ctx {
+        conn: &c,
+        profile_id: "p",
+        network: fx::NET,
+        policy: fx::policy(),
+        node: None,
+        sources: &[],
+        relay: Some(&point as &dyn MeetingPoint),
+        watchtower: None,
+        now: fx::START + fx::policy().buyer_fund_window + 1,
+    };
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(600), tick(&ctx)).await;
+    assert!(
+        ended.is_err(),
+        "the silent meeting point holds the rest of the tick"
+    );
+    assert!(
+        *point.calls.lock().unwrap() >= 1,
+        "the meeting point was asked"
+    );
+    let t = store::trade(&c, "p", &late).unwrap().unwrap();
+    assert_eq!(
+        t.status,
+        Some(Status::Expired),
+        "stepped before the meeting point"
+    );
+}
+
+/// However many inboxes and offers a profile has, a tick spends at most
+/// `MEETING_BUDGET_SECS` (plus the one call under way) on the meeting point,
+/// so the next profile's step and the next sync are not held back.
+#[tokio::test(start_paused = true)]
+async fn a_tick_spends_at_most_its_budget_on_a_slow_meeting_point() {
+    use crate::exchange_io::job::{tick, Ctx, MEETING_BUDGET_SECS};
+    use crate::exchange_io::meeting::MeetingPoint;
+    let c = conn();
+    buyer_account(&c);
+    for n in 0..12u8 {
+        negotiating(&c, 0xa0 + n, fx::START);
+    }
+    let call = std::time::Duration::from_secs(25);
+    let point = SlowPoint::new(Some(call));
+    let ctx = Ctx {
+        conn: &c,
+        profile_id: "p",
+        network: fx::NET,
+        policy: fx::policy(),
+        node: None,
+        sources: &[],
+        relay: Some(&point as &dyn MeetingPoint),
+        watchtower: None,
+        now: fx::START + 1,
+    };
+    let start = tokio::time::Instant::now();
+    tick(&ctx).await;
+    let spent = start.elapsed();
+    assert!(
+        spent <= std::time::Duration::from_secs(MEETING_BUDGET_SECS) + call,
+        "{spent:?} on the meeting point"
+    );
+    let calls = *point.calls.lock().unwrap();
+    assert!((1..12).contains(&calls), "{calls} calls");
+}
+
+/// Under the budget, the inboxes are read in turn: a tick starts where the
+/// order moved on, so no trade's inbox waits for ever behind the others.
+#[tokio::test(start_paused = true)]
+async fn inboxes_left_unread_by_one_tick_are_read_first_later() {
+    use crate::exchange_io::job::{tick, Ctx};
+    use crate::exchange_io::meeting::MeetingPoint;
+    let c = conn();
+    buyer_account(&c);
+    for n in 0..12u8 {
+        // Inside its window for all twelve ticks.
+        negotiating(&c, 0xb0 + n, fx::START + 3600);
+    }
+    let call = std::time::Duration::from_secs(25);
+    let mut first = std::collections::BTreeSet::new();
+    let mut read = std::collections::BTreeSet::new();
+    for minute in 0..12u64 {
+        let point = SlowPoint::new(Some(call));
+        let ctx = Ctx {
+            conn: &c,
+            profile_id: "p",
+            network: fx::NET,
+            policy: fx::policy(),
+            node: None,
+            sources: &[],
+            relay: Some(&point as &dyn MeetingPoint),
+            watchtower: None,
+            now: fx::START + 1 + minute * 60,
+        };
+        tick(&ctx).await;
+        let asked = point.inboxes.lock().unwrap().clone();
+        assert!(asked.len() < 12, "the budget cut the tick short");
+        first.insert(asked[0].clone());
+        read.extend(asked);
+    }
+    assert_eq!(read.len(), 12, "every inbox was read within twelve ticks");
+    assert!(
+        first.len() > 1,
+        "the ticks did not all start at the same inbox"
+    );
+}
+
+/// The chains are stepped before the meeting point, and again when it
+/// handed something over: the maker's terms read in a tick ask the Buyer to
+/// confirm in that tick, not one sync later.
+#[tokio::test]
+async fn terms_read_in_a_tick_ask_for_the_commit_in_the_same_tick() {
+    use super::exchange_fake_btc::FakeRelay;
+    use crate::exchange_io::job::{tick, Ctx, Event};
+    use crate::exchange_io::meeting::MeetingPoint;
+    use crate::noncustodial::exchange::keys;
+    use crate::noncustodial::exchange::relay_msg::{Body, Message, TakeRequest};
+    use crate::noncustodial::exchange::terms::{Terms, TermsDraft};
+    let c = conn();
+    buyer_account(&c);
+    let maker = relay_msg::new_relay_key();
+    let mut t = new_trade();
+    t.trade_id = "e1".repeat(16);
+    t.offer = crate::noncustodial::exchange::relay_msg::Offer {
+        maker_relay_pubkey: relay_msg::relay_pubkey_hex(&maker),
+        ..t.offer.offer.clone()
+    }
+    .sign(&maker)
+    .unwrap();
+    let b = keys::trade_keys(&fx::buyer_master(), fx::NET, 0, 0).unwrap();
+    let s = keys::trade_keys(&fx::seller_master(), fx::NET, 0, 0).unwrap();
+    let pk = |k: &secp256k1::SecretKey| {
+        secp256k1::PublicKey::from_secret_key(&secp256k1::Secp256k1::new(), k).serialize()
+    };
+    let terms = Terms::from_draft(
+        &TermsDraft {
+            network: fx::NET.as_str(),
+            offer_id: &t.offer.offer.id(),
+            trade_id: &t.trade_id,
+            hns_amount: fx::HNS_AMOUNT,
+            price_msat_per_hns: fx::PRICE,
+            hash: b.hash(&fx::NONCE),
+            seller_hns_refund_pubkey: s.hns_pubkey,
+            buyer_hns_claim_pubkey: b.hns_pubkey,
+            buyer_btc_refund_pubkey: b.btc_pubkey,
+            seller_btc_claim_pubkey: s.btc_pubkey,
+            seller_relay_pubkey: pk(&maker),
+            buyer_relay_pubkey: pk(&t.relay_key),
+            start: fx::START,
+        },
+        &fx::policy(),
+    )
+    .unwrap();
+    t.request = Some(TakeRequest {
+        hns_amount: fx::HNS_AMOUNT,
+        hns_pubkey: terms.buyer_hns_claim_pubkey.clone(),
+        btc_pubkey: terms.buyer_btc_refund_pubkey.clone(),
+        hash: Some(terms.hash.clone()),
+        start: fx::START,
+    });
+    t.terms = None;
+    t.holdings = None;
+    store::insert_trade(&c, &t).unwrap();
+    let relay = FakeRelay::default();
+    relay.messages.lock().unwrap().push(
+        Message {
+            version: 1,
+            network: "regtest".into(),
+            offer_id: t.offer.offer.id(),
+            trade_id: t.trade_id.clone(),
+            from: relay_msg::relay_pubkey_hex(&maker),
+            to: relay_msg::relay_pubkey_hex(&t.relay_key),
+            sent_at: fx::START,
+            body: Body::Accept {
+                terms: Box::new(terms),
+            },
+        }
+        .sign(&maker)
+        .unwrap(),
+    );
+    let ctx = Ctx {
+        conn: &c,
+        profile_id: "p",
+        network: fx::NET,
+        policy: fx::policy(),
+        node: None,
+        sources: &[],
+        relay: Some(&relay as &dyn MeetingPoint),
+        watchtower: None,
+        now: fx::START + 30,
+    };
+    let report = tick(&ctx).await;
+    let got = store::trade(&c, "p", &t.trade_id).unwrap().unwrap();
+    assert!(
+        got.terms.is_some(),
+        "the terms were taken: {:?}",
+        report.errors
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::NeedsCommit { trade_id, .. } if *trade_id == t.trade_id)),
+        "{:?} / {:?}",
+        report.events,
+        got.status
+    );
+}
