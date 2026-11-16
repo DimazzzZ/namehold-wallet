@@ -15,6 +15,7 @@
   <nav>
     <a href="#names">Names</a>
     <a href="#market">Market</a>
+    <a href="#exchange">Exchange</a>
     <a href="#keys">Your keys</a>
     <a href="#download">Download</a>
     <a href="verify.html">Verify</a>
@@ -28,7 +29,7 @@
 <main>
 <section class="wrap hero">
   <h1>Own your <em>.names</em>.<br>Keep your keys.</h1>
-  <p class="lede">Namehold is a desktop wallet for Handshake: hold HNS, win and renew top-level names, edit their DNS, and buy or sell them on the Shakedex market. Your recovery phrase stays on your computer.</p>
+  <p class="lede">Namehold is a desktop wallet for Handshake: hold HNS, win and renew top-level names, edit their DNS, buy or sell them on the Shakedex market, and trade HNS for BTC with other people. Your recovery phrase stays on your computer.</p>
   <div class="actions">
     <a class="btn primary" id="dl-hero" href="#download">Download</a>
     <a class="btn" href="https://github.com/DimazzzZ/namehold-wallet">Read the source</a>
@@ -77,6 +78,19 @@
     <a class="zoom" href="img/market.jpg"><img class="shot" src="img/market.jpg" width="1500" height="1032" loading="lazy" alt="The Market page: Shakedex listings checked by your node, and your purchases on their way"></a>
   </section>
 
+  <section class="feature" id="exchange">
+    <div class="text">
+      <h2>Trade HNS for BTC, person to person</h2>
+      <p>The Exchange (beta) matches you with other Namehold users. Each trade is an atomic swap: both sides get paid, or both get their own coins back, and nobody holds your coins in between. <a href="https://github.com/DimazzzZ/namehold-wallet/blob/main/docs/USER_MANUAL.md#10c-exchange-hns--btc">Read about the Exchange</a>.</p>
+      <ul>
+        <li>One confirmation signs your side; the rest happens on its own</li>
+        <li>Offers travel over public Nostr relays: no server to trust or run</li>
+        <li>Every Bitcoin lock checked by proof of work</li>
+      </ul>
+    </div>
+    <a class="zoom" href="img/exchange.jpg"><img class="shot" src="img/exchange.jpg" width="1500" height="1032" loading="lazy" alt="The Exchange page: offers to sell and to buy HNS for BTC, and the Bitcoin account made from your recovery phrase"></a>
+  </section>
+
   <section class="feature">
     <div class="text">
       <h2>One page for each name</h2>
@@ -99,7 +113,7 @@
   <div>
     <h2>You choose whom to trust</h2>
     <ul class="facts">
-      <li><b>Your own node.</b> Run hsd from the app, or point it at one you trust. Sending needs a node. <a href="https://github.com/DimazzzZ/namehold-wallet/blob/main/docs/USER_MANUAL.md#11-node-control">How nodes work here</a>.</li>
+      <li><b>Your own node.</b> Run hsd from the app, or point it at one you trust. Sending and the Exchange need a node. <a href="https://github.com/DimazzzZ/namehold-wallet/blob/main/docs/USER_MANUAL.md#11-node-control">How nodes work here</a>.</li>
       <li><b>Read without one.</b> Check balances and names through an explorer while you get set up.</li>
       <li><b>Open source.</b> Read the code and check every release file against its signature.</li>
     </ul>
