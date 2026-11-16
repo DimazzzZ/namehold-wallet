@@ -6,7 +6,7 @@ requires:
   - procedures/exchange-setup.md
   - procedures/nostr-relay.md
   - procedures/switch-profile.md
-last_verified: "E40 ✅, E41 ✅, E42 ✅, E44 ✅, E45 ✅, E46 ✅ on 76721eb8 (2026-11-13; E40 toasts and notifications not read); E43 ◐ (toasts not captured); E47 not run"
+last_verified: "E40 ✅, E41 ✅, E42 ✅, E44 ✅, E45 ✅, E46 ✅ on 76721eb8 (2026-11-13); E43 ◐ (toasts not captured then); the money paths over Nostr (E18, E20, refunds, toasts, OS notifications, wss:// from the daemon) rechecked on 8b39be6e (2026-11-15/16); E47 not run"
 ---
 
 # The exchange over Nostr
