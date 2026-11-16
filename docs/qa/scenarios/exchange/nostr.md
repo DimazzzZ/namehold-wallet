@@ -6,7 +6,7 @@ requires:
   - procedures/exchange-setup.md
   - procedures/nostr-relay.md
   - procedures/switch-profile.md
-last_verified: "E40 ✅, E41 ✅, E42 ✅, E44 ✅, E45 ✅, E46 ✅ on 76721eb8 (2026-11-13); E43 ◐ (toasts not captured then); the money paths over Nostr (E18, E20, refunds, toasts, OS notifications, wss:// from the daemon) rechecked on 8b39be6e (2026-11-15/16); E47 not run"
+last_verified: "E40 ✅, E41 ✅, E42 ✅, E44 ✅, E45 ✅, E46 ✅ on 76721eb8 (2026-11-13); E43 ◐ (toasts not captured then); the money paths over Nostr (E18, E20, refunds, toasts, OS notifications, wss:// from the daemon) rechecked on 8b39be6e (2026-11-15/16); E47 2026-11-16: nostr.bitcoiner.social failed, replaced by relay.snort.social"
 ---
 
 # The exchange over Nostr
@@ -221,7 +221,7 @@ Steps:
 Expected:
 
 - One line per default relay (`env::DEFAULT_NOSTR_RELAYS`): `offer taken true served true | replaced true | … | message taken true served true | burst N/20`, and `test result: ok` (at least 2 relays take and serve both kinds).
-- Passes if every default relay takes and serves both kinds. A relay that fails (as relay.damus.io, nos.lol and nostr.mom did on 2026-11-12) is reported with its line, to be replaced in the defaults.
+- Passes if every default relay takes and serves both kinds. A relay that fails (as relay.damus.io, nos.lol and nostr.mom did on 2026-11-12, and nostr.bitcoiner.social on 2026-11-16) is reported with its line, to be replaced in the defaults.
 
 - **Blocks mined:** none
 - **Evidence:** the test's output.

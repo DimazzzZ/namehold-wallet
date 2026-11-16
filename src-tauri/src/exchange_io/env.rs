@@ -44,7 +44,7 @@ pub fn default_nostr_relays(network: Network) -> Vec<String> {
 pub const DEFAULT_NOSTR_RELAYS: [&str; 6] = [
     "wss://relay.primal.net",
     "wss://offchain.pub",
-    "wss://nostr.bitcoiner.social",
+    "wss://relay.snort.social",
     "wss://relay.nostr.net",
     "wss://nostr.oxtr.dev",
     "wss://relay.mostro.network",
