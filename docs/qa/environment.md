@@ -1,6 +1,6 @@
 # QA environment
 
-How to stand up what the scenarios assume: a build of the branch under test, the regtest node with its hsd wallet, the Shakedex CLI seller, funded regtest profiles, a per-run set of test names and, for the HNS ⇄ BTC exchange, a Bitcoin Core regtest node and a local relay. The rules in [rules.md](rules.md) apply throughout. The node script and its live tests are described in [REGTEST_TESTING.md](../REGTEST_TESTING.md); this file only adds what a GUI run needs.
+How to stand up what the scenarios assume: a build of the branch under test, the regtest node with its hsd wallet, the Shakedex CLI seller, funded regtest profiles, a per-run set of test names and, for the HNS ⇄ BTC exchange, a Bitcoin Core regtest node, a local relay and local Nostr relays. The rules in [rules.md](rules.md) apply throughout. The node script and its live tests are described in [REGTEST_TESTING.md](../REGTEST_TESTING.md); this file only adds what a GUI run needs.
 
 ## Variables
 

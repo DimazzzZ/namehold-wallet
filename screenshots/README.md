@@ -16,8 +16,9 @@ On one machine, two runs give the same bytes: the data, the page clock (2026-10-
 - `scenes.ts` lists the scenes: the file written to `docs/assets/<file>.png`, the route, and what to click or scroll before the shot. A new screenshot is one entry here.
 - `showcase/world.ts` is the showcase wallet: profile, balances, owned names, auctions in each phase, purchases, renewals and the imported Namebase history. It is typed against `src/types`, so `pnpm typecheck` fails when a backend shape changes under it. Next-action words and countdown labels are copied from the backend (`next_action_for_task` in `commands/names.rs`, `extract_countdown` in `commands/names_pure.rs`), not from the mock.
 - `showcase/index.ts` installs the world through the mock's `globalThis.__webqa_overrides` hook: a command listed there is answered from the showcase (a value, or a function of the call's args), everything else keeps the mock's answer. The Browse tab's listings are the mock's own demo listings; the rows of My listings are the showcase's, each taking its actions and refusal sentences from the backend's fixture `src/test/fixtures/listing-actions.json` for its state.
+- `showcase/exchange.ts` is the showcase's side of the Exchange, for the `exchange` and `exchange-trades` scenes: enabled on mainnet over the default Nostr relays, a few offers in the order book and one of our own, three trades in different states and the Bitcoin account. It is typed against `src/types/exchange.ts`; its amounts and times follow mainnet's policy in `src-tauri/src/noncustodial/exchange/policy.rs`.
 - `frame.ts` draws the window around the shot; `shoot.ts` starts Vite on port 5199, runs the scenes and writes the files.
-- `derive-keys.py` derives the showcase addresses and xpub: well-formed, but from fixed seeds, so they belong to nobody.
+- `derive-keys.py` derives the showcase addresses and xpub, and the `bc1…` address of the Exchange's Bitcoin account: well-formed, but from fixed seeds, so they belong to nobody.
 
 ## When a screen changes
 

@@ -15,6 +15,7 @@ code-smell heuristics a reviewer might otherwise apply.
 | Frontend | `npx vitest run` (repo root)                                |
 | Frontend | `npm run lint:format` (prettier), `npm run lint:secure-imports` and `npm run lint:native-title` |
 | Secrets  | `npm run lint:secrets` (repo root): no recovery phrase or private key in any tracked file, and the scanner's own tests |
+| Supply chain | `npm run lint:supply-chain` (repo root): pinned actions, checkout credentials and the other rules of `scripts/check-supply-chain.mjs`, and the tests of that script and of the release scripts. CI runs it in the `Validate workflow YAML` job, a check every release requires (`scripts/release-gate.mjs`) |
 
 Locally `cargo test` is enough; CI uses nextest for its two-lane split (see
 `src-tauri/.config/nextest.toml`).
@@ -153,7 +154,7 @@ The hooks do not run on a branch that predates them (rebase it on main before pu
 - Features that span backend + frontend + docs get a spec in `docs/specs/`
   (see `docs/specs/README.md`), written before or with the code, and kept
   current when behaviour changes.
-- A spec's *Pinned:* lines name tests that exist. When the pinned behaviour lands in a test with another name, or a test is renamed, the *Pinned:* line changes in the same PR.
+- A spec's *Pinned:* lines name tests that exist. When the pinned behaviour lands in a test with another name, or a test is renamed, the *Pinned:* line changes in the same PR. `scripts/check-spec-refs.sh SPEC FROM TO` checks that the files and names referenced in backticks in the *Enforced:* and *Pinned:* lines of the requirements numbered FROM to TO exists (it reads only those lines, not a spec that lists its requirements in a table).
 - A spec's *Enforced:* line that names two places asks for defence in depth: each place holds its own check and its own test. R16 named both `commands/tx.rs` and `providers/ledger/signing.rs`; only the first refused a Shakedex plan, so any other path to the Ledger signer would have signed it wrongly.
 - A script that builds against another repository pins the full 40-character commit hash and checks `git rev-parse HEAD` after the checkout. An abbreviated hash is not a pin, because a later commit can share its prefix.
 

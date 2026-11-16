@@ -1,6 +1,6 @@
 # ICANN collision flag
 
-**Status:** implemented (2026-10-29, branch `feat/icann-collision-flag`). Roadmap item P2.13.
+**Status:** implemented (2026-10-29, #133).
 
 ## 1. Summary
 

@@ -1,7 +1,7 @@
 # Namehold — User Manual
 
 Your local desktop wallet for **Handshake (HNS)**: hold HNS, run the full name
-auction lifecycle, manage the names you own, and edit on-chain DNS — all
+auction lifecycle, manage the names you own, edit on-chain DNS, buy and sell names through Shakedex, and trade HNS for BTC with other people on the Exchange — all
 non-custodially, with your keys encrypted on your own machine.
 
 > **Beta software.** Transactions, transfers and name sales are irreversible. Always
@@ -45,7 +45,7 @@ wallet talks directly to the Handshake network:
 - **Reads (balances, owned names, name info): no node required.** Data comes from
   the HNSFans explorer by default. When your local hsd is synced, the wallet
   automatically switches to node-authoritative reads (faster, more reliable).
-- **Writes (Send HNS, name actions): an address-indexed hsd node required**: one on this device (the app can start it), or a remote hsd you trust with "Allow sending via remote node" turned on. No hosted provider offers this today.
+- **Writes (Send HNS, name actions): an address-indexed hsd node required**: one on this device (the app can start it), or a remote hsd you trust with "Allow sending via remote node" turned on. No hosted provider offers this today. The Exchange needs a node on this computer: it refuses a remote node even with that setting on.
 
 Your **secrets never touch the web UI.** Passphrases and recovery phrases are
 entered and displayed only inside a small **Rust-owned secure window**.
@@ -57,7 +57,7 @@ entered and displayed only inside a small **Rust-owned secure window**.
 ### Prerequisites
 
 - The Namehold desktop app (macOS `.dmg`, Windows `-setup.exe`, or Linux `.AppImage`, `.deb` or `.rpm`).
-- To **send HNS or perform name actions**, you also need [hsd](https://github.com/handshake-org/hsd)
+- To **send HNS, perform name actions or use the Exchange**, you also need [hsd](https://github.com/handshake-org/hsd)
   — the app can start it for you (see [Node control](#11-node-control)). On Windows, set a Node RPC API key in Settings › Connections first. Reads work without hsd.
 
 ### First launch — Onboarding
@@ -93,7 +93,7 @@ The sidebar has six top-level sections:
 | **Wallet** | Balance, send, receive, and what needs you. Default page. |
 | **Names** | Names you own, bid on or watch, and finding new ones. |
 | **Market** (marked New) | Buy and sell names through Shakedex. |
-| **Exchange** (marked New, beta) | Trade HNS for BTC with other people, as atomic swaps (see [section 10c](#10c-exchange-hns--btc)). |
+| **Exchange** (marked New; the page carries a beta banner) | Trade HNS for BTC with other people, as atomic swaps (see [section 10c](#10c-exchange-hns--btc)). |
 | **Activity** | Every transaction and name action: To finish, Waiting for a block, and History. |
 | **Settings** | Connections, Node & tray, Notifications, Backup & import, Updates and Advanced. |
 
@@ -513,7 +513,7 @@ The "Ready to finalize" reminders of a Shakedex purchase, listing or cancel (see
 
 ## 10c. Exchange: HNS ⇄ BTC
 
-> ⚠️ **Beta.** A mistake in the exchange can cost you coins. Trades are limited to 50 000 sats to 0.1 BTC each on mainnet; try a small trade first, and keep the computer online until each trade has ended. Report every problem, even a small one, as an issue on [GitHub](https://github.com/DimazzzZ/namehold-wallet/issues): the page's beta banner has a **Report a problem…** button that opens a new one.
+> ⚠️ **Beta.** A mistake in the exchange can cost you coins. Trades are limited to 50 000 sats to 0.1 BTC each on mainnet and testnet; try a small trade first, and keep the computer online until each trade has ended. Report every problem, even a small one, as an issue on [GitHub](https://github.com/DimazzzZ/namehold-wallet/issues): the page's beta banner has a **Report a problem…** button that opens a new one.
 
 The Exchange page (sidebar, hotkey `4`) is an order book where people who want to sell HNS for BTC and people who want to buy HNS with BTC meet. Each trade is an **atomic swap**: both sides get paid, or both get their own coins back. Nobody holds your coins in between. That includes the Nostr relays that carry the offers and messages, any watchtower, and the project, which runs no server for the exchange.
 
@@ -521,12 +521,12 @@ The Exchange page (sidebar, hotkey `4`) is an order book where people who want t
 
 - A wallet whose recovery phrase is on this computer. A Ledger or watch-only wallet cannot sign a trade.
 - A node on this computer (Namehold's own local node, or your hsd with `--index-address --index-tx`). A remote node or an explorer cannot be trusted with a trade.
-- **Enable exchange.** This creates a Bitcoin account from the same recovery phrase (BIP 84: any Bitcoin wallet such as Sparrow or Electrum restores it from the same phrase).
-- **Exchange settings:** where offers and trade messages go, an optional watchtower URL, and Bitcoin sources. Offers and messages go through public **Nostr relays** that other people run; six are set by default on mainnet and testnet, and you can list your own (`wss://…`, one per line). Trade messages are encrypted to the other side, but who talks to whom and when is public, and each relay sees your IP address. **Your own relay** is optional: if someone you trust runs `namehold-relay`, enter its URL and it is used instead of Nostr. For Bitcoin, two public servers are the default on mainnet, and mainnet and testnet need at least two; a local Bitcoin Core with `-txindex` can be one of them, as `bitcoind+http://127.0.0.1:8332` with its login. Namehold does not trust the Bitcoin sources: it checks every lock by proof of work and needs every source to agree.
+- **Enable exchange** (the wallet unlocked; no transaction is made). This creates a Bitcoin account from the same recovery phrase (BIP 84: any Bitcoin wallet such as Sparrow or Electrum restores it from the same phrase).
+- **Exchange settings** (the page's **Settings** button; saving asks for confirmation in the secure window): where offers and trade messages go, an optional watchtower URL, and Bitcoin sources. Offers and messages go through public **Nostr relays** that other people run; six are set by default on mainnet and testnet, and you can list your own (`wss://…`, one per line). Trade messages are encrypted to the other side, but who talks to whom and when is public, and each relay sees your IP address. **Your own relay** is optional: if someone you trust runs `namehold-relay`, enter its URL and it is used instead of Nostr. For Bitcoin, two public servers are the default on mainnet and testnet, which need at least two; a local Bitcoin Core with `-txindex` can be one of them, as `bitcoind+http://127.0.0.1:8332` with its login. Namehold does not trust the Bitcoin sources: it checks every lock by proof of work and needs every source to agree.
 
 **How a trade goes:**
 
-1. Take an offer in the order book, or make your own with **Make an offer**. Publishing signs nothing and locks nothing.
+1. Take an offer in the **Order book** tab, or make your own with **Make an offer…**. Publishing an offer asks for confirmation in the secure window but signs nothing and locks nothing (a buy offer needs the wallet unlocked). Your offers are under **My offers**, your trades under **My trades**, where a trade you have not confirmed yet can still be cancelled with **Cancel**.
 2. **The buyer confirms.** One confirmation in the secure window signs every transaction of the buyer's side at once: the BTC into a lock, its refund, and the claim of the HNS. The BTC is locked.
 3. **The seller confirms** once that BTC lock has its confirmations, before the seller's deadline the trade card shows. That one confirmation signs everything of the seller's side: the HNS into a lock, its refund, and the claim of the BTC.
 4. **The rest happens on its own.** Once the HNS lock is confirmed, the buyer's Namehold claims the HNS. That publishes a secret, and with it the seller's Namehold (or its watchtower) claims the BTC. The background sync does all of this with the app closed. It sends only the transactions you signed when you confirmed, and it signs nothing itself.
@@ -537,17 +537,19 @@ The Exchange page (sidebar, hotkey `4`) is an order book where people who want t
 - **The buyer never claims the HNS.** Your HNS comes back automatically after the HNS refund time (about 12 hours after the start on mainnet).
 - **You are the seller and the buyer has claimed.** Your BTC must be claimed before the BTC refund time. Keep the background sync on until the trade completes, and set a watchtower: it claims for you if your computer is off. Neither can redirect your coins: every transaction it holds pays you.
 
+**Notifications:** unless deadline notifications are turned off (Settings › Notifications), the app and the background sync show a notification when a trade needs your confirmation ("Exchange: your confirmation is needed"), when the buyer took the HNS and your BTC claim is being sent ("Exchange: the buyer took the HNS"), when a trade completes ("Exchange: trade complete"), when its coins came back ("Exchange: coins returned"), and when a trade needs you ("Exchange: a trade needs you").
+
 **Making an offer:**
 
 - Each trade someone starts on it needs your confirmation in the app, so it waits until you open Namehold.
 - An offer stays listed only while your Namehold renews it.
-- **Withdraw offer** replaces it with a withdrawal on the relays and asks them to delete it; it disappears from every order book within three minutes.
+- **Withdraw** (My offers) replaces it with a withdrawal on the relays and asks them to delete it; it disappears from every order book within three minutes.
 
 **The BTC account card:**
 
 - Shows confirmed and unconfirmed BTC, and what is locked in trades.
 - Gives a receive address.
-- **Withdraw BTC** sends BTC to any Bitcoin address, after the secure window.
+- **Withdraw…** opens Withdraw BTC, which sends BTC to any Bitcoin address after the secure window.
 
 Specs: [docs/specs/2026-11-07-hns-btc-exchange.md](specs/2026-11-07-hns-btc-exchange.md) and [docs/specs/2026-11-12-exchange-nostr-transport.md](specs/2026-11-12-exchange-nostr-transport.md). Running your own relay or watchtower: [docs/RELAY.md](RELAY.md).
 
@@ -582,7 +584,9 @@ data fresh without the app being open.
 
 - **When ON (default):** hsd stays running after you close the app. A background
   daemon (`namehold-syncd`) wakes every 60 seconds and syncs all wallet profiles
-  (UTXOs, name states, transactions) from hsd into the local database. The next
+  (UTXOs, name states, transactions) from hsd into the local database, and runs
+  the Exchange's step (renews your offers, answers takes, and sends the reveals,
+  claims and refunds you signed). The next
   time you launch the app, it adopts the running hsd and picks up where the daemon
   left off — so your data is always current.
 - **When OFF:** hsd is stopped when you close the app (the classic behavior).
@@ -590,7 +594,7 @@ data fresh without the app being open.
   refreshes your data.
 - **Crash recovery:** if the daemon dies, the app detects it on the next startup
   and respawns it (as long as the toggle is ON).
-- **Never signs or broadcasts:** The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market. It reads from hsd, writes sync data to the local database and, for a listing you chose to publish on mainnet, keeps it on LearnHNS Market. Your keys stay locked in the encrypted vault.
+- **Never signs:** The background daemon never signs. It publishes listings already signed to LearnHNS Market and, for the Exchange, sends only the transactions you signed at a trade's confirmation. It reads from hsd, writes sync data to the local database and, for a listing you chose to publish on mainnet, keeps it on LearnHNS Market. Your keys stay locked in the encrypted vault.
 
 ### SPV mode (lightweight)
 
@@ -706,8 +710,8 @@ All app data lives in one SQLite file in your home folder (pairs with hsd's
 ~/.namehold/portfolio.db
 ```
 
-It holds your wallet profiles, the encrypted vault, the local chain cache, and
-sync state.
+It holds your wallet profiles, the encrypted vault, the local chain cache,
+sync state, and your Exchange offers and trades, including a buyer's swap secret until the trade reveals it.
 
 When background sync is running, the daemon also writes its process ID to
 `~/.namehold/syncd.pid` (removed when the daemon stops).
@@ -758,10 +762,10 @@ Then open the app normally.
 - **Local-first.** No cloud, no telemetry. Keys and secrets stay on your
   device. By default, balance/name lookups go to the public HNSFans explorer,
   which therefore sees your wallet addresses and the names you track; running
-  your own hsd node keeps those lookups fully local. The only other outbound HTTP is to your configured node, to GitHub Releases for the update check, and, when you use the Market, to LearnHNS Market (browsing and buying, and publishing a listing you chose to publish on mainnet).
+  your own hsd node keeps those lookups fully local. The only other outbound HTTP is to your configured node, to GitHub Releases for the update check, and, when you use the Market, to LearnHNS Market (browsing and buying, and publishing a listing you chose to publish on mainnet). The Exchange talks to Nostr relays (six public ones by default), to Bitcoin sources (mempool.space and blockstream.info by default) and, if you set them, to a `namehold-relay` and a watchtower; they see your IP address, and the relays also see who trades with whom and when.
 - **Localhost-first.** Namehold connects to hsd on `127.0.0.1` by default; another host needs https and your confirmation in the secure window, and sending through it needs "Allow sending via remote node".
 - **Auto-lock.** The unlocked signer times out after a configurable idle period (Settings → Advanced → Signer session timeout, default 15 min) and at the latest one hour after unlock.
-- **Background sync never signs or sends.** The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market. When "Sync in background" is enabled, the `namehold-syncd` daemon reads from hsd and writes sync data to the local database; it never has access to key material. Your keys stay locked in the encrypted vault.
+- **Background sync never signs.** The background daemon never signs. It publishes listings already signed to LearnHNS Market and, for the Exchange, sends only the transactions you signed at a trade's confirmation. When "Sync in background" is enabled, the `namehold-syncd` daemon reads from hsd and writes sync data to the local database; it never has access to key material. Your keys stay locked in the encrypted vault.
 - **What Namehold never does.** Never asks for or transmits your seed phrase,
   never logs passphrases or private keys, never talks to a remote wallet
   service.
@@ -845,6 +849,10 @@ builds are delivered and installed in place.
 - Click **Restart now** to finish the install. On Windows the app exits
   automatically during install (OS limitation); on macOS and Linux you
   trigger the relaunch yourself.
+- The first start after an update may show **Updating Namehold's database** with
+  its progress (step, share of the file read, time elapsed) while the update
+  changes the database. If it fails, the window reads **The database update did
+  not finish**: nothing is lost, and **Try again** starts it over.
 
 ### Dismissing an update
 

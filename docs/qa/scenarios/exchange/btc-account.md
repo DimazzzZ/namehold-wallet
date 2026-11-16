@@ -1,6 +1,6 @@
 ---
 area: HNS ⇄ BTC exchange — the BTC account (BIP 84 from the profile's phrase): receive address, balance, withdrawal
-priority: P1–P3
+priority: P1–P2
 blocks: HNS 0, BTC 3
 requires:
   - procedures/exchange-setup.md

@@ -5,7 +5,7 @@ code + user docs). Named `YYYY-MM-DD-<feature>.md` by the date the spec was
 first written. A spec is the source of truth a reviewer checks the code
 against; when behaviour changes, the spec changes in the same PR.
 
-Each spec has these sections, in this order:
+Each spec has at least these sections, in this order. A spec may add sections of its own, such as a protocol, an API or an implementation plan, before Pointers or after it:
 
 1. **Summary** — one paragraph, what the user gets.
 2. **Terms** — the words the code and UI use, defined once.
@@ -24,10 +24,10 @@ Each spec has these sections, in this order:
 | [2026-09-15 Per-profile node banner & preflight](./2026-09-15-per-profile-node-banner-and-preflight.md) | Steps 1-2 of 9 implemented — see the spec's own status table |
 | [2026-09-20 Multiple bids per name](./2026-09-20-multiple-bids-per-name.md) | Implemented |
 | [2026-09-21 Paid name swaps](./2026-09-21-paid-name-swaps.md) | Superseded by 2026-10-05 Shakedex name sales |
-| [2026-10-05 Shakedex name sales](./2026-10-05-shakedex-name-sales.md) | Accepted — buying implemented; selling and clean-up not yet |
+| [2026-10-05 Shakedex name sales](./2026-10-05-shakedex-name-sales.md) | Implemented — buying, selling and the clean-up; amendments R34 and R36–R45 too |
 | [2026-10-07 Honest broadcast result](./2026-10-07-honest-broadcast-result.md) | Implemented |
 | [2026-10-21 Speed up an unconfirmed send](./2026-10-21-speed-up-unconfirmed-sends.md) | Implemented |
 | [2026-10-24 Local node per network](./2026-10-24-local-node-per-network.md) | Implemented |
 | [2026-10-29 ICANN collision flag](./2026-10-29-icann-collision-flag.md) | Implemented |
-| [2026-11-07 HNS ⇄ BTC exchange](./2026-11-07-hns-btc-exchange.md) | Implemented, beta; merged in #161, not released |
-| [2026-11-12 Exchange over Nostr](./2026-11-12-exchange-nostr-transport.md) | Accepted; being implemented |
+| [2026-11-07 HNS ⇄ BTC exchange](./2026-11-07-hns-btc-exchange.md) | Implemented (#161), released in 0.8.0 (beta) |
+| [2026-11-12 Exchange over Nostr](./2026-11-12-exchange-nostr-transport.md) | Implemented (#162), released in 0.8.0 (beta) |

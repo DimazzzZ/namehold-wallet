@@ -661,8 +661,8 @@ pub async fn run_sync_steps(
         // mainnet only. Each reads the node and writes to the market and the
         // listing's market bookkeeping only: no key, no signature, no send —
         // the daemon runs them as the app does (SECURITY.md, "The daemon
-        // never signs or broadcasts"). Each stops before its next listing
-        // once the lock is lost.
+        // never signs; it sends only what you signed"). Each stops before
+        // its next listing once the lock is lost.
         crate::shakedex_jobs::publish_listings_step(db_path, profile_id, &lock).await;
         // R24 (T8): a reverse auction's copy on the market follows its
         // schedule: the current step uploaded once it moves. Same contract

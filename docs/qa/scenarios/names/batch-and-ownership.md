@@ -1,7 +1,7 @@
 ---
 area: Names — batch actions on a wallet with hundreds of names, a name in transfer, a lost auction
 priority: P1–P3
-blocks: ~36 setup + ~45
+blocks: ~36 setup + ~36
 requires:
   - environment.md (the seller profile; the hsd wallet funded)
   - procedures/seed-many-names.md

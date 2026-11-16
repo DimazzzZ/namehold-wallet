@@ -102,6 +102,7 @@ No passphrase prompt appears — the device IS the signer.
 - The change address is always branch 1, index 0 (first change address).
 - Bluetooth is not supported (USB only).
 - The device must stay connected and the Handshake app open throughout signing.
+- A Ledger wallet cannot use the HNS ⇄ BTC Exchange or buy and sell names through Shakedex: both need a wallet whose recovery phrase is on this computer.
 
 ## Developer Testing: In-Process Simulator
 

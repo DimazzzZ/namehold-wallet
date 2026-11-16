@@ -128,8 +128,8 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
   just to view your wallet. Only mainnet has a built-in explorer; testnet and
   regtest read node-free only with an explorer URL you configure. When your local hsd is synced, the app automatically
   switches to **node-authoritative** reads (owned names, balances, bid history)
-  for faster, more reliable data. A local node is needed **only to send or
-  perform name actions**.
+  for faster, more reliable data. A local node is needed **only to send, perform name actions
+  or use the Exchange**.
 - When you click a transaction, name, or address link, it opens on **Shakeshift**
   (https://shakeshift.com) for viewing on-chain details.
 
@@ -153,7 +153,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
 - When enabled, hsd stays running after you close the app so the daemon can
   query it; the next app launch adopts the running node (no duplicate spawned).
 - Crash recovery: if the daemon dies, the app respawns it on startup.
-- The background daemon never signs; it publishes listings already signed to LearnHNS Market (on mainnet, for listings you chose to publish), sends only the exchange transactions you signed at a trade's Commit, and sends the Shakedex "Ready to finalize" reminders, so they arrive with the app closed.
+- The background daemon never signs; it publishes listings already signed to LearnHNS Market (on mainnet, for listings you chose to publish), keeps your Exchange offers listed and answers takes, sends only the exchange transactions you signed at a trade's Commit, and sends the Shakedex "Ready to finalize" reminders and the Exchange's notifications, so they arrive with the app closed.
 
 ### Connections: local node, remote node, SPV
 
@@ -193,7 +193,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
   and are cached locally per wallet; other networks need an explorer URL of yours. Links to transactions, names, and addresses open on Shakeshift.
 - **Sending needs a node.** Broadcasting and coin/owner discovery use an **hsd**
   node over RPC: a local one the app can start/stop for you, or a remote one with
-  sending allowed (Settings → Connections).
+  sending allowed (Settings → Connections). The Exchange accepts only a node on this computer.
 - **Secrets stay in a secure window.** Your mnemonic/passphrase is only ever typed
   into — and your backup phrase only ever shown in — a small **Rust-owned window**;
   it never passes through the web UI. At rest it's an **encrypted vault**
@@ -201,7 +201,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
 - **Write-capability gating.** Spend/name actions are enabled only when the signer
   is unlocked **and** the node is reachable, synced, and address-indexed — with a
   precise reason shown when any condition isn't met.
-- **Background sync daemon.** When "Sync in background" is enabled (Settings › Node & tray, default ON), a separate Rust binary syncs all profiles every 60s. A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync and the daemon via heartbeats (10s) and stale-lock takeover (30s); the app's Sync takes the lock from a daemon run. A run whose lock is taken over stops at its next check, within one heartbeat, and the LearnHNS Market jobs read the lock row before each listing, so they stop at once. The daemon writes its PID to `~/.namehold/syncd.pid` for lifecycle tracking.
+- **Background sync daemon.** When "Sync in background" is enabled (Settings › Node & tray, default ON), a separate Rust binary syncs all profiles every 60s and runs the Exchange's step for each. A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync and the daemon via heartbeats (10s) and stale-lock takeover (30s); the app's Sync takes the lock from a daemon run. A run whose lock is taken over stops at its next check, within one heartbeat, and the LearnHNS Market jobs read the lock row before each listing, so they stop at once. The daemon writes its PID to `~/.namehold/syncd.pid` for lifecycle tracking.
 
 ## Security
 
@@ -223,8 +223,8 @@ For a detailed threat model, attack surfaces, and mitigations, see [SECURITY.md]
 - [pnpm](https://pnpm.io/) 11+ (CI pins `11.17.0` via the `packageManager`
   field; run `corepack enable` to match it locally)
 - [Rust](https://www.rust-lang.org/tools/install) (stable, edition 2021)
-- [hsd](https://github.com/handshake-org/hsd) — **only needed for sending / name
-  actions** (reads work without it). Run it with `--index-address`.
+- [hsd](https://github.com/handshake-org/hsd) — **only needed for sending, name
+  actions and the Exchange** (reads work without it). Run it with `--index-address`.
 
 ## Quick start
 
@@ -319,8 +319,8 @@ on every platform:
 - `~/.namehold/syncd.pid` — background sync daemon's process ID (present only
   while the daemon is running)
 
-It holds your wallet profiles, the encrypted vault, the local chain cache, and (if
-used) the local transaction history.
+It holds your wallet profiles, the encrypted vault, the local chain cache, (if
+used) the local transaction history, and your Exchange offers and trades, including a buyer's swap secret until the trade reveals it.
 
 ## Tech stack
 
@@ -332,10 +332,13 @@ used) the local transaction history.
 - **Zustand** — client state
 - **Zod** — validation
 - **SQLite (rusqlite)** — local database
-- **reqwest** — HTTP client (explorer + hsd RPC)
+- **reqwest** — HTTP client (explorer, hsd RPC, Bitcoin sources, LearnHNS Market)
+- **rust-bitcoin** — the Exchange's Bitcoin transactions and scripts
+- **tokio-tungstenite · hkdf · chacha20** — the Exchange's Nostr client and NIP-44 encryption
+- **axum** (optional, `relay-server` feature) — the `namehold-relay` server
 - **secp256k1 · bip39 · argon2 · aes-gcm · zeroize** — keys, mnemonics, vault crypto
 - **hidapi** — Ledger hardware wallet HID transport
-- **notify-rust** — cross-platform OS notifications (watchlist alerts)
+- **notify-rust** — cross-platform OS notifications (deadlines, watchlist alerts, Exchange)
 - **Tailwind CSS** — styling
 
 ## Coverage
@@ -361,7 +364,7 @@ live database and a running event loop. Excluding it from coverage metrics preve
 it from dragging down the overall number, while the pure logic it orchestrates
 (in `daemon::*` submodules and `commands::*`) is independently tested and counted.
 
-**Why is `run()` in `lib.rs` `coverage(off)`?** `tauri::generate_handler!` inside it expands one IPC wrapper per command, and llvm-cov counts each wrapper on its `#[tauri::command]` line in the command's own file, where it only runs through the real IPC dispatcher. Unit tests call the command function directly, so without the attribute every command showed one red line (134 of them) that no test can reach.
+**Why is `run()` in `lib.rs` `coverage(off)`?** `tauri::generate_handler!` inside it expands one IPC wrapper per command, and llvm-cov counts each wrapper on its `#[tauri::command]` line in the command's own file, where it only runs through the real IPC dispatcher. Unit tests call the command function directly, so without the attribute every command showed one red line that no test can reach.
 
 **What are the remaining uncovered lines?** After Phases 1–5, the residual
 uncovered lines fall into structurally-untestable categories that are documented

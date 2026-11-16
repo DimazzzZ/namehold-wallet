@@ -60,7 +60,7 @@ Steps:
 
 Expected:
 
-- Step 1: rows `Offer` "Buy HNS with BTC", `Price` "10000 sats per HNS", `Each trade` as in E10, `Relay`; toast "Offer published"; My offers row Side `Buy HNS`, `Live`.
+- Step 1: rows `Offer` "Buy HNS with BTC", `Price` "10000 sats per HNS", `Each trade` as in E10, `Published on` "http://127.0.0.1:8787"; toast "Offer published"; My offers row Side `Buy HNS`, `Live`.
 - Step 2: no secure window opens; the dialog shows in red "Your signer is locked — click Unlock first." (the pool of hashes needs the phrase, so the signer is checked before the window); no new row in My offers, nothing new on the relay.
 - Passes if a buy offer is published as confirmed.
 

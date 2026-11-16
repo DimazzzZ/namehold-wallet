@@ -56,7 +56,7 @@ _Avoid_: Resolved config (same meaning, but "effective" emphasizes the resolutio
 
 **Listing**:
 A Handshake name its owner has put up for sale through Shakedex: the name sits in the seller's lock, and the seller has signed one or more prices at which anyone may take it. Either a Buy Now or a Reverse auction.
-_Avoid_: Offer, paid swap, sale, auction (on its own — see Reverse auction)
+_Avoid_: Offer (in this wallet an offer is an Exchange offer), paid swap, sale, auction (on its own — see Reverse auction)
 
 **Pending listing**:
 An announcement on a market that a name is on its way to being listed: the name is being transferred into its lock and no price is signed yet, so it cannot be bought.
@@ -129,3 +129,54 @@ _Avoid_: Edit price, reprice
 **My listings**:
 The place, on the Market page, where a seller sees their own listings and acts on them — Finalize & sign, Lower price, Cancel, export the listing file — and restores a lock by name. Selling a name starts from the name itself, among Owned Names.
 _Avoid_: My sales, Sell tab
+
+### Exchange (HNS ⇄ BTC)
+
+**Offer**:
+A maker's signed announcement that it will sell or buy HNS for BTC: a side, a price in sats per HNS, the smallest and largest trade, and the maker's offer key. It stays listed only while the maker's Namehold renews it.
+_Avoid_: Listing (that is a name for sale through Shakedex), order, ask/bid
+
+**Maker / Taker**:
+Who published the offer / who takes it. Either can be the Seller or the Buyer.
+_Avoid_: Poster, responder
+
+**Seller / Buyer**:
+The Seller pays HNS and receives BTC; the Buyer pays BTC and receives HNS. Named by the HNS side, whoever made the offer.
+_Avoid_: Bid side, ask side
+
+**Trade**:
+One atomic swap between a maker and a taker, from the take to its completion, refund or expiry. Identified by its terms.
+_Avoid_: Order, deal, swap (on its own: every trade is a swap)
+
+**Terms**:
+Everything both locks are made from, agreed before any coin moves: the amounts, the secret's hash, both parties' keys and the trade's deadlines.
+_Avoid_: Contract, quote
+
+**Commit**:
+A party's one confirmation of a trade in the secure window, which signs every transaction of that party's side at once. The Buyer commits first, the Seller second. In the app the button reads "Confirm and sign".
+_Avoid_: Accept, sign (on its own), approve
+
+**Reveal**:
+The Buyer's claim of the HNS lock. It publishes the secret, with which the Seller then claims the BTC.
+_Avoid_: Disclose, unlock
+
+**Claim / Refund**:
+Taking the other side's lock with the secret / taking your own lock back after its refund time.
+_Avoid_: Redeem (that is reclaiming a losing bid's lockup), withdraw
+
+**Meeting point**:
+Where offers are listed and the two sides of a trade talk: the Nostr relays by default, or a `namehold-relay` someone runs, used instead when it is set.
+_Avoid_: Server, exchange (the Exchange is the page and the feature)
+
+**Relay**:
+A server that carries offers and trade messages: a public Nostr relay, or a `namehold-relay`. It holds no coin and signs nothing that moves one.
+_Avoid_: Exchange server, matching engine, broker
+
+**Watchtower**:
+A service, offered by a `namehold-relay`, that holds a party's presigned transactions and sends them at the right time while that party's computer is off. It can fail to send them, never redirect them.
+_Avoid_: Backup, guardian
+
+**BTC account**:
+The Bitcoin account inside a wallet profile, made from its recovery phrase (BIP 84), which pays the Buyer's locks and receives the Seller's BTC.
+_Avoid_: Bitcoin wallet (a separate app), BTC balance (that is one number on it)
+

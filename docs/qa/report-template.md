@@ -24,6 +24,7 @@ Copy the skeleton below into the run's own folder, outside the repo or under the
 | Chain height | start <h> → end <h> |
 | Profiles used | seller = <name>, second device = <name>, watch-only = <name> |
 | Settings changed | <setting: original → changed → restored> |
+| Exchange (when run) | Bitcoin height start <h> → end <h>, `mtp` offsets at start; relay version <v>; Buyer = <name> with <BTC>, Seller = <name> with <HNS> spendable; Nostr relays = <the `nostr-relay.sh urls` used, or none> |
 
 | Role | Real name | How acquired |
 |---|---|---|
