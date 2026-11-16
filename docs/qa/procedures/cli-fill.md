@@ -19,7 +19,7 @@ After any earlier run of the script has installed the CLI into `$SHAKEDEX_WORK`:
 
 ```bash
 cli_fill_nomine() {   # $1 = listing file
-  ( sleep 1; echo y; sleep 1; echo y; sleep 2 ) | node --require "$SHAKEDEX_WORK/no-tty-shim.js" \
+  ( sleep 1; echo y; sleep 1; echo y; sleep 2 ) | NODE_BACKEND=js node --require "$SHAKEDEX_WORK/no-tty-shim.js" \
     "$SHAKEDEX_WORK/shakedex/bin/shakedex" --prefix "$SHAKEDEX_WORK/prefix" -n regtest -w primary -a test \
     --no-passphrase fill-auction "$1"
   scripts/regtest.sh rpc getrawmempool     # the fill must be there

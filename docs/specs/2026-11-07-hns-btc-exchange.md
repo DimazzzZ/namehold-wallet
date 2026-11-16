@@ -1,6 +1,6 @@
 # HNS ⇄ BTC exchange
 
-**Status:** implemented on branch `feat/exchange` (2026-11-07), not released. Every requirement names the code that enforces it and the test that pins it.
+**Status:** implemented (#161), released in 0.8.0 (beta). Every requirement names the code that enforces it and the test that pins it.
 
 ## 1. Summary
 
@@ -96,7 +96,7 @@ Bitcoin signatures always commit to the outpoint they spend, so the Seller can s
 
 What remains is a liveness risk, not a theft: a Seller whose daemon **and** watchtowers are all offline from the reveal until the BTC refund time can lose the BTC claim. The window is 12 hours on mainnet. The sync shows an OS notification when the Buyer reveals ("the buyer took the HNS"), when a Commit is needed, and when a trade completes, is refunded or needs attention, unless deadline notifications are off (`job::event_text`).
 
-### 3.5 Policy (mainnet; regtest and testnet use minutes, `noncustodial/exchange/policy.rs`)
+### 3.5 Policy (mainnet and testnet; regtest and simnet use minutes, `noncustodial/exchange/policy.rs`)
 
 - The Buyer must fund within 1 h of `t0`; the Seller's funding deadline is `t0 + 4 h`.
 - HNS refund time `t0 + 12 h`; reveal deadline = HNS refund time − 3 h; BTC refund time = HNS refund time + 12 h.
@@ -104,7 +104,7 @@ What remains is a liveness risk, not a theft: a Seller whose daemon **and** watc
 - Limits during the beta: at least 50 000 sats (so the 20 % fee cap still allows about 66 sat/vB in a fee spike) and at most 0.1 BTC per trade.
 - HNS presigned transactions pay 20× the node's rate (at least 20 doos/byte): hsd has no replace-by-fee, so they are signed once at a rate that will always be mined.
 - Bitcoin presigned ladders: 1×, 2×, 4×, 8×, 16×, 32× the source's fastest estimate (at least 2 sat/vB), dropping every rung whose fee exceeds 20 % of the coin; a trade whose first rung cannot fit is refused. The next rung is sent after 30 minutes (about 3 blocks of wall clock, `ladder_escalate_after`) without the previous one mined, and the highest rung once fewer than 6 h are left before the competing path opens.
-- The Seller's Commit is refused when this computer's clock and the HNS chain's median time disagree by more than 3 h (`max_clock_drift`); regtest does not check.
+- The Seller's Commit is refused when this computer's clock and the HNS chain's median time disagree by more than 3 h (`max_clock_drift`); regtest and simnet do not check.
 - Per offer, at most 3 trades negotiate or await the Buyer's Commit at once (`job::MAX_OPEN_PER_OFFER`); a buy offer answers takes from a pool of 20 hashes made at the offer (`commands/exchange.rs::HASH_POOL`).
 
 ### 3.6 Checking the other chain

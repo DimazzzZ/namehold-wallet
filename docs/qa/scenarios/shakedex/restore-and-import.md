@@ -1,7 +1,7 @@
 ---
 area: Shakedex restore a lock by name, own listing file import, second device
 priority: P1–P3
-blocks: ~92
+blocks: ~102
 requires:
   - environment.md (seller and second-device profiles of one recovery phrase; names SE, SF)
   - procedures/lock-and-list.md

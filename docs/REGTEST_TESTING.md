@@ -14,10 +14,15 @@ bash scripts/regtest.sh run-it
 ```
 
 This boots a disposable regtest node (idempotent), points the live-node
-integration suite at it, and runs every `live_*` test in
-`src-tauri/src/tests/live_node_it.rs` green (send, full auction lifecycle,
-single transfer→finalize, and batch transfer). The node's data dir is the
-repo-local, git-ignored `.regtest/` — it never touches your real `~/.hsd` chain.
+integration suite at it (`HNS_IT_NODE_URL`, `HNS_IT_NODE_API_KEY=test`), and
+runs `cargo test … live_ -- --test-threads=1`: every test whose path contains
+`live_`. That is the whole of `src-tauri/src/tests/live_node_it.rs` (send, the
+auction lifecycle, transfers, batches, Shakedex, …) and of the exchange's
+`live_exchange_it.rs`, `live_exchange_e2e.rs` and `live_exchange_nostr.rs`,
+plus a few offline unit tests whose names contain `live_`. Tests that need
+more than this node skip themselves and say why (see the gated tests below).
+The node's data dir is the repo-local, git-ignored `.regtest/` — it never
+touches your real `~/.hsd` chain.
 
 Other subcommands:
 
@@ -27,16 +32,19 @@ bash scripts/regtest.sh fund <addr> 110  # mine 110 blocks to <addr>
 bash scripts/regtest.sh mine 1 <addr>    # advance the chain one block
 bash scripts/regtest.sh rpc getnameinfo <name>   # hsd-cli passthrough
 bash scripts/regtest.sh stop             # graceful shutdown
-bash scripts/regtest.sh reset            # stop + wipe .regtest/ for a fresh chain
+bash scripts/regtest.sh reset            # stop the hsd nodes + wipe all of .regtest/
 ```
+
+`reset` stops the hsd nodes this script starts (the main one, `start-noaddrindex` and `start-cpfp`) and then deletes the whole `.regtest/` directory. That includes the data of the exchange's other local services, which live there too: `.regtest/bitcoin` (`scripts/btc-regtest.sh`) and `.regtest/nostr` (`scripts/nostr-relay.sh`). `reset` does not stop those, so stop them first (`scripts/btc-regtest.sh stop`, `scripts/nostr-relay.sh stop`), or use their own `reset` to wipe only their data.
 
 Mining 110 blocks is about having enough value to spend, not about maturity:
 on regtest `coinbaseMaturity` is **2** blocks (mainnet and testnet 100, simnet
 6), so the first coinbase is spendable almost immediately.
 
 With no node/env set, the same tests print "skip" — so `cargo test` /
-`cargo nextest` stays offline and CI is unaffected. See the `namehold-qa`
-skill for details.
+`cargo nextest` stays offline and CI is unaffected. For manual QA of the app
+itself, see [docs/qa/README.md](qa/README.md) and
+[docs/qa/environment.md](qa/environment.md).
 
 > **Where data lives.** The regtest *chain* data is the repo-local, git-ignored
 > `.regtest/` dir (via `hsd --prefix`); a manual `hsd --network=regtest` without
@@ -69,7 +77,7 @@ Helper CLI (separate terminal): `hsd-cli --network=regtest --api-key=test rpc <m
 ## 2. Launch the app
 
 ```sh
-cd ~/git/namehold-wallet
+# from the repository root
 pnpm install        # first time only
 pnpm tauri dev
 ```
@@ -170,15 +178,19 @@ The following scenarios must be validated against a running regtest node to conf
 
 1. Start a regtest hsd node:
    ```bash
-   hsd --network=regtest --index-address --index-tx --api-key=testkey --listen
+   hsd --network=regtest --index-address --index-tx --api-key=test --listen
    ```
    Node RPC listens on `127.0.0.1:14037` (regtest's default), NOT the mainnet
    port 12037.
 
-2. Mine an initial set of blocks so names can be opened:
+2. Mine an initial set of blocks to the app's receive address (Wallet →
+   **Receive**) so names can be opened and bid on:
    ```bash
-   hsd-rpc --network=regtest generatetoaddress 200 $(hsd-rpc --network=regtest getnewaddress)
+   scripts/regtest.sh fund <receiveAddress> 200
+   # or: hsd-cli --network=regtest --api-key=test rpc generatetoaddress 200 <receiveAddress>
    ```
+   `getnewaddress` is an hsd *wallet* RPC, not a node one, so it is no source
+   of an address on a node without the hsd wallet.
 
 3. Start the Namehold app with the regtest node configured in Settings.
 
@@ -260,7 +272,7 @@ HNS_IT_NODE_API_KEY=test \
   cargo test --manifest-path src-tauri/Cargo.toml live_node -- --nocapture --test-threads=1
 ```
 
-This runs the following tests:
+The `live_node` filter matches the module path `tests::live_node_it::`, so this runs every test in `src-tauri/src/tests/live_node_it.rs`, not only the ones listed in this document; the tests that need more than this node skip themselves with the reason. The auction lifecycle tests among them:
 
 | Test | Lifecycle |
 |------|-----------|
@@ -413,6 +425,23 @@ scripts/regtest.sh stop-cpfp            # `reset` stops it and wipes its data to
 
 The window's growth from the explorer (SPV, or a node that is not authoritative) has no live test here: there is no regtest explorer to run it against. It is covered by mocked-explorer tests in `commands::sync::address_window_tests`.
 
+### A Bob Wallet user moves by the phrase alone
+
+`live_bob_wallet_moves_by_phrase` plays a Bob Wallet user with hsd's own wallet, made from a recovery phrase: profiles restored from that phrase sync to hsd's exact coins and balance, list a name Bob won as owned, and recover and reveal a bid Bob never revealed. It needs the hsd wallet on its default port 14039 and skips without it (`no hsd wallet at http://127.0.0.1:14039`):
+
+```bash
+scripts/regtest.sh start --with-wallet
+HNS_IT_NODE_URL=http://127.0.0.1:14037 HNS_IT_NODE_API_KEY=test \
+  cargo test --manifest-path src-tauri/Cargo.toml live_bob_wallet_moves_by_phrase -- --nocapture --test-threads=1
+```
+
+### Other gated tests in `live_node_it.rs`
+
+| Test | Runs only with |
+|------|----------------|
+| `live_regtest_and_testnet_nodes_run_side_by_side` | `HNS_IT_SPAWN_HSD=1`. It starts its own regtest and testnet hsd under a temporary prefix, so nothing may listen on 14037 or 13037 while it runs, and the testnet node reaches out to testnet peers for the few seconds it lives: `HNS_IT_SPAWN_HSD=1 cargo test --manifest-path src-tauri/Cargo.toml live_regtest_and_testnet_nodes_run_side_by_side -- --nocapture` |
+| `learnhns_local_market_pending_upload_and_renewal`, `learnhns_local_market_sale_reorg_and_cancel` | `HNS_IT_LEARNHNS_URL` (LearnHNS Market's own local regtest setup, its `compose.regtest.yaml`), with `HNS_IT_SHAKEDEX=1` and `HNS_IT_NODE_URL` |
+
 ## Shakedex purchases against the CLI
 
 These are manual checks that Namehold buys from the real shakedex CLI and meets it as the other party (spec R30, Namehold-buys half, and the R7/R10/R13 chain paths). They are not part of CI: each test is skipped while `HNS_IT_SHAKEDEX` is unset or empty.
@@ -476,3 +505,31 @@ Some listings the CLI cannot write: it publishes a market fee only through Learn
 The tests move the node's clock forward with `setmocktime` to make price steps valid. hsd keeps that as an offset that goes on ticking, and the median time never goes back, so the clock is only ever moved forward; never run `setmocktime 0` against this node, which sets its clock to 0 and stalls mining (`scripts/regtest.sh reset` starts over).
 
 The winner of a name pays the second-highest bid, so the preamble places two bids to give the lock coin a non-zero value (0.5 HNS). A name won uncontested has a lock coin worth 0, which Namehold accepts as well. Stop the node with `scripts/regtest.sh stop`, or wipe the chain with `scripts/regtest.sh reset`.
+
+## Exchange (HNS ⇄ BTC)
+
+The HNS side of the exchange runs against the same regtest node. `live_exchange_it.rs` touches only HNS, and `live_exchange_e2e.rs` fakes Bitcoin in memory, so neither needs bitcoind. Both are skipped while `HNS_IT_NODE_URL` is unset, and `run-it` runs them with the rest.
+
+```bash
+bash scripts/regtest.sh start
+HNS_IT_NODE_URL=http://127.0.0.1:14037 HNS_IT_NODE_API_KEY=test \
+  cargo test --manifest-path src-tauri/Cargo.toml live_exchange -- --nocapture --test-threads=1
+```
+
+| Test | Asserts |
+|------|---------|
+| `live_exchange_hns_claim_signed_before_the_lock_is_mined_and_reveals_the_secret` | hsd's mempool and miner accept the Buyer's `0xc1` claim signed before the lock existed, and the node observer finds the lock, its confirmations and the revealed secret |
+| `live_exchange_hns_claim_does_not_fit_a_lock_of_another_value` | Against a lock of another value the observer finds no lock and reports a mismatched payment, and hsd refuses the claim |
+| `live_exchange_hns_refund_is_refused_before_its_time_and_mined_after` | The refund is refused before its time and mined after it, and carries no secret |
+| `live_exchange_a_coinbase_output_is_not_the_lock` | A miner's coinbase with exactly the lock's script and value is listed at the lock's address, hsd refuses its claim, and the observer does not call it the lock |
+| `live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_alone` (`live_exchange_e2e.rs`) | A whole trade through the code the app and the daemon run: an offer, a take, both answers through the relay, both Commits, and every later step taken by the exchange job alone (`job::tick`). Bitcoin is `exchange_fake_btc::FakeBtc`, an in-memory chain with real headers that runs every transaction through Bitcoin Core's interpreter |
+
+The tests fund their HNS by mining one coinbase at a time to a funder until its coins cover the amount (up to 2000 blocks), then 3 more blocks for maturity. Regtest halves the subsidy every 2500 blocks, so the number of blocks a run mines grows with the chain's height.
+
+`live_exchange_nostr_default_relays_take_and_serve_our_kinds` (`live_exchange_nostr.rs`) is not a regtest test: it is skipped unless `HNS_IT_NOSTR=1`, and then **publishes real, short-lived test events to the public default Nostr relays** (a throwaway key, a random network tag, a 10-minute NIP-40 expiration). `HNS_IT_NOSTR_RELAYS=wss://a,wss://b` points it at other relays instead, such as local ones from `scripts/nostr-relay.sh`:
+
+```bash
+HNS_IT_NOSTR=1 cargo test --manifest-path src-tauri/Cargo.toml live_exchange_nostr -- --nocapture --test-threads=1
+```
+
+The manual exchange stand (bitcoind from `scripts/btc-regtest.sh`, a local relay, Buyer and Seller profiles) is described in [docs/qa/procedures/exchange-setup.md](qa/procedures/exchange-setup.md), and local Nostr relays in [docs/qa/procedures/nostr-relay.md](qa/procedures/nostr-relay.md).

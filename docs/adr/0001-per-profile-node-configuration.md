@@ -1,5 +1,7 @@
 # Per-profile node configuration with global fallback
 
+Status: accepted. Steps 1–2 of the [implementation plan](../specs/2026-09-15-per-profile-node-banner-and-preflight.md) are done: the `profile_settings` table, `effective_node_config_for_profile`, and every node client resolving per profile. Steps 3–9 are not started, so the "Configure node for this profile" button and its modal below do not exist yet, and nothing writes `profile_settings` outside tests.
+
 When a wallet profile is created for a specific network (mainnet, testnet, regtest), the user may want to point that profile at a different node than the global default — for example, a regtest profile should use a local regtest node, while a mainnet profile uses a remote node. Today, the app has only global `node_rpc_url` and `node_rpc_api_key` settings; all profiles share them, which forces a choice: either all profiles see the same node, or the user manually edits settings each time they switch profiles.
 
 We will store per-profile node configuration in a new `profile_settings` table (key/value pairs per profile_id), with explicit keys `node_rpc_url`, `node_rpc_api_key`, and `chain_source`. Resolution order is: profile override → global setting → built-in default. This keeps the global settings as a fallback and avoids breaking existing code that reads from global settings only.
@@ -18,14 +20,14 @@ The frontend will offer a "Configure node for this profile" button in Settings w
 
 ## Related
 
-- [ADR-002 Network-derived behaviour](./2026-09-14-network-derived-behaviour.md) — network is immutable per profile; node resolution respects that.
+- [ADR-002 Network-derived behaviour](../specs/2026-09-14-network-derived-behaviour.md) — network is immutable per profile; node resolution respects that.
 - [Spec: Remote-node connection & broadcast guard](../specs/2026-09-11-remote-node-connection-and-broadcast-guard.md) — R7 already gates the probe on `expected_network`.
 - [Spec: Per-profile node banner & preflight](../specs/2026-09-15-per-profile-node-banner-and-preflight.md) — UX/behaviour verdicts from the 2026-09-15 prototype grill, and the step-by-step implementation plan for shipping this ADR.
 
 
 ## Interaction with N11 (`realign_loopback_rpc_url`)
 
-> Amended by [ADR-0005](./0005-one-local-hsd-per-network.md) (2026-10-24): the realign below is gone. A `local_node` profile without a URL override reaches its own network's port whenever the global URL is only a default, and nothing writes the global setting. The override rule here is unchanged.
+> Amended by [ADR-0005](./0005-one-local-hsd-per-network.md) (2026-10-24): the realign below is gone. A profile without a URL override, whatever its `chain_source` (amended 2026-10-28; at first only a `local_node` profile), reaches its own network's port whenever the global URL is only a default, and nothing writes the global setting. The override rule here is unchanged.
 
 The narrow auto-realign introduced by [ADR-002 / N11](../specs/2026-09-14-network-derived-behaviour.md) rewrites a stale loopback `node_rpc_url` at `start_hsd` time when the stored URL is a *default* loopback port for a *different* network. Per-profile override takes precedence: when a profile has an override set, `start_hsd` and every read/broadcast path resolves through `effective_node_config_for_profile` first, and realign is skipped for that profile. Realign continues to apply only when the resolved node config comes from the global fallback (no per-profile override), preserving the original safety net for users who never opted into per-profile config.
 

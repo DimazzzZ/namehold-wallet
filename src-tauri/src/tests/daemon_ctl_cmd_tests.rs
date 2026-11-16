@@ -231,7 +231,13 @@ fn the_real_daemon_is_alive_and_gets_stopped() {
         .find(|p| std::path::Path::new(p).exists())
         .unwrap();
     std::fs::copy(sleep, &stand_in).unwrap();
+    // uutils coreutils (Ubuntu 26.04's `sleep`) is one binary that picks the
+    // utility from argv[0], and under the daemon's name it exits at once with
+    // "unknown program". argv[0] says `sleep`; the file, which is what the
+    // app checks, keeps the daemon's name.
+    use std::os::unix::process::CommandExt;
     let mut daemon = std::process::Command::new(&stand_in)
+        .arg0("sleep")
         .arg("30")
         .spawn()
         .unwrap();

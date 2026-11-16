@@ -12,16 +12,15 @@ Background, non-interrupting, repeatable UI regression testing. The browser app 
 ### How it works
 - `pnpm dev` starts the Vite dev server.
 - The app detects it is **not** inside Tauri and routes all `invoke()` calls through `src/lib/webqa-mock.ts`.
-- Playwright drives the full UI against `http://localhost:5173`.
+- A Playwright-driven browser drives the full UI against `http://localhost:1420` (`vite.config.ts`, `strictPort`).
 
 ### Commands
 ```bash
-# Terminal 1 — start the dev server
+# Start the dev server, then point the browser at http://localhost:1420
 pnpm dev
-
-# Terminal 2 — run Playwright (once tests exist)
-npx playwright test
 ```
+
+The repository has no Playwright test suite of its own: browser QA is driven by hand or by a browser automation tool. Playwright is a dependency only of the README screenshot tool (`just screenshots`, see [screenshots/README.md](../screenshots/README.md)); the automated end-to-end suite of the Tauri app is WebdriverIO in `e2e/` (see [e2e/README.md](../e2e/README.md)).
 
 ### What can be validated
 - Navigation and layout rendering
@@ -36,16 +35,15 @@ npx playwright test
   checkbox enable/disable, toast feedback, form state revert on failure
 
 ### Current limitations
-The web mock (`src/lib/webqa-mock.ts`) is **static** — it returns canned data and does not persist state across commands:
-- `start_hsd()` returns success but `node_status()` still returns the hardcoded "stopped" state.
-- Building/signing/broadcasting a draft does not change the drafts list or transaction history.
-- Auction phase transitions are not simulated.
-- `set_background_sync_enabled()` returns success but does not actually spawn or
-  stop a daemon — the mock reports `is_daemon_alive: false` always, so
-  daemon-lifecycle end-to-end flows can only be validated in the Tauri or regtest
-  paths below.
+The web mock (`src/lib/webqa-mock.ts`) has a block-driven engine for auctions and Shakedex listings: one chain height and a record per name, moved by `__webqa_mine(n)` in the browser console (or the `webqa_mine_blocks` command). Reads derive each name's phase from the height, `node_status()` reports a running, connected and synced node, a broadcast reveal joins the drafts list and settles on the next mined block, and a broadcast listing draft moves its listing on the next mined block. What it does not do:
+- State lives in memory only: a page reload resets it.
+- Phase windows are compressed (a few blocks each), not real Handshake durations.
+- There is one bidder (this wallet) plus a single canned rival bid; a sent HNS transaction changes nothing.
+- `set_background_sync_enabled()` returns success but does not spawn or stop a daemon, and `is_daemon_alive` always reports `false`, so daemon-lifecycle flows can only be validated in the Tauri or regtest paths below.
+- A command the mock has no handler for returns `null` with a `[browser QA] No mock handler for invoke(…)` warning in the console.
+- The Exchange's commands are answered by `src/lib/webqa-exchange.ts`: demo offers, taking and making offers, your Commit, a Refresh that moves each trade a step unless it waits for your own Commit, the BTC account and Exchange settings. Nothing is signed or sent, so browser QA checks the Exchange page's layout and flows, not a real swap.
 
-**To make browser QA realistic for lifecycle flows**, the mock must be upgraded to a stateful, scenario-driven backend. Until then, browser QA validates **UI structure and interaction patterns**, not end-to-end lifecycle correctness.
+Browser QA therefore validates **UI structure, interaction patterns and the mock's simulated lifecycles**; anything that depends on a real node, the daemon or a real Exchange trade needs the Tauri or regtest paths.
 
 ---
 
@@ -133,7 +131,7 @@ scripts/regtest.sh mine 10 <address> # advance through REVEAL phase
 
 ### A. Shell & navigation
 - [ ] App loads without console errors
-- [ ] All sidebar routes render: Wallet, Names, Market, Activity, Settings; `/auctions`, `/watchlist` and `/migration` redirect
+- [ ] All sidebar routes render: Wallet, Names, Market, Exchange, Activity, Settings; `/auctions`, `/watchlist` and `/migration` redirect
 - [ ] Readiness pill shows wallet, signer, node and read source in its panel
 - [ ] Beta badge in the sidebar, with its warning on hover
 
@@ -231,7 +229,7 @@ scripts/regtest.sh mine 10 <address> # advance through REVEAL phase
 The full agent-runnable scenarios for this section (steps, exact expected text, evidence, block budgets) are in [docs/qa/README.md](qa/README.md); this checklist stays the overview.
 
 Paid name swaps were withdrawn on 2026-09-21 (`docs/specs/2026-09-21-paid-name-swaps.md`); a claim panel for an offer recorded before that still works. Buying and selling through Shakedex replace them. The buying checklist comes first, the selling checklist after it.
-- [ ] Market is the 3rd sidebar item, right after Names, with a "New" tag, and hotkey 3 opens it; 4 and 5 open Activity and Settings
+- [ ] Market is the 3rd sidebar item, right after Names, with a "New" tag, and hotkey 3 opens it; 4, 5 and 6 open Exchange, Activity and Settings
 - [ ] Browse: one list of imports and market listings with Name · Price now · Next price · Check; the first verified row is selected and shown in the panel beside the list; next-price times read as approximate
 - [ ] Search ("Find a name", a leading dot ignored), the All / Fixed price / Price drops filter and the Lowest price / Next price drop / Newest sort; a search with no match reads "No listings match"
 - [ ] Unavailable listings are not rows: the toggle at the foot of the list counts them by reason ("▸ N unavailable listings hidden: …") and expands to names and a reason each, not selectable
@@ -298,6 +296,16 @@ Selling (regtest: node `http://127.0.0.1:14037`, key `test`; never a mainnet pro
 - [ ] Recovery uses only xpub (no passphrase needed)
 - [ ] Recovery works after seed restore or wallet import
 
+### L. Exchange (HNS ⇄ BTC, beta)
+The Exchange page (`/exchange`, sidebar item with a "New" tag, hotkey 4) shows in browser QA on the mock's demo exchange (`src/lib/webqa-exchange.ts`); a real trade needs the Tauri app on the regtest stand. Its agent-runnable cases (steps, exact expected text, evidence, block budgets) are in [docs/qa/README.md](qa/README.md), run on the stand that [procedures/exchange-setup.md](qa/procedures/exchange-setup.md) sets up (regtest hsd, Bitcoin Core regtest, a local relay, Buyer and Seller profiles):
+- [ ] Gates and settings, E1–E7: [scenarios/exchange/gates-and-settings.md](qa/scenarios/exchange/gates-and-settings.md)
+- [ ] The BTC account, E8, E9, E36, E38, E39: [scenarios/exchange/btc-account.md](qa/scenarios/exchange/btc-account.md)
+- [ ] Offers and taking, E10–E16, E37: [scenarios/exchange/offers-and-taking.md](qa/scenarios/exchange/offers-and-taking.md)
+- [ ] Trades that complete, E17–E19: [scenarios/exchange/trades.md](qa/scenarios/exchange/trades.md)
+- [ ] Refunds and safety rules, E20–E25, E35: [scenarios/exchange/refunds-and-safety.md](qa/scenarios/exchange/refunds-and-safety.md)
+- [ ] Cancelling, crashes, outages and restarts, E26–E34: [scenarios/exchange/recovery.md](qa/scenarios/exchange/recovery.md)
+- [ ] Offers and trade messages over Nostr, E40–E47: [scenarios/exchange/nostr.md](qa/scenarios/exchange/nostr.md), on local relays from [procedures/nostr-relay.md](qa/procedures/nostr-relay.md)
+
 ---
 
 ## Handshake Units Reference
@@ -352,7 +360,7 @@ Use `#[coverage(off)]` via `cargo-llvm-cov`'s nightly cfg support. In `src-tauri
 
 ```toml
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 ```
 
 In the crate root or module:
@@ -387,8 +395,12 @@ Every exclusion **must** have a short comment explaining why it is excluded.
 The saved report at `src-tauri/coverage/html/index.html` may be stale. Always regenerate before making decisions:
 
 ```bash
-cd src-tauri && cargo llvm-cov --open
+just coverage
+# the same as:
+cd src-tauri && cargo +nightly llvm-cov --lib --ignore-filename-regex '(src/lib\.rs|src/daemon/mod\.rs)'
 ```
+
+It must run on nightly: the `coverage(off)` attributes are inert on stable. The regex leaves out `src/lib.rs` and `src/daemon/mod.rs`, which are IO shell with no testable logic. Add `--open` to open the HTML report.
 
 ---
 
@@ -402,6 +414,8 @@ cd src-tauri && cargo llvm-cov --open
 | Names page | `src/components/NamesView.tsx` |
 | Name page | `src/components/NamePage.tsx`, `src/components/name-page/` |
 | Settings page | `src/components/Settings.tsx` |
+| Exchange page | `src/components/exchange/ExchangePage.tsx`, `src/components/exchange/` |
+| Exchange queries / types | `src/queries/exchange.ts`, `src/types/exchange.ts` |
 | Auction phase logic | `src/lib/auction.ts` |
 | Read queries | `src/queries/read.ts` |
 | Wallet queries | `src/queries/wallet.ts` |
@@ -409,6 +423,8 @@ cd src-tauri && cargo llvm-cov --open
 | Frontend types | `src/types/index.ts` |
 | Rust read commands | `src-tauri/src/commands/read.rs` |
 | Rust name commands | `src-tauri/src/commands/names.rs` |
+| Rust exchange commands | `src-tauri/src/commands/exchange.rs` |
+| Exchange: protocol (pure) / chains, relays, sync step | `src-tauri/src/noncustodial/exchange/`, `src-tauri/src/exchange_io/` |
 | HNSFans adapter | `src-tauri/src/providers/hnsfans.rs` |
 | Backend types | `src-tauri/src/hsd/types.rs` |
 | Existing tests | `src/components/__tests__/` |

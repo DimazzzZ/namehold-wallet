@@ -3,7 +3,7 @@
 [![Coverage](https://img.shields.io/badge/coverage-97.81%25%20lines-brightgreen)](https://github.com/DimazzzZ/namehold-wallet/pull/50)
 
 Namehold is a local desktop wallet for **Handshake (HNS)**: hold HNS, manage the
-names you own, run the full name-auction lifecycle, and edit on-chain DNS — all
+names you own, run the full name-auction lifecycle, edit on-chain DNS, buy and sell names through Shakedex, and trade HNS for BTC with other people by atomic swap — all
 non-custodially, with your keys encrypted on your own machine. It used to include a **Move from Namebase** helper; the legacy custodial Namebase closed on 1 October 2026, so that part of the app, now Import from Namebase under Settings › Backup & import, explains the shutdown and keeps only the import of history you exported earlier.
 
 Built with Tauri v2, React + TypeScript, Rust, and SQLite.
@@ -35,6 +35,14 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
   <tr>
     <td align="center">Market (Shakedex)</td>
     <td align="center">Selling your names</td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/assets/exchange.png"><img src="docs/assets/exchange.png" alt="Exchange: an order book of offers to sell and to buy HNS for BTC, met over public Nostr relays, and the Bitcoin account made from your recovery phrase" /></a></td>
+    <td width="50%"><a href="docs/assets/exchange-trades.png"><img src="docs/assets/exchange-trades.png" alt="My trades: a trade waiting for your one confirmation, one waiting for the other side, and every deadline and lock of each" /></a></td>
+  </tr>
+  <tr>
+    <td align="center">Exchange HNS ⇄ BTC (beta)</td>
+    <td align="center">Your trades</td>
   </tr>
   <tr>
     <td width="50%"><a href="docs/assets/activity.png"><img src="docs/assets/activity.png" alt="Activity: what is left to finish, what waits for a block, and the history of this wallet" /></a></td>
@@ -108,13 +116,20 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
   from your account xpub and reveal it before the window closes. See
   [`docs/RECOVER_LOST_BIDS.md`](docs/RECOVER_LOST_BIDS.md).
 
+### Exchange HNS ⇄ BTC (beta)
+- **Trade HNS for BTC with other people** on the Exchange page: an order book of offers to sell and to buy HNS, your own offers and trades, and a **Bitcoin account** made from your recovery phrase (BIP 84, so any Bitcoin wallet restores it). On mainnet a trade is 0.0005 to 0.1 BTC.
+- **An atomic swap**: both sides get paid, or both get their own coins back, and nobody holds your coins in between. One confirmation in the secure window signs every transaction of your side; the background sync then reveals, claims and refunds on its own, sending only what you signed.
+- **No server to trust or run**: offers and trade messages go through public **Nostr relays** (six by default, editable in Exchange settings), trade messages encrypted to the other side. A `namehold-relay` someone you trust runs can be used instead, and can also be your watchtower ([docs/RELAY.md](docs/RELAY.md)).
+- **Checked, not trusted**: Bitcoin locks are proven by proof of work and every Bitcoin source must agree; the HNS side needs a node on this computer. Relays and sources can delay a trade, never redirect coins.
+- It is a beta: trade small amounts first, keep the computer online until a trade ends, and report every problem as a GitHub issue. See the [User Manual](docs/USER_MANUAL.md) and [SECURITY.md](SECURITY.md#the-exchange-hns--btc).
+
 ### Node-free reads
 - Reads are **node-free by default** via the HNSFans explorer — no node required
   just to view your wallet. Only mainnet has a built-in explorer; testnet and
   regtest read node-free only with an explorer URL you configure. When your local hsd is synced, the app automatically
   switches to **node-authoritative** reads (owned names, balances, bid history)
-  for faster, more reliable data. A local node is needed **only to send or
-  perform name actions**.
+  for faster, more reliable data. A local node is needed **only to send, perform name actions
+  or use the Exchange**.
 - When you click a transaction, name, or address link, it opens on **Shakeshift**
   (https://shakeshift.com) for viewing on-chain details.
 
@@ -138,7 +153,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
 - When enabled, hsd stays running after you close the app so the daemon can
   query it; the next app launch adopts the running node (no duplicate spawned).
 - Crash recovery: if the daemon dies, the app respawns it on startup.
-- The background daemon never signs; it publishes listings already signed to LearnHNS Market (on mainnet, for listings you chose to publish), sends only the exchange transactions you signed at a trade's Commit, and sends the Shakedex "Ready to finalize" reminders, so they arrive with the app closed.
+- The background daemon never signs; it publishes listings already signed to LearnHNS Market (on mainnet, for listings you chose to publish), keeps your Exchange offers listed and answers takes, sends only the exchange transactions you signed at a trade's Commit, and sends the Shakedex "Ready to finalize" reminders and the Exchange's notifications, so they arrive with the app closed.
 
 ### Connections: local node, remote node, SPV
 
@@ -178,7 +193,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
   and are cached locally per wallet; other networks need an explorer URL of yours. Links to transactions, names, and addresses open on Shakeshift.
 - **Sending needs a node.** Broadcasting and coin/owner discovery use an **hsd**
   node over RPC: a local one the app can start/stop for you, or a remote one with
-  sending allowed (Settings → Connections).
+  sending allowed (Settings → Connections). The Exchange accepts only a node on this computer.
 - **Secrets stay in a secure window.** Your mnemonic/passphrase is only ever typed
   into — and your backup phrase only ever shown in — a small **Rust-owned window**;
   it never passes through the web UI. At rest it's an **encrypted vault**
@@ -186,7 +201,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
 - **Write-capability gating.** Spend/name actions are enabled only when the signer
   is unlocked **and** the node is reachable, synced, and address-indexed — with a
   precise reason shown when any condition isn't met.
-- **Background sync daemon.** When "Sync in background" is enabled (Settings › Node & tray, default ON), a separate Rust binary syncs all profiles every 60s. A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync and the daemon via heartbeats (10s) and stale-lock takeover (30s); the app's Sync takes the lock from a daemon run. A run whose lock is taken over stops at its next check, within one heartbeat, and the LearnHNS Market jobs read the lock row before each listing, so they stop at once. The daemon writes its PID to `~/.namehold/syncd.pid` for lifecycle tracking.
+- **Background sync daemon.** When "Sync in background" is enabled (Settings › Node & tray, default ON), a separate Rust binary syncs all profiles every 60s and runs the Exchange's step for each. A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync and the daemon via heartbeats (10s) and stale-lock takeover (30s); the app's Sync takes the lock from a daemon run. A run whose lock is taken over stops at its next check, within one heartbeat, and the LearnHNS Market jobs read the lock row before each listing, so they stop at once. The daemon writes its PID to `~/.namehold/syncd.pid` for lifecycle tracking.
 
 ## Security
 
@@ -198,7 +213,7 @@ For a detailed threat model, attack surfaces, and mitigations, see [SECURITY.md]
 - **Local-first** — keys and secrets stay on your device (encrypted at rest). By
   default, balance and name lookups query the public HNSFans explorer, which sees
   your wallet addresses and tracked names. Run your own hsd node (Settings) to keep
-  all lookups fully local. No cloud, no telemetry.
+  all lookups fully local. The Exchange talks to public Nostr relays and Bitcoin sources, which see your IP address and, for the relays, who trades with whom and when. No cloud, no telemetry.
 - **Auto-lock** — the unlocked signer locks after a configurable idle period (1 to 60 minutes) and at the latest an hour after it was unlocked; the decrypted master key is dropped, its bytes overwritten, within a second of the session expiring.
 - **Namebase migration (retired)** — the legacy Namebase it talked to shut down on 1 October 2026. A session cookie stored before then stays encrypted at rest and is never exposed to the web layer; disconnecting clears it. See [SECURITY.md](./SECURITY.md) for the threat model.
 
@@ -208,8 +223,8 @@ For a detailed threat model, attack surfaces, and mitigations, see [SECURITY.md]
 - [pnpm](https://pnpm.io/) 11+ (CI pins `11.17.0` via the `packageManager`
   field; run `corepack enable` to match it locally)
 - [Rust](https://www.rust-lang.org/tools/install) (stable, edition 2021)
-- [hsd](https://github.com/handshake-org/hsd) — **only needed for sending / name
-  actions** (reads work without it). Run it with `--index-address`.
+- [hsd](https://github.com/handshake-org/hsd) — **only needed for sending, name
+  actions and the Exchange** (reads work without it). Run it with `--index-address`.
 
 ## Quick start
 
@@ -304,8 +319,8 @@ on every platform:
 - `~/.namehold/syncd.pid` — background sync daemon's process ID (present only
   while the daemon is running)
 
-It holds your wallet profiles, the encrypted vault, the local chain cache, and (if
-used) the local transaction history.
+It holds your wallet profiles, the encrypted vault, the local chain cache, (if
+used) the local transaction history, and your Exchange offers and trades, including a buyer's swap secret until the trade reveals it.
 
 ## Tech stack
 
@@ -317,10 +332,13 @@ used) the local transaction history.
 - **Zustand** — client state
 - **Zod** — validation
 - **SQLite (rusqlite)** — local database
-- **reqwest** — HTTP client (explorer + hsd RPC)
+- **reqwest** — HTTP client (explorer, hsd RPC, Bitcoin sources, LearnHNS Market)
+- **rust-bitcoin** — the Exchange's Bitcoin transactions and scripts
+- **tokio-tungstenite · hkdf · chacha20** — the Exchange's Nostr client and NIP-44 encryption
+- **axum** (optional, `relay-server` feature) — the `namehold-relay` server
 - **secp256k1 · bip39 · argon2 · aes-gcm · zeroize** — keys, mnemonics, vault crypto
 - **hidapi** — Ledger hardware wallet HID transport
-- **notify-rust** — cross-platform OS notifications (watchlist alerts)
+- **notify-rust** — cross-platform OS notifications (deadlines, watchlist alerts, Exchange)
 - **Tailwind CSS** — styling
 
 ## Coverage
@@ -346,7 +364,7 @@ live database and a running event loop. Excluding it from coverage metrics preve
 it from dragging down the overall number, while the pure logic it orchestrates
 (in `daemon::*` submodules and `commands::*`) is independently tested and counted.
 
-**Why is `run()` in `lib.rs` `coverage(off)`?** `tauri::generate_handler!` inside it expands one IPC wrapper per command, and llvm-cov counts each wrapper on its `#[tauri::command]` line in the command's own file, where it only runs through the real IPC dispatcher. Unit tests call the command function directly, so without the attribute every command showed one red line (134 of them) that no test can reach.
+**Why is `run()` in `lib.rs` `coverage(off)`?** `tauri::generate_handler!` inside it expands one IPC wrapper per command, and llvm-cov counts each wrapper on its `#[tauri::command]` line in the command's own file, where it only runs through the real IPC dispatcher. Unit tests call the command function directly, so without the attribute every command showed one red line that no test can reach.
 
 **What are the remaining uncovered lines?** After Phases 1–5, the residual
 uncovered lines fall into structurally-untestable categories that are documented

@@ -14,6 +14,7 @@ device. It splits how it talks to the Handshake network:
   - HNScan — no public API. Namebase — custodial, shut down on 1 October 2026.
 
   So to send, run hsd yourself (locally, or on a small VPS — the chain is light).
+- **The HNS ⇄ BTC Exchange needs a node on this computer.** A remote node is refused for trades even with sending allowed: it could show a fake lock and learn your secret.
 
 ## Run a node for sending
 
@@ -62,6 +63,7 @@ Instead of running hsd locally, you can point the wallet at an existing hsd RPC:
   the onboarding Remote step and in Settings → Connections). This sets the
   `allow_remote_broadcast` flag, which gates the broadcast path. Your recovery phrase
   never leaves this device — remote is a privacy/trust tradeoff, not custody.
+  The Exchange refuses a remote node even with this opt-in: a remote node could show a fake lock and learn your secret.
 - **Any node off this machine counts as remote:** the opt-in is asked for whenever the node URL's host is not this computer, even if the chain source says local node. Sending shows as unavailable, and a send is refused at broadcast, until you choose Remote node and enable the opt-in.
 - **A full node, not SPV:** the remote hsd must be a full node with the same indexes as a local one (`--index-tx --index-address`). An hsd started with `--spv` keeps no name state and no coins: it answers `getnameinfo` with no state for every name and cannot answer a coin lookup, so the wallet sees no auction on any name and cannot confirm a stranded lockup, an unrevealed bid or a balance against it.
 - **Plaintext-key guard:** the app refuses to send an API key over plaintext HTTP to a

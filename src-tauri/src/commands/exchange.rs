@@ -396,7 +396,10 @@ pub async fn exchange_btc_balance(state: State<'_, AppState>) -> Result<BtcBalan
             return Ok(b);
         }
     };
-    match btc_wallet::coins(srcs[0].as_ref(), &acct, ctx.network).await {
+    let names = env::config(&ctx.settings, ctx.network)
+        .btc_sources
+        .join("\n");
+    match btc_wallet::coins_shared(&srcs, &names, &acct, ctx.network).await {
         Ok(coins) => {
             for c in coins {
                 if c.height.is_some() {
@@ -523,7 +526,7 @@ pub async fn exchange_btc_withdraw(
         account_of(&conn, &ctx)?
     };
     let srcs = built_sources(&ctx)?;
-    let coins = btc_wallet::coins(srcs[0].as_ref(), &acct, ctx.network).await?;
+    let coins = btc_wallet::coins_from_any(&srcs, &acct, ctx.network).await?;
     let picked = btc_rate(&srcs).await?;
     let rate = picked.sat_per_vb;
     let confirmed: Vec<_> = coins.into_iter().filter(|c| c.height.is_some()).collect();
@@ -1204,7 +1207,7 @@ async fn buyer_commit(
             "the time to lock BTC for this trade is over".into(),
         ));
     }
-    let coins = btc_wallet::coins(srcs[0].as_ref(), acct, ctx.network).await?;
+    let coins = btc_wallet::coins_from_any(srcs, acct, ctx.network).await?;
     let picked = btc_rate(srcs).await?;
     let rate = picked.sat_per_vb;
     let hns_rate = draft_ctx::fee_rate(ctx, None)?;

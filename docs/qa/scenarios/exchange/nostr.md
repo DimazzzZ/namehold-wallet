@@ -1,6 +1,6 @@
 ---
 area: HNS ⇄ BTC exchange over Nostr — the Nostr relays in Exchange settings, an offer's events (publish, renew, withdraw), encrypted trade messages, each message handled once across restarts, relays going down (the 2-relay quorum), a custom relay in place of Nostr, the public default relays
-priority: P1–P3
+priority: P1–P2
 blocks: HNS 2, BTC 2
 requires:
   - procedures/exchange-setup.md
@@ -25,7 +25,7 @@ maker_x() { sqlite3 -readonly "$DB" "select signed_json from exchange_offers whe
 ## E41 — Nostr relays in Exchange settings
 
 - **Priority:** P1
-- **Covers:** spec 2026-11-12 R9, R10, R11; `env::with_nostr`, `settings_rows`, `NO_RELAY`
+- **Covers:** spec 2026-11-12 R9, R10, R11; `env::with_nostr`, `settings_rows`, `env::NO_MEETING_POINT` (the frontend's `NO_RELAY`)
 - **Preconditions:** [exchange-setup](../../procedures/exchange-setup.md) done; [nostr-relay](../../procedures/nostr-relay.md) step 1 with 3 relays; the Seller active; no trade open.
 
 Steps:

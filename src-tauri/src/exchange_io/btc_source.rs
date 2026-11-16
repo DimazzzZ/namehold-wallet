@@ -76,6 +76,9 @@ pub trait BtcSource: Send + Sync {
 /// An error of a Bitcoin source. Not `AppError::Rpc`: that one reads "Node
 /// RPC error", which names the Handshake node for a failure that is not its
 /// (QA 2026-11-09, Q2).
+/// The longest pause a source's `Retry-After` gets before one more try.
+pub const MAX_RETRY_AFTER_SECS: u64 = 5;
+
 fn rpc_err(src: &str, m: impl std::fmt::Display) -> AppError {
     AppError::Other(format!("Bitcoin source {src}: {m}"))
 }
@@ -102,12 +105,31 @@ impl Esplora {
     }
 
     async fn get_text(&self, path: &str) -> Result<Option<String>, AppError> {
-        let r = self
+        let url = format!("{}{}", self.base, path);
+        let mut r = self
             .http
-            .get(format!("{}{}", self.base, path))
+            .get(&url)
             .send()
             .await
             .map_err(|e| rpc_err(&self.base, e))?;
+        // A public server's rate limit: wait the pause it names (at most
+        // MAX_RETRY_AFTER_SECS) and ask once more before giving up.
+        if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let wait = r
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(1)
+                .min(MAX_RETRY_AFTER_SECS);
+            tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+            r = self
+                .http
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| rpc_err(&self.base, e))?;
+        }
         if r.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }

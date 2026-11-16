@@ -1,6 +1,6 @@
 # Exchange offers and messages over Nostr
 
-Status: accepted 2026-11-12, being implemented on `feat/exchange-nostr`. Extends [2026-11-07 HNS ⇄ BTC exchange](./2026-11-07-hns-btc-exchange.md) (§8 relay API, §9 commands); the trade protocol, its signatures and every on-chain check stay as that spec says.
+Status: accepted 2026-11-12; implemented (#162), released in 0.8.0 (beta). Extends [2026-11-07 HNS ⇄ BTC exchange](./2026-11-07-hns-btc-exchange.md) (§8 relay API, §9 commands); the trade protocol, its signatures and every on-chain check stay as that spec says.
 
 ## 1. Summary
 

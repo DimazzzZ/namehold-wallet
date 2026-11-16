@@ -2,6 +2,7 @@
 
 ## Releases
 
+- [0.8.0](#080---2026-11-16)
 - [0.7.1](#071---2026-11-06)
 - [0.7.0](#070---2026-11-04)
 - [0.6.1](#061---2026-10-25)
@@ -16,27 +17,35 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-16
+
+> **Highlights:** an **Exchange (beta)** where you trade HNS and BTC with other people by atomic swap, with nobody holding your coins and no server to run; and the window now opens at once while an update changes the database.
+
+### Security
+- The bundled SQLite is updated (`rusqlite` 0.41, `libsqlite3-sys` 0.39.1) for RUSTSEC-2026-0459 (CVE-2026-119375 in SQLite), and `rustix` to 1.1.6 for RUSTSEC-2026-0486 (its xattr functions could mark unwritten bytes as initialized; reached only through the updater's archive handling).
+
 ### Fixed
 - **The window opens while the database is updated.** An update's database changes ran before the window was created, so after updating to 0.7.1 with a large database Namehold showed no window, or a frozen one, for minutes and macOS reported it as not responding. The window now opens at once and shows the update's progress (step, share of the file read, time elapsed); the app appears when it finishes. If the update fails, the window says why and offers Try again.
 - **An update stopped halfway no longer blocks the next start.** Each database change was recorded as applied in a separate step after it, so a Namehold quit between the two ran the change again on the next start, and a change that cannot run twice then failed on every start. A change and its record now commit together.
 
 ### Added
-- **An Exchange for trading HNS and BTC with other people (beta).** The new Exchange page has an order book of offers to sell and to buy HNS, your own offers and trades, and a Bitcoin account made from your recovery phrase (BIP 84, so any Bitcoin wallet restores it).
-  - Each trade is an atomic swap: both sides get paid, or both get their own coins back. Nobody holds your coins in between, not even the relay or the watchtower.
-  - You confirm once in the secure window, and that one confirmation signs every transaction of your side. After it, the background sync reveals, claims and refunds on its own. It sends only what you signed.
-  - Bitcoin is checked by proof of work, and every configured source must agree.
-  - An optional watchtower claims for you while your computer is off.
-  - When the exchange cannot be used with a wallet, every button says why.
-  - Exchange sits after Market in the sidebar, marked New, so the keys for Activity and Settings are now 5 and 6.
-  - It is a beta: a banner at the top of the page asks you to trade small amounts first and to report every problem as a GitHub issue, with a button that opens a new one.
-  - Offers and trade messages go through public Nostr relays, so the exchange works without anyone running a server for it; trade messages are encrypted to the other side. Exchange settings list the relays (six by default on mainnet and testnet). If someone you trust runs `namehold-relay` (docs/RELAY.md), you can use it instead, and it can also be your watchtower. Trades are limited to 0.1 BTC each on mainnet.
+- **Exchange: trade HNS and BTC with other people (beta).** A new page after Market in the sidebar, marked New.
+  - **Order book and offers.** Offers to sell and to buy HNS, priced in sats per HNS, each with a smallest and a largest trade. Take one, or publish your own: publishing signs and locks nothing, and Withdraw takes it down.
+  - **Atomic swaps.** Both sides get paid, or both get their own coins back. Nobody holds your coins in between: not the relays, not a watchtower, not the project.
+  - **One confirmation per trade.** The secure window shows the amounts, the fees, the addresses and the deadlines, and that one confirmation signs every transaction of your side. The background sync then claims and refunds on its own, with the app closed too, and sends only what you signed.
+  - **No server needed.** Offers and trade messages travel over public Nostr relays (six by default on mainnet and testnet, editable in Exchange settings); trade messages are encrypted to the other side. A `namehold-relay` that someone you trust runs can be used instead, and it can also be your watchtower, which claims for you while your computer is off ([docs/RELAY.md](docs/RELAY.md)).
+  - **Checked, not trusted.** Every Bitcoin lock is proven by proof of work, and every Bitcoin source must report the same block (two public servers by default; a local Bitcoin Core with `-txindex` can be one). The HNS side needs a node on this computer.
+  - **A Bitcoin account** made from your recovery phrase (BIP 84, so any Bitcoin wallet restores it): its balance, what is locked in trades, a receive address, and Withdraw BTC.
+  - **Notifications** unless deadline notifications are turned off: a trade needs your confirmation, the buyer took the HNS, a trade completed, or its coins came back.
+  - **Limits:** 0.0005 to 0.1 BTC a trade on mainnet. A recovery-phrase wallet is needed; with a Ledger or watch-only wallet, or a remote node, every button says why it cannot be used.
+  - **A beta:** a banner asks you to trade small amounts first and to report every problem as a GitHub issue, with a button that opens one.
+- **Keys:** `4` opens the Exchange, so Activity and Settings move to `5` and `6`.
 
 ### CI / tooling
-- E2E tests run on Ubuntu 26.04, which renamed the WebDriver package they need; on the old name the package cache installed nothing and every E2E run failed.
+- E2E tests run on Ubuntu 26.04, which renamed the WebDriver package they need; under the old name the package cache installed nothing and every E2E run failed.
+- A live test shows that a wallet moves from Bob Wallet to Namehold by its recovery phrase alone: the keys, the coins, the names and an unrevealed bid, which Namehold finds and reveals.
 - The live exchange tests fund their locks from as many regtest coinbases as it takes, so they pass at any height of the local chain.
-
-### Security
-- The bundled SQLite is updated (`rusqlite` 0.41, `libsqlite3-sys` 0.39.1) for RUSTSEC-2026-0459 (CVE-2026-119375 in SQLite), and `rustix` to 1.1.6 for RUSTSEC-2026-0486 (its xattr functions could mark unwritten bytes as initialized; reached only through the updater's archive handling).
+- QA cases for the exchange, over a local `namehold-relay` and over local Nostr relays (`scripts/nostr-relay.sh`), so another agent can check every path of a trade on regtest.
 
 ## [0.7.1] - 2026-11-06
 
