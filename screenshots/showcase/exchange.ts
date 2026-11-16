@@ -121,7 +121,7 @@ function timeline(t0: number): TradeTimeline {
 const TXIDS: Record<string, string> = {
   "9b": "14112cca250804ffec7360c8126415d8d6ebd8ca6cee7f299b1b1fb058139c87",
   "4c": "c34d5897e1bbe56410ddf46945b4a664d2da07a5ea2809c0fee26f1792921759",
-  "a2": "a19cf7fc486d09e60b10321bca92776ebcb1adcbd90f223471d2b8e9147a50da",
+  a2: "a19cf7fc486d09e60b10321bca92776ebcb1adcbd90f223471d2b8e9147a50da",
   "6f": "566d4537631976bdda05e5a40033527e9d6e3b5d55562b63493d90de368a0a08",
 };
 const outpoint = (tag: string, vout = 0) => ({ txid: TXIDS[tag]!, vout });
