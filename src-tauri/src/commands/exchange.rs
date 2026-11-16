@@ -396,7 +396,10 @@ pub async fn exchange_btc_balance(state: State<'_, AppState>) -> Result<BtcBalan
             return Ok(b);
         }
     };
-    match btc_wallet::coins_from_any(&srcs, &acct, ctx.network).await {
+    let names = env::config(&ctx.settings, ctx.network)
+        .btc_sources
+        .join("\n");
+    match btc_wallet::coins_shared(&srcs, &names, &acct, ctx.network).await {
         Ok(coins) => {
             for c in coins {
                 if c.height.is_some() {

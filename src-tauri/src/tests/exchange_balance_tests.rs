@@ -161,3 +161,52 @@ async fn every_source_refusing_names_each_on_the_card() {
     assert!(e.contains(&b.url()) && e.contains("503"), "{e}");
     assert_eq!(got.confirmed_sats, 0);
 }
+
+/// Two reads at once (the page re-opened, Refresh pressed while a read runs)
+/// make one scan: the second waits for the first and takes its answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_reads_at_once_scan_the_account_once() {
+    let mut src = mockito::Server::new_async().await;
+    let all = src
+        .mock("GET", mockito::Matcher::Regex(r"^/address/.*/utxo$".into()))
+        .with_body_from_request(|_| {
+            // A slow public server: the two reads overlap.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            b"[]".to_vec()
+        })
+        .expect(2 * btc_account::GAP_LIMIT as usize)
+        .create_async()
+        .await;
+    let app = app_with(seeded(&src.url()));
+    let (a, b) = tokio::join!(
+        exchange_btc_balance(app.state()),
+        exchange_btc_balance(app.state())
+    );
+    assert_eq!(a.unwrap().error, None);
+    assert_eq!(b.unwrap().error, None);
+    all.assert_async().await;
+}
+
+/// A source that answers 429 once, with Retry-After, is asked again after the
+/// pause it names instead of failing the whole read.
+#[tokio::test]
+async fn a_429_with_retry_after_is_asked_again_once() {
+    let mut src = mockito::Server::new_async().await;
+    let first = src
+        .mock("GET", format!("/address/{}/utxo", first_receive()).as_str())
+        .with_status(429)
+        .with_header("retry-after", "0")
+        .expect(1)
+        .create_async()
+        .await;
+    let rest = src
+        .mock("GET", mockito::Matcher::Regex(r"^/address/.*/utxo$".into()))
+        .with_body("[]")
+        .create_async()
+        .await;
+    let app = app_with(seeded(&src.url()));
+    let b = exchange_btc_balance(app.state()).await.unwrap();
+    assert_eq!(b.error, None, "the card: {:?}", b.error);
+    first.assert_async().await;
+    let _ = rest;
+}
