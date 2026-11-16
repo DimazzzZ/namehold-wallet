@@ -33,3 +33,31 @@ pub async fn coins(
     }
     Ok(out)
 }
+
+/// The BTC account's coins from the first source that answers for every
+/// scanned address, in the order the settings list them. One source refusing
+/// (a public server's rate limit, an outage) no longer leaves the account
+/// unread while another is set; the error names every source that failed.
+pub async fn coins_from_any(
+    srcs: &[Box<dyn BtcSource>],
+    acct: &Account,
+    network: Network,
+) -> Result<Vec<BtcCoin>, AppError> {
+    let mut errors: Vec<AppError> = Vec::new();
+    for src in srcs {
+        match coins(src.as_ref(), acct, network).await {
+            Ok(c) => return Ok(c),
+            Err(e) => errors.push(e),
+        }
+    }
+    if errors.len() > 1 {
+        let all: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        return Err(AppError::Other(format!(
+            "no Bitcoin source could be read: {}",
+            all.join("; ")
+        )));
+    }
+    Err(errors.pop().unwrap_or_else(|| {
+        AppError::InvalidInput("no Bitcoin source is set: add one in Exchange settings".into())
+    }))
+}
