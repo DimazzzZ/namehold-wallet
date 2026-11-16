@@ -177,3 +177,52 @@ impl RelayClient {
         Ok((status, sent))
     }
 }
+
+#[async_trait::async_trait]
+impl crate::exchange_io::meeting::MeetingPoint for RelayClient {
+    async fn publish_offer(
+        &self,
+        o: &SignedOffer,
+        _key: &secp256k1::SecretKey,
+    ) -> Result<(), AppError> {
+        RelayClient::publish_offer(self, o).await
+    }
+    async fn withdraw_offer(
+        &self,
+        o: &SignedOffer,
+        signature: &str,
+        _key: &secp256k1::SecretKey,
+    ) -> Result<(), AppError> {
+        RelayClient::withdraw_offer(self, &o.offer.id(), signature).await
+    }
+    async fn offers(&self, network: &str, now: u64) -> Result<(Vec<SignedOffer>, usize), AppError> {
+        RelayClient::offers(self, network, now).await
+    }
+    async fn send(&self, e: &Envelope, _key: &secp256k1::SecretKey) -> Result<(), AppError> {
+        RelayClient::send(self, e).await
+    }
+    async fn inbox(
+        &self,
+        key: &secp256k1::SecretKey,
+        network: &str,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<Envelope>, Option<String>), AppError> {
+        // A cursor the Nostr meeting point wrote means nothing here.
+        let cursor =
+            cursor.filter(|c| !c.starts_with(crate::exchange_io::meeting::NOSTR_CURSOR_PREFIX));
+        RelayClient::inbox(
+            self,
+            &crate::noncustodial::exchange::relay_msg::relay_pubkey_hex(key),
+            network,
+            cursor,
+        )
+        .await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::exchange_io::meeting::Watchtower for RelayClient {
+    async fn watch(&self, job: &WatchJob) -> Result<String, AppError> {
+        RelayClient::watch(self, job).await
+    }
+}

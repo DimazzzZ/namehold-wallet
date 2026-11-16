@@ -1,6 +1,6 @@
 # Running a relay and watchtower (`namehold-relay`)
 
-`namehold-relay` is the server of the HNS ⇄ BTC exchange ([spec](specs/2026-11-07-hns-btc-exchange.md), API in §8). One process does two jobs:
+`namehold-relay` is an optional server for the HNS ⇄ BTC exchange ([spec](specs/2026-11-07-hns-btc-exchange.md), API in §8). Nobody needs one to trade: by default the app sends offers and trade messages through public Nostr relays ([spec](specs/2026-11-12-exchange-nostr-transport.md)), and the Namehold project runs no server for the exchange. A user who enters a `namehold-relay` URL in Exchange settings uses it instead of Nostr; a watchtower, which Nostr has no equivalent for, needs one. One process does two jobs:
 
 - **Relay.** It carries the order book (signed offers) and the trade messages between two Namehold apps.
 - **Watchtower.** It keeps the presigned transactions a party registers after its Commit and sends them at the right moment: the Seller's claim of the BTC lock as soon as the secret appears on the HNS chain, and each party's refund once its time has come. Every minute it runs on every job the same step the app's own daemon runs (`exchange_io::runner::run_step`).
@@ -17,7 +17,7 @@ The server holds **no private key and no secret** that is not already public. It
 
 Limits that follow from this design:
 
-- A signed offer is public. Anyone who has fetched one can post it again, and posting is the heartbeat, so a third party can keep an offer listed until it expires or its maker withdraws it. A withdrawal is final: the server refuses the same offer until it expires.
+- A signed offer is public. Anyone who has fetched one can post it again to a `namehold-relay`, and posting is the heartbeat, so a third party can keep an offer listed there until it expires or its maker withdraws it. (Over Nostr an offer is taken only from its maker's key, so this does not apply there.) A withdrawal is final: the server refuses the same offer until it expires.
 - A job is identified by `<terms id>-<role>`, and the server keeps the first job registered under an id; a different job under the same id is refused (409). A job is taken only when every presigned spend in it spends the job's lock and carries the lock key's valid signature (`WatchJob::check`, spec R19), so only the holder of that key can register it: a counterparty who knows the terms cannot take the other party's id first.
 
 ## Build

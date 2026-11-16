@@ -21,8 +21,8 @@ use bitcoin::{
 
 use crate::error::AppError;
 use crate::exchange_io::btc_source::{branch_for, BtcSource, Outspend, SourceUtxo};
-use crate::exchange_io::job::Relay;
-use crate::noncustodial::exchange::relay_msg::{Envelope, SignedOffer};
+use crate::exchange_io::meeting::{MeetingPoint, Watchtower};
+use crate::noncustodial::exchange::relay_msg::{self, Envelope, SignedOffer};
 use crate::noncustodial::exchange::watch::WatchJob;
 
 struct Block {
@@ -395,25 +395,72 @@ pub struct FakeRelay {
 }
 
 #[async_trait]
-impl Relay for FakeRelay {
-    async fn publish_offer(&self, o: &SignedOffer) -> Result<(), AppError> {
+impl MeetingPoint for FakeRelay {
+    async fn publish_offer(
+        &self,
+        o: &SignedOffer,
+        key: &secp256k1::SecretKey,
+    ) -> Result<(), AppError> {
+        assert_eq!(
+            relay_msg::relay_pubkey_hex(key),
+            o.offer.maker_relay_pubkey,
+            "the code under test published an offer with another key"
+        );
         let mut v = self.offers.lock().unwrap();
         if !v.iter().any(|x| x.offer.id() == o.offer.id()) {
             v.push(o.clone());
         }
         Ok(())
     }
-    async fn send(&self, e: &Envelope) -> Result<(), AppError> {
+    async fn withdraw_offer(
+        &self,
+        o: &SignedOffer,
+        signature: &str,
+        key: &secp256k1::SecretKey,
+    ) -> Result<(), AppError> {
+        assert_eq!(relay_msg::relay_pubkey_hex(key), o.offer.maker_relay_pubkey);
+        assert!(relay_msg::verify_withdraw(
+            &o.offer.maker_relay_pubkey,
+            &o.offer.id(),
+            signature
+        ));
+        self.offers
+            .lock()
+            .unwrap()
+            .retain(|x| x.offer.id() != o.offer.id());
+        Ok(())
+    }
+    async fn offers(
+        &self,
+        network: &str,
+        _now: u64,
+    ) -> Result<(Vec<SignedOffer>, usize), AppError> {
+        let v = self.offers.lock().unwrap();
+        Ok((
+            v.iter()
+                .filter(|o| o.offer.network == network)
+                .cloned()
+                .collect(),
+            0,
+        ))
+    }
+    async fn send(&self, e: &Envelope, key: &secp256k1::SecretKey) -> Result<(), AppError> {
         assert!(e.verify(), "the code under test sent an unsigned message");
+        assert_eq!(
+            relay_msg::relay_pubkey_hex(key),
+            e.message.from,
+            "the code under test sent a message with another key"
+        );
         self.messages.lock().unwrap().push(e.clone());
         Ok(())
     }
     async fn inbox(
         &self,
-        to: &str,
+        key: &secp256k1::SecretKey,
         _network: &str,
         cursor: Option<&str>,
     ) -> Result<(Vec<Envelope>, Option<String>), AppError> {
+        let to = relay_msg::relay_pubkey_hex(key);
         let v = self.messages.lock().unwrap();
         let from: usize = cursor.and_then(|c| c.parse().ok()).unwrap_or(0);
         let msgs = v
@@ -424,6 +471,10 @@ impl Relay for FakeRelay {
             .collect();
         Ok((msgs, Some(v.len().to_string())))
     }
+}
+
+#[async_trait]
+impl Watchtower for FakeRelay {
     async fn watch(&self, job: &WatchJob) -> Result<String, AppError> {
         job.check()?;
         self.jobs.lock().unwrap().push(job.clone());

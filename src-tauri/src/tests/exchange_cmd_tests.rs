@@ -369,3 +369,126 @@ fn the_bitcoin_fee_rate_falls_back_to_the_relay_floor_and_says_so() {
     assert!(e.contains("nothing was signed"), "{e}");
     assert!(e.contains("s1: down; s2: no rate"), "{e}");
 }
+
+// ------------------------------------------- Nostr relays (spec 2026-11-12)
+
+mod nostr_settings {
+    use crate::commands::exchange::settings_rows;
+    use crate::exchange_io::env::{self, Meeting};
+    use crate::noncustodial::network::Network;
+    use std::collections::HashMap;
+
+    fn base() -> env::Config {
+        env::validate(Network::Main, "", "", &[], None).unwrap()
+    }
+
+    #[test]
+    fn settings_take_nostr_relays_only_as_wss_without_logins() {
+        let ok = |l: &[&str]| {
+            env::with_nostr(base(), &l.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            ok(&[" wss://relay.example ", "", "ws://127.0.0.1:7777"])
+                .unwrap()
+                .nostr_relays,
+            vec!["wss://relay.example", "ws://127.0.0.1:7777"]
+        );
+        for bad in [
+            "https://relay.example",
+            "ws://relay.example",
+            "wss://user:pass@relay.example",
+            "wss://re lay.example",
+            "wss://réla.example",
+            "relay.example",
+        ] {
+            assert!(ok(&[bad]).is_err(), "took {bad}");
+        }
+        let eleven: Vec<String> = (0..11).map(|i| format!("wss://r{i}.example")).collect();
+        assert!(env::with_nostr(base(), &eleven).is_err());
+    }
+
+    #[test]
+    fn the_defaults_are_the_six_checked_relays_on_main_and_testnet_and_none_on_regtest() {
+        let six: Vec<String> = env::DEFAULT_NOSTR_RELAYS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(six.len(), 6);
+        assert!(six.iter().all(|r| r.starts_with("wss://")));
+        let cfg = env::config(&HashMap::new(), Network::Main);
+        assert!(cfg.nostr_relays.is_empty(), "nothing stored");
+        assert_eq!(cfg.nostr(Network::Main), six);
+        assert_eq!(cfg.nostr(Network::Testnet), six);
+        assert!(cfg.nostr(Network::Regtest).is_empty());
+        assert!(cfg.nostr(Network::Simnet).is_empty());
+        // A stored list replaces the defaults.
+        let mut s = HashMap::new();
+        s.insert(
+            env::key(env::NOSTR_KEY, Network::Main),
+            "wss://a.example\nwss://b.example".to_owned(),
+        );
+        assert_eq!(
+            env::config(&s, Network::Main).nostr(Network::Main),
+            vec!["wss://a.example", "wss://b.example"]
+        );
+    }
+
+    #[test]
+    fn meeting_point_is_the_custom_relay_then_nostr_then_none() {
+        let main = env::config(&HashMap::new(), Network::Main);
+        assert_eq!(env::meeting_point(&main, Network::Main), Meeting::Nostr);
+        let regtest = env::config(&HashMap::new(), Network::Regtest);
+        assert_eq!(
+            env::meeting_point(&regtest, Network::Regtest),
+            Meeting::None
+        );
+        assert!(env::relay(&regtest, Network::Regtest).unwrap().is_none());
+        let mut custom = main.clone();
+        custom.relay_url = "https://relay.example".into();
+        assert_eq!(env::meeting_point(&custom, Network::Main), Meeting::Relay);
+        assert!(env::relay(&custom, Network::Main).unwrap().is_some());
+        let nostr_regtest = env::with_nostr(regtest, &["ws://127.0.0.1:7777".to_owned()]).unwrap();
+        assert_eq!(
+            env::meeting_point(&nostr_regtest, Network::Regtest),
+            Meeting::Nostr
+        );
+    }
+
+    /// The publication window names where the offer goes; over Nostr the
+    /// custom relay is empty and must not be what it shows.
+    #[test]
+    fn the_meeting_point_is_named_for_the_secure_window() {
+        let regtest = env::config(&HashMap::new(), Network::Regtest);
+        assert_eq!(env::meeting_point_text(&regtest, Network::Regtest), "none");
+        let nostr = env::with_nostr(
+            regtest.clone(),
+            &[
+                "ws://127.0.0.1:7777".to_owned(),
+                "ws://127.0.0.1:7778".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            env::meeting_point_text(&nostr, Network::Regtest),
+            "Nostr relays ws://127.0.0.1:7777, ws://127.0.0.1:7778"
+        );
+        let mut custom = nostr;
+        custom.relay_url = "http://127.0.0.1:8787".into();
+        assert_eq!(
+            env::meeting_point_text(&custom, Network::Regtest),
+            "http://127.0.0.1:8787"
+        );
+        let main = env::config(&HashMap::new(), Network::Main);
+        assert!(env::meeting_point_text(&main, Network::Main).starts_with("Nostr relays wss://"));
+    }
+
+    #[test]
+    fn a_nostr_change_is_a_row_of_the_secure_window() {
+        let old = base();
+        let new = env::with_nostr(base(), &["wss://a.example".to_owned()]).unwrap();
+        let rows = serde_json::to_string(&settings_rows(&old, &new)).unwrap();
+        assert!(rows.contains("Nostr relays"), "{rows}");
+        assert!(rows.contains("the defaults → wss://a.example"), "{rows}");
+        assert!(settings_rows(&new, &new).is_empty());
+    }
+}

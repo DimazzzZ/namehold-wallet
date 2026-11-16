@@ -93,3 +93,14 @@ describe("mapError: a series out of free coins", () => {
     expect(m).not.toMatch(/Insufficient HNS balance/);
   });
 });
+
+describe("mapError: a refused Nostr publish", () => {
+  it("keeps the count of relays and names each one that did not take it", () => {
+    const raw =
+      "the offer is saved but the relay refused it: Nostr: 1 of 3 relays took the event (2 needed): ws://127.0.0.1:7778: refused the connection (is it running?); ws://127.0.0.1:7779: no answer in time";
+    const shown = mapError(raw);
+    expect(shown).toContain("1 of 3 relays took the event (2 needed)");
+    expect(shown).toContain("ws://127.0.0.1:7778: refused the connection");
+    expect(shown).toContain("ws://127.0.0.1:7779: no answer in time");
+  });
+});

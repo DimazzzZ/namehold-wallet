@@ -39,6 +39,9 @@ function initial(): ExchangeState {
       btcSources: ["https://mempool.space/testnet/api", "https://blockstream.info/testnet/api"],
       btcNetwork: "regtest",
       bitcoindAuthSet: false,
+      nostrRelays: [],
+      defaultNostrRelays: [],
+      meetingPoint: "relay",
     },
     myOffers: [],
     trades: [],
@@ -169,7 +172,16 @@ export const exchangeHandlers: Record<string, Handler> = {
       watchtowerUrl: String(args?.watchtowerUrl ?? "") || null,
       btcSources: (args?.btcSources as string[] | undefined) ?? [],
       bitcoindAuthSet: auth == null ? state.overview.bitcoindAuthSet : auth !== "",
+      nostrRelays: (args?.nostrRelays as string[] | undefined) ?? [],
     };
+    const nostr = state.overview.nostrRelays.length
+      ? state.overview.nostrRelays
+      : state.overview.defaultNostrRelays;
+    state.overview.meetingPoint = state.overview.relayUrl
+      ? "relay"
+      : nostr.length
+        ? "nostr"
+        : "none";
     return { ...state.overview };
   },
   exchange_btc_balance: (): BtcBalance => ({
@@ -184,9 +196,10 @@ export const exchangeHandlers: Record<string, Handler> = {
   }),
   exchange_btc_withdraw: () => ({ txid: "c4".repeat(32) }),
   exchange_list_offers: (): MarketOffers => ({
-    offers: state.overview.relayUrl
-      ? [...DEMO_OFFERS, ...state.myOffers.map((o) => ({ ...o, own: true }))]
-      : [],
+    offers:
+      state.overview.meetingPoint !== "none"
+        ? [...DEMO_OFFERS, ...state.myOffers.map((o) => ({ ...o, own: true }))]
+        : [],
     fetchedAt: now(),
     error: null,
   }),

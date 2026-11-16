@@ -128,7 +128,7 @@ Expected:
 - **Evidence:** screenshots `E4-1-not-enabled`, `E4-3-enabled`.
 - **Cleanup / end state:** the profile enabled.
 
-## E5 — No relay set
+## E5 — No meeting point set
 
 - **Priority:** P2
 - **Covers:** spec §9 (`exchange_list_offers`, `exchange_create_offer`), `NO_RELAY`
@@ -136,15 +136,15 @@ Expected:
 
 Steps:
 
-1. Exchange › `Settings` → empty `Relay URL` → `Save`. Read the secure window; `Confirm & Sign`.
+1. Exchange › `Settings` → empty `Your own relay (optional)` (regtest has no default Nostr relays, so nothing is left) → `Save`. Read the secure window; `Confirm & Sign`.
 2. Read the Order book tab, `Make an offer…`, My offers' `Withdraw`, `Refresh`.
-3. `Settings` → `Relay URL` `http://127.0.0.1:8787` → `Save` → confirm.
+3. `Settings` → `Your own relay (optional)` `http://127.0.0.1:8787` → `Save` → confirm.
 4. After 2 minutes reopen My offers.
 
 Expected:
 
 - Step 1: secure window `Change exchange settings` with the one row `Relay` "http://127.0.0.1:8787 → none". Toast "Exchange settings saved".
-- Step 2: the Order book tab reads "No relay is set. Set one in Exchange settings to see and publish offers." (no offer tables); `Make an offer…` and every `Withdraw` disabled with that sentence; `Refresh` stays enabled.
+- Step 2: the Order book tab reads "No meeting point is set. Name Nostr relays or a relay in Exchange settings to see and publish offers." (no offer tables); `Make an offer…` and every `Withdraw` disabled with that sentence; `Refresh` stays enabled.
 - Step 3: the row `Relay` "none → http://127.0.0.1:8787"; the order book is back within 15 s.
 - Step 4: OB reads `Live` again (record whether it went `Paused` meanwhile: its heartbeat had no relay).
 - Passes if an empty relay is a clear, named state and setting it back restores the order book.
@@ -163,7 +163,7 @@ Expected:
 Steps:
 
 1. Exchange › `Settings`. Read the dialog.
-2. Field checks (no secure window yet): type `ftp://x` in `Relay URL`; then `127.0.0.1:18443` as the only source line; then `namehold` in `bitcoind RPC login (user:password)`. Clear each after reading it.
+2. Field checks (no secure window yet): type `https://relay.example` in `Nostr relays, one per line`; then `ftp://x` in `Your own relay (optional)`; then `127.0.0.1:18443` as the only source line; then `namehold` in `bitcoind RPC login (user:password)`. Clear each after reading it.
 3. Backend checks, with the source `bitcoind+http://127.0.0.1:18443` and the login `namehold:regtest` filled in, and in turn: relay `http://192.0.2.1:8787`; watchtower `http://192.0.2.1:8787`; source `bitcoind+http://192.0.2.1:18443`; relay `http://u:p@127.0.0.1:8787`; six source lines (`bitcoind+http://127.0.0.1:18443` six times). `Save` after each, then restore the field.
 4. The valid values of [exchange-setup](../../procedures/exchange-setup.md) step 9 → `Save` → read the secure window → `Cancel`. `Save` again → `Confirm & Sign`.
 5. Reopen `Settings`. Read the login field. `Save` with nothing changed. Reopen; type `namehold:other` in the login → `Save` → read → `Cancel`; `Cancel` the dialog. Reopen; press `Clear` → read → `Save` → read → `Cancel`; press `Keep`; `Cancel` the dialog.
@@ -171,10 +171,10 @@ Steps:
 
 Expected:
 
-- Step 1: title `Exchange settings`; fields `Relay URL`, `Watchtower URL (optional)` (placeholder "Empty: no watchtower"), `Bitcoin sources, one per line` (placeholder `https://mempool.space/api` / `bitcoind+http://127.0.0.1:18443`) with the hint "Bitcoin sources are not trusted: Namehold checks every lock by proof of work and needs every source to agree. An Esplora base URL looks like https://mempool.space/api; a local Bitcoin Core is bitcoind+http://127.0.0.1:18443.", `bitcoind RPC login (user:password)` (a password field); `Cancel` and `Save`. With no source: "Enter at least one Bitcoin source" under the sources and `Save` disabled. No `Clear` button while no login is stored.
-- Step 2: "Enter a URL that starts with http:// or https://"; "\"127.0.0.1:18443\" is not a Bitcoin source: use an Esplora URL (https://…) or bitcoind+http://host:port"; "Enter the RPC login as user:password". `Save` disabled while one shows.
+- Step 1: title `Exchange settings`; fields `Nostr relays, one per line` (empty, placeholder: the network's defaults, none on regtest) with the hint "Offers and trade messages go through these public Nostr relays, which other people run; messages are encrypted to the other side. Leave empty to use the defaults.", `Your own relay (optional)` (placeholder "Empty: the Nostr relays above", hint "Only if you trust someone who runs namehold-relay: when set, it is used instead of the Nostr relays."), `Watchtower URL (optional)` (placeholder "Empty: no watchtower"), `Bitcoin sources, one per line` (placeholder `https://mempool.space/api` / `bitcoind+http://127.0.0.1:18443`) with the hint "Bitcoin sources are not trusted: Namehold checks every lock by proof of work and needs every source to agree. An Esplora base URL looks like https://mempool.space/api; a local Bitcoin Core is bitcoind+http://127.0.0.1:18443.", `bitcoind RPC login (user:password)` (a password field); `Cancel` and `Save`. With no source: "Enter at least one Bitcoin source" under the sources and `Save` disabled. No `Clear` button while no login is stored.
+- Step 2: "\"https://relay.example\" is not a Nostr relay: use wss://host"; "Enter a URL that starts with http:// or https://"; "\"127.0.0.1:18443\" is not a Bitcoin source: use an Esplora URL (https://…) or bitcoind+http://host:port"; "Enter the RPC login as user:password". `Save` disabled while one shows.
 - Step 3: no secure window opens; under the fields, in red: "Invalid input: the relay URL must be https, or http to this machine"; "Invalid input: the watchtower URL must be https, or http to this machine"; "Invalid input: the Bitcoin source must be https, or http to this machine"; "Invalid input: the relay URL must not carry a user name or password"; "Invalid input: at most 5 Bitcoin sources". Nothing is contacted (192.0.2.1 is a documentation address).
-- Step 4: secure window `Change exchange settings`, message "Bitcoin sources are not trusted: Namehold checks every lock by proof of work and needs every source to agree. The relay and the watchtower hold no key and no secret.", rows `Relay` "none → http://127.0.0.1:8787", `Watchtower` "none → http://127.0.0.1:8787", `Bitcoin sources` "none → bitcoind+http://127.0.0.1:18443", `bitcoind login` "set". The login's value appears nowhere in the window. `Cancel` → the dialog shows "Confirmation declined" in red and stays open. After `Confirm & Sign`: toast "Exchange settings saved", the dialog closes, and the app still answers: `Refresh` updates `Checked` and the order book stops reading "No relay is set. Set one in Exchange settings to see and publish offers." (a dialog stuck on "Confirm in the secure window…" with the settings already stored is finding 17 again).
+- Step 4: secure window `Change exchange settings`, message "Bitcoin sources are not trusted: Namehold checks every lock by proof of work and needs every source to agree. The Nostr relays, the relay and the watchtower hold no key and no secret.", rows `Relay` "none → http://127.0.0.1:8787", `Watchtower` "none → http://127.0.0.1:8787", `Bitcoin sources` "none → bitcoind+http://127.0.0.1:18443", `bitcoind login` "set". The login's value appears nowhere in the window. `Cancel` → the dialog shows "Confirmation declined" in red and stays open. After `Confirm & Sign`: toast "Exchange settings saved", the dialog closes, and the app still answers: `Refresh` updates `Checked` and the order book stops reading "No relay is set. Set one in Exchange settings to see and publish offers." (a dialog stuck on "Confirm in the secure window…" with the settings already stored is finding 17 again).
 - Step 5: the login field is empty with the placeholder `set`, under it "A user:password is set. Leave the field empty to keep it.", and a `Clear` button. `Save` with nothing changed: no secure window, toast "Exchange settings saved". `namehold:other`: one row `bitcoind login` "changed" (never the value). `Clear`: the button reads `Keep`, the field is disabled and empty, the line reads "The stored user:password is removed when you save."; its window has one row `bitcoind login` "cleared". Every declined window leaves the settings as they were.
 - Step 6: the card shows balances and no red source error (the stored login still works).
 - Passes if every change is shown old → new in the secure window, the login only as set / changed / cleared, and nothing unconfirmed is stored.

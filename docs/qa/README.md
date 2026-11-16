@@ -15,7 +15,7 @@ The definitions live here; the results of a run never do. The short checklists i
 | [scenarios/](scenarios/) | the cases, one file per area |
 | [report-template.md](report-template.md) | the skeleton of a run's report |
 
-Procedures: [mine-and-sync](procedures/mine-and-sync.md), [switch-profile](procedures/switch-profile.md), [lock-and-list](procedures/lock-and-list.md), [cancel-and-bring-home](procedures/cancel-and-bring-home.md), [restore-and-import](procedures/restore-and-import.md), [cli-list-a-name](procedures/cli-list-a-name.md), [cli-fill](procedures/cli-fill.md), [buy-a-cli-listing](procedures/buy-a-cli-listing.md), [seed-many-names](procedures/seed-many-names.md); for the exchange [exchange-setup](procedures/exchange-setup.md) and [exchange-time-travel](procedures/exchange-time-travel.md).
+Procedures: [mine-and-sync](procedures/mine-and-sync.md), [switch-profile](procedures/switch-profile.md), [lock-and-list](procedures/lock-and-list.md), [cancel-and-bring-home](procedures/cancel-and-bring-home.md), [restore-and-import](procedures/restore-and-import.md), [cli-list-a-name](procedures/cli-list-a-name.md), [cli-fill](procedures/cli-fill.md), [buy-a-cli-listing](procedures/buy-a-cli-listing.md), [seed-many-names](procedures/seed-many-names.md); for the exchange [exchange-setup](procedures/exchange-setup.md) and [exchange-time-travel](procedures/exchange-time-travel.md), [nostr-relay](procedures/nostr-relay.md).
 
 ## Scenario index
 
@@ -37,6 +37,7 @@ Procedures: [mine-and-sync](procedures/mine-and-sync.md), [switch-profile](proce
 | [exchange/trades.md](scenarios/exchange/trades.md) | the happy path: both Commits and their secure windows, the locks, the reveal and the claim without a click, with the app closed, with either party the maker | E17 E18 E19 | P1–P2 | 6 (BTC 6) |
 | [exchange/refunds-and-safety.md](scenarios/exchange/refunds-and-safety.md) | the Seller never commits, the Buyer offline before the reveal, the Seller offline after it (the watchtower claims), the honest-wallet rule, a wrong-amount lock, the reveal deadline, a decoy coin | E20 … E25, E35 | P1–P3 | ~54 (BTC ~80) |
 | [exchange/recovery.md](scenarios/exchange/recovery.md) | cancelling, a kill right after a Commit, a deadline passing in the Commit window, relay outages, the watchtower line, restarts, Activity and notifications, the browser mock | E26 … E34 | P1–P3 | ~8 (BTC ~8) |
+| [exchange/nostr.md](scenarios/exchange/nostr.md) | the exchange over Nostr: the Nostr relays in settings, an offer's events (publish, renew, withdraw), encrypted trade messages, each message handled once across restarts, relays going down, a custom relay in place of Nostr, the public defaults before a release | E40 … E47 | P1–P3 | 2 (BTC 2) |
 
 Case ids are unique across all files. Setup ([environment](environment.md#test-names-for-a-run)) costs about 90 blocks more. The exchange's Bitcoin blocks (in brackets) are mined on its own bitcoind and do not count against the mining budget; its setup ([exchange-setup](procedures/exchange-setup.md)) costs about 12 HNS blocks.
 
@@ -65,6 +66,7 @@ The exchange cases need [exchange-setup](procedures/exchange-setup.md) (mode B i
 3. P1 without waiting: E1, E3, E9, E12, E17 with E26(d) folded in (between its steps 4 and 5, and after 8), E18, E26(a)(b), E27(a).
 4. P1 that wait, started back to back so one wait serves them all: E20 with [E30](scenarios/exchange/recovery.md) folded in before its Commit, E24, E26(c); then E23 (from its step 4 the daemon is off and the Buyer stays active: start it once the others no longer need a Seller click); then E22 (about 10 minutes, daemon off, Buyer active). E21 last, alone (the app and the daemon stay off until both its refunds).
 5. P2: E37; E38 once a refund case has run; E2, E5, E7, E11's step 2, E13, E15, E19, E27(b)(c), E28, E29, E30 if not folded, E34, E31; E39 after every trade case (it empties the Buyer's BTC account).
+   The Nostr cases ([exchange/nostr.md](scenarios/exchange/nostr.md)) after the trade cases, on local relays ([nostr-relay](procedures/nostr-relay.md)): E41 first, then E42, E43, E40 (P1), then E44, E45, E46 (P2). E47 only once per release and only with the maintainer's agreement: it writes to public relays.
 6. P3: E16; E35; E25 alone (no HNS block for 30 minutes); E32 over everything mined; E33 in the browser mock.
 
 With real time only, the waiting group takes about 2½ hours (the BTC refunds) and a full run 4–5 hours; with mocktime on both chains, well under 2 hours. About 60 HNS blocks and 110 Bitcoin blocks in all.

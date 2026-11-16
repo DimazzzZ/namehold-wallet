@@ -25,6 +25,7 @@ import {
   EXCHANGE_SUBTITLE,
   NO_RELAY,
   OWN_OFFER,
+  NOSTR_HINT,
   SOURCES_HINT,
   TAKE_ABOVE_MAX,
   TAKE_BELOW_MIN,
@@ -288,7 +289,10 @@ describe("Exchange page: order book", () => {
   });
 
   it("says when no relay is set and disables every offer action with that sentence", async () => {
-    mock({ overview: makeOverview({ relayUrl: "" }), myOffers: [makeOffer({ id: "mine-1" })] });
+    mock({
+      overview: makeOverview({ relayUrl: "", meetingPoint: "none" }),
+      myOffers: [makeOffer({ id: "mine-1" })],
+    });
     renderPage();
     expect(await screen.findByTestId("order-book-no-relay")).toHaveTextContent(NO_RELAY);
     expect(calls("exchange_list_offers")).toHaveLength(0);
@@ -772,9 +776,36 @@ describe("Exchange page: settings dialog", () => {
       watchtowerUrl: "",
       btcSources: ["https://mempool.space/api", "bitcoind+http://127.0.0.1:18443"],
       bitcoindAuth: "user:secret",
+      nostrRelays: [],
     });
     await waitFor(() => expect(screen.queryByTestId("settings-save")).toBeNull());
     expect(toasts()).toContain("Exchange settings saved");
+  });
+
+  it("shows the default Nostr relays, checks each line and saves the list", async () => {
+    await openSettings(
+      makeOverview({
+        meetingPoint: "nostr",
+        relayUrl: "",
+        defaultNostrRelays: ["wss://relay.one", "wss://relay.two"],
+      }),
+    );
+    expect(screen.getByTestId("settings-nostr")).toHaveValue("");
+    expect(screen.getByTestId("settings-nostr")).toHaveAttribute(
+      "placeholder",
+      "wss://relay.one\nwss://relay.two",
+    );
+    expect(screen.getByTestId("settings-nostr-hint")).toHaveTextContent(NOSTR_HINT);
+    type("settings-nostr", "wss://mine.example\nhttps://not-a-relay");
+    expect(screen.getByTestId("settings-nostr-error")).toHaveTextContent('"https://not-a-relay"');
+    expect(screen.getByTestId("settings-save")).toBeDisabled();
+    type("settings-nostr", " wss://mine.example \n\nwss://other.example");
+    fireEvent.click(screen.getByTestId("settings-save"));
+    await waitFor(() => expect(calls("exchange_update_settings")).toHaveLength(1));
+    expect(calls("exchange_update_settings")[0]![1]).toMatchObject({
+      nostrRelays: ["wss://mine.example", "wss://other.example"],
+      relayUrl: "",
+    });
   });
 
   it("keeps a stored login when the field is left empty, and Clear sends an empty one", async () => {

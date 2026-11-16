@@ -27,6 +27,9 @@ export function makeOverview(over: Partial<ExchangeOverview> = {}): ExchangeOver
     btcSources: ["https://mempool.example/api", "https://blockstream.example/api"],
     btcNetwork: "regtest",
     bitcoindAuthSet: false,
+    nostrRelays: [],
+    defaultNostrRelays: [],
+    meetingPoint: "relay",
     ...over,
   };
 }

@@ -385,6 +385,7 @@ fn settings_with(source: String, login: &str) -> crate::exchange_io::env::Config
         watchtower_url: String::new(),
         btc_sources: vec![source],
         bitcoind_auth: Some(login.to_owned()),
+        nostr_relays: Vec::new(),
     }
 }
 

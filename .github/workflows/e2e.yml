@@ -16,7 +16,9 @@ permissions:
 jobs:
   e2e:
     name: E2E Tests (Tauri App)
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: the WebDriver package below has the name
+    # Ubuntu 26.04 gives it, and ubuntu-latest moves between images.
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     env:
       RUSTC_WRAPPER: sccache
@@ -62,7 +64,10 @@ jobs:
 
       # Same Tauri build deps as ci.yml / release.yml, plus the two packages
       # needed to drive the built app headlessly under WebDriver:
-      #   - webkit2gtk-driver: provides WebKitWebDriver, which tauri-driver wraps
+      #   - webkitgtk-webdriver: provides WebKitWebDriver, which tauri-driver
+      #     wraps. Ubuntu 26.04 renamed it from webkit2gtk-driver, which is only
+      #     a virtual name there: the apt cache action cannot resolve a virtual
+      #     package, installs nothing and caches the empty set (2026-11-16).
       #   - xvfb: virtual framebuffer so the GTK/WebKit window has a display
       #   - gsettings-desktop-schemas + dbus-x11: WebKit's network process reads
       #     the org.gnome.system.proxy GSettings schema on startup. Without the
@@ -88,7 +93,7 @@ jobs:
             build-essential
             libssl-dev
             mold
-            webkit2gtk-driver
+            webkitgtk-webdriver
             xvfb
             gsettings-desktop-schemas
             dbus-x11

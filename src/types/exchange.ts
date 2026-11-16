@@ -34,6 +34,11 @@ export type ExchangeOverview = {
   btcNetwork: string;
   /** A bitcoind RPC `user:password` is stored (its value never crosses the bridge). */
   bitcoindAuthSet: boolean;
+  /** The Nostr relays as set; empty = `defaultNostrRelays`. */
+  nostrRelays: string[];
+  defaultNostrRelays: string[];
+  /** Where offers and messages go: the custom relay, Nostr, or nowhere. */
+  meetingPoint: "relay" | "nostr" | "none";
 };
 
 export type BtcBalance = {

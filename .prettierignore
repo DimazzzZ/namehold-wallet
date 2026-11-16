@@ -15,3 +15,6 @@ src-tauri/tests/vectors/shakedex/*.json
 
 # Replies recorded from a real Esplora server, kept byte for byte as served.
 src-tauri/src/tests/fixtures/esplora/
+# A Nostr event read from a public relay and the official NIP-44 test
+# vectors: kept byte for byte, the tests recompute ids and checksums from them.
+src-tauri/src/tests/fixtures/nostr/
