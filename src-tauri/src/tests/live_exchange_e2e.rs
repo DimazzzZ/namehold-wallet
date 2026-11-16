@@ -350,42 +350,61 @@ async fn live_exchange_e2e_an_honest_trade_settles_both_sides_through_the_job_al
 
     // 5. The Seller's Commit: an HNS funding of the lock, then the rest.
     let funder = run_key("seller hns");
-    node.generate_to_address(1, &hns_addr_of(&funder))
-        .await
-        .unwrap();
+    // Coinbases to the funder until they cover the lock and the fee: one
+    // block's subsidy halves every 2500 regtest blocks, so how many it takes
+    // depends on the chain's height, not on this test.
+    let fee = 100_000u64;
+    let mut coins = Vec::new();
+    for _ in 0..2000 {
+        node.generate_to_address(1, &hns_addr_of(&funder))
+            .await
+            .unwrap();
+        coins = node
+            .get_coins_by_address(&hns_addr_of(&funder))
+            .await
+            .unwrap();
+        let total: u64 = coins.iter().map(|c| c.value as u64).sum();
+        if total >= terms.hns_amount + fee {
+            break;
+        }
+    }
+    let total: u64 = coins.iter().map(|c| c.value as u64).sum();
+    assert!(
+        total >= terms.hns_amount + fee,
+        "the funder's coinbases: {total}"
+    );
     node.generate_to_address(3, &miner()).await.unwrap();
-    let coin = node
-        .get_coins_by_address(&hns_addr_of(&funder))
-        .await
-        .unwrap()
-        .remove(0);
     let hp = terms.hns_params().unwrap();
     let mut funding = Transaction::new();
-    let mut h = [0u8; 32];
-    hex::decode_to_slice(&coin.txid, &mut h).unwrap();
-    funding.inputs.push(Input::new(Outpoint {
-        hash: h,
-        index: coin.vout,
-    }));
+    for coin in &coins {
+        let mut h = [0u8; 32];
+        hex::decode_to_slice(&coin.txid, &mut h).unwrap();
+        funding.inputs.push(Input::new(Outpoint {
+            hash: h,
+            index: coin.vout,
+        }));
+    }
     funding
         .outputs
         .push(hns_htlc::lock_output(&hp, terms.hns_amount));
     funding.outputs.push(Output {
-        value: coin.value as u64 - terms.hns_amount - 100_000,
+        value: total - terms.hns_amount - fee,
         address: crate::noncustodial::tx::output_address_from_string(NET, &hns_addr_of(&funder))
             .unwrap(),
         covenant: Covenant::default(),
     });
     let fpk = PublicKey::from_secret_key(&Secp256k1::new(), &funder).serialize();
-    funding
-        .sign_p2wpkh_input(
-            0,
-            &funder,
-            &address::pubkey_to_hash160(&fpk),
-            coin.value as u64,
-            sighash::ALL,
-        )
-        .unwrap();
+    for (i, coin) in coins.iter().enumerate() {
+        funding
+            .sign_p2wpkh_input(
+                i,
+                &funder,
+                &address::pubkey_to_hash160(&fpk),
+                coin.value as u64,
+                sighash::ALL,
+            )
+            .unwrap();
+    }
     let st = only_trade(&conn, SELLER);
     let sacct = store::account(&conn, SELLER).unwrap().unwrap();
     let seller_btc_to = btc_account::address_at(&sacct.btc_xpub, NET, 0, 0).unwrap();

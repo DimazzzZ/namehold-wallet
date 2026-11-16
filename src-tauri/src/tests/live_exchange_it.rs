@@ -56,39 +56,61 @@ async fn mine(node: &NodeRpcClient, n: u32, to: &str) {
     node.generate_to_address(n, to).await.unwrap();
 }
 
-/// A spendable coin of `funder`'s: mine to it, then past coinbase maturity.
-async fn fund(node: &NodeRpcClient, funder: &SecretKey) -> crate::noncustodial::rpc::NodeCoin {
+/// Spendable coins of `funder`'s worth at least `need`: coinbases to it,
+/// then past coinbase maturity. One block's subsidy halves every 2500
+/// regtest blocks, so how many blocks that takes depends on the chain's
+/// height, not on the test.
+async fn fund(
+    node: &NodeRpcClient,
+    funder: &SecretKey,
+    need: u64,
+) -> Vec<crate::noncustodial::rpc::NodeCoin> {
     let a = addr(funder);
-    mine(node, 1, &a).await;
+    let mut coins = Vec::new();
+    for _ in 0..2000 {
+        mine(node, 1, &a).await;
+        coins = node.get_coins_by_address(&a).await.unwrap();
+        if coins.iter().map(|c| c.value as u64).sum::<u64>() >= need {
+            break;
+        }
+    }
+    assert!(
+        coins.iter().map(|c| c.value as u64).sum::<u64>() >= need,
+        "the funder's coinbases cover {need}"
+    );
     mine(node, 3, &addr(&key("someone else"))).await;
-    let coins = node.get_coins_by_address(&a).await.unwrap();
-    coins.into_iter().next().expect("a mined coin")
+    coins
 }
 
-/// Pay `value` from `coin` to the lock of `p`, change back to the funder.
+/// Pay `value` from `coins` to the lock of `p`, change back to the funder.
 fn lock_tx(
     funder: &SecretKey,
-    coin: &crate::noncustodial::rpc::NodeCoin,
+    coins: &[crate::noncustodial::rpc::NodeCoin],
     p: &HtlcParams,
     value: u64,
 ) -> Transaction {
     let mut tx = Transaction::new();
-    let mut h = [0u8; 32];
-    hex::decode_to_slice(&coin.txid, &mut h).unwrap();
-    tx.inputs.push(Input::new(Outpoint {
-        hash: h,
-        index: coin.vout,
-    }));
+    for coin in coins {
+        let mut h = [0u8; 32];
+        hex::decode_to_slice(&coin.txid, &mut h).unwrap();
+        tx.inputs.push(Input::new(Outpoint {
+            hash: h,
+            index: coin.vout,
+        }));
+    }
     tx.outputs.push(hns_htlc::lock_output(p, value));
     let fee = 100_000;
+    let total: u64 = coins.iter().map(|c| c.value as u64).sum();
     tx.outputs.push(Output {
-        value: coin.value as u64 - value - fee,
+        value: total - value - fee,
         address: crate::noncustodial::tx::output_address_from_string(NET, &addr(funder)).unwrap(),
         covenant: Covenant::default(),
     });
     let hash160 = address::pubkey_to_hash160(&pubkey(funder));
-    tx.sign_p2wpkh_input(0, funder, &hash160, coin.value as u64, sighash::ALL)
-        .unwrap();
+    for (i, coin) in coins.iter().enumerate() {
+        tx.sign_p2wpkh_input(i, funder, &hash160, coin.value as u64, sighash::ALL)
+            .unwrap();
+    }
     tx
 }
 
@@ -123,8 +145,8 @@ async fn live_exchange_hns_claim_signed_before_the_lock_is_mined_and_reveals_the
 
     // 2. The Seller locks.
     let seller = key("seller funds");
-    let coin = fund(&node, &seller).await;
-    let funding = lock_tx(&seller, &coin, &p, value);
+    let coins = fund(&node, &seller, value + 200_000).await;
+    let funding = lock_tx(&seller, &coins, &p, value);
     node.send_raw_transaction(&funding.to_hex()).await.unwrap();
     mine(&node, 1, &addr(&key("miner"))).await;
 
@@ -187,9 +209,9 @@ async fn live_exchange_hns_claim_does_not_fit_a_lock_of_another_value() {
     let claim =
         hns_htlc::sign_claim(NET, &p, value, &claim_key, &addr(&key("payout 2")), 20_000).unwrap();
     let seller = key("seller funds 2");
-    let coin = fund(&node, &seller).await;
+    let coins = fund(&node, &seller, value + 200_000).await;
     // The Seller locks one doo more than the terms.
-    let funding = lock_tx(&seller, &coin, &p, value + 1);
+    let funding = lock_tx(&seller, &coins, &p, value + 1);
     node.send_raw_transaction(&funding.to_hex()).await.unwrap();
     mine(&node, 1, &addr(&key("miner"))).await;
     // The observer does not call it the lock.
@@ -226,8 +248,8 @@ async fn live_exchange_hns_refund_is_refused_before_its_time_and_mined_after() {
         refund_pubkey: pubkey(&refund_key),
         refund_lock_time: hns_htlc::encode_time_lock(mtp + 86_400).unwrap(),
     };
-    let coin = fund(&node, &seller).await;
-    let funding = lock_tx(&seller, &coin, &future, value);
+    let coins = fund(&node, &seller, value + 200_000).await;
+    let funding = lock_tx(&seller, &coins, &future, value);
     node.send_raw_transaction(&funding.to_hex()).await.unwrap();
     mine(&node, 1, &addr(&key("miner"))).await;
     let mut h = [0u8; 32];
@@ -254,8 +276,8 @@ async fn live_exchange_hns_refund_is_refused_before_its_time_and_mined_after() {
         ..future.clone()
     };
     assert!(hns_htlc::time_lock_open(past.refund_lock_time, mtp));
-    let coin = fund(&node, &seller).await;
-    let funding = lock_tx(&seller, &coin, &past, value);
+    let coins = fund(&node, &seller, value + 200_000).await;
+    let funding = lock_tx(&seller, &coins, &past, value);
     node.send_raw_transaction(&funding.to_hex()).await.unwrap();
     mine(&node, 1, &addr(&key("miner"))).await;
     hex::decode_to_slice(funding.txid(), &mut h).unwrap();
