@@ -3,7 +3,7 @@
 [![Coverage](https://img.shields.io/badge/coverage-97.81%25%20lines-brightgreen)](https://github.com/DimazzzZ/namehold-wallet/pull/50)
 
 Namehold is a local desktop wallet for **Handshake (HNS)**: hold HNS, manage the
-names you own, run the full name-auction lifecycle, and edit on-chain DNS — all
+names you own, run the full name-auction lifecycle, edit on-chain DNS, buy and sell names through Shakedex, and trade HNS for BTC with other people by atomic swap — all
 non-custodially, with your keys encrypted on your own machine. It used to include a **Move from Namebase** helper; the legacy custodial Namebase closed on 1 October 2026, so that part of the app, now Import from Namebase under Settings › Backup & import, explains the shutdown and keeps only the import of history you exported earlier.
 
 Built with Tauri v2, React + TypeScript, Rust, and SQLite.
@@ -35,6 +35,14 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
   <tr>
     <td align="center">Market (Shakedex)</td>
     <td align="center">Selling your names</td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/assets/exchange.png"><img src="docs/assets/exchange.png" alt="Exchange: an order book of offers to sell and to buy HNS for BTC, met over public Nostr relays, and the Bitcoin account made from your recovery phrase" /></a></td>
+    <td width="50%"><a href="docs/assets/exchange-trades.png"><img src="docs/assets/exchange-trades.png" alt="My trades: a trade waiting for your one confirmation, one waiting for the other side, and every deadline and lock of each" /></a></td>
+  </tr>
+  <tr>
+    <td align="center">Exchange HNS ⇄ BTC (beta)</td>
+    <td align="center">Your trades</td>
   </tr>
   <tr>
     <td width="50%"><a href="docs/assets/activity.png"><img src="docs/assets/activity.png" alt="Activity: what is left to finish, what waits for a block, and the history of this wallet" /></a></td>
@@ -107,6 +115,13 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
   restore, import from another wallet), Namehold can brute-force the bid value
   from your account xpub and reveal it before the window closes. See
   [`docs/RECOVER_LOST_BIDS.md`](docs/RECOVER_LOST_BIDS.md).
+
+### Exchange HNS ⇄ BTC (beta)
+- **Trade HNS for BTC with other people** on the Exchange page: an order book of offers to sell and to buy HNS, your own offers and trades, and a **Bitcoin account** made from your recovery phrase (BIP 84, so any Bitcoin wallet restores it). On mainnet a trade is 0.0005 to 0.1 BTC.
+- **An atomic swap**: both sides get paid, or both get their own coins back, and nobody holds your coins in between. One confirmation in the secure window signs every transaction of your side; the background sync then reveals, claims and refunds on its own, sending only what you signed.
+- **No server to trust or run**: offers and trade messages go through public **Nostr relays** (six by default, editable in Exchange settings), trade messages encrypted to the other side. A `namehold-relay` someone you trust runs can be used instead, and can also be your watchtower ([docs/RELAY.md](docs/RELAY.md)).
+- **Checked, not trusted**: Bitcoin locks are proven by proof of work and every Bitcoin source must agree; the HNS side needs a node on this computer. Relays and sources can delay a trade, never redirect coins.
+- It is a beta: trade small amounts first, keep the computer online until a trade ends, and report every problem as a GitHub issue. See the [User Manual](docs/USER_MANUAL.md) and [SECURITY.md](SECURITY.md#the-exchange-hns--btc).
 
 ### Node-free reads
 - Reads are **node-free by default** via the HNSFans explorer — no node required
@@ -198,7 +213,7 @@ For a detailed threat model, attack surfaces, and mitigations, see [SECURITY.md]
 - **Local-first** — keys and secrets stay on your device (encrypted at rest). By
   default, balance and name lookups query the public HNSFans explorer, which sees
   your wallet addresses and tracked names. Run your own hsd node (Settings) to keep
-  all lookups fully local. No cloud, no telemetry.
+  all lookups fully local. The Exchange talks to public Nostr relays and Bitcoin sources, which see your IP address and, for the relays, who trades with whom and when. No cloud, no telemetry.
 - **Auto-lock** — the unlocked signer locks after a configurable idle period (1 to 60 minutes) and at the latest an hour after it was unlocked; the decrypted master key is dropped, its bytes overwritten, within a second of the session expiring.
 - **Namebase migration (retired)** — the legacy Namebase it talked to shut down on 1 October 2026. A session cookie stored before then stays encrypted at rest and is never exposed to the web layer; disconnecting clears it. See [SECURITY.md](./SECURITY.md) for the threat model.
 

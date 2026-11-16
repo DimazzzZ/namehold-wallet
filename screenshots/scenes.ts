@@ -24,6 +24,18 @@ export const SCENES: Scene[] = [
       await page.getByRole("tab", { name: "My listings" }).click();
     },
   },
+  // The exchange: the order book over Nostr, then the trades, one of them
+  // waiting for our confirmation.
+  { file: "exchange", route: "/exchange" },
+  {
+    file: "exchange-trades",
+    route: "/exchange",
+    prepare: async (page) => {
+      await page.getByRole("tab", { name: /^My trades/ }).click();
+      // Off the tab, so its tooltip does not cover the page.
+      await page.mouse.move(0, 0);
+    },
+  },
   { file: "activity", route: "/activity" },
   { file: "settings", route: "/settings" },
 ];

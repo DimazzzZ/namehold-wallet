@@ -5,6 +5,7 @@
  * answer (the market's listings among them).
  */
 import * as world from "./world";
+import * as exchange from "./exchange";
 
 const now = new Date();
 
@@ -57,4 +58,11 @@ globalThis.__webqa_overrides = {
   shakedex_list_listings: world.myListings(now),
   get_namebase_history_summary: world.namebaseSummary(),
   get_namebase_history: world.namebaseHistory(),
+  // The exchange, enabled on mainnet over the default Nostr relays.
+  exchange_overview: exchange.exchangeOverview(),
+  exchange_list_offers: exchange.marketOffers(now),
+  exchange_my_offers: exchange.myOffers(now),
+  exchange_list_trades: exchange.trades(now),
+  exchange_refresh: exchange.trades(now),
+  exchange_btc_balance: exchange.btcBalance(now),
 };

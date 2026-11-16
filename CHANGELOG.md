@@ -2,6 +2,7 @@
 
 ## Releases
 
+- [0.8.0](#080---2026-11-16)
 - [0.7.1](#071---2026-11-06)
 - [0.7.0](#070---2026-11-04)
 - [0.6.1](#061---2026-10-25)
@@ -15,6 +16,10 @@
 - [0.1.0](#010---2026-06-30)
 
 ## [Unreleased]
+
+## [0.8.0] - 2026-11-16
+
+> **Highlights:** an Exchange (beta) for trading HNS and BTC with other people by atomic swap, with offers and trade messages over public Nostr relays, so it works without anyone running a server for it; and the window now opens at once while an update changes the database, showing its progress.
 
 ### Fixed
 - **The window opens while the database is updated.** An update's database changes ran before the window was created, so after updating to 0.7.1 with a large database Namehold showed no window, or a frozen one, for minutes and macOS reported it as not responding. The window now opens at once and shows the update's progress (step, share of the file read, time elapsed); the app appears when it finishes. If the update fails, the window says why and offers Try again.

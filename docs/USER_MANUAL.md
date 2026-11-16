@@ -861,7 +861,7 @@ signing key never touches your machine.
 
 ### Checking your current version
 
-Open **Settings › Updates**. Your running version is shown at the top of the card (e.g. "Current version v0.7.0"). It is also in the sidebar's footer and on the About page.
+Open **Settings › Updates**. Your running version is shown at the top of the card (e.g. "Current version v0.8.0"). It is also in the sidebar's footer and on the About page.
 
 ---
 

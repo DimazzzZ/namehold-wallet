@@ -1,6 +1,6 @@
 {
   "productName": "Namehold",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "identifier": "org.zhavoronkov.nameholdwallet",
   "build": {
     "frontendDist": "../dist",
