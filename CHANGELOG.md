@@ -2,7 +2,7 @@
 
 ## Releases
 
-- [0.8.0](#080---2026-11-16)
+- [0.8.0](#080---2026-11-17)
 - [0.7.1](#071---2026-11-06)
 - [0.7.0](#070---2026-11-04)
 - [0.6.1](#061---2026-10-25)
@@ -21,18 +21,6 @@
 
 > **Highlights:** an **Exchange (beta)** where you trade HNS and BTC with other people by atomic swap, with nobody holding your coins and no server to run; the ICANN badge now follows the strings ICANN confirmed on 17 November; and the window opens at once while an update changes the database.
 
-### Security
-- The bundled SQLite is updated (`rusqlite` 0.41, `libsqlite3-sys` 0.39.1) for RUSTSEC-2026-0459 (CVE-2026-119375 in SQLite), and `rustix` to 1.1.6 for RUSTSEC-2026-0486 (its xattr functions could mark unwritten bytes as initialized; reached only through the updater's archive handling).
-
-### Fixed
-- **A node that stopped answering no longer shows as starting forever.** A node Namehold started kept its process and port after the disk holding its data went away, but answered nothing; the app read "Starting mainnet node…" for days and the tray said the node was running. Ten minutes after its start, a node of Namehold's that does not answer now reads "Mainnet node not answering", says how long it has been silent, and offers Stop, so it can be started again; the tray no longer calls it running.
-- **The sync total shows how high the chain really is.** While the node synced, the status read "block 355,682 / 355,682": the total was the node's own height, which hsd reports as its header count. The total is now the highest height the node's peers report, and it is left out until a peer is ahead of the node.
-- **The window opens while the database is updated.** An update's database changes ran before the window was created, so after updating to 0.7.1 with a large database Namehold showed no window, or a frozen one, for minutes and macOS reported it as not responding. The window now opens at once and shows the update's progress (step, share of the file read, time elapsed); the app appears when it finishes. If the update fails, the window says why and offers Try again.
-- **An update stopped halfway no longer blocks the next start.** Each database change was recorded as applied in a separate step after it, so a Namehold quit between the two ran the change again on the next start, and a change that cannot run twice then failed on every start. A change and its record now commit together.
-
-### Changed
-- **The ICANN list holds the strings ICANN confirmed on String Confirmation Day (17 November):** 1,605 applications on 1,134 strings, 226 of them with more than one applicant (it was 1,614 on 1,214 from the Reveal Day export). The 9 applications withdrawn since and the replacement strings an applicant did not keep no longer count: 238 strings lose the ICANN badge and 158 gain it.
-
 ### Added
 - **Exchange: trade HNS and BTC with other people (beta).** A new page after Market in the sidebar, marked New.
   - **Order book and offers.** Offers to sell and to buy HNS, priced in sats per HNS. Take one, or publish your own: publishing signs and locks nothing, and Withdraw takes it down.
@@ -47,6 +35,18 @@
   - **Limits:** 0.0005 to 0.1 BTC a trade on mainnet. A recovery-phrase wallet is needed; with a Ledger or watch-only wallet, or a remote node, every button says why it cannot be used.
   - **A beta:** a banner asks you to trade small amounts first and to report every problem as a GitHub issue, with a button that opens one.
 - **Keys:** `4` opens the Exchange, so Activity and Settings move to `5` and `6`.
+
+### Changed
+- **The ICANN list holds the strings ICANN confirmed on String Confirmation Day (17 November):** 1,605 applications on 1,134 strings, 226 of them with more than one applicant (it was 1,614 on 1,214 from the Reveal Day export). The 9 applications withdrawn since and the replacement strings an applicant did not keep no longer count: 238 strings lose the ICANN badge and 158 gain it.
+
+### Fixed
+- **A node that stopped answering no longer shows as starting forever.** A node Namehold started kept its process and port after the disk holding its data went away, but answered nothing; the app read "Starting mainnet node…" for days and the tray said the node was running. Ten minutes after its start, a node of Namehold's that does not answer now reads "Mainnet node not answering", says how long it has been silent, and offers Stop, so it can be started again; the tray no longer calls it running.
+- **The sync total shows how high the chain really is.** While the node synced, the status read "block 355,682 / 355,682": the total was the node's own height, which hsd reports as its header count. The total is now the highest height the node's peers report, and it is left out until a peer is ahead of the node.
+- **The window opens while the database is updated.** An update's database changes ran before the window was created, so after updating to 0.7.1 with a large database Namehold showed no window, or a frozen one, for minutes and macOS reported it as not responding. The window now opens at once and shows the update's progress (step, share of the file read, time elapsed); the app appears when it finishes. If the update fails, the window says why and offers Try again.
+- **An update stopped halfway no longer blocks the next start.** Each database change was recorded as applied in a separate step after it, so a Namehold quit between the two ran the change again on the next start, and a change that cannot run twice then failed on every start. A change and its record now commit together.
+
+### Security
+- The bundled SQLite is updated (`rusqlite` 0.41, `libsqlite3-sys` 0.39.1) for RUSTSEC-2026-0459 (CVE-2026-119375 in SQLite), and `rustix` to 1.1.6 for RUSTSEC-2026-0486 (its xattr functions could mark unwritten bytes as initialized; reached only through the updater's archive handling).
 
 ### CI / tooling
 - E2E tests run on Ubuntu 26.04, which renamed the WebDriver package they need; under the old name the package cache installed nothing and every E2E run failed.
