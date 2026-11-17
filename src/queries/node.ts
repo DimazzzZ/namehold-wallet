@@ -16,6 +16,12 @@ export interface NodeStatus {
   ownership: "own" | "outside" | "none";
   /** An own node whose RPC has not answered yet (R11). */
   starting: boolean;
+  /**
+   * An own node whose process lives on long after its start (10 minutes)
+   * without answering: stuck, not starting. Stop it, then Start. Optional:
+   * older backends never send it.
+   */
+  not_answering?: boolean;
   /** The node's RPC actually answered — the truthful "node is up" signal. */
   connected: boolean;
   /** Chain height from the RPC probe, when connected. */

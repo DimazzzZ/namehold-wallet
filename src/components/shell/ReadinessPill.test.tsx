@@ -233,6 +233,27 @@ describe("ReadinessPill popover", () => {
     expect(screen.getByTestId("readiness-node-cancel")).toBeInTheDocument();
   });
 
+  it("says an own node silent long after its start is not answering, and offers Stop", async () => {
+    invokeMock.mockImplementation(
+      route(
+        node({
+          process_alive: true,
+          ownership: "own",
+          starting: false,
+          not_answering: true,
+          last_error:
+            "The mainnet node is running but has not answered since it started 8 days ago. Stop it and start it again.",
+        }),
+      ),
+    );
+    render(<ReadinessPill />, { wrapper: wrapper() });
+    await openPopover();
+    expect(await screen.findByText("Mainnet node not answering")).toBeInTheDocument();
+    expect(screen.queryByText("Starting mainnet node…")).toBeNull();
+    expect(screen.getByTestId("readiness-node-stop")).toHaveTextContent(/^Stop mainnet node$/);
+    expect(screen.queryByTestId("readiness-node-start")).toBeNull();
+  });
+
   it("offers Stop and Re-sync when connected; Re-sync asks first", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     invokeMock.mockImplementation(

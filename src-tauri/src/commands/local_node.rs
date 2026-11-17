@@ -203,6 +203,30 @@ pub(crate) fn own_node_pid_of(state: &AppState, network: Network) -> Option<u32>
     own_node_pid(std::path::Path::new(&data_dir))
 }
 
+/// How long an own node may go without answering its RPC and still count as
+/// starting. hsd answers within a minute or two of its start, its chain
+/// opening included; a node silent much longer is not starting but stuck
+/// (a node whose data disk went away kept its process and port for days).
+pub(crate) const NODE_START_GRACE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// How long ago `network`'s own node was started: the age of its pid file,
+/// which is written at every spawn. `None` when there is no record or its
+/// time cannot be read.
+pub(crate) fn own_node_age(state: &AppState, network: Network) -> Option<std::time::Duration> {
+    let data_dir = resolve_data_dir_for_network(state, network).ok()?;
+    let written = std::fs::metadata(std::path::Path::new(&data_dir).join(PID_FILE))
+        .ok()?
+        .modified()
+        .ok()?;
+    std::time::SystemTime::now().duration_since(written).ok()
+}
+
+/// Whether `network`'s own node, if its RPC is silent, is still within its
+/// start: no record of its start (it cannot be judged) counts as starting.
+pub(crate) fn own_node_may_still_be_starting(state: &AppState, network: Network) -> bool {
+    own_node_age(state, network).is_none_or(|age| age <= NODE_START_GRACE)
+}
+
 /// Why Stop refuses a node it did not start (spec 2026-10-24 R7).
 pub(crate) const OUTSIDE_NODE_NOT_STOPPED: &str =
     "This node was not started by Namehold, so Namehold does not stop it.";

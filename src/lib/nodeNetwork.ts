@@ -24,6 +24,16 @@ export function nodeActionLabel(
 }
 
 /**
+ * The status of an own node that runs but does not answer, long after its
+ * start: "Mainnet node not answering", or "Node not answering" with no active
+ * wallet.
+ */
+export function nodeNotAnsweringLabel(network: string | null): string {
+  const name = network ? `${networkDisplayName(network)} node` : "node";
+  return `${name.charAt(0).toUpperCase()}${name.slice(1)} not answering`;
+}
+
+/**
  * The settings key of a per-network node setting (R10): `node_mode.main` for
  * a mainnet wallet, spelled as the backend's `Network::as_str` spells it.
  */

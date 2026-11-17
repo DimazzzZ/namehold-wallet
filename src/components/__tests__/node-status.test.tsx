@@ -44,6 +44,7 @@ type NodeOver = Partial<{
   last_error: string | null;
   index_mismatch: boolean;
   read_source: "local" | "explorer";
+  not_answering: boolean;
 }>;
 
 function nodeStatus(over: NodeOver = {}) {
@@ -342,6 +343,24 @@ describe("Node status (truthful, RPC-based)", () => {
     );
     render(<Settings />, { wrapper: settingsWrapper("node") });
     expect(await screen.findByRole("button", { name: /Stop mainnet node/i })).toBeEnabled();
+  });
+
+  it("Settings says an own node silent long after its start is not answering, with Stop", async () => {
+    invokeMock.mockImplementation(
+      route(
+        nodeStatus({
+          connected: false,
+          process_alive: true,
+          ownership: "own",
+          starting: false,
+          not_answering: true,
+        }),
+      ),
+    );
+    render(<Settings />, { wrapper: settingsWrapper("node") });
+    expect(await screen.findByText("Mainnet node not answering")).toBeInTheDocument();
+    expect(screen.queryByText(/^Stopped$/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /Stop mainnet node/i })).toBeEnabled();
   });
 
   it("Settings shows Stopped when nothing is running", async () => {

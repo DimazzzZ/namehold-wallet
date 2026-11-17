@@ -7,6 +7,7 @@ import {
   confirmResync,
   networkDisplayName,
   nodeActionLabel,
+  nodeNotAnsweringLabel,
   OUTSIDE_NODE_NOT_STOPPED,
 } from "../../lib/nodeNetwork";
 import { cn, formatDate, latestTimestamp } from "../../lib/utils";
@@ -28,7 +29,8 @@ import { Icon } from "../ui/Icon";
 import { Popover } from "../ui/Popover";
 import { Tooltip } from "../ui/Tooltip";
 
-export type NodeView = "connected" | "outside" | "syncing" | "starting" | "offline";
+/** `stuck`: an own node that runs but has not answered long after its start. */
+export type NodeView = "connected" | "outside" | "syncing" | "starting" | "stuck" | "offline";
 export type ReadinessKind = "none" | "watch" | "ledger" | "hot";
 export type ReadinessTone = "ok" | "warn" | "info" | "off";
 
@@ -59,9 +61,11 @@ export function readiness(input: {
         ? "outside"
         : "connected"
       : "syncing"
-    : (node?.starting ?? node?.process_alive)
-      ? "starting"
-      : "offline";
+    : node?.not_answering
+      ? "stuck"
+      : (node?.starting ?? node?.process_alive)
+        ? "starting"
+        : "offline";
   const syncPct =
     node?.verification_progress != null ? Math.floor(node.verification_progress * 100) : null;
   // A Ledger signs on the device: no signer session, nothing to unlock.
@@ -126,6 +130,16 @@ export function readiness(input: {
         "node offline",
         "Can't send",
         "Your node is offline. Start it to sync your coins and send.",
+      );
+    }
+    if (nodeView === "stuck") {
+      const node = profile?.network ? `${networkDisplayName(profile.network)} node` : "node";
+      return r(
+        "warn",
+        "Can't send",
+        "node not answering",
+        "Can't send",
+        `Your ${node} is running but does not answer. Stop it and start it again.`,
       );
     }
     if (nodeView === "starting") {
@@ -277,6 +291,8 @@ export function ReadinessPill() {
       }
       case "starting":
         return nodeActionLabel("Starting", nodeNetwork);
+      case "stuck":
+        return nodeNotAnsweringLabel(nodeNetwork);
       default:
         return "Node offline";
     }
@@ -286,7 +302,9 @@ export function ReadinessPill() {
       ? "bg-green-500"
       : r.nodeView === "offline"
         ? "bg-gray-400"
-        : "bg-amber-500";
+        : r.nodeView === "stuck"
+          ? "bg-red-500"
+          : "bg-amber-500";
 
   const isSpv = node?.node_mode === "spv";
   const readLocal = node?.read_source === "local";
@@ -418,6 +436,18 @@ export function ReadinessPill() {
                     }
                   >
                     {nodeActionLabel("Start", nodeNetwork)}
+                  </Button>
+                ) : r.nodeView === "stuck" ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={nodeBusy}
+                    data-testid="readiness-node-stop"
+                    onClick={() =>
+                      void runNodeAction(() => stopHsd.mutateAsync(), "Stopping node…")
+                    }
+                  >
+                    {nodeActionLabel("Stop", nodeNetwork)}
                   </Button>
                 ) : r.nodeView === "starting" ? (
                   <Button
