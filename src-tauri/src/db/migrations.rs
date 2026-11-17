@@ -78,6 +78,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
     ("043", include_str!("../sql/043_shakedex_market_expiry.sql")),
     ("044", include_str!("../sql/044_exchange.sql")),
+    (
+        "045",
+        include_str!("../sql/045_exchange_forget_secrets.sql"),
+    ),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -281,7 +285,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 44, "expected 44 migrations, got {count}");
+        assert_eq!(count, 45, "expected 45 migrations, got {count}");
     }
 
     /// An in-memory database with every migration before `version` applied
@@ -631,7 +635,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 44);
+        assert_eq!(count, 45);
     }
 
     #[test]

@@ -743,3 +743,71 @@ async fn a_step_that_changes_nothing_does_not_refuse_a_commit_read_before_it() {
         "the Commit was refused after steps that changed nothing"
     );
 }
+
+/// A committed Buyer's trade, stored, with its secret in the holdings.
+fn committed_buyer(c: &Connection) -> Trade {
+    let mut t = trade(c);
+    t.holdings = Some(fx::trade().buyer());
+    assert!(store::commit_trade(c, &mut t, 1).unwrap());
+    let t = store::trade(c, "p", &t.trade_id).unwrap().unwrap();
+    assert!(
+        t.holdings.as_ref().unwrap().secret.is_some(),
+        "the Commit stores the secret"
+    );
+    t
+}
+
+/// SECURITY.md: the Buyer's secret is on disk only while the daemon may
+/// need it. Once a trade is no longer followed, nothing can use it, so it
+/// is not kept in the file.
+#[test]
+fn a_finished_trade_no_longer_keeps_the_buyers_secret() {
+    let c = conn();
+    let mut t = committed_buyer(&c);
+    t.status = Some(Status::Completed);
+    t.terminal_at = Some(2);
+    t.finished = true;
+    assert!(store::update_trade(&c, &mut t, 3).unwrap());
+    let stored = store::trade(&c, "p", &t.trade_id).unwrap().unwrap();
+    assert_eq!(stored.holdings.unwrap().secret, None);
+}
+
+/// An ended trade is followed for a day: a reorg can undo the HNS claim,
+/// which is finished again with the secret, so it stays until then.
+#[test]
+fn an_ended_trade_still_followed_keeps_the_secret() {
+    let c = conn();
+    let mut t = committed_buyer(&c);
+    t.status = Some(Status::Completed);
+    t.terminal_at = Some(2);
+    assert!(store::update_trade(&c, &mut t, 3).unwrap());
+    let stored = store::trade(&c, "p", &t.trade_id).unwrap().unwrap();
+    assert!(stored.holdings.unwrap().secret.is_some());
+}
+
+/// Trades finished before the rule above still hold their secret: the
+/// migration forgets it there, and only there.
+#[test]
+fn the_migration_forgets_the_secrets_of_finished_trades_only() {
+    let c = conn();
+    let done = committed_buyer(&c);
+    let mut open = new_trade();
+    open.trade_id = "cd".repeat(16);
+    store::insert_trade(&c, &open).unwrap();
+    assert!(store::update_trade(&c, &mut open, fx::START).unwrap());
+    let mut open = store::trade(&c, "p", &open.trade_id).unwrap().unwrap();
+    open.holdings = Some(fx::trade().buyer());
+    assert!(store::commit_trade(&c, &mut open, 1).unwrap());
+    // A row written by an older build: finished, secret still there.
+    c.execute(
+        "UPDATE exchange_trades SET finished = 1 WHERE trade_id = ?1",
+        [&done.trade_id],
+    )
+    .unwrap();
+    c.execute_batch(include_str!("../sql/045_exchange_forget_secrets.sql"))
+        .unwrap();
+    let done = store::trade(&c, "p", &done.trade_id).unwrap().unwrap();
+    let open = store::trade(&c, "p", &open.trade_id).unwrap().unwrap();
+    assert_eq!(done.holdings.unwrap().secret, None);
+    assert!(open.holdings.unwrap().secret.is_some());
+}

@@ -22,6 +22,7 @@
 > **Highlights:** an **Exchange (beta)** where you trade HNS and BTC with other people by atomic swap, with nobody holding your coins and no server to run; and the window now opens at once while an update changes the database.
 
 ### Security
+- **The exchange forgets the Buyer's secret once a trade is over.** It is kept in the database only while the daemon may need it to reveal, until a day after the trade ends; it was kept for good before. Trades that already ended lose it when the app starts.
 - The bundled SQLite is updated (`rusqlite` 0.41, `libsqlite3-sys` 0.39.1) for RUSTSEC-2026-0459 (CVE-2026-119375 in SQLite), and `rustix` to 1.1.6 for RUSTSEC-2026-0486 (its xattr functions could mark unwritten bytes as initialized; reached only through the updater's archive handling).
 
 ### Fixed
