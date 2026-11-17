@@ -598,6 +598,11 @@ impl NodeRpcClient {
         self.call("getblockchaininfo", serde_json::json!([])).await
     }
 
+    /// `getpeerinfo` — the node's peers and the heights they report.
+    pub async fn get_peer_info(&self) -> Result<Vec<PeerInfo>, AppError> {
+        self.call("getpeerinfo", serde_json::json!([])).await
+    }
+
     /// `getinfo` — general node info (version, network, height).
     pub async fn get_info(&self) -> Result<serde_json::Value, AppError> {
         self.call("getinfo", serde_json::json!([])).await
@@ -1053,13 +1058,38 @@ fn void_rpc(res: Result<serde_json::Value, AppError>) -> Result<(), AppError> {
     }
 }
 
+/// One peer of `getpeerinfo` (extra fields ignored). hsd sends
+/// `startingheight` (the peer's height when it connected) and `bestheight`
+/// (the height it has announced since, `-1` until hsd learns one).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PeerInfo {
+    #[serde(default)]
+    pub startingheight: Option<i64>,
+    #[serde(default)]
+    pub bestheight: Option<i64>,
+}
+
+/// The network's height as the node's peers report it: the highest height
+/// any peer announced, when that is above the node's own `height`. `None`
+/// with no peers, or none ahead of the node.
+pub fn network_height(peers: &[PeerInfo], height: i64) -> Option<i64> {
+    peers
+        .iter()
+        .flat_map(|p| [p.startingheight, p.bestheight])
+        .flatten()
+        .max()
+        .filter(|&h| h > height)
+}
+
 /// Minimal typed view of `getblockchaininfo` (extra fields ignored).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockchainInfo {
     /// Current best chain height.
     pub blocks: i64,
-    /// Header height (peers' best).
+    /// Header height. hsd does not sync headers first and reports its own
+    /// chain height here (`headers: this.chain.height`), so for hsd this is
+    /// never the network's height; [`network_height`] reads the peers instead.
     #[serde(default)]
     pub headers: Option<i64>,
     /// 0.0..=1.0 sync progress. hsd sends this all-lowercase

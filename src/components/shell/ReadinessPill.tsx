@@ -281,9 +281,11 @@ export function ReadinessPill() {
           .filter(Boolean)
           .join(" · ");
       case "syncing": {
+        // The peers' height, not `headers`: hsd reports its own height there.
+        const total = node?.network_height;
         const blocks =
-          height && node?.headers != null
-            ? `block ${height} / ${node.headers.toLocaleString("en-US")}`
+          height && total != null && node?.height != null && total > node.height
+            ? `block ${height} / ${total.toLocaleString("en-US")}`
             : height && `block ${height}`;
         return ["Node syncing", r.syncPct != null && `${r.syncPct}%`, blocks]
           .filter(Boolean)

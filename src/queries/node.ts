@@ -28,8 +28,17 @@ export interface NodeStatus {
   height: number | null;
   /** Sync progress 0.0..=1.0, when the node reports it. */
   verification_progress: number | null;
-  /** Peers' best header height (the sync target), when reported. */
+  /**
+   * `getblockchaininfo.headers`. hsd does not sync headers first, so this is
+   * its own chain height, not the network's: never show it as a total.
+   */
   headers: number | null;
+  /**
+   * The highest height the node's peers report (`getpeerinfo`), read only
+   * while the node syncs: the total to show next to `height`. Optional: older
+   * backends never send it, and a node with no peers has none.
+   */
+  network_height?: number | null;
   /**
    * Whether the node has reached the chain tip, as the backend's own
    * `chain_synced` rule decides it — the same verdict the read and write gates
