@@ -37,6 +37,7 @@ import {
   networkDisplayName,
   networkNodeSettingKey,
   nodeActionLabel,
+  nodeNotAnsweringLabel,
   OUTSIDE_NODE_NOT_STOPPED,
   confirmResync,
 } from "../lib/nodeNetwork";
@@ -1136,14 +1137,24 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
         ? Math.min(100, Math.floor((height / headers) * 1000) / 10)
         : 100; // 1 decimal
   // Connected (RPC answers) → green; spawned but RPC not up yet → amber; else grey.
-  const dotClass = connected ? "bg-green-500" : processAlive ? "bg-amber-500" : "bg-gray-300";
+  // An own node that runs but has not answered long after its start → red.
+  const stuck = !connected && status?.not_answering === true;
+  const dotClass = connected
+    ? "bg-green-500"
+    : stuck
+      ? "bg-red-500"
+      : processAlive
+        ? "bg-amber-500"
+        : "bg-gray-300";
   const label = connected
     ? synced
       ? `Connected · block ${status?.height ?? "?"}${processAlive ? "" : " (external node)"}`
       : `Syncing · ${pct}%`
-    : (status?.starting ?? processAlive)
-      ? nodeActionLabel("Starting", network)
-      : "Stopped";
+    : stuck
+      ? nodeNotAnsweringLabel(network)
+      : (status?.starting ?? processAlive)
+        ? nodeActionLabel("Starting", network)
+        : "Stopped";
 
   const onStart = async () => {
     try {

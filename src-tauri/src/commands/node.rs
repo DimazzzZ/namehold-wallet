@@ -296,6 +296,13 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         Some(network) => crate::commands::local_node::own_node(&state, network).is_some(),
         None => false,
     };
+    // An own node silent long after its start is not starting but stuck: its
+    // process (and its port) live on while it answers nothing.
+    let not_answering = own
+        && probe.is_none()
+        && active_profile_network_opt(&state).is_some_and(|network| {
+            !crate::commands::local_node::own_node_may_still_be_starting(&state, network)
+        });
     let ownership = if own {
         "own"
     } else if probe.is_some() {
@@ -322,7 +329,8 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     let err = match (&probe, &binary) {
         (Some(_), _) => None,
         (None, Err(refused)) => Some((refused.to_string(), false)),
-        (None, Ok(_)) => node_start_error(&data_dir),
+        (None, Ok(_)) => node_start_error(&data_dir)
+            .or_else(|| not_answering.then(|| (not_answering_sentence(&state), false))),
     };
     let (last_error, index_mismatch) = match err {
         Some((msg, mismatch)) => (Some(msg), mismatch),
@@ -372,7 +380,10 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         "network": active_profile_network_opt(&state).map(Network::as_str),
         "process_alive": process_alive,
         "ownership": ownership,
-        "starting": own && probe.is_none(),
+        "starting": own && probe.is_none() && !not_answering,
+        // An own node whose process lives on long after its start without
+        // answering (spec 2026-10-24 R11): Stop, then Start.
+        "not_answering": not_answering,
         "connected": probe.is_some(),
         "height": probe.as_ref().map(|p| p.height),
         "verification_progress": probe.as_ref().and_then(|p| p.verification_progress),
@@ -391,6 +402,32 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         // Node operating mode: "full" or "spv".
         "node_mode": node_mode.as_str(),
     }))
+}
+
+/// What a stuck own node's status says: how long it has been silent and what
+/// to do about it.
+fn not_answering_sentence(state: &State<'_, AppState>) -> String {
+    let Some(network) = active_profile_network_opt(state) else {
+        return "The node is running but does not answer. Stop it and start it again.".into();
+    };
+    let since = crate::commands::local_node::own_node_age(state, network)
+        .map(|age| format!(" since it started {} ago", age_words(age)))
+        .unwrap_or_default();
+    format!(
+        "The {} node is running but has not answered{since}. Stop it and start it again.",
+        network.display_name()
+    )
+}
+
+/// A duration as people say it: minutes under two hours, hours under two
+/// days, then days.
+pub(crate) fn age_words(age: std::time::Duration) -> String {
+    let mins = age.as_secs() / 60;
+    match mins {
+        m if m < 120 => format!("{m} minutes"),
+        m if m < 48 * 60 => format!("{} hours", m / 60),
+        m => format!("{} days", m / (24 * 60)),
+    }
 }
 
 /// Whether one hsd log line signals that the node failed to start, as opposed

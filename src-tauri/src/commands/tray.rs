@@ -152,6 +152,23 @@ struct TraySnapshot {
     outside: bool,
 }
 
+/// Whether the tray says the node runs: its RPC answers (the probe loop
+/// updates `node_rpc_alive` every ~5 s), or the active network's own node is
+/// still within its start, so a freshly spawned one shows "Running" before
+/// the first probe. An own node silent long after its start does not count:
+/// its process lives on, but it is not running as a node.
+pub(crate) fn node_running_now(state: &AppState) -> bool {
+    state
+        .node_rpc_alive
+        .load(std::sync::atomic::Ordering::Relaxed)
+        || crate::commands::active_profile::active_profile_network_opt(state).is_some_and(
+            |network| {
+                crate::commands::local_node::own_node(state, network).is_some()
+                    && crate::commands::local_node::own_node_may_still_be_starting(state, network)
+            },
+        )
+}
+
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn snapshot(app: &AppHandle) -> TraySnapshot {
     let state = app.state::<AppState>();
@@ -160,12 +177,7 @@ fn snapshot(app: &AppHandle) -> TraySnapshot {
     // (and start/stop actions flip it immediately). We OR it with the active
     // network's own node so a freshly-spawned one shows "Running" even before
     // the first probe tick fires.
-    let node_running = state
-        .node_rpc_alive
-        .load(std::sync::atomic::Ordering::Relaxed)
-        || crate::commands::active_profile::active_profile_network_opt(&state).is_some_and(
-            |network| crate::commands::local_node::own_node(&state, network).is_some(),
-        );
+    let node_running = node_running_now(&state);
 
     // "Syncing" state proxy: whether a wallet full-sync run is active. This is
     // the cheapest in-process signal (no RPC round-trip on every 5s tick).

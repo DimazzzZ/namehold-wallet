@@ -1893,6 +1893,55 @@ async fn an_own_node_not_answering_yet_is_starting() {
     let _ = child.wait();
 }
 
+/// Seen on 0.8.0-rc.1: the node an earlier session started kept its process
+/// and its port after the disk holding its data went away, but answered no
+/// request for days. The app showed "Starting mainnet node…" for good. Long
+/// after its start, an own node that does not answer is not starting: the
+/// status says it does not answer, and what to do.
+#[tokio::test]
+#[serial_test::serial(hsd_home)]
+async fn an_own_node_silent_long_after_its_start_is_not_starting() {
+    use crate::commands::local_node::{network_scoped_data_dir, write_pid_file, PID_FILE};
+    use crate::noncustodial::network::Network;
+    let base = crate::tests::command_helpers::TempDir::new();
+    let conn = conn_with_active_regtest("http://127.0.0.1:1");
+    db::queries::set_setting(&conn, "hsd_prefix", base.path().to_str().unwrap()).unwrap();
+    let dir = std::path::PathBuf::from(network_scoped_data_dir(
+        base.path().to_str().unwrap(),
+        Network::Regtest,
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut left = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    write_pid_file(&dir, left.id()).unwrap();
+    // Recorded at its start, two hours ago.
+    std::fs::File::options()
+        .write(true)
+        .open(dir.join(PID_FILE))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600))
+        .unwrap();
+    let app = app_with(conn);
+
+    let v = node_status(app.state()).await.unwrap();
+    let _ = left.kill();
+    let _ = left.wait();
+    assert_eq!(v["ownership"], "own");
+    assert_eq!(v["starting"], false, "{v}");
+    assert_eq!(v["not_answering"], true, "{v}");
+    let err = v["last_error"].as_str().unwrap_or_default();
+    assert_eq!(
+        err,
+        "The regtest node is running but has not answered since it started 2 hours ago. Stop it and start it again."
+    );
+    // The tray does not call it running either.
+    assert!(!crate::commands::tray::node_running_now(
+        &app.state::<AppState>()
+    ));
+}
+
 /// A node that answers but that Namehold did not start is outside; nothing
 /// answering and nothing of ours is none.
 #[tokio::test]
