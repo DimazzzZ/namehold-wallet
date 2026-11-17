@@ -42,6 +42,9 @@ function initial(): ExchangeState {
       nostrRelays: [],
       defaultNostrRelays: [],
       meetingPoint: "relay",
+      // The regtest policy (policy.rs).
+      tradeMinSats: 1_000,
+      tradeMaxSats: 1_000_000_000,
     },
     myOffers: [],
     trades: [],

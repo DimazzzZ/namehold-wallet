@@ -125,11 +125,56 @@ export function takeRefusal(
 export const TAKE_BELOW_MIN = (min: string) => `This offer takes at least ${min} HNS`;
 export const TAKE_ABOVE_MAX = (max: string) => `This offer takes at most ${max} HNS`;
 export const TAKE_ZERO_SATS = "At this price that amount is worth less than 1 sat";
+/** A take whose trade is outside the network's limits, and the amount that fits. */
+export const TAKE_OUTSIDE_LIMITS = (t: {
+  worth: string;
+  min: string;
+  max: string;
+  price: string;
+  tooSmall: boolean;
+  hns: string;
+}) =>
+  `This trade is worth ${t.worth}, and a trade must be worth ${t.min} to ${t.max}. ` +
+  `At ${t.price} take at ${t.tooSmall ? "least" : "most"} ${t.hns}.`;
 export const TAKEN_TOAST = "Trade started · it is under My trades";
 
 // --- Creating an offer ---
 
-export const MIN_ABOVE_MAX = "The smallest trade cannot be larger than the largest";
+export const SMALLEST_ABOVE_AMOUNT = "The smallest part cannot be larger than the amount";
+/** Under the amount fields: the network's limits, before anything is typed. */
+export const TRADE_LIMITS = (min: string, max: string) =>
+  `Each trade must be worth ${min} to ${max}, so Bitcoin fees cannot eat it.`;
+/**
+ * A trade below the floor: what it is worth, the floor, and what would reach
+ * it (all already formatted: "4,000 sats", "4 sats/HNS", "12,500 HNS").
+ */
+export const TRADE_TOO_SMALL = (t: {
+  worth: string;
+  limit: string;
+  price: string;
+  hns: string;
+  amount: string;
+  needPrice: string;
+}) =>
+  `Too small: this trade is worth ${t.worth}, and a trade must be worth at least ${t.limit}. ` +
+  `At ${t.price} that is ${t.hns} or more; for ${t.amount} the price would have to be at least ${t.needPrice}.`;
+/** A trade above the ceiling, in the same terms. */
+export const TRADE_TOO_LARGE = (t: {
+  worth: string;
+  limit: string;
+  price: string;
+  hns: string;
+  amount: string;
+  needPrice: string;
+}) =>
+  `Too large: this trade is worth ${t.worth}, and a trade can be worth at most ${t.limit}. ` +
+  `At ${t.price} that is ${t.hns} or less; for ${t.amount} the price would have to be at most ${t.needPrice}.`;
+/** Under the price: the order book's best prices (either part may be missing). */
+export const MARKET_PRICES = (sellFrom: string | null, buyUpTo: string | null) =>
+  "Order book: " +
+  [sellFrom && `sell offers from ${sellFrom}`, buyUpTo && `buy offers up to ${buyUpTo}`]
+    .filter(Boolean)
+    .join(" · ");
 export const OFFER_CREATED_TOAST = "Offer published";
 export const OFFER_WITHDRAWN_TOAST = "Offer withdrawn";
 export const SECURE_WINDOW_WAIT = "Confirm in the secure window…";

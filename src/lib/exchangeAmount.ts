@@ -60,6 +60,57 @@ export function btcSatsFor(doos: bigint, msatPerHns: bigint): bigint {
   return (doos * msatPerHns) / (DOOS_PER_HNS * MSAT_PER_SAT);
 }
 
+/** What one trade may be worth on this network (`exchange_overview`'s policy). */
+export type TradeLimits = { minSats: bigint; maxSats: bigint };
+
+/**
+ * A trade range against the network's limits. Out of them, what would fit:
+ * at this price, the HNS a trade needs (below the floor: at least `hnsDoos`;
+ * above the ceiling: at most `hnsDoos`, both rounded to whole HNS on the safe
+ * side); for this amount, the price it needs (`priceMsat`, at least / at most).
+ */
+export type LimitVerdict =
+  { ok: true } | { ok: false; tooSmall: boolean; sats: bigint; hnsDoos: bigint; priceMsat: bigint };
+
+const ceilDiv = (a: bigint, b: bigint) => (a + b - 1n) / b;
+
+/**
+ * Judge a trade of `smallestDoos` to `largestDoos` at `msatPerHns`: the
+ * smallest against the floor, the largest against the ceiling, with the same
+ * `floor(doos × msat / 1e9)` sats the backend counts.
+ */
+export function checkTradeLimits(
+  smallestDoos: bigint,
+  largestDoos: bigint,
+  msatPerHns: bigint,
+  limits: TradeLimits,
+): LimitVerdict {
+  const unit = DOOS_PER_HNS * MSAT_PER_SAT;
+  const low = btcSatsFor(smallestDoos, msatPerHns);
+  if (low < limits.minSats) {
+    const doos = ceilDiv(limits.minSats * unit, msatPerHns);
+    return {
+      ok: false,
+      tooSmall: true,
+      sats: low,
+      hnsDoos: ceilDiv(doos, DOOS_PER_HNS) * DOOS_PER_HNS,
+      priceMsat: ceilDiv(limits.minSats * unit, smallestDoos),
+    };
+  }
+  const high = btcSatsFor(largestDoos, msatPerHns);
+  if (high > limits.maxSats) {
+    const top = (limits.maxSats + 1n) * unit - 1n;
+    return {
+      ok: false,
+      tooSmall: false,
+      sats: high,
+      hnsDoos: (top / msatPerHns / DOOS_PER_HNS) * DOOS_PER_HNS,
+      priceMsat: top / largestDoos,
+    };
+  }
+  return { ok: true };
+}
+
 /** An HNS amount an offer carries (`minHns`, a trade's `hnsAmount`), as doos, or null. */
 export function offerHnsDoos(text: string): bigint | null {
   const read = hnsDigitsToDoos(text.trim());
@@ -67,7 +118,7 @@ export function offerHnsDoos(text: string): bigint | null {
 }
 
 /** An integer with thousands separators, from a BigInt ("1,234,567"). */
-function grouped(n: bigint): string {
+export function grouped(n: bigint): string {
   return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
@@ -116,6 +167,17 @@ export function hnsText(hns: string): string | null {
   if (doos === null) return null;
   const frac = (doos % DOOS_PER_HNS).toString().padStart(6, "0").replace(/0+$/, "");
   return `${grouped(doos / DOOS_PER_HNS)}${frac === "" ? "" : `.${frac}`} HNS`;
+}
+
+/** Doos as HNS for display ("12,500 HNS", "1,250.5 HNS"), exact at any size. */
+export function hnsDoosText(doos: bigint): string {
+  const frac = (doos % DOOS_PER_HNS).toString().padStart(6, "0").replace(/0+$/, "");
+  return `${grouped(doos / DOOS_PER_HNS)}${frac === "" ? "" : `.${frac}`} HNS`;
+}
+
+/** A price in millisats per HNS for display ("4 sats/HNS", "3.333 sats/HNS"). */
+export function priceMsatText(msat: bigint): string {
+  return priceText(msatToPriceDigits(msat)) ?? UNREADABLE;
 }
 
 /** A sats amount the user typed (Withdraw BTC), read: the sats, or the sentence the field shows. */

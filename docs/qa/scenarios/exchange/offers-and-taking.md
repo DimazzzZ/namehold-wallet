@@ -14,6 +14,8 @@ An offer is a signed announcement on the relay (spec §2, §8): a side, a price 
 
 The BTC of a trade is `floor(doos × msat per HNS / 10^9)` sats, the same number on both sides (spec §9, `price.rs`, `exchangeAmount.ts`). Amounts below are those of the roles OS, OX and OB ([exchange-setup](../../procedures/exchange-setup.md#roles-used-by-the-cases)). In the order book and My offers a price reads without its unit (`10,000`), in dialogs with it (`10,000 sats/HNS`); HNS amounts drop trailing zeros (`1 HNS`, `2.5 HNS`).
 
+An offer written as `Sell HNS`, amount `20` from `1`, price `10000` is made in `Make an offer…` as: `Amount (HNS)` `20`; tick `Let a buyer take part of it` (`Let a seller fill part of it` for `Buy HNS`) and enter `Smallest part (HNS)` `1`; `Price (sats per 1 HNS)` `10000`. Without "from", leave the box unticked: the offer trades the whole amount only.
+
 HNS amounts cross the bridge as plain decimals with six places and no unit (`commands/exchange.rs::hns_text`: `"1.000000"`), which the page shows without trailing zeros (`1 HNS`); the secure windows write them with six places and the unit once (`5.000000 HNS`). A sentence that repeats an offer's own limit (`TAKE_BELOW_MIN`, `TAKE_ABOVE_MAX`) shows it as the bridge carries it (`1.000000 HNS`).
 
 ## E10 — Publish a sell offer
@@ -26,16 +28,16 @@ HNS amounts cross the bridge as plain decimals with six places and no unit (`com
 Steps:
 
 1. Exchange › `Make an offer…`; read the dialog.
-2. `Sell HNS` (selected by default); `Price in sats per HNS` `10000`, `Smallest trade (HNS)` `1`, `Largest trade (HNS)` `20` → `Publish offer`. Read the secure window; `Confirm & Sign`.
+2. `Sell HNS` (selected by default); `Amount (HNS)` `20`; tick `Let a buyer take part of it`, `Smallest part (HNS)` `1`; `Price (sats per 1 HNS)` `10000`. Read the box under the price, then `Publish offer`. Read the secure window; `Confirm & Sign`.
 3. Read the toast and My offers. Hover the `Live` badge.
 4. `curl -s "$RELAY/v1/offers?network=regtest"`.
-5. OX: `Make an offer…` → `Sell HNS`, `333.333`, `5`, `20` → `Publish offer` → read → `Confirm & Sign`.
+5. OX: `Make an offer…` → `Sell HNS`, amount `20` from `5`, price `333.333` → `Publish offer` → read → `Confirm & Sign`.
 6. Wait 3 minutes (switching to the Buyer meanwhile is fine: the daemon renews the Seller's offers). Reopen My offers (it does not poll); `curl` the offers again; `grep -c "POST /v1/offers" "$QA_DIR/relay/relay.log"`.
 
 Expected:
 
-- Step 1: title `Make an offer`; two choices `Sell HNS` ("You lock HNS and receive BTC") and `Buy HNS` ("You lock BTC and receive HNS"); the three fields; "The offer stays listed only while your Namehold keeps renewing it. Every trade someone starts from it still asks you to confirm in the secure window."; `Cancel`, and `Publish offer` disabled until all three fields read.
-- Step 2: the button reads "Confirm in the secure window…"; secure window `Publish an offer`, message "Nothing is signed or locked now. Each trade someone starts on this offer asks you to confirm it here, and needs Namehold open.", rows `Offer` "Sell HNS for BTC", `Price` "10000 sats per HNS", `Each trade` "1.000000 HNS to 20.000000 HNS (10000 to 200000 sats)", `Published on` "http://127.0.0.1:8787" (the custom relay of setup; over Nostr the row lists the Nostr relays, see [E42](nostr.md#e42--an-offers-life-on-nostr)).
+- Step 1: title `Make an offer`; two choices `Sell HNS` ("You lock HNS and receive BTC") and `Buy HNS` ("You lock BTC and receive HNS"); `Amount (HNS)`, the unticked box `Let a buyer take part of it` (no `Smallest part` field yet), `Price (sats per 1 HNS)`; when the order book has other makers' offers, a grey line under the price "Order book: sell offers from … · buy offers up to …"; "Each trade must be worth 1,000 to 1,000,000,000 sats, so Bitcoin fees cannot eat it."; "The offer stays listed only while your Namehold keeps renewing it. Every trade someone starts from it still asks you to confirm in the secure window."; `Cancel`, and `Publish offer` disabled until the fields read.
+- Step 2: before Publish, a grey box: `You lock` "1 to 20 HNS", `You receive` "10,000 to 200,000 sats (0.00010000 to 0.00200000 BTC)". After it, the button reads "Confirm in the secure window…"; secure window `Publish an offer`, message "Nothing is signed or locked now. Each trade someone starts on this offer asks you to confirm it here, and needs Namehold open.", rows `Offer` "Sell HNS for BTC", `Price` "10000 sats per HNS", `Each trade` "1.000000 HNS to 20.000000 HNS (10000 to 200000 sats)", `Published on` "http://127.0.0.1:8787" (the custom relay of setup; over Nostr the row lists the Nostr relays, see [E42](nostr.md#e42--an-offers-life-on-nostr)).
 - Step 3: toast "Offer published"; the page is on `My offers` (badge `1`); one row: Side `Sell HNS`, Price `10,000`, Amount `1 – 20 HNS`, BTC `≈ 0.00010000 – 0.00200000 BTC`, State `Live` (hover "Published on the relay and renewed by this Namehold"), `Withdraw`.
 - Step 4: the list holds the offer with `"side":"sell"`, `"priceMsatPerHns":10000000`, `"minHns":1000000`, `"maxHns":20000000`, `"network":"regtest"`, and a `signature`.
 - Step 5: rows `Price` "333.333 sats per HNS", `Each trade` "5.000000 HNS to 20.000000 HNS (1666 to 6666 sats)"; My offers now has two rows; OX: Price `333.333`, Amount `5 – 20 HNS`, BTC `≈ 0.00001666 – 0.00006666 BTC`.
@@ -55,7 +57,7 @@ Expected:
 
 Steps:
 
-1. `Make an offer…` → `Buy HNS`, `10000`, `1`, `20` → `Publish offer` → read → `Confirm & Sign`.
+1. `Make an offer…` → `Buy HNS`, amount `20` from `1`, price `10000` → `Publish offer` → read → `Confirm & Sign`.
 2. Lock the signer (readiness pill › Lock); make the same offer again (`Publish offer`); read the dialog and My offers. Unlock again.
 
 Expected:
@@ -101,14 +103,14 @@ Expected:
 
 Steps:
 
-1. `Make an offer…`; type in turn and read the field's line: price `0`; price `1.2345`; price `1e3`; smallest `0.0000001`; smallest `abc`; smallest `30` with largest `20`.
-2. Price `10000`, smallest `0.01`, largest `1` → `Publish offer`. Then smallest `1`, largest `200000` → `Publish offer`.
+1. `Make an offer…`; type in turn and read the field's line: price `0`; price `1.2345`; price `1e3`; amount `0.0000001`; amount `abc`; amount `20`, tick `Let a buyer take part of it`, smallest part `30`.
+2. Untick the box. Amount `1`, price `10000`; read the box and the red line. Then amount `200000`; read them again.
 3. `Cancel`.
 
 Expected:
 
-- Step 1: "Enter a price greater than 0, in sats per HNS like 250 or 250.5" (for `0` and `1e3`); "A price has at most 3 decimals of a sat"; "HNS has at most 6 decimals"; "Enter an amount greater than 0, in digits like 12.5"; under the smallest field "The smallest trade cannot be larger than the largest". `Publish offer` disabled throughout.
-- Step 2: no secure window; in red under the fields "Invalid input: each trade must be worth 1000 to 1000000000 sats", both times (100 sats is too little, 2 000 000 000 sats too much). Nothing new in My offers or on the relay.
+- Step 1: "Enter a price greater than 0, in sats per HNS like 250 or 250.5" (for `0` and `1e3`); "A price has at most 3 decimals of a sat"; "HNS has at most 6 decimals"; "Enter an amount greater than 0, in digits like 12.5"; under the smallest part "The smallest part cannot be larger than the amount". `Publish offer` disabled throughout.
+- Step 2: `You receive` "10,000 sats (0.00010000 BTC)" and no red line (regtest: 1 000 sats at least); then `You receive` "2,000,000,000 sats (20.00000000 BTC)" and in red "Too large: this trade is worth 2,000,000,000 sats, and a trade can be worth at most 1,000,000,000 sats. At 10,000 sats/HNS that is 100,000 HNS or less; for 200,000 HNS the price would have to be at most 5,000 sats/HNS.", `Publish offer` disabled. No secure window; nothing new in My offers or on the relay.
 - Passes if no offer outside the policy reaches the secure window.
 
 - **Blocks mined:** HNS 0, BTC 0

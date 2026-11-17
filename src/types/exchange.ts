@@ -39,6 +39,9 @@ export type ExchangeOverview = {
   defaultNostrRelays: string[];
   /** Where offers and messages go: the custom relay, Nostr, or nowhere. */
   meetingPoint: "relay" | "nostr" | "none";
+  /** What one trade may be worth on this network, in sats (the policy). */
+  tradeMinSats: number;
+  tradeMaxSats: number;
 };
 
 export type BtcBalance = {

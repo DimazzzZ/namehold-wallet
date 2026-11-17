@@ -13,6 +13,7 @@ import { MyTrades } from "./MyTrades";
 import { BtcAccountCard, BtcWithdrawDialog } from "./BtcAccountCard";
 import { TakeOfferDialog } from "./TakeOfferDialog";
 import { CreateOfferDialog } from "./CreateOfferDialog";
+import type { TradeLimits } from "../../lib/exchangeAmount";
 import { ExchangeSettingsDialog } from "./ExchangeSettingsDialog";
 import {
   useBtcBalance,
@@ -72,6 +73,10 @@ export default function ExchangePage() {
   const relay = hasRelay(overview);
   // Browsing the order book needs no keys, only a relay; the user's own data needs the account.
   const offersQ = useMarketOffers(overview != null && relay);
+  // The network's limits for one trade: the dialogs say what fits.
+  const limits: TradeLimits | null = overview
+    ? { minSats: BigInt(overview.tradeMinSats), maxSats: BigInt(overview.tradeMaxSats) }
+    : null;
   const myOffersQ = useMyOffers(enabled);
   const tradesQ = useTrades(enabled);
   const balanceQ = useBtcBalance(enabled);
@@ -249,6 +254,7 @@ export default function ExchangePage() {
           offer={taking}
           refusal={takeRefusal(overview, taking)}
           busy={takeOffer.isPending}
+          limits={limits}
           onClose={() => setTaking(null)}
           onTake={async (hnsAmount) => {
             await takeOffer.mutateAsync({ offerId: taking.id, hnsAmount });
@@ -262,6 +268,8 @@ export default function ExchangePage() {
         <CreateOfferDialog
           refusal={offerRefusal}
           busy={createOffer.isPending}
+          limits={limits}
+          market={offersQ.data?.offers ?? []}
           onClose={() => setCreating(false)}
           onCreate={async (args) => {
             await createOffer.mutateAsync(args);
