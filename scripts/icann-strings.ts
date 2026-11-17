@@ -36,7 +36,8 @@ export type ApplicationRow = {
   uLabel: string;
   /** Variant strings as `{ aLabel, uLabel }`, already split from `xn--… (…)`. */
   variants: { aLabel: string; uLabel: string }[];
-  status: "Active" | "Deactivated";
+  /** Only `Active` is still applied for (`Withdrawn` since 2026-11-17). */
+  status: "Active" | "Deactivated" | "Withdrawn";
   type: string;
 };
 
@@ -129,7 +130,8 @@ export function parseApplicationsCsv(text: string): ApplicationRow[] {
       throw layoutError(`a row has ${r.length} cells, header ${header.length}`);
     const cell = (c: (typeof REQUIRED_COLUMNS)[number]): string => (r[col[c]] ?? "").trim();
     const status = cell("Application Status");
-    if (status !== "Active" && status !== "Deactivated") throw layoutError(`status "${status}"`);
+    if (status !== "Active" && status !== "Deactivated" && status !== "Withdrawn")
+      throw layoutError(`status "${status}"`);
     const variant = splitVariant(cell("TLD Variants"));
     out.push({
       id: cell("Application ID"),

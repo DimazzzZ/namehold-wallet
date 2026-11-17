@@ -49,6 +49,13 @@ describe("the ICANN strings list builder (spec R1)", () => {
     expect(list.strings["xn--3ds831g"]!.applications[0]!.contention).toBe(false);
   });
 
+  // The export of String Confirmation Day (2026-11-17) adds the status
+  // "Withdrawn": such an application is no longer applied for.
+  it("leaves out a withdrawn application", () => {
+    expect(apps.find((a) => a.id === "H9-T9")?.status).toBe("Withdrawn");
+    expect(list.strings.quit).toBeUndefined();
+  });
+
   it("sorts keys and lowercases them", () => {
     const keys = Object.keys(list.strings);
     expect(keys).toEqual([...keys].sort());
