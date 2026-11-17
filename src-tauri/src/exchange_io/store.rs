@@ -412,6 +412,14 @@ fn write_trade(
     now: u64,
     committing: bool,
 ) -> Result<bool, AppError> {
+    // A trade no longer followed has no use for the Buyer's secret (the
+    // engine finishes the HNS claim with it only while it follows the
+    // trade, a day past its end for a reorg): it does not stay in the file.
+    if t.finished {
+        if let Some(h) = t.holdings.as_mut() {
+            h.secret = None;
+        }
+    }
     let committed = t.holdings.as_ref().is_some_and(|h| h.committed);
     if committing && !committed {
         return Err(AppError::Other(
