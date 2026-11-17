@@ -697,6 +697,8 @@ Start/Stop toggle, a **Background sync** checkbox, and **Quit Namehold**. The tr
 icon reflects node state (normal / syncing / stopped) and adapts to light/dark
 menu bars on macOS.
 
+**macOS: the menu does not open while the window is open.** If the Namehold icon sits among the menu bar items macOS hides behind the « chevron, a click on it reaches Namehold only while its window is hidden to the tray; with the window open nothing happens. Move the icon out of the hidden items: hold Cmd and drag it to the right of «. Then the menu opens either way.
+
 ---
 
 ## 14. Data location and macOS quarantine
