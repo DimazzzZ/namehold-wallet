@@ -86,6 +86,9 @@ export function exchangeOverview(): ExchangeOverview {
     nostrRelays: [],
     defaultNostrRelays: DEFAULT_NOSTR_RELAYS,
     meetingPoint: "nostr",
+    // The mainnet policy (policy.rs).
+    tradeMinSats: 50_000,
+    tradeMaxSats: 10_000_000,
   };
 }
 
