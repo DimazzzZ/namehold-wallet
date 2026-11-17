@@ -2076,3 +2076,94 @@ async fn resync_refuses_an_outside_node_when_our_child_has_exited() {
     );
     assert!(chain.exists(), "the chain stays where it was");
 }
+
+// --- network_height: the total shown while the node syncs -------------------
+
+/// A node answering `getblockchaininfo` the way hsd 8.0.0 does while it
+/// syncs (`headers` is its own chain height: hsd does not sync headers first,
+/// `lib/node/rpc.js` `headers: this.chain.height`) and `getpeerinfo` with
+/// `peers` (each `[startingheight, bestheight]`, hsd's `-1` for a best height
+/// it has not learnt).
+async fn syncing_node(peers: &[(i64, i64)]) -> (mockito::ServerGuard, Vec<mockito::Mock>) {
+    let mut server = mockito::Server::new_async().await;
+    let info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"chain":"main","blocks":355682,"headers":355682,"verificationprogress":0.9952},"error":null,"id":1}"#,
+        )
+        .create_async()
+        .await;
+    let list: Vec<serde_json::Value> = peers
+        .iter()
+        .map(|(start, best)| serde_json::json!({ "startingheight": start, "bestheight": best }))
+        .collect();
+    let peer_info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getpeerinfo".into()))
+        .with_body(serde_json::json!({ "result": list, "error": null, "id": 1 }).to_string())
+        .create_async()
+        .await;
+    (server, vec![info, peer_info])
+}
+
+fn conn_for(url: &str) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", url).unwrap();
+    conn
+}
+
+/// The user's report: "Node syncing · 99% · block 355,682 / 355,682", the
+/// total always equal to the height. The total is the highest height the
+/// node's peers report, not hsd's `headers`.
+#[tokio::test]
+async fn a_syncing_node_reports_its_peers_height_as_the_total() {
+    let (server, _mocks) = syncing_node(&[(355_700, -1), (355_731, 355_731), (355_690, -1)]).await;
+    let app = app_with(conn_for(&server.url()));
+    let v = node_status(app.state()).await.expect("node_status ok");
+    assert_eq!(v["synced"], serde_json::json!(false), "{v}");
+    assert_eq!(v["height"], serde_json::json!(355_682));
+    assert_eq!(v["network_height"], serde_json::json!(355_731), "{v}");
+}
+
+/// No peers yet, or peers behind the node: no total to show.
+#[tokio::test]
+async fn a_syncing_node_with_no_peer_ahead_reports_no_total() {
+    for peers in [vec![], vec![(355_600, -1)]] {
+        let (server, _mocks) = syncing_node(&peers).await;
+        let app = app_with(conn_for(&server.url()));
+        let v = node_status(app.state()).await.expect("node_status ok");
+        assert_eq!(
+            v["network_height"],
+            serde_json::Value::Null,
+            "{peers:?}: {v}"
+        );
+    }
+}
+
+/// A synced node is not asked for its peers: there is no total to show.
+#[tokio::test]
+async fn a_synced_node_is_not_asked_for_its_peers() {
+    let mut server = mockito::Server::new_async().await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"chain":"main","blocks":355731,"headers":355731,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .create_async()
+        .await;
+    let peers = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getpeerinfo".into()))
+        .expect(0)
+        .create_async()
+        .await;
+    let app = app_with(conn_for(&server.url()));
+    let v = node_status(app.state()).await.expect("node_status ok");
+    assert_eq!(v["synced"], serde_json::json!(true), "{v}");
+    assert_eq!(v["network_height"], serde_json::Value::Null);
+    peers.assert_async().await;
+}

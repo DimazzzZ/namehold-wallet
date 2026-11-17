@@ -201,7 +201,7 @@ struct NodeProbe {
     height: i64,
     /// Sync progress 0.0..=1.0, when the node reports it.
     verification_progress: Option<f64>,
-    /// Peers' best header height (the sync target), when reported.
+    /// `getblockchaininfo.headers`: for hsd, its own chain height.
     headers: Option<i64>,
     /// Network the node reports via `getblockchaininfo.chain` (`"main"` /
     /// `"testnet"` / `"regtest"` / `"simnet"`), when present. Used to refuse a
@@ -228,8 +228,13 @@ pub(crate) async fn probe_and_update(state: &AppState) -> bool {
 /// since process liveness is not proof the RPC server is up. Carries sync
 /// progress so the UI can show how far the node has caught up.
 async fn probe_node(state: &AppState) -> Option<NodeProbe> {
-    // Clone the settings map under the lock, then drop it — never hold the db
-    // mutex across the await.
+    probe_with(&active_node_client(state)?).await
+}
+
+/// The RPC client of the node [`probe_node`] asks.
+fn active_node_client(state: &AppState) -> Option<NodeRpcClient> {
+    // Builds the client under the db lock and drops it on return — never
+    // hold the db mutex across an await.
     // Per-profile node override routing (ADR-001): probe the active profile's
     // effective node config (per-profile override -> global settings ->
     // built-in default) so the tray/status reflects the active profile's node.
@@ -237,21 +242,18 @@ async fn probe_node(state: &AppState) -> Option<NodeProbe> {
     // is the whole answer; a profile whose own config will not resolve is a
     // configuration error, and this probe reports "cannot tell" rather than
     // quietly describing a node the profile does not use.
-    let client = {
-        let db = state.db.lock().ok()?;
-        match db::queries::get_active_profile_id(&db) {
-            // No active profile — the id is stored as an empty string, not an
-            // error — so there is nothing that could override, and global is
-            // the whole answer.
-            Ok(id) if id.is_empty() => {
-                let settings = db::queries::get_settings(&db).ok()?;
-                NodeRpcClient::from_settings(&settings)
-            }
-            Ok(profile_id) => NodeRpcClient::for_profile(&db, &profile_id).ok()?,
-            Err(_) => return None,
+    let db = state.db.lock().ok()?;
+    match db::queries::get_active_profile_id(&db) {
+        // No active profile — the id is stored as an empty string, not an
+        // error — so there is nothing that could override, and global is
+        // the whole answer.
+        Ok(id) if id.is_empty() => {
+            let settings = db::queries::get_settings(&db).ok()?;
+            Some(NodeRpcClient::from_settings(&settings))
         }
-    };
-    probe_with(&client).await
+        Ok(profile_id) => NodeRpcClient::for_profile(&db, &profile_id).ok(),
+        Err(_) => None,
+    }
 }
 
 /// [`probe_node`] for one wallet profile's node, whichever wallet is active.
@@ -361,6 +363,19 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
             })
             .unwrap_or(false)
     };
+    // The total to show next to the height while the node syncs: hsd's
+    // `headers` is its own height, so ask its peers how high the chain is.
+    let network_height = match &probe {
+        Some(p) if !node_synced => match active_node_client(&state) {
+            Some(client) => client
+                .get_peer_info()
+                .await
+                .ok()
+                .and_then(|peers| crate::noncustodial::rpc::network_height(&peers, p.height)),
+            None => None,
+        },
+        _ => None,
+    };
     let read_source = if node_mode.is_spv() {
         // SPV mode always uses explorer for data reads (no --index-address).
         "explorer"
@@ -388,6 +403,9 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         "height": probe.as_ref().map(|p| p.height),
         "verification_progress": probe.as_ref().and_then(|p| p.verification_progress),
         "headers": probe.as_ref().and_then(|p| p.headers),
+        // The highest height the node's peers report, while it syncs and only
+        // when above its own: the sync total.
+        "network_height": network_height,
         // The shared `chain_synced` verdict (and, in SPV mode, the
         // connected-means-synced convention). Reported so the UI reads the one
         // rule the read/write gates use rather than re-deriving it from

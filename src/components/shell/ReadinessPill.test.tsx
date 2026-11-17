@@ -254,6 +254,45 @@ describe("ReadinessPill popover", () => {
     expect(screen.queryByTestId("readiness-node-start")).toBeNull();
   });
 
+  // hsd reports `headers` as its own chain height (it does not sync headers
+  // first), so they are not the network's height and never a total.
+  it("shows no total while syncing when only hsd's own headers are known", async () => {
+    invokeMock.mockImplementation(
+      route(
+        node({
+          connected: true,
+          ownership: "own",
+          height: 355682,
+          headers: 355682,
+          verification_progress: 0.9952,
+        }),
+      ),
+    );
+    render(<ReadinessPill />, { wrapper: wrapper() });
+    await openPopover();
+    expect(await screen.findByText("Node syncing · 99% · block 355,682")).toBeInTheDocument();
+  });
+
+  it("shows the peers' height as the total while syncing", async () => {
+    invokeMock.mockImplementation(
+      route(
+        node({
+          connected: true,
+          ownership: "own",
+          height: 355682,
+          headers: 355682,
+          network_height: 355731,
+          verification_progress: 0.9952,
+        }),
+      ),
+    );
+    render(<ReadinessPill />, { wrapper: wrapper() });
+    await openPopover();
+    expect(
+      await screen.findByText("Node syncing · 99% · block 355,682 / 355,731"),
+    ).toBeInTheDocument();
+  });
+
   it("offers Stop and Re-sync when connected; Re-sync asks first", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     invokeMock.mockImplementation(
