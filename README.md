@@ -117,7 +117,7 @@ Once installed, the app updates itself (see [Auto-update](#auto-update-since-v02
   [`docs/RECOVER_LOST_BIDS.md`](docs/RECOVER_LOST_BIDS.md).
 
 ### Exchange HNS ⇄ BTC (beta)
-- **Trade HNS for BTC with other people** on the Exchange page: an order book of offers to sell and to buy HNS, your own offers and trades, and a **Bitcoin account** made from your recovery phrase (BIP 84, so any Bitcoin wallet restores it). On mainnet a trade is 0.0005 to 0.1 BTC.
+- **Trade HNS for BTC with other people** on the Exchange page: an order book of offers to sell and to buy HNS, your own offers and trades, and a **Bitcoin account** made from your recovery phrase (BIP 84, so any Bitcoin wallet restores it). On mainnet a trade is 0.0005 to 0.1 BTC; making an offer, the form shows what a trade locks and brings and which amount or price fits those limits.
 - **An atomic swap**: both sides get paid, or both get their own coins back, and nobody holds your coins in between. One confirmation in the secure window signs every transaction of your side; the background sync then reveals, claims and refunds on its own, sending only what you signed.
 - **No server to trust or run**: offers and trade messages go through public **Nostr relays** (six by default, editable in Exchange settings), trade messages encrypted to the other side. A `namehold-relay` someone you trust runs can be used instead, and can also be your watchtower ([docs/RELAY.md](docs/RELAY.md)).
 - **Checked, not trusted**: Bitcoin locks are proven by proof of work and every Bitcoin source must agree; the HNS side needs a node on this computer. Relays and sources can delay a trade, never redirect coins.

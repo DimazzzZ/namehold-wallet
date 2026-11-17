@@ -5,7 +5,7 @@ blocks: HNS 0, BTC 0
 requires:
   - procedures/exchange-setup.md
   - procedures/switch-profile.md
-last_verified: "E10, E11, E12, E14 ✅ on 8d904e2 (2026-11-09); E15, E16, E37 ✅, E13 ◐ on f542de6 (2026-11-11)"
+last_verified: "E10, E11, E12, E14 ✅ on 8d904e2 (2026-11-09); E15, E16, E37 ✅, E13 ◐ on f542de6 (2026-11-11); E10 and E13 rewritten for the new offer form (806d712e, 2026-11-17), not run since"
 ---
 
 # Offers and taking
