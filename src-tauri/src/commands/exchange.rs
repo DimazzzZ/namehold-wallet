@@ -104,6 +104,10 @@ pub struct ExchangeOverview {
     /// Where offers and messages go: `"relay"` (the custom relay),
     /// `"nostr"`, or `"none"` (neither is set).
     pub meeting_point: String,
+    /// What one trade may be worth on this network, in sats (the policy):
+    /// the form says what fits before anything is sent.
+    pub trade_min_sats: u64,
+    pub trade_max_sats: u64,
 }
 
 /// What the page needs to know about a profile before any key is involved:
@@ -170,7 +174,57 @@ pub(crate) fn overview_of(
         btc_sources: cfg.btc_sources,
         btc_network: btc_network_name(v.network).to_owned(),
         bitcoind_auth_set: cfg.bitcoind_auth.is_some(),
+        trade_min_sats: env::policy(v.network).min_btc_sats,
+        trade_max_sats: env::policy(v.network).max_btc_sats,
     })
+}
+
+/// `n` with thousands separators ("10,000,000").
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Sats as BTC without trailing zeros ("0.0005").
+fn btc_digits(sats: u64) -> String {
+    let frac = format!("{:08}", sats % 100_000_000);
+    let frac = frac.trim_end_matches('0');
+    if frac.is_empty() {
+        (sats / 100_000_000).to_string()
+    } else {
+        format!("{}.{frac}", sats / 100_000_000)
+    }
+}
+
+/// Refuse a trade worth `lo..=hi` sats outside the network's limits, saying
+/// what the trade is worth and what the limits are.
+pub(crate) fn check_trade_worth(
+    lo: u64,
+    hi: u64,
+    p: &crate::noncustodial::exchange::policy::Policy,
+) -> Result<(), AppError> {
+    let worth = if lo < p.min_btc_sats {
+        lo
+    } else if hi > p.max_btc_sats {
+        hi
+    } else {
+        return Ok(());
+    };
+    Err(AppError::InvalidInput(format!(
+        "this trade is worth {} sats; each trade must be worth {} to {} sats ({} to {} BTC)",
+        grouped(worth),
+        grouped(p.min_btc_sats),
+        grouped(p.max_btc_sats),
+        btc_digits(p.min_btc_sats),
+        btc_digits(p.max_btc_sats),
+    )))
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -700,12 +754,7 @@ pub async fn exchange_create_offer(
     }
     let p = env::policy(ctx.network);
     let (lo, hi) = (price::btc_for(min, msat)?, price::btc_for(max, msat)?);
-    if lo < p.min_btc_sats || hi > p.max_btc_sats {
-        return Err(AppError::InvalidInput(format!(
-            "each trade must be worth {} to {} sats",
-            p.min_btc_sats, p.max_btc_sats
-        )));
-    }
+    check_trade_worth(lo, hi, &p)?;
     let cfg = env::config(&ctx.settings, ctx.network);
     let relay = env::relay(&cfg, ctx.network)?
         .ok_or_else(|| AppError::InvalidInput(env::NO_MEETING_POINT.into()))?;
@@ -1009,12 +1058,7 @@ pub async fn exchange_take_offer(
     }
     let btc = price::btc_for(amount, f.price_msat_per_hns)?;
     let p = env::policy(ctx.network);
-    if btc < p.min_btc_sats || btc > p.max_btc_sats {
-        return Err(AppError::InvalidInput(format!(
-            "a trade must be worth {} to {} sats",
-            p.min_btc_sats, p.max_btc_sats
-        )));
-    }
+    check_trade_worth(btc, btc, &p)?;
     let role = match f.side {
         Side::Sell => Role::Buyer,
         Side::Buy => Role::Seller,

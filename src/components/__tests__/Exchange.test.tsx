@@ -329,6 +329,23 @@ describe("Exchange page: Take dialog", () => {
     expect(screen.getByTestId("take-submit")).toBeDisabled();
   });
 
+  // An offer from another client may reach past this network's limits; the
+  // dialog says so before the backend refuses it.
+  it("refuses an amount whose trade the network's limits do not allow", async () => {
+    mock({ overview: makeOverview({ tradeMinSats: 50_000, tradeMaxSats: 10_000_000 }) });
+    renderPage();
+    const field = await openTake();
+    // 100 HNS at 250 sats is 25,000 sats.
+    type(field, "100");
+    expect(screen.getByTestId("take-amount-error")).toHaveTextContent(
+      "This trade is worth 25,000 sats, and a trade must be worth 50,000 to 10,000,000 sats. At 250 sats/HNS take at least 200 HNS.",
+    );
+    expect(screen.getByTestId("take-submit")).toBeDisabled();
+    type(field, "200");
+    expect(screen.queryByTestId("take-amount-error")).toBeNull();
+    expect(screen.getByTestId("take-submit")).toBeEnabled();
+  });
+
   it("shows the BTC exactly as floor(doos × msat / 1e9) and takes the offer", async () => {
     mock({
       offers: makeMarketOffers({
@@ -386,7 +403,10 @@ describe("Exchange page: Take dialog", () => {
     const msat = 18_446_744_073_709_551_615_999n;
     const sats = (doos * msat) / 1_000_000_000n;
     const grouped = sats.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-    expect(screen.getByTestId("take-btc")).toHaveTextContent(`(${grouped} sats)`);
+    // Far past the network's limits: the sentence names the exact worth.
+    expect(screen.getByTestId("take-amount-error")).toHaveTextContent(
+      `This trade is worth ${grouped} sats`,
+    );
     // Past the money supply: the field's own sentence, no throw.
     type(field, "18446744073709.551615");
     expect(screen.getByTestId("take-amount-error")).toHaveTextContent(
@@ -410,12 +430,81 @@ describe("Exchange page: Take dialog", () => {
 describe("Exchange page: Create offer dialog", () => {
   const type = (id: string, value: string) =>
     fireEvent.change(screen.getByTestId(id), { target: { value } });
-
-  it("validates price and limits with a sentence under each field", async () => {
-    mock();
+  // The mainnet policy (policy.rs): 0.0005 to 0.1 BTC a trade.
+  const MAINNET = makeOverview({ tradeMinSats: 50_000, tradeMaxSats: 10_000_000 });
+  const openCreate = async (overview = MAINNET) => {
+    mock({ overview });
     renderPage();
     await screen.findAllByTestId("offer-row");
     fireEvent.click(screen.getByTestId("exchange-create-offer"));
+  };
+
+  it("asks for the amount first, then the price, and shows the limits up front", async () => {
+    await openCreate();
+    const labels = screen
+      .getAllByRole("textbox")
+      .map((el) => document.querySelector(`label[for="${el.id}"]`)?.textContent);
+    expect(labels).toEqual(["Amount (HNS)", "Price (sats per 1 HNS)"]);
+    expect(screen.getByTestId("offer-limits")).toHaveTextContent(
+      "Each trade must be worth 50,000 to 10,000,000 sats, so Bitcoin fees cannot eat it.",
+    );
+  });
+
+  it("shows what a sell trade locks and brings as you type", async () => {
+    await openCreate();
+    type("offer-amount-input", "20000");
+    type("offer-price-input", "4");
+    expect(screen.getByTestId("offer-lock")).toHaveTextContent("20,000 HNS");
+    expect(screen.getByTestId("offer-receive")).toHaveTextContent("80,000 sats (0.00080000 BTC)");
+    expect(screen.queryByTestId("offer-limit")).toBeNull();
+    expect(screen.getByTestId("offer-submit")).toBeEnabled();
+  });
+
+  it("shows what a buy trade locks and brings", async () => {
+    await openCreate();
+    fireEvent.click(screen.getByTestId("offer-side-buy"));
+    type("offer-amount-input", "20000");
+    type("offer-price-input", "4");
+    expect(screen.getByTestId("offer-lock")).toHaveTextContent("80,000 sats (0.00080000 BTC)");
+    expect(screen.getByTestId("offer-receive")).toHaveTextContent("20,000 HNS");
+  });
+
+  // The report: 1,000 HNS at 4 sats, refused only after Publish with
+  // "Invalid input: each trade must be worth 50000 to 10000000 sats".
+  it("says, before anything is sent, what fits when the trade is too small", async () => {
+    await openCreate();
+    type("offer-amount-input", "1000");
+    type("offer-price-input", "4");
+    expect(screen.getByTestId("offer-receive")).toHaveTextContent("4,000 sats");
+    expect(screen.getByTestId("offer-limit")).toHaveTextContent(
+      "Too small: this trade is worth 4,000 sats, and a trade must be worth at least 50,000 sats. " +
+        "At 4 sats/HNS that is 12,500 HNS or more; for 1,000 HNS the price would have to be at least 50 sats/HNS.",
+    );
+    expect(screen.getByTestId("offer-submit")).toBeDisabled();
+    expect(calls("exchange_create_offer")).toHaveLength(0);
+  });
+
+  it("says what fits when the trade is too large", async () => {
+    await openCreate();
+    type("offer-amount-input", "3000000");
+    type("offer-price-input", "4");
+    expect(screen.getByTestId("offer-limit")).toHaveTextContent(
+      "Too large: this trade is worth 12,000,000 sats, and a trade can be worth at most 10,000,000 sats. " +
+        "At 4 sats/HNS that is 2,500,000 HNS or less; for 3,000,000 HNS the price would have to be at most 3.333 sats/HNS.",
+    );
+    expect(screen.getByTestId("offer-submit")).toBeDisabled();
+  });
+
+  it("names the order book's prices under the price, own offers left out", async () => {
+    await openCreate();
+    // makeMarketOffers: a sell at 250, an own sell at 260, a buy at 240.5.
+    expect(screen.getByTestId("offer-market")).toHaveTextContent(
+      "Order book: sell offers from 250 sats/HNS · buy offers up to 240.5 sats/HNS",
+    );
+  });
+
+  it("validates each field with a sentence under it", async () => {
+    await openCreate();
     type("offer-price-input", "250.1234");
     expect(screen.getByTestId("offer-price-error")).toHaveTextContent(PRICE_DECIMALS);
     type("offer-price-input", "0");
@@ -424,44 +513,57 @@ describe("Exchange page: Create offer dialog", () => {
     );
     type("offer-price-input", "250");
     expect(screen.queryByTestId("offer-price-error")).toBeNull();
-    type("offer-min-input", "500");
-    type("offer-max-input", "100");
-    expect(screen.getByTestId("offer-min-error")).toHaveTextContent(
-      "The smallest trade cannot be larger than the largest",
-    );
-    expect(screen.getByTestId("offer-submit")).toBeDisabled();
-    type("offer-max-input", "0");
-    expect(screen.getByTestId("offer-max-error")).toHaveTextContent(
+    type("offer-amount-input", "0");
+    expect(screen.getByTestId("offer-amount-error")).toHaveTextContent(
       "Enter an amount greater than 0",
     );
+    type("offer-amount-input", "100");
+    fireEvent.click(screen.getByTestId("offer-split"));
+    type("offer-smallest-input", "500");
+    expect(screen.getByTestId("offer-smallest-error")).toHaveTextContent(
+      "The smallest part cannot be larger than the amount",
+    );
+    expect(screen.getByTestId("offer-submit")).toBeDisabled();
   });
 
-  it("publishes the offer with normalized digits and awaits the secure window", async () => {
+  it("publishes one amount as both limits unless a buyer may take part of it", async () => {
     let resolve: (v: unknown) => void = () => {};
-    mock({
-      on: {
-        exchange_create_offer: () => new Promise((r) => (resolve = r)),
-      },
-    });
+    mock({ on: { exchange_create_offer: () => new Promise((r) => (resolve = r)) } });
     renderPage();
     await screen.findAllByTestId("offer-row");
     fireEvent.click(screen.getByTestId("exchange-create-offer"));
     fireEvent.click(screen.getByTestId("offer-side-buy"));
     type("offer-price-input", "250.500");
-    type("offer-min-input", "100.0");
-    type("offer-max-input", "2500");
+    type("offer-amount-input", "2500.0");
+    expect(screen.queryByTestId("offer-smallest-input")).toBeNull();
     fireEvent.click(screen.getByTestId("offer-submit"));
     await waitFor(() => expect(calls("exchange_create_offer")).toHaveLength(1));
     expect(calls("exchange_create_offer")[0]![1]).toEqual({
       side: "buy",
       price: "250.5",
-      minHns: "100",
+      minHns: "2500",
       maxHns: "2500",
     });
     expect(screen.getByTestId("offer-submit")).toHaveTextContent("Confirm in the secure window…");
     resolve(makeOffer({ id: "mine-1", own: true, side: "buy" }));
     await waitFor(() => expect(screen.queryByTestId("offer-submit")).toBeNull());
     expect(toasts()).toContain("Offer published");
+  });
+
+  it("publishes a range when a buyer may take part of it", async () => {
+    mock({ on: { exchange_create_offer: () => Promise.resolve(makeOffer({ own: true })) } });
+    renderPage();
+    await screen.findAllByTestId("offer-row");
+    fireEvent.click(screen.getByTestId("exchange-create-offer"));
+    type("offer-price-input", "250");
+    type("offer-amount-input", "2500");
+    fireEvent.click(screen.getByTestId("offer-split"));
+    type("offer-smallest-input", "100");
+    // A range: the box shows both ends.
+    expect(screen.getByTestId("offer-lock")).toHaveTextContent("100 to 2,500 HNS");
+    fireEvent.click(screen.getByTestId("offer-submit"));
+    await waitFor(() => expect(calls("exchange_create_offer")).toHaveLength(1));
+    expect(calls("exchange_create_offer")[0]![1]).toMatchObject({ minHns: "100", maxHns: "2500" });
   });
 });
 

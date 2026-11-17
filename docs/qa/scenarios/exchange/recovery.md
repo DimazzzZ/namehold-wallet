@@ -77,7 +77,7 @@ Expected:
 Steps:
 
 1. `relay_stop` ([exchange-setup](../../procedures/exchange-setup.md) step 4). On the Buyer wait 15 s; read the Order book.
-2. The Seller: `Make an offer…` → `Sell HNS`, `10000`, `1`, `2` → `Publish offer` → `Confirm & Sign`. Read the dialog; then My offers (reopen it after 3 minutes).
+2. The Seller: `Make an offer…` → `Sell HNS`, amount `2` from `1`, price `10000` → `Publish offer` → `Confirm & Sign`. Read the dialog; then My offers (reopen it after 3 minutes).
 3. `mine 1`. Within 3 minutes `hns_at "$HNS_LOCK"` and `btc_spender $BTC_TX 0`. `mine 1`; `bmine 1`; read both cards.
 4. `relay_start`. Within 3 minutes reopen My offers on both profiles and the Order book; `curl -s "$RELAY/v1/offers?network=regtest"`.
 
@@ -203,7 +203,7 @@ Expected:
 Steps:
 
 1. Open `/exchange`. `Enable exchange`. Open `Settings`; `Cancel`.
-2. `Make an offer…` (`Sell HNS`, `250`, `1`, `100`) → `Publish offer`; read My offers.
+2. `Make an offer…` (`Sell HNS`, amount `100` from `1`, price `250`) → `Publish offer`; read My offers.
 3. Take the first sell offer of the mock's order book for `100` (its limits are 100 to 2,500 HNS; `10` reads "This offer takes at least 100 HNS"); then press `Confirm and sign` or `Refresh` until the card reads "Trade complete", reading the headline at each step.
 
 Expected:

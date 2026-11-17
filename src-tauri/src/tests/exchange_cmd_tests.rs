@@ -492,3 +492,48 @@ mod nostr_settings {
         assert!(settings_rows(&new, &new).is_empty());
     }
 }
+
+/// The page reads the network's trade limits from the overview, so the form
+/// can say what fits before anything is sent (one copy of the numbers).
+#[test]
+fn the_overview_carries_the_trade_limits() {
+    use crate::commands::exchange::{overview_of, View};
+    use crate::db::queries::{insert_wallet_profile, set_active_profile};
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::db::migrations::run(&conn).unwrap();
+    insert_wallet_profile(
+        &conn,
+        "w",
+        "W",
+        "watch_only_xpub",
+        "mainnet",
+        "xpubFAKE",
+        0,
+        true,
+    )
+    .unwrap();
+    set_active_profile(&conn, "w").unwrap();
+    let o = overview_of(&conn, &View::load(&conn).unwrap()).unwrap();
+    assert_eq!((o.trade_min_sats, o.trade_max_sats), (50_000, 10_000_000));
+    let json = serde_json::to_value(&o).unwrap();
+    assert_eq!(json["tradeMinSats"], 50_000);
+    assert_eq!(json["tradeMaxSats"], 10_000_000);
+}
+
+/// The backend's own refusal (the form refuses first) says what the trade is
+/// worth and what the limits are, in sats and BTC.
+#[test]
+fn a_trade_outside_the_limits_is_refused_with_its_worth() {
+    use crate::commands::exchange::check_trade_worth;
+    let p = crate::exchange_io::env::policy(Network::Main);
+    let e = check_trade_worth(4_000, 4_000, &p).unwrap_err().to_string();
+    assert_eq!(
+        e,
+        "Invalid input: this trade is worth 4,000 sats; each trade must be worth 50,000 to 10,000,000 sats (0.0005 to 0.1 BTC)"
+    );
+    let e = check_trade_worth(60_000, 12_000_000, &p)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("worth 12,000,000 sats;"), "{e}");
+    assert!(check_trade_worth(50_000, 10_000_000, &p).is_ok());
+}

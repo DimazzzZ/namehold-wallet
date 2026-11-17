@@ -8,17 +8,23 @@ import { doosToHnsDigits, parseHnsAmount } from "../../lib/hnsAmount";
 import {
   btcSatsFor,
   btcText,
+  checkTradeLimits,
+  grouped,
+  hnsDoosText,
   hnsText,
   offerHnsDoos,
   parsePriceMsat,
+  priceMsatText,
   priceText,
   satsText,
   UNREADABLE,
+  type TradeLimits,
 } from "../../lib/exchangeAmount";
 import {
   OFFER_UNREADABLE,
   TAKE_ABOVE_MAX,
   TAKE_BELOW_MIN,
+  TAKE_OUTSIDE_LIMITS,
   TAKE_ZERO_SATS,
   takerRole,
 } from "../../lib/exchangeText";
@@ -30,12 +36,14 @@ export type TakeCheck =
 
 /**
  * Read the amount the user typed against the offer: exact doos (the
- * `hnsAmount.ts` parser), inside the offer's min..max, worth at least 1 sat.
- * `error` is null for an empty field (nothing to say yet).
+ * `hnsAmount.ts` parser), inside the offer's min..max, worth at least 1 sat
+ * and, with `limits`, inside the network's limits for one trade. `error` is
+ * null for an empty field (nothing to say yet).
  */
 export function checkTake(
   offer: Pick<OfferRow, "price" | "minHns" | "maxHns">,
   text: string,
+  limits: TradeLimits | null = null,
 ): TakeCheck {
   const price = parsePriceMsat(offer.price);
   const min = offerHnsDoos(offer.minHns);
@@ -50,6 +58,22 @@ export function checkTake(
   if (doos > max) return { ok: false, error: TAKE_ABOVE_MAX(offer.maxHns) };
   const sats = btcSatsFor(doos, price.msat);
   if (sats === 0n) return { ok: false, error: TAKE_ZERO_SATS };
+  if (limits) {
+    const v = checkTradeLimits(doos, doos, price.msat, limits);
+    if (!v.ok) {
+      return {
+        ok: false,
+        error: TAKE_OUTSIDE_LIMITS({
+          worth: satsText(sats) ?? UNREADABLE,
+          min: grouped(limits.minSats),
+          max: satsText(limits.maxSats) ?? UNREADABLE,
+          price: priceMsatText(price.msat),
+          tooSmall: v.tooSmall,
+          hns: hnsDoosText(v.hnsDoos),
+        }),
+      };
+    }
+  }
   return { ok: true, hnsAmount: doosToHnsDigits(read.doos), sats };
 }
 
@@ -57,10 +81,13 @@ export function TakeOfferDialog({
   offer,
   refusal,
   busy,
+  limits,
   onClose,
   onTake,
 }: {
   offer: OfferRow;
+  /** The network's limits for one trade; null until the overview answers. */
+  limits: TradeLimits | null;
   /** The gate's refusal for this offer, re-checked while the dialog is open. */
   refusal: string | null;
   busy: boolean;
@@ -69,7 +96,7 @@ export function TakeOfferDialog({
 }) {
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const check = checkTake(offer, text);
+  const check = checkTake(offer, text, limits);
   const buying = takerRole(offer.side) === "buyer";
 
   const submit = async () => {

@@ -6,6 +6,7 @@ import {
   SATS_NOT_POSITIVE,
   btcSatsFor,
   btcText,
+  checkTradeLimits,
   hnsText,
   msatToPriceDigits,
   offerHnsDoos,
@@ -105,5 +106,57 @@ describe("parseSatsAmount", () => {
   it("refuses more than 21 million BTC", () => {
     expect(parseSatsAmount("2100000000000001")).toEqual({ error: SATS_ABOVE_SUPPLY });
     expect(parseSatsAmount("18446744073709551615")).toEqual({ error: SATS_ABOVE_SUPPLY });
+  });
+});
+
+// The mainnet limits (policy.rs): 0.0005 to 0.1 BTC a trade.
+const MAINNET = { minSats: 50_000n, maxSats: 10_000_000n };
+const HNS = 1_000_000n;
+
+describe("checkTradeLimits", () => {
+  it("passes a trade inside the limits", () => {
+    // 1,000 HNS at 50 sats = 50,000 sats, exactly the floor.
+    expect(checkTradeLimits(1_000n * HNS, 1_000n * HNS, 50_000n, MAINNET)).toEqual({ ok: true });
+  });
+
+  it("names, for a trade below the floor, the HNS and the price that would reach it", () => {
+    // The report: 1,000 HNS at 4 sats is 4,000 sats. At 4 sats the floor is
+    // 12,500 HNS; for 1,000 HNS the price must be 50 sats.
+    expect(checkTradeLimits(1_000n * HNS, 1_000n * HNS, 4_000n, MAINNET)).toEqual({
+      ok: false,
+      tooSmall: true,
+      sats: 4_000n,
+      hnsDoos: 12_500n * HNS,
+      priceMsat: 50_000n,
+    });
+  });
+
+  it("judges the smallest part against the floor and the amount against the ceiling", () => {
+    // 100..5,000 HNS at 50 sats: the smallest part (5,000 sats) is too small.
+    const small = checkTradeLimits(100n * HNS, 5_000n * HNS, 50_000n, MAINNET);
+    expect(small).toMatchObject({ ok: false, tooSmall: true, sats: 5_000n });
+  });
+
+  it("names, for a trade above the ceiling, the HNS and the price that keep under it", () => {
+    // 3,000,000 HNS at 4 sats is 12,000,000 sats. At 4 sats the ceiling is
+    // 2,500,000 HNS; for 3,000,000 HNS the price must be at most 3.333 sats.
+    expect(checkTradeLimits(12_500n * HNS, 3_000_000n * HNS, 4_000n, MAINNET)).toEqual({
+      ok: false,
+      tooSmall: false,
+      sats: 12_000_000n,
+      hnsDoos: 2_500_000n * HNS,
+      priceMsat: 3_333n,
+    });
+  });
+
+  it("rounds the HNS it names to whole HNS on the safe side", () => {
+    // At 3 sats the floor is 16,666.67 HNS: named as 16,667 (worth 50,001 sats).
+    expect(checkTradeLimits(1n * HNS, 1n * HNS, 3_000n, MAINNET)).toMatchObject({
+      hnsDoos: 16_667n * HNS,
+    });
+    // At 3 sats the ceiling is 3,333,333.67 HNS: named as 3,333,333.
+    expect(checkTradeLimits(20_000n * HNS, 4_000_000n * HNS, 3_000n, MAINNET)).toMatchObject({
+      hnsDoos: 3_333_333n * HNS,
+    });
   });
 });

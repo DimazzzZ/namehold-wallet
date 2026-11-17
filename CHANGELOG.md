@@ -37,6 +37,7 @@
 ### Added
 - **Exchange: trade HNS and BTC with other people (beta).** A new page after Market in the sidebar, marked New.
   - **Order book and offers.** Offers to sell and to buy HNS, priced in sats per HNS, each with a smallest and a largest trade. Take one, or publish your own: publishing signs and locks nothing, and Withdraw takes it down.
+  - **An offer form that does the sums.** You enter the amount of HNS and the price; the form shows what a trade locks and brings in sats and BTC, the order book's best prices, and the network's limits. A trade outside them is refused before anything is sent, with the amount and the price that would fit. One amount trades whole unless you let the other side take part of it.
   - **Atomic swaps.** Both sides get paid, or both get their own coins back. Nobody holds your coins in between: not the relays, not a watchtower, not the project.
   - **One confirmation per trade.** The secure window shows the amounts, the fees, the addresses and the deadlines, and that one confirmation signs every transaction of your side. The background sync then claims and refunds on its own, with the app closed too, and sends only what you signed.
   - **No server needed.** Offers and trade messages travel over public Nostr relays (six by default on mainnet and testnet, editable in Exchange settings); trade messages are encrypted to the other side. A `namehold-relay` that someone you trust runs can be used instead, and it can also be your watchtower, which claims for you while your computer is off ([docs/RELAY.md](docs/RELAY.md)).

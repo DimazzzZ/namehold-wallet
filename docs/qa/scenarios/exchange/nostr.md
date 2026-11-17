@@ -60,7 +60,7 @@ Expected:
 
 Steps:
 
-1. `Make an offer…` → `Sell HNS`, `10000`, `1`, `20` → `Publish offer`. Read the secure window → `Confirm & Sign`. Note the offer id: `sqlite3 "$DB" "select id from exchange_offers where state = 'live' order by created_at desc limit 1"`.
+1. `Make an offer…` → `Sell HNS`, amount `20` from `1`, price `10000` → `Publish offer`. Read the secure window → `Confirm & Sign`. Note the offer id: `sqlite3 "$DB" "select id from exchange_offers where state = 'live' order by created_at desc limit 1"`.
 2. On each relay: `NQ '{"kinds":[37491],"#d":["<id>"]}'`, then with `ws://127.0.0.1:7778` and `:7779`.
 3. Compare the event's author with `maker_x <id>`.
 4. [switch-profile](../../procedures/switch-profile.md) to the Buyer; Exchange › Order book; wait up to 15 s.
