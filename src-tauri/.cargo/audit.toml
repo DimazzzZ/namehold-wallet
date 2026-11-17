@@ -53,7 +53,8 @@ ignore = [
 
   # zip 4.6.1 — extraction follows symlinks and keeps permission bits
   # (3 vulns), fixed only in >=9.0.0 (semver-major). Pinned by
-  # tauri-plugin-updater (even 2.14.0 depends on zip 4.6.1). Extraction runs
+  # tauri-plugin-updater (2.14.1 moved to zip ^9 but needs tauri ^2.12; we
+  # are on 2.11). Extraction runs
   # only in the Windows updater, on a bundle whose Ed25519 signature
   # `download_and_install` has already verified against our pubkey.
   "RUSTSEC-2026-0367",
@@ -62,6 +63,19 @@ ignore = [
   # A symlink entry with a large declared size aborts the process. Same reach:
   # a crafted archive needs our signing key, and the failure is a crash.
   "RUSTSEC-2026-0429",
+  # ZipStreamReader extracts under local-header names that can differ from
+  # the central directory. The updater extracts with ZipArchive
+  # (updater.rs, extract_zip), which uses the central-directory names.
+  "RUSTSEC-2026-0548",
+  # WinZip AES entries returned without their MAC checked when the data ends
+  # early. Needs the `aes-crypto` feature; the updater depends on zip with
+  # default-features = false and reads no encrypted entry.
+  "RUSTSEC-2026-0545",
+
+  # chrono 0.4 — unmaintained, no patched release; not a vulnerability.
+  # Used directly by namehold-wallet only (timestamps and RFC 3339
+  # formatting). Replace with jiff or time after 0.8.0.
+  "RUSTSEC-2026-0543",
 
   # zvariant, zbus_names, zvariant_derive (4.x and 5.x) — unmaintained.
   # Pulled in by zbus (Linux D-Bus) via notify-rust,
