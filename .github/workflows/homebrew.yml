@@ -1,0 +1,77 @@
+name: Homebrew Cask
+
+# Points the `namehold` cask in DimazzzZ/homebrew-tap at the latest published
+# release, so `brew install --cask dimazzzz/tap/namehold` and `brew upgrade` get
+# it. A release published by the Release workflow's GITHUB_TOKEN raises no
+# `release` event, so this follows that workflow's completion instead. It never
+# touches the release itself: the tap is the only thing it writes.
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew-cask
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Update the cask
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    # HOMEBREW_TAP_TOKEN lives in this environment only: a fine-grained token with
+    # Contents read/write on DimazzzZ/homebrew-tap and nothing else.
+    environment: homebrew
+    steps:
+      # The latest release is the newest published one that is not a pre-release,
+      # which is what the cask should offer. The dmg's checksum is the one GitHub
+      # computed on upload, and it must match the release's own SHA256SUMS line.
+      - name: Read the latest release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/releases/latest" > release.json
+          TAG="$(jq -r .tag_name release.json)"
+          VERSION="${TAG#v}"
+          printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::unexpected tag $TAG"; exit 1; }
+          DMG="Namehold_${VERSION}_universal.dmg"
+          DIGEST="$(jq -r --arg n "$DMG" '.assets[] | select(.name == $n) | .digest // ""' release.json)"
+          SHA="${DIGEST#sha256:}"
+          printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{64}$' || { echo "::error::no sha256 digest for $DMG"; exit 1; }
+          gh release download "$TAG" -p SHA256SUMS -O SHA256SUMS
+          LISTED="$(awk -v n="$DMG" '$2 == n || $2 == "*" n { print $1 }' SHA256SUMS)"
+          [ "$LISTED" = "$SHA" ] || { echo "::error::$DMG digest $SHA does not match SHA256SUMS ($LISTED)"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Latest release $TAG, $DMG sha256 $SHA"
+
+      - name: Update and push the cask
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.release.outputs.version }}
+          SHA256: ${{ steps.release.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          [ -n "$TAP_TOKEN" ] || { echo "::error::HOMEBREW_TAP_TOKEN is not set in the homebrew environment"; exit 1; }
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/DimazzzZ/homebrew-tap.git" tap
+          cd tap
+          CASK=Casks/namehold.rb
+          sed -i -E "s/^  version \"[^\"]*\"$/  version \"$VERSION\"/; s/^  sha256 \"[0-9a-f]{64}\"$/  sha256 \"$SHA256\"/" "$CASK"
+          grep -qx "  version \"$VERSION\"" "$CASK" || { echo "::error::version line not updated in $CASK"; exit 1; }
+          grep -qx "  sha256 \"$SHA256\"" "$CASK" || { echo "::error::sha256 line not updated in $CASK"; exit 1; }
+          if git diff --quiet; then
+            echo "The cask already points at $VERSION"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "namehold $VERSION"
+          git push origin HEAD:main
+          echo "Cask updated to $VERSION"
