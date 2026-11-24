@@ -1942,6 +1942,87 @@ async fn an_own_node_silent_long_after_its_start_is_not_starting() {
     ));
 }
 
+/// A regtest own node left by an earlier session (a `sleep` standing in for
+/// hsd), recorded as started `started_ago`, and the app over it. The caller
+/// kills the returned process.
+fn app_with_left_regtest_node(
+    base: &crate::tests::command_helpers::TempDir,
+    started_ago: std::time::Duration,
+) -> (
+    tauri::App<tauri::test::MockRuntime>,
+    std::process::Child,
+    std::path::PathBuf,
+) {
+    use crate::commands::local_node::{network_scoped_data_dir, write_pid_file, PID_FILE};
+    use crate::noncustodial::network::Network;
+    let conn = conn_with_active_regtest("http://127.0.0.1:1");
+    db::queries::set_setting(&conn, "hsd_prefix", base.path().to_str().unwrap()).unwrap();
+    let dir = std::path::PathBuf::from(network_scoped_data_dir(
+        base.path().to_str().unwrap(),
+        Network::Regtest,
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let left = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    write_pid_file(&dir, left.id()).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(dir.join(PID_FILE))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - started_ago)
+        .unwrap();
+    (app_with(conn), left, dir)
+}
+
+/// A node that started days ago and answered a minute ago is not stuck: one
+/// missed probe of a long-running node is no reason to tell the user to
+/// restart it. Silence counts from the last answer, not from the start.
+#[tokio::test]
+#[serial_test::serial(hsd_home)]
+async fn a_long_running_node_that_answered_recently_is_not_called_stuck() {
+    let base = crate::tests::command_helpers::TempDir::new();
+    let (app, mut left, dir) =
+        app_with_left_regtest_node(&base, std::time::Duration::from_secs(2 * 24 * 3600));
+    crate::commands::local_node::note_answer(
+        &dir,
+        left.id(),
+        std::time::SystemTime::now() - std::time::Duration::from_secs(60),
+    );
+
+    let v = node_status(app.state()).await.unwrap();
+    let _ = left.kill();
+    let _ = left.wait();
+    assert_eq!(v["ownership"], "own");
+    assert_eq!(v["not_answering"], false, "{v}");
+}
+
+/// Seen 2026-11-24: a mainnet node that ran two days and answered until the
+/// evening before was reported as "has not answered since it started 2 days
+/// ago". The status counts the silence from the last answer it heard.
+#[tokio::test]
+#[serial_test::serial(hsd_home)]
+async fn a_stuck_nodes_silence_counts_from_its_last_answer() {
+    let base = crate::tests::command_helpers::TempDir::new();
+    let (app, mut left, dir) =
+        app_with_left_regtest_node(&base, std::time::Duration::from_secs(2 * 24 * 3600));
+    crate::commands::local_node::note_answer(
+        &dir,
+        left.id(),
+        std::time::SystemTime::now() - std::time::Duration::from_secs(20 * 3600),
+    );
+
+    let v = node_status(app.state()).await.unwrap();
+    let _ = left.kill();
+    let _ = left.wait();
+    assert_eq!(v["not_answering"], true, "{v}");
+    assert_eq!(
+        v["last_error"].as_str().unwrap_or_default(),
+        "The regtest node is running but has not answered for 20 hours. Stop it and start it again."
+    );
+}
+
 /// A node that answers but that Namehold did not start is outside; nothing
 /// answering and nothing of ours is none.
 #[tokio::test]

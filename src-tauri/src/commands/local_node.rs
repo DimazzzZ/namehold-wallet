@@ -39,10 +39,21 @@ pub(crate) fn process_start_time(pid: u32) -> Option<u64> {
 /// fields are counted from the last `)`.
 #[cfg(target_os = "linux")]
 pub(crate) fn process_start_time(pid: u32) -> Option<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_name = &stat[stat.rfind(')')? + 1..];
+    start_time_from_proc_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// [`process_start_time`] from the text of `/proc/<pid>/stat`. A zombie (state
+/// `Z`) has exited and only waits for its parent to reap it, so it has no start
+/// time: a node killed by the watchdog is gone even before it is reaped, as
+/// macOS already reports it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn start_time_from_proc_stat(stat: &str) -> Option<u64> {
+    let mut fields = stat[stat.rfind(')')? + 1..].split_whitespace();
     // After the name: state is field 3, so starttime (22) is the 20th.
-    after_name.split_whitespace().nth(19)?.parse().ok()
+    if fields.next()? == "Z" {
+        return None;
+    }
+    fields.nth(18)?.parse().ok()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -221,11 +232,115 @@ pub(crate) fn own_node_age(state: &AppState, network: Network) -> Option<std::ti
     std::time::SystemTime::now().duration_since(written).ok()
 }
 
-/// Whether `network`'s own node, if its RPC is silent, is still within its
-/// start: no record of its start (it cannot be judged) counts as starting.
-pub(crate) fn own_node_may_still_be_starting(state: &AppState, network: Network) -> bool {
-    own_node_age(state, network).is_none_or(|age| age <= NODE_START_GRACE)
+/// When this app last heard each own node answer its RPC, keyed by the node's
+/// data dir and pid: a restarted node is another process, so it starts with no
+/// answer heard. Kept in memory only: after an app restart a node's silence
+/// counts from its start again.
+static LAST_ANSWER: std::sync::Mutex<
+    Option<std::collections::HashMap<(std::path::PathBuf, u32), std::time::SystemTime>>,
+> = std::sync::Mutex::new(None);
+
+/// Record that the node with `pid` over `data_dir` answered at `at`.
+pub(crate) fn note_answer(data_dir: &std::path::Path, pid: u32, at: std::time::SystemTime) {
+    let mut guard = match LAST_ANSWER.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard
+        .get_or_insert_with(Default::default)
+        .insert((data_dir.to_path_buf(), pid), at);
 }
+
+/// When the node with `pid` over `data_dir` last answered, if this app heard it.
+fn last_answer(data_dir: &std::path::Path, pid: u32) -> Option<std::time::SystemTime> {
+    let guard = match LAST_ANSWER.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.as_ref()?.get(&(data_dir.to_path_buf(), pid)).copied()
+}
+
+/// The pid of `network`'s own node, whichever kind it is.
+pub(crate) fn own_node_process_id(state: &AppState, network: Network) -> Option<u32> {
+    match own_node(state, network)? {
+        OwnNode::Left(pid) => Some(pid),
+        OwnNode::Child => {
+            let children = match state.hsd_children.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            children.get(&network).map(std::process::Child::id)
+        }
+    }
+}
+
+/// Record that `network`'s own node answered just now. No own node: nothing
+/// to record.
+pub(crate) fn note_own_node_answered(state: &AppState, network: Network) {
+    let Some(pid) = own_node_process_id(state, network) else {
+        return;
+    };
+    let Ok(data_dir) = resolve_data_dir_for_network(state, network) else {
+        return;
+    };
+    note_answer(
+        std::path::Path::new(&data_dir),
+        pid,
+        std::time::SystemTime::now(),
+    );
+}
+
+/// How long `network`'s own node has been silent: since its last answer this
+/// app heard, else since its start. `None` when there is no own node or its
+/// start cannot be read.
+pub(crate) fn own_node_silence(state: &AppState, network: Network) -> Option<std::time::Duration> {
+    Some(own_node_silence_and_answered(state, network)?.0)
+}
+
+/// [`own_node_silence`], and whether this app heard the node answer at all.
+pub(crate) fn own_node_silence_and_answered(
+    state: &AppState,
+    network: Network,
+) -> Option<(std::time::Duration, bool)> {
+    let age = own_node_age(state, network)?;
+    let heard = own_node_process_id(state, network).and_then(|pid| {
+        let data_dir = resolve_data_dir_for_network(state, network).ok()?;
+        last_answer(std::path::Path::new(&data_dir), pid)
+    });
+    Some(match heard {
+        // A clock that went back makes the answer "now": silent for nothing.
+        Some(at) => (
+            age.min(
+                std::time::SystemTime::now()
+                    .duration_since(at)
+                    .unwrap_or_default(),
+            ),
+            true,
+        ),
+        None => (age, false),
+    })
+}
+
+/// Whether `network`'s own node, if its RPC is silent, may still come back on
+/// its own: within its start, or within the same grace of its last answer. No
+/// record of its start (it cannot be judged) counts as not stuck.
+pub(crate) fn own_node_may_still_be_starting(state: &AppState, network: Network) -> bool {
+    own_node_silence(state, network).is_none_or(|silence| silence <= NODE_START_GRACE)
+}
+
+/// Send SIGKILL to process `pid`: for an own node that neither answers nor
+/// exits on SIGTERM. Called only for a pid `own_node_pid` vouched for.
+#[cfg(unix)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn kill_hard(pid: u32) {
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+}
+
+/// No own-node record is ever written off macOS and Linux.
+#[cfg(not(unix))]
+pub(crate) fn kill_hard(_pid: u32) {}
 
 /// Why Stop refuses a node it did not start (spec 2026-10-24 R7).
 pub(crate) const OUTSIDE_NODE_NOT_STOPPED: &str =
@@ -321,4 +436,27 @@ pub(crate) async fn until_no_own_node(state: &AppState, network: Network) -> boo
         waited += step;
     }
     true
+}
+
+#[cfg(test)]
+mod proc_stat_tests {
+    use super::start_time_from_proc_stat;
+
+    /// A `/proc/<pid>/stat` line with `state` and starttime 4242; the name
+    /// holds a space and a `)` to pin parsing from the last `)`.
+    fn stat_line(state: &str) -> String {
+        let mut fields = vec!["0"; 19];
+        fields[18] = "4242";
+        format!("123 (hs d) x) {state} {}", fields.join(" "))
+    }
+
+    #[test]
+    fn a_running_process_has_its_start_time() {
+        assert_eq!(start_time_from_proc_stat(&stat_line("S")), Some(4242));
+    }
+
+    #[test]
+    fn a_zombie_has_no_start_time() {
+        assert_eq!(start_time_from_proc_stat(&stat_line("Z")), None);
+    }
 }

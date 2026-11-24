@@ -352,14 +352,23 @@ pub(crate) fn finish_setup(
         // accurate even when the main window is closed to tray (the
         // frontend's polling pauses when unfocused). The first tick
         // fires immediately so the flag is fresh within a few hundred ms
-        // of app launch.
+        // of app launch. A silent probe also asks the stuck-node watchdog,
+        // which restarts an own node that has answered nothing for longer
+        // than its start grace (a node whose data disk dropped hung for two
+        // days otherwise). The restart runs inside the loop, so two never
+        // overlap.
         let handle = app.clone();
         tauri::async_runtime::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 interval.tick().await;
                 let state = handle.state::<AppState>();
-                let _ = commands::node::probe_and_update(&state).await;
+                if !commands::node::probe_and_update(&state).await {
+                    if let Err(e) = commands::node::restart_stuck_own_node(state).await {
+                        eprintln!("hsd watchdog: {e}");
+                    }
+                }
             }
         });
     }
