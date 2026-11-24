@@ -39,10 +39,21 @@ pub(crate) fn process_start_time(pid: u32) -> Option<u64> {
 /// fields are counted from the last `)`.
 #[cfg(target_os = "linux")]
 pub(crate) fn process_start_time(pid: u32) -> Option<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_name = &stat[stat.rfind(')')? + 1..];
+    start_time_from_proc_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// [`process_start_time`] from the text of `/proc/<pid>/stat`. A zombie (state
+/// `Z`) has exited and only waits for its parent to reap it, so it has no start
+/// time: a node killed by the watchdog is gone even before it is reaped, as
+/// macOS already reports it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn start_time_from_proc_stat(stat: &str) -> Option<u64> {
+    let mut fields = stat[stat.rfind(')')? + 1..].split_whitespace();
     // After the name: state is field 3, so starttime (22) is the 20th.
-    after_name.split_whitespace().nth(19)?.parse().ok()
+    if fields.next()? == "Z" {
+        return None;
+    }
+    fields.nth(18)?.parse().ok()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -425,4 +436,27 @@ pub(crate) async fn until_no_own_node(state: &AppState, network: Network) -> boo
         waited += step;
     }
     true
+}
+
+#[cfg(test)]
+mod proc_stat_tests {
+    use super::start_time_from_proc_stat;
+
+    /// A `/proc/<pid>/stat` line with `state` and starttime 4242; the name
+    /// holds a space and a `)` to pin parsing from the last `)`.
+    fn stat_line(state: &str) -> String {
+        let mut fields = vec!["0"; 19];
+        fields[18] = "4242";
+        format!("123 (hs d) x) {state} {}", fields.join(" "))
+    }
+
+    #[test]
+    fn a_running_process_has_its_start_time() {
+        assert_eq!(start_time_from_proc_stat(&stat_line("S")), Some(4242));
+    }
+
+    #[test]
+    fn a_zombie_has_no_start_time() {
+        assert_eq!(start_time_from_proc_stat(&stat_line("Z")), None);
+    }
 }
