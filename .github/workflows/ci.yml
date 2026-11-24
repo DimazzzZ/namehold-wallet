@@ -16,7 +16,7 @@ permissions:
 jobs:
   frontend:
     name: Frontend (typecheck · build · test)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,7 +53,7 @@ jobs:
 
   rust-lint:
     name: Rust lint (fmt · clippy)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # A single flaky apt mirror or a stuck runner step must not eat a 6-hour
     # slot — bound the whole job so a hang fails fast and can be re-run.
     timeout-minutes: 20
@@ -159,7 +159,7 @@ jobs:
 
   rust-test:
     name: Rust tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # A single flaky apt mirror or a stuck runner step must not eat a 6-hour
     # slot — bound the whole job so a hang fails fast and can be re-run.
     timeout-minutes: 20
@@ -255,7 +255,7 @@ jobs:
           tool: cargo-nextest@0.9.148
           fallback: none
 
-      # Required gate. Runs tests in parallel across all cores (ubuntu-latest = 4 vCPU).
+      # Required gate. Runs tests in parallel across all cores (ubuntu-26.04 = 4 vCPU).
       # The env-gated live-node integration tests skip automatically (no HNS_IT_NODE_URL set),
       # so this stays fast and offline.
       #
@@ -287,7 +287,7 @@ jobs:
 
   audit:
     name: Dependency audit (cargo audit · pnpm audit)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # Advisory-only — a new CVE in the transitive graph should surface here
     # without blocking unrelated PRs. Promote to required once the security
     # backlog is drained.
