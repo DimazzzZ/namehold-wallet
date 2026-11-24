@@ -216,6 +216,9 @@ struct NodeProbe {
 /// loop and by callers that already probe RPC (to avoid a duplicate probe).
 pub(crate) async fn probe_and_update(state: &AppState) -> bool {
     let alive = probe_node(state).await.is_some();
+    if alive {
+        note_active_own_node_answered(state);
+    }
     state
         .node_rpc_alive
         .store(alive, std::sync::atomic::Ordering::Relaxed);
@@ -229,6 +232,14 @@ pub(crate) async fn probe_and_update(state: &AppState) -> bool {
 /// progress so the UI can show how far the node has caught up.
 async fn probe_node(state: &AppState) -> Option<NodeProbe> {
     probe_with(&active_node_client(state)?).await
+}
+
+/// The active wallet's node answered: when it is the app's own, remember when,
+/// so its silence counts from this answer (the stuck-node rule and watchdog).
+fn note_active_own_node_answered(state: &AppState) {
+    if let Some(network) = active_profile_network_opt(state) {
+        crate::commands::local_node::note_own_node_answered(state, network);
+    }
 }
 
 /// The RPC client of the node [`probe_node`] asks.
@@ -291,6 +302,9 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         None => false,
     };
     let probe = probe_node(&state).await;
+    if probe.is_some() {
+        note_active_own_node_answered(&state);
+    }
     // Whose node this is (spec 2026-10-24 R7, R11): this session's child, or
     // the node an earlier session left (its pid file), is own; a node that
     // answers otherwise is outside, and Stop never touches it.
@@ -428,9 +442,11 @@ fn not_answering_sentence(state: &State<'_, AppState>) -> String {
     let Some(network) = active_profile_network_opt(state) else {
         return "The node is running but does not answer. Stop it and start it again.".into();
     };
-    let since = crate::commands::local_node::own_node_age(state, network)
-        .map(|age| format!(" since it started {} ago", age_words(age)))
-        .unwrap_or_default();
+    let since = match crate::commands::local_node::own_node_silence_and_answered(state, network) {
+        Some((silence, true)) => format!(" for {}", age_words(silence)),
+        Some((age, false)) => format!(" since it started {} ago", age_words(age)),
+        None => String::new(),
+    };
     format!(
         "The {} node is running but has not answered{since}. Stop it and start it again.",
         network.display_name()
@@ -1109,6 +1125,70 @@ pub(crate) async fn autostart_network_node(
         return Ok(None);
     }
     start_hsd(state).await.map(Some)
+}
+
+/// The stuck-node watchdog: restart the active wallet's own node when it has
+/// answered nothing for longer than [`NODE_START_GRACE`] and its network
+/// starts its node on its own. `Ok(true)` when a restart was made.
+///
+/// Seen 2026-11-23: the disk holding the chain dropped for six seconds, hsd
+/// threw on its revoked files and hung in its own exit for two days, process
+/// and port alive, answering nothing. Such a node never comes back by itself,
+/// and SIGTERM may not end it: a node still there after the stop wait is
+/// sent SIGKILL. A node the user stopped is no own node, so it is never
+/// started here; a network whose autostart is off is left to the user.
+pub(crate) async fn restart_stuck_own_node(state: State<'_, AppState>) -> Result<bool, AppError> {
+    use crate::commands::local_node as ln;
+    let Some(network) = active_profile_network_opt(&state) else {
+        return Ok(false);
+    };
+    let Some(pid) = ln::own_node_process_id(&state, network) else {
+        return Ok(false);
+    };
+    let autostart = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        crate::noncustodial::rpc::autostart_hsd_for(&db::queries::get_settings(&db)?, network)
+    };
+    if !autostart || ln::own_node_may_still_be_starting(&state, network) {
+        return Ok(false);
+    }
+    // The caller's probe may be seconds old: never end a node that answers.
+    if probe_node(&state).await.is_some() {
+        note_active_own_node_answered(&state);
+        return Ok(false);
+    }
+    let silent_secs = ln::own_node_silence(&state, network).map(|d| d.as_secs());
+    eprintln!(
+        "hsd watchdog: the {} node (pid {pid}) has not answered for {silent_secs:?}s; restarting it",
+        network.as_str()
+    );
+    {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db.execute(
+            "INSERT INTO audit_log (action, detail) VALUES ('restart_stuck_hsd', ?1)",
+            [serde_json::json!({
+                "network": network.as_str(),
+                "pid": pid,
+                "silent_secs": silent_secs,
+            })
+            .to_string()],
+        )?;
+    }
+    ln::stop_own_node(&state, network);
+    if !ln::until_no_own_node(&state, network).await {
+        ln::kill_hard(pid);
+        if !ln::until_no_own_node(&state, network).await {
+            return Err(AppError::Other(format!(
+                "The {} node (pid {pid}) does not answer and could not be ended.",
+                network.display_name()
+            )));
+        }
+    }
+    state
+        .node_rpc_alive
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    start_hsd(state).await?;
+    Ok(true)
 }
 
 /// What quit does with the app's own nodes (spec 2026-10-24 R9), by one rule

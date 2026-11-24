@@ -1751,3 +1751,155 @@ async fn a_data_dir_the_start_creates_is_owner_only() {
         0o600
     );
 }
+
+// ===========================================================================
+// The stuck-node watchdog. Seen 2026-11-23: the disk holding the mainnet
+// chain dropped for six seconds, hsd's files were revoked, hsd threw and hung
+// in its own exit for two days, its process and port alive, answering
+// nothing. The app said "Stop it and start it again" and waited for the user.
+// ===========================================================================
+
+/// An own mainnet node left by an "earlier session" (a process the test
+/// starts from `sh -c script`), recorded as started `started_ago`.
+fn left_main_node(
+    h: &Harness,
+    script: &str,
+    started_ago: std::time::Duration,
+) -> std::process::Child {
+    let node = std::process::Command::new("sh")
+        .args(["-c", script])
+        .spawn()
+        .unwrap();
+    // Let a trap in `script` install before anything signals it.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    crate::commands::local_node::write_pid_file(h.data_dir(), node.id()).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(h.data_dir().join(crate::commands::local_node::PID_FILE))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - started_ago)
+        .unwrap();
+    node
+}
+
+fn audit_count(app: &tauri::App<tauri::test::MockRuntime>, action: &str) -> i64 {
+    let state = app.state::<AppState>();
+    let db = state.db.lock().unwrap();
+    db.query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = ?1",
+        [action],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+const TWO_HOURS: std::time::Duration = std::time::Duration::from_secs(2 * 3600);
+
+#[tokio::test]
+#[serial(hsd_home)]
+async fn the_watchdog_restarts_an_own_node_that_stopped_answering() {
+    // The watchdog's own probe and the start's adoption probe find nothing;
+    // the new node answers.
+    let (server, _fail, _up) = spawn_then_up_server_after(2, 9).await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let app = app_with(conn_for(&h, &server.url()));
+    let mut stuck = left_main_node(&h, "exec sleep 60", TWO_HOURS);
+
+    let restarted = crate::commands::node::restart_stuck_own_node(app.state())
+        .await
+        .expect("restart");
+
+    assert!(restarted);
+    assert!(
+        !stuck.wait().unwrap().success(),
+        "the stuck node was ended, not left to finish"
+    );
+    assert!(child_alive(&app, Network::Main), "a new node runs");
+    assert_eq!(audit_count(&app, "restart_stuck_hsd"), 1);
+    stop_hsd(app.state()).await.expect("cleanup");
+}
+
+#[tokio::test]
+#[serial(hsd_home)]
+async fn the_watchdog_kills_a_stuck_node_that_ignores_sigterm() {
+    let (server, _fail, _up) = spawn_then_up_server_after(2, 9).await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let app = app_with(conn_for(&h, &server.url()));
+    let mut stuck = left_main_node(&h, "trap '' TERM; exec sleep 60", TWO_HOURS);
+
+    let restarted = crate::commands::node::restart_stuck_own_node(app.state())
+        .await
+        .expect("restart");
+
+    assert!(restarted);
+    let status = stuck.wait().unwrap();
+    assert!(!status.success(), "ended by SIGKILL");
+    assert!(child_alive(&app, Network::Main), "a new node runs");
+    stop_hsd(app.state()).await.expect("cleanup");
+}
+
+#[tokio::test]
+#[serial(hsd_home)]
+async fn the_watchdog_leaves_a_node_still_within_its_start() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let app = app_with(conn_for(&h, NO_RPC));
+    let mut starting = left_main_node(&h, "exec sleep 60", std::time::Duration::from_secs(60));
+
+    let restarted = crate::commands::node::restart_stuck_own_node(app.state())
+        .await
+        .expect("no restart");
+
+    assert!(!restarted);
+    assert!(matches!(starting.try_wait(), Ok(None)), "left running");
+    assert_eq!(audit_count(&app, "restart_stuck_hsd"), 0);
+    let _ = starting.kill();
+    let _ = starting.wait();
+}
+
+#[tokio::test]
+#[serial(hsd_home)]
+async fn the_watchdog_leaves_a_node_whose_network_does_not_start_on_its_own() {
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let conn = conn_for(&h, NO_RPC);
+    db::queries::set_setting(&conn, "autostart_hsd.main", "false").unwrap();
+    let app = app_with(conn);
+    let mut stuck = left_main_node(&h, "exec sleep 60", TWO_HOURS);
+
+    let restarted = crate::commands::node::restart_stuck_own_node(app.state())
+        .await
+        .expect("no restart");
+
+    assert!(!restarted);
+    assert!(matches!(stuck.try_wait(), Ok(None)), "left running");
+    let _ = stuck.kill();
+    let _ = stuck.wait();
+}
+
+#[tokio::test]
+#[serial(hsd_home)]
+async fn the_watchdog_leaves_a_node_that_answers() {
+    let mut server = mockito::Server::new_async().await;
+    let _info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":9,"headers":9,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .create_async()
+        .await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let app = app_with(conn_for(&h, &server.url()));
+    let mut node = left_main_node(&h, "exec sleep 60", TWO_HOURS);
+
+    let restarted = crate::commands::node::restart_stuck_own_node(app.state())
+        .await
+        .expect("no restart");
+
+    assert!(
+        !restarted,
+        "the loop's probe was stale: the node answers now"
+    );
+    assert!(matches!(node.try_wait(), Ok(None)), "left running");
+    let _ = node.kill();
+    let _ = node.wait();
+}
