@@ -30,7 +30,7 @@ pub(crate) struct CsvRow {
         default
     )]
     pub(crate) notes: Option<String>,
-    #[serde(alias = "has_sld", alias = "HasSld", alias = "has_sld", default)]
+    #[serde(alias = "has_sld", alias = "HasSld", default)]
     #[allow(dead_code)]
     pub(crate) has_sld: Option<String>,
     #[serde(
