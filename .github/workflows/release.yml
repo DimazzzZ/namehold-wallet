@@ -32,7 +32,7 @@ jobs:
   # DRAFT release that the publish job later fills.
   prepare:
     name: Prepare release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write # create the draft release and set its notes
       checks: read # read main's CI results for this commit
@@ -335,7 +335,7 @@ jobs:
   sign:
     name: Sign release files
     needs: [prepare, build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: release
     permissions:
       contents: read
@@ -383,7 +383,7 @@ jobs:
   publish:
     name: Publish release
     needs: [prepare, build, sign]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write # upload the files, take the release out of draft
       id-token: write # attest build provenance
