@@ -29,6 +29,15 @@ This creates:
 
 `scripts/check-supply-chain.mjs` fails Workflow Validation if a workflow names either secret outside the signing step of `release.yml`'s `sign` job or reaches secrets without naming one. That catches a mistake in review; a workflow pushed to a branch still runs before any review, so the environment is what actually keeps the key out of reach.
 
+### 3. Homebrew tap token
+
+`homebrew.yml` updates the `namehold` cask in [DimazzzZ/homebrew-tap](https://github.com/DimazzzZ/homebrew-tap) after each release. It needs one secret:
+
+1. Create a fine-grained personal access token with access to `DimazzzZ/homebrew-tap` only and the **Contents: Read and write** permission.
+2. Create a `homebrew` environment (Settings → Environments), limit its deployments to `main`, and add the token there as `HOMEBREW_TAP_TOKEN`. Only the `bump` job of `homebrew.yml` declares that environment.
+
+Without the secret the workflow fails with a message and the release itself is unaffected.
+
 ---
 
 ## Cutting a release
@@ -72,6 +81,7 @@ This creates:
    `SHA256SUMS` and the signatures use the updater key, so they show a file matches what this workflow signed; they do not protect against someone who holds that key or can run the `sign` job. `scripts/check-supply-chain.mjs` keeps these jobs, their permissions and their guard steps as written: changing a guard step means changing its copy in that script in the same commit.
 6. Existing installs auto-detect the new version within ~30 s of their next
    launch (or immediately when the user clicks "Check for updates" in Settings).
+7. When the Release run succeeds, **Homebrew Cask** (`homebrew.yml`) starts on its own. It reads the latest published release (a pre-release is never the latest), takes the universal dmg's sha256 from GitHub's asset digest, refuses it unless the release's `SHA256SUMS` lists the same value, and commits the new `version` and `sha256` to `Casks/namehold.rb` in the tap. If the cask already has that version it changes nothing. To redo it by hand: Actions → **Homebrew Cask** → **Run workflow**.
 
 ### A test run before a real release
 

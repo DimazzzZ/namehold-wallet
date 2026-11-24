@@ -66,6 +66,14 @@ Download the latest build from [Releases](https://github.com/DimazzzZ/namehold-w
 | Windows | `Namehold_<version>_x64-setup.exe` |
 | Linux | `Namehold_<version>_amd64.AppImage`, `.deb` or `.rpm` |
 
+On macOS you can also install it with [Homebrew](https://brew.sh) from [DimazzzZ/homebrew-tap](https://github.com/DimazzzZ/homebrew-tap):
+
+```bash
+brew install --cask dimazzzz/tap/namehold
+```
+
+The cask installs the same `.dmg` from the latest release and checks it against that release's sha256. The app is still not code-signed, so the first launch needs the step in [macOS](#macos).
+
 Once installed, the app updates itself (see [Auto-update](#auto-update-since-v020)). On first launch it asks how to connect: a local full node, a remote node or SPV. On Windows, a local node needs a Node RPC API key set in Settings › Connections first.
 
 ## Features
