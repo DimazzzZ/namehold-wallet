@@ -626,7 +626,7 @@ When SPV mode is active:
 
 ### Start, stop, status
 
-In **Settings › Node & tray**, a panel shows a live status dot (Connected · Starting · Stopped · Syncing %, or red "Mainnet node not answering" for a node Namehold started that still has not answered ten minutes after its start: stop it and start it again), the read source (**Local node cache** or **Explorer**), the data directory and hsd version. Buttons:
+In **Settings › Node & tray**, a panel shows a live status dot (Connected · Starting · Stopped · Syncing %, or red "Mainnet node not answering" for a node Namehold started that has not answered for over ten minutes, since its start or its last answer; with **Start the mainnet node automatically** on, Namehold restarts it, otherwise stop it and start it again), the read source (**Local node cache** or **Explorer**), the data directory and hsd version. Buttons:
 
 - **Start mainnet node** (named for the active wallet's network; on Windows, set a Node RPC API key first) — spawns that network's hsd with the required flags (`--index-address --index-tx`), listening on 127.0.0.1 only: an `http-host` setting in `hsd.conf` does not apply to a node the app starts. If a node already answers on that network's port, it uses it instead. If something else holds the port, Start refuses and says which port: stop what holds it, or, if it is your own hsd, set its key in Settings. Another network's node keeps running: each network has its own.
 - **Stop mainnet node** — stops the active wallet's network's node, if Namehold started it. A node you started yourself is never stopped by Namehold; the button is disabled and says so.
@@ -782,7 +782,7 @@ Click the readiness pill, top right, or hover Send, for the exact reason. Common
 
 - **"Locked · unlock to send"**: press Unlock in the pill, or the lock button beside the wallet card in the sidebar.
 - **"Your local node is still syncing (N%)…"**: wait for hsd to finish syncing.
-- **"Can't send · node not answering"**: a node Namehold started runs but has not answered for over ten minutes (for example, the disk holding its data went away). The pill's panel says how long; press **Stop mainnet node**, then **Start mainnet node**.
+- **"Can't send · node not answering"**: a node Namehold started runs but has not answered for over ten minutes (for example, the disk holding its data went away). The pill's panel says how long. With **Start the mainnet node automatically** on (Settings › Node & tray), Namehold restarts the node by itself (each restart is in the audit log); otherwise press **Stop mainnet node**, then **Start mainnet node**. A node you stopped is never restarted.
 - **"Your node isn't address-indexed — restart hsd with address indexing…"**: hsd was started without `--index-address`. Restart it from Settings › Node & tray; the app adds the flag. If your chain was already synced without it, use **Re-sync node data**.
 - **"Your node doesn't report its indexes (hsd older than 7.0)…"**: update hsd (8.0 or newer if the app starts it).
 - **"Your node's status couldn't be read…"**: check that hsd is running and reachable at the RPC URL, then press Sync.
@@ -872,7 +872,7 @@ signing key never touches your machine.
 
 ### Checking your current version
 
-Open **Settings › Updates**. Your running version is shown at the top of the card (e.g. "Current version v0.8.0"). It is also in the sidebar's footer and on the About page.
+Open **Settings › Updates**. Your running version is shown at the top of the card (e.g. "Current version v0.8.1"). It is also in the sidebar's footer and on the About page.
 
 ---
 

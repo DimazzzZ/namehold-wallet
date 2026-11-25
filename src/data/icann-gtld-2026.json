@@ -1,6 +1,6 @@
 {
   "round": "2026",
-  "fetchedAt": "2026-11-17T17:07:49.518Z",
+  "fetchedAt": "2026-11-25T15:46:09.244Z",
   "source": {
     "applications": "https://newgtldprogram-aps.icann.org/aps/applications/export/csv",
     "contentionSets": "https://newgtldprogram.icann.org/en/application-rounds/round2/reveal-day-contention-sets.csv"
@@ -484,15 +484,6 @@
         {
           "id": "AI2640T-T91090",
           "applicant": "Airbnb, Inc.",
-          "contention": false
-        }
-      ]
-    },
-    "airliquide": {
-      "applications": [
-        {
-          "id": "AI2686T-T93348",
-          "applicant": "L'Air Liquide, société anonyme pour l'Étude et l'Exploitation des procédés Georges Claude",
           "contention": false
         }
       ]
@@ -1430,11 +1421,6 @@
         {
           "id": "HKZI2636T-T79772",
           "applicant": "Hong Kong Zhongze International Limited",
-          "contention": true
-        },
-        {
-          "id": "INC2624T-T96235",
-          "applicant": "Internet Naming Company",
           "contention": true
         },
         {
@@ -4241,11 +4227,6 @@
           "contention": true
         },
         {
-          "id": "CCS2640T-T43697",
-          "applicant": "Cam Connecting SARL",
-          "contention": true
-        },
-        {
           "id": "IRI2679T-T68212",
           "applicant": "Intercap Registry Inc.",
           "contention": true
@@ -4775,11 +4756,6 @@
         {
           "id": "AM2619T-T42943",
           "applicant": "Acid Medal, LLC",
-          "contention": true
-        },
-        {
-          "id": "CCS2640T-T59535",
-          "applicant": "Cam Connecting SARL",
           "contention": true
         },
         {
@@ -6176,12 +6152,7 @@
         {
           "id": "ARSI2666T-T15666",
           "applicant": "Amazon Registry Services, Inc.",
-          "contention": true
-        },
-        {
-          "id": "TL2645T-T79897",
-          "applicant": "TechEdge Limited",
-          "contention": true
+          "contention": false
         }
       ]
     },
@@ -6762,11 +6733,6 @@
     },
     "max": {
       "applications": [
-        {
-          "id": "CCS2640T-T75373",
-          "applicant": "Cam Connecting SARL",
-          "contention": true
-        },
         {
           "id": "IRI2679T-T72982",
           "applicant": "Intercap Registry Inc.",
@@ -7683,11 +7649,6 @@
     "official": {
       "applications": [
         {
-          "id": "CCS2640T-T64563",
-          "applicant": "Cam Connecting SARL",
-          "contention": true
-        },
-        {
           "id": "CS2595-T95743",
           "applicant": "Cardelina Sociedad por Acciones Simplificada",
           "contention": true
@@ -8359,11 +8320,6 @@
         {
           "id": "APEC2611T-T63430",
           "applicant": "Aruba PEC S.P.A.",
-          "contention": true
-        },
-        {
-          "id": "BGNT2696T-T98747",
-          "applicant": "Beijing Guoxu Network Technology Co., Ltd.",
           "contention": true
         },
         {
@@ -9617,11 +9573,6 @@
         {
           "id": "LFGL2683T-T66821",
           "applicant": "Link Freedom Group Ltd",
-          "contention": true
-        },
-        {
-          "id": "NTG2671T-T12150",
-          "applicant": "NextGEN TLDs GmbH",
           "contention": true
         },
         {
@@ -11173,11 +11124,6 @@
           "contention": true
         },
         {
-          "id": "NTG2671T-T13787",
-          "applicant": "NextGEN TLDs GmbH",
-          "contention": true
-        },
-        {
           "id": "UA2620T-T14912",
           "applicant": "ULTRAVIEW AG",
           "contention": true
@@ -12551,11 +12497,6 @@
     "zen": {
       "applications": [
         {
-          "id": "CCS2640T-T99130",
-          "applicant": "Cam Connecting SARL",
-          "contention": true
-        },
-        {
           "id": "IRI2679T-T80147",
           "applicant": "Intercap Registry Inc.",
           "contention": true
@@ -12578,11 +12519,6 @@
         {
           "id": "RTIS2674T-T25222",
           "applicant": "Radix Technologies Inc SEZC",
-          "contention": true
-        },
-        {
-          "id": "TL2645T-T30242",
-          "applicant": "TechEdge Limited",
           "contention": true
         },
         {
