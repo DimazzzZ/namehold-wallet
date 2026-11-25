@@ -96,7 +96,9 @@ async fn a_rate_limited_first_source_does_not_blank_the_btc_account() {
         .mock("GET", mockito::Matcher::Regex(r"^/address/.*/utxo$".into()))
         .with_status(429)
         .with_body("Too Many Requests")
-        .expect_at_least(1)
+        // The first address and its one retry. Then the source waits behind
+        // the one that answered, instead of a 429 and a pause per address.
+        .expect(2)
         .create_async()
         .await;
     let mut healthy = mockito::Server::new_async().await;
@@ -209,4 +211,60 @@ async fn a_429_with_retry_after_is_asked_again_once() {
     assert_eq!(b.error, None, "the card: {:?}", b.error);
     first.assert_async().await;
     let _ = rest;
+}
+
+fn scanned(branch: u32, index: u32) -> String {
+    let xpub = btc_account::account_xpub(&fx::buyer_master(), fx::NET, 0).unwrap();
+    btc_account::address_at(&xpub, fx::NET, branch, index)
+        .unwrap()
+        .to_string()
+}
+
+/// QA 2026-11-25: one read asks each source for 40 addresses, and from a
+/// flaky network one of them fails now and then (mempool.space's 429, a
+/// 20-second timeout at blockstream.info). One failed address used to
+/// discard the whole source, so a slip on each source left the card "Not
+/// read" although every address had an answer from one source or the other.
+#[tokio::test]
+async fn one_failed_address_per_source_still_reads_the_btc_account() {
+    let coin_body = r#"[{"txid":"6bb38c22ead17f91a5bc7a217a0d4bd4b0f5f807f8de47179539938585b21929","vout":0,"status":{"confirmed":true,"block_height":120},"value":5000}]"#;
+    // Source a: refuses the first change address, knows the coin.
+    let mut a = mockito::Server::new_async().await;
+    let _a_refuse = a
+        .mock(
+            "GET",
+            format!("/address/{}/utxo", scanned(btc_account::BRANCH_CHANGE, 0)).as_str(),
+        )
+        .with_status(429)
+        // Both the try and the one retry after the pause: mockito hands a
+        // mock's hits past its expected count to the next matching mock.
+        .expect(2)
+        .create_async()
+        .await;
+    let _a_coin = a
+        .mock("GET", format!("/address/{}/utxo", first_receive()).as_str())
+        .with_body(coin_body)
+        .create_async()
+        .await;
+    let _a_rest = a
+        .mock("GET", mockito::Matcher::Regex(r"^/address/.*/utxo$".into()))
+        .with_body("[]")
+        .create_async()
+        .await;
+    // Source b: refuses the first receive address, answers the rest.
+    let mut b = mockito::Server::new_async().await;
+    let _b_refuse = b
+        .mock("GET", format!("/address/{}/utxo", first_receive()).as_str())
+        .with_status(503)
+        .create_async()
+        .await;
+    let _b_rest = b
+        .mock("GET", mockito::Matcher::Regex(r"^/address/.*/utxo$".into()))
+        .with_body("[]")
+        .create_async()
+        .await;
+    let app = app_with(seeded(&format!("{}\n{}", a.url(), b.url())));
+    let got = exchange_btc_balance(app.state()).await.unwrap();
+    assert_eq!(got.error, None, "the card: {:?}", got.error);
+    assert_eq!(got.confirmed_sats, 5000);
 }

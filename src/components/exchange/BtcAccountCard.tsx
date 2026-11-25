@@ -228,7 +228,7 @@ export function BtcAccountCard({
             <Spinner /> Reading the BTC account…
           </div>
         ) : error != null ? (
-          <p role="alert" className="text-red-600" data-testid="btc-balance-error">
+          <p role="alert" className="text-red-600 wrap-anywhere" data-testid="btc-balance-error">
             {mapError(error)}
           </p>
         ) : balance ? (
@@ -253,7 +253,11 @@ export function BtcAccountCard({
               />
             </dl>
             {balance.error && (
-              <p role="alert" className="text-xs text-red-700" data-testid="btc-source-error">
+              <p
+                role="alert"
+                className="text-xs text-red-700 wrap-anywhere"
+                data-testid="btc-source-error"
+              >
                 {balance.error}
               </p>
             )}

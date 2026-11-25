@@ -111,7 +111,7 @@ impl Esplora {
             .get(&url)
             .send()
             .await
-            .map_err(|e| rpc_err(&self.base, e))?;
+            .map_err(|e| rpc_err(&self.base, crate::http::describe(&e)))?;
         // A public server's rate limit: wait the pause it names (at most
         // MAX_RETRY_AFTER_SECS) and ask once more before giving up.
         if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -128,7 +128,7 @@ impl Esplora {
                 .get(&url)
                 .send()
                 .await
-                .map_err(|e| rpc_err(&self.base, e))?;
+                .map_err(|e| rpc_err(&self.base, crate::http::describe(&e)))?;
         }
         if r.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -136,7 +136,10 @@ impl Esplora {
         if !r.status().is_success() {
             return Err(rpc_err(&self.base, format!("{path}: HTTP {}", r.status())));
         }
-        r.text().await.map(Some).map_err(|e| rpc_err(&self.base, e))
+        r.text()
+            .await
+            .map(Some)
+            .map_err(|e| rpc_err(&self.base, crate::http::describe(&e)))
     }
 
     async fn need_text(&self, path: &str) -> Result<String, AppError> {
@@ -338,7 +341,7 @@ impl BtcSource for Esplora {
             .body(tx_hex.to_owned())
             .send()
             .await
-            .map_err(|e| rpc_err(&self.base, e))?;
+            .map_err(|e| rpc_err(&self.base, crate::http::describe(&e)))?;
         let ok = r.status().is_success();
         let body = r.text().await.unwrap_or_default();
         if !ok {
