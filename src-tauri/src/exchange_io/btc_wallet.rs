@@ -12,6 +12,39 @@ pub async fn coins(
     acct: &Account,
     network: Network,
 ) -> Result<Vec<BtcCoin>, AppError> {
+    scan(vec![src], acct, network).await
+}
+
+/// The BTC account's coins, asking each scanned address of the sources in
+/// the order the settings list them until one answers for it.
+///
+/// One read asks for 40 addresses or more, and a public server now and then
+/// refuses one of them (a rate limit, a timeout). The fallback is per
+/// address: a source that refused one address used to be dropped for the
+/// whole read, so a slip on each source left the account unread although
+/// every address had an answer from one of them (QA 2026-11-25). A source
+/// that refused goes to the back of the queue for the rest of the read, so a
+/// rate-limited one is not asked first again for every address. Only an
+/// address that no source answers fails the read; the error names every
+/// source's refusal of it.
+pub async fn coins_from_any(
+    srcs: &[Box<dyn BtcSource>],
+    acct: &Account,
+    network: Network,
+) -> Result<Vec<BtcCoin>, AppError> {
+    if srcs.is_empty() {
+        return Err(AppError::InvalidInput(
+            "no Bitcoin source is set: add one in Exchange settings".into(),
+        ));
+    }
+    scan(srcs.iter().map(AsRef::as_ref).collect(), acct, network).await
+}
+
+async fn scan(
+    mut order: Vec<&dyn BtcSource>,
+    acct: &Account,
+    network: Network,
+) -> Result<Vec<BtcCoin>, AppError> {
     let mut out = Vec::new();
     for (branch, next) in [
         (btc_account::BRANCH_RECEIVE, acct.next_btc_receive),
@@ -19,7 +52,33 @@ pub async fn coins(
     ] {
         for index in 0..next.saturating_add(GAP_LIMIT) {
             let addr = btc_account::address_at(&acct.btc_xpub, network, branch, index)?;
-            for u in src.utxos(&addr).await? {
+            let mut errors: Vec<AppError> = Vec::new();
+            let mut answer = None;
+            for (i, src) in order.iter().enumerate() {
+                match src.utxos(&addr).await {
+                    Ok(u) => {
+                        answer = Some((i, u));
+                        break;
+                    }
+                    Err(e) => errors.push(e),
+                }
+            }
+            let Some((answered_by, utxos)) = answer else {
+                if errors.len() == 1 {
+                    return Err(errors.remove(0));
+                }
+                let all: Vec<String> = errors.iter().map(ToString::to_string).collect();
+                return Err(AppError::Other(format!(
+                    "no Bitcoin source could be read: {}",
+                    all.join("; ")
+                )));
+            };
+            // The sources that refused this address move behind the one that
+            // answered it, keeping their own order.
+            if answered_by > 0 {
+                order.rotate_left(answered_by);
+            }
+            for u in utxos {
                 out.push(BtcCoin {
                     txid: u.outpoint.txid.to_string(),
                     vout: u.outpoint.vout,
@@ -32,34 +91,6 @@ pub async fn coins(
         }
     }
     Ok(out)
-}
-
-/// The BTC account's coins from the first source that answers for every
-/// scanned address, in the order the settings list them. One source refusing
-/// (a public server's rate limit, an outage) no longer leaves the account
-/// unread while another is set; the error names every source that failed.
-pub async fn coins_from_any(
-    srcs: &[Box<dyn BtcSource>],
-    acct: &Account,
-    network: Network,
-) -> Result<Vec<BtcCoin>, AppError> {
-    let mut errors: Vec<AppError> = Vec::new();
-    for src in srcs {
-        match coins(src.as_ref(), acct, network).await {
-            Ok(c) => return Ok(c),
-            Err(e) => errors.push(e),
-        }
-    }
-    if errors.len() > 1 {
-        let all: Vec<String> = errors.iter().map(ToString::to_string).collect();
-        return Err(AppError::Other(format!(
-            "no Bitcoin source could be read: {}",
-            all.join("; ")
-        )));
-    }
-    Err(errors.pop().unwrap_or_else(|| {
-        AppError::InvalidInput("no Bitcoin source is set: add one in Exchange settings".into())
-    }))
 }
 
 type Answer = Option<(std::time::Instant, Result<Vec<BtcCoin>, String>)>;
