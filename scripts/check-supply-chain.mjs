@@ -576,6 +576,8 @@ echo "release_id=$RID" >> "$GITHUB_OUTPUT"`,
     job: "build",
     text: `- name: Build bundles
 shell: bash
+env:
+CI: \${{ matrix.platform == 'macos-latest' && 'false' || 'true' }}
 run: pnpm tauri build --no-sign \${{ matrix.args }} -- --locked`,
   },
   {

@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="400" viewBox="0 0 660 400">
+  <!-- Source of background.png (the macOS DMG window). Render with
+       src-tauri/dmg/render.sh. Icon centres in tauri.conf.json:
+       app (180,170), Applications (480,170). Finder draws the title bar
+       over the window size, so only the top ~368 of 400 points show. -->
+  <defs>
+    <pattern id="dots" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect x="2" y="2" width="3" height="3" rx="0.6" fill="#d1d5db"/>
+    </pattern>
+    <radialGradient id="fade" cx="50%" cy="50%" r="75%">
+      <stop offset="0.45" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="1"/>
+    </radialGradient>
+    <mask id="edge">
+      <rect width="660" height="400" fill="url(#fade)"/>
+    </mask>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#111827" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+  <rect width="660" height="400" fill="#f9fafb"/>
+  <rect width="660" height="400" fill="url(#dots)" mask="url(#edge)"/>
+  <rect x="36" y="24" width="588" height="320" rx="16" fill="#ffffff" stroke="#e5e7eb" filter="url(#shadow)"/>
+  <g fill="none" stroke="#4b5563" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M296 170 H364"/>
+    <path d="M342 148 L364 170 L342 192"/>
+  </g>
+  <text x="330" y="316" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="13" fill="#6b7280">Drag Namehold to Applications to install</text>
+</svg>

@@ -296,8 +296,15 @@ jobs:
       # archive is still produced, and the sign job below signs what comes out. It
       # would also skip macOS and Windows code signing, which this build does not
       # do yet; adding that means revisiting this flag.
+      #
+      # CI=false on macOS: with CI=true the bundler passes --skip-jenkins to
+      # bundle_dmg.sh, which then skips the Finder AppleScript that lays out the
+      # DMG window, so the background and icon positions from tauri.conf.json
+      # would be missing from the released .dmg.
       - name: Build bundles
         shell: bash
+        env:
+          CI: ${{ matrix.platform == 'macos-latest' && 'false' || 'true' }}
         run: pnpm tauri build --no-sign ${{ matrix.args }} -- --locked
 
       # The AppImage runs as whoever mounted it, or as another user under firejail
