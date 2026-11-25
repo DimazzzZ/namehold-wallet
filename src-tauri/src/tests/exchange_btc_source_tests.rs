@@ -434,3 +434,18 @@ async fn a_bitcoind_password_with_url_characters_logs_in_as_typed() {
     sources[0].ready().await.unwrap();
     asked.assert();
 }
+
+/// A request that never got an answer says why: reqwest's own text stops at
+/// "error sending request for url (...)", which is all the BTC account card
+/// showed for a timeout at blockstream.info (QA 2026-11-25).
+#[tokio::test]
+async fn a_failed_connection_says_why() {
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let src = Esplora::new(&format!("http://127.0.0.1:{port}")).unwrap();
+    let e = src.fee_rate().await.unwrap_err().to_string();
+    assert!(e.starts_with("Bitcoin source "), "{e}");
+    assert!(e.contains("error sending request"), "{e}");
+    assert!(e.to_lowercase().contains("refused"), "{e}");
+}

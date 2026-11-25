@@ -16,7 +16,33 @@ fn base_builder() -> reqwest::ClientBuilder {
         // updater plugin), which is just as good.
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
-    reqwest::Client::builder()
+    reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT)
+}
+
+/// How long one connection may take to open, across all the addresses its
+/// host resolves to: hyper splits it evenly between them, so an address that
+/// drops the handshake is left after a share of it for the next one. Without
+/// it the request's own timeout ran out on the first such address
+/// (mempool.space resolves to 16, and from one home network ~60% of them
+/// hung for ~15 s: 14 of 30 fresh requests failed at the 20 s timeout, none
+/// with this bound; QA 2026-11-25).
+pub(crate) const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `e` with its causes: reqwest's own text stops at "error sending request
+/// for url (...)" and keeps why (a timeout, a refused connection, a TLS
+/// failure) in its source chain.
+pub(crate) fn describe(e: &reqwest::Error) -> String {
+    let mut s = e.to_string();
+    let mut cause = std::error::Error::source(e);
+    while let Some(c) = cause {
+        let c_text = c.to_string();
+        if !s.contains(&c_text) {
+            s.push_str(": ");
+            s.push_str(&c_text);
+        }
+        cause = c.source();
+    }
+    s
 }
 
 /// `reqwest::Client::builder()` with the process-wide rustls provider in place.
