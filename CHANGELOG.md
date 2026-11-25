@@ -2,6 +2,7 @@
 
 ## Releases
 
+- [0.8.1](#081---2026-11-25)
 - [0.8.0](#080---2026-11-17)
 - [0.7.1](#071---2026-11-06)
 - [0.7.0](#070---2026-11-04)
@@ -16,6 +17,22 @@
 - [0.1.0](#010---2026-06-30)
 
 ## [Unreleased]
+
+## [0.8.1] - 2026-11-25
+
+> **Highlights:** an own node that hangs is restarted by itself; the BTC account reads through a flaky network; Homebrew installs on macOS, and the macOS installer shows where to drag the app.
+
+### Added
+- **Install on macOS with Homebrew:** `brew install --cask dimazzzz/tap/namehold`. The cask follows each release.
+
+### Changed
+- **The macOS installer shows what to do.** The disk image opened on a blank white window with the two icons in a corner; it now shows Namehold, an arrow and Applications, with "Drag Namehold to Applications to install".
+- **The ICANN list drops the applications withdrawn since 17 November:** 1,593 applications on 1,133 strings, 225 with more than one applicant (it was 1,605 on 1,134). `.airliquide` loses the ICANN badge, and `.leo` has a single applicant left.
+- **User manual:** how to move the menu-bar icon out of macOS's hidden items, where a click on it reaches Namehold only while the window is hidden.
+
+### Fixed
+- **An own node that stopped answering is restarted.** When the disk holding its data dropped for a few seconds, hsd could hang while exiting, keeping its process and port for days and answering nothing, and the wallet fell behind. A node Namehold started that has not answered for over ten minutes is now restarted when its network's **Start the node automatically** is on (ended by force if it ignores the stop), and each restart is in the audit log. The status counts the silence from the node's last answer ("has not answered for 20 hours"), and a long-running node is no longer called stuck because one check missed. A node you stopped is never restarted.
+- **The BTC account reads through a flaky network.** One refused address dropped a whole Bitcoin source, so a rate limit on mempool.space and one slip on blockstream.info left the card "Not read" although every address had an answer. Sources are now tried per address, and one that refused moves behind the other for the rest of the read. Every connection gives up on an address that does not answer after its share of 10 seconds and tries the host's next one, instead of using up the whole request; the error says why a source failed and wraps inside the card.
 
 ## [0.8.0] - 2026-11-17
 
